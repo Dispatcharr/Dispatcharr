@@ -70,14 +70,25 @@ class OutputStreamBuffer:
         try:
             now = time.time()
             with self.lock:
-                chunk_index = self.redis_client.incr(self.buffer_index_key)
+                # Local index + publish-after-write: avoids permanent holes when
+                # an INCR succeeds but the chunk pipeline fails (same contract
+                # as StreamBuffer; single writer under self.lock).
+                chunk_index = self.index + 1
                 chunk_key = RedisKeys.output_buffer_chunk(self.channel_id, self.fmt, chunk_index)
                 pipe = self.redis_client.pipeline(transaction=False)
                 pipe.setex(chunk_key, self.chunk_ttl, data)
+                pipe.set(self.buffer_index_key, chunk_index)
                 pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
                 pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
                 pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
-                pipe.execute()
+                try:
+                    pipe.execute()
+                except Exception as e:
+                    logger.error(
+                        f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                        f"Failed to write chunk {chunk_index}: {e}"
+                    )
+                    return False
                 self.index = chunk_index
             self.chunk_available.set()
             self.chunk_available.clear()

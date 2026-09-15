@@ -143,14 +143,13 @@ def hls_playlist(request, channel_id, client_id):
         try:
             state = json.loads(playlist_json)
             if _playlist_is_stale(state):
-                # Ending the session is what gets playback back: the player
-                # re-enters through the stream URL, which starts a segmenter
-                # again, instead of polling a frozen playlist whose segments
-                # are already expiring out of Redis.
+                # Temporary unavailability of a live playlist update (Apple
+                # WWDC17 / RFC 7231): 404 so the player retries rather than
+                # treating the session as permanently gone (410).
                 logger.warning(
-                    f"[{client_id}] HLS output for {channel_id} stopped advancing; ending session"
+                    f"[{client_id}] HLS playlist for {channel_id} stopped advancing"
                 )
-                return JsonResponse({"error": "Stream stopped"}, status=410)
+                return JsonResponse({"error": "Playlist stale"}, status=404)
             body = render_media_playlist(
                 state.get("window", []),
                 state.get("target", 4),

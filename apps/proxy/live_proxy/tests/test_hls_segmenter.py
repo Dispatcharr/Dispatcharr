@@ -419,5 +419,51 @@ class PlaylistTests(unittest.TestCase):
         self.assertEqual(len(starts), 1)   # EXT-X-START also byte-stable
 
 
+AUDIO_PID = 256
+AAC = 0x0F
+
+
+def make_audio_pmt():
+    payload = bytearray([0x00])
+    es_loop = bytes([AAC, 0xE0 | (AUDIO_PID >> 8), AUDIO_PID & 0xFF, 0xF0, 0x00])
+    section_length = 9 + len(es_loop) + 4
+    payload += bytes([0x02, 0xB0 | (section_length >> 8), section_length & 0xFF])
+    payload += bytes([0x00, 0x01, 0xC1, 0x00, 0x00])
+    payload += bytes([0xE0 | (AUDIO_PID >> 8), AUDIO_PID & 0xFF, 0xF0, 0x00])
+    payload += es_loop
+    payload += bytes(4)
+    return make_packet(PMT_PID, payload, pusi=True)
+
+
+def make_audio_pes(pts_seconds):
+    """PUSI AAC PES with PTS (stream_id 0xC0); extract_pts only needs the PTS."""
+    p = make_pes_header(pts_seconds)
+    p[3] = 0xC0  # audio stream_id
+    p += bytes([0xFF, 0xF1, 0x50, 0x80, 0x01, 0x1F, 0xFC])  # ADTS-ish filler
+    return make_packet(AUDIO_PID, p, pusi=True)
+
+
+class AudioOnlySegmenterTests(unittest.TestCase):
+    def test_pmt_without_video_enables_audio_mode_immediately(self):
+        seg = TSSegmenter(target_duration=4.0, startup_keyframe_cuts=0)
+        self.assertEqual(seg.feed(make_pat() + make_audio_pmt()), [])
+        self.assertTrue(seg.audio_only)
+        self.assertFalse(seg.video_detected)
+
+    def test_audio_only_cuts_on_pts_target(self):
+        seg = TSSegmenter(target_duration=4.0, startup_keyframe_cuts=0)
+        out = []
+        out.extend(seg.feed(make_pat() + make_audio_pmt()))
+        # Open on first PTS-bearing audio AU, then cut at +4s.
+        out.extend(seg.feed(make_audio_pes(10.0)))
+        out.extend(seg.feed(make_packet(AUDIO_PID, b"\x00" * 20)))
+        out.extend(seg.feed(make_audio_pes(12.0)))
+        self.assertEqual(out, [])
+        out.extend(seg.feed(make_audio_pes(14.0)))
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out[0].duration, 4.0, places=2)
+        self.assertGreater(len(out[0].data), TS_PACKET_SIZE * 2)
+
+
 if __name__ == "__main__":
     unittest.main()

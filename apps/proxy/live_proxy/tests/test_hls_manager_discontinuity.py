@@ -34,7 +34,6 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         mgr.fmt = "hls"
         mgr.ts_buffer = ts_buffer
         mgr.running = True
-        mgr._switch_pending = False
         mgr._window = []
         mgr._owns_output = True
         mgr._stopped = False

@@ -113,7 +113,7 @@ class ClientManager:
                             last_active = self.redis_client.hget(client_key, "last_active")
                             if last_active:
                                 last_active_time = float(last_active)
-                                ghost_timeout = self.heartbeat_interval * getattr(Config, 'GHOST_CLIENT_MULTIPLIER', 5.0)
+                                ghost_timeout = self._ghost_timeout_for_client(client_key)
 
                                 if current_time - last_active_time > ghost_timeout:
                                     logger.debug(f"Client {client_id} inactive for {current_time - last_active_time:.1f}s, removing as ghost")
@@ -170,6 +170,22 @@ class ClientManager:
         thread.name = f"client-heartbeat-{self.channel_id}"
         thread.start()
         logger.debug(f"Started client heartbeat thread for channel {self.channel_id} (interval: {self.heartbeat_interval}s)")
+
+    def _ghost_timeout_for_client(self, client_key):
+        """Seconds of last_active silence before this client is a ghost.
+
+        MPEG-TS / fMP4 keep a long window so failover grace is not mistaken
+        for disconnect. HLS is pull-based: after a few missed segment
+        intervals with no playlist/segment poll, the player is gone.
+        """
+        output_format = self.redis_client.hget(client_key, "output_format")
+        if isinstance(output_format, bytes):
+            output_format = output_format.decode("utf-8", errors="replace")
+        if output_format == "hls":
+            segment = float(ConfigHelper.get("HLS_SEGMENT_DURATION", 4))
+            missed = float(ConfigHelper.get("HLS_CLIENT_GHOST_SEGMENTS", 3))
+            return segment * missed
+        return self.heartbeat_interval * getattr(Config, "GHOST_CLIENT_MULTIPLIER", 5.0)
 
     def stop(self):
         """Stop the heartbeat thread and cleanup"""

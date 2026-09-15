@@ -37,7 +37,8 @@ HLS_KEY_TTL = 3600
 # elsewhere, and nothing restarts the segmenter until the key finally expires.
 HLS_OWNER_TTL = 60
 
-# Defaults; both overridable via proxy settings
+# HLS segmenter knobs (code-level ConfigHelper / TSConfig attrs). Not exposed
+# in the DB-backed Proxy Settings UI; add CoreSettings keys later if needed.
 DEFAULT_SEGMENT_DURATION = 4
 # Retain 10 segments (~40s) in the rolling live window. A player starts
 # near the live edge regardless of window length, so a longer window adds
@@ -68,10 +69,6 @@ class HLSOutputManager:
         self.fmt = fmt
         self.running = False
         self._thread = None
-        # Set by the input side when the upstream switched; retained as a
-        # secondary path. The primary signal is the buffer discontinuity
-        # sidecar written by StreamBuffer.mark_discontinuity().
-        self._switch_pending = False
         # True only while this instance holds the output owner lock. Redis
         # cleanup is gated on it: if ownership moved to another worker, its
         # playlist and segments live under the same keys and must not be
@@ -184,16 +181,6 @@ class HLSOutputManager:
             )
         logger.info(f"[HLS:{self.channel_id}] Stopped")
 
-    def notify_stream_switch(self):
-        """Optional input-side signal for a stream switch.
-
-        Prefer StreamBuffer.mark_discontinuity(), which both stamps the
-        MPEG-TS discontinuity_indicator into the first packets of the new
-        source and records a sidecar index HLS can cut on. This boolean is
-        kept for callers that cannot go through the buffer.
-        """
-        self._switch_pending = True
-
     # ------------------------------------------------------------------
     # Segmenter loop
     # ------------------------------------------------------------------
@@ -227,10 +214,6 @@ class HLSOutputManager:
 
         try:
             while self.running:
-                if self._switch_pending:
-                    self._switch_pending = False
-                    self._cut_for_discontinuity(segmenter, reason="notify_stream_switch")
-
                 now = time.time()
                 if now - last_demand_check >= DEMAND_CHECK_INTERVAL:
                     last_demand_check = now

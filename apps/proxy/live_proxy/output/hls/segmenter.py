@@ -11,15 +11,17 @@ This module is intentionally dependency-free (stdlib only, no Django or
 Redis imports) so the parsing logic is unit-testable in isolation.
 
 Segmentation rules:
-- A segment may only begin on a video keyframe access unit. Keyframes are
-  detected via the adaptation-field random_access_indicator when the
-  provider sets it, with a codec-aware start-code scan as a fallback
-  (H.264 IDR, H.265 IRAP, MPEG-1/2 sequence header, GOP header or
+- Video: a segment may only begin on a video keyframe access unit.
+  Keyframes are detected via the adaptation-field random_access_indicator
+  when the provider sets it, with a codec-aware start-code scan as a
+  fallback (H.264 IDR, H.265 IRAP, MPEG-1/2 sequence header, GOP header or
   I-picture). A parameter set counts as a keyframe marker only when the
   packet carries no non-keyframe slice of its own; many encoders repeat
-  parameter sets before every picture.
-- Segment duration is measured from video PES PTS deltas, cut at the
-  first keyframe at or after the target duration.
+  parameter sets before every picture. Duration is measured from video
+  PES PTS deltas, cut at the first keyframe at or after the target.
+- Audio-only: when a parsed PMT lists no video ES (e.g. radio as MPEG-TS
+  AAC), switch immediately to cutting on audio PES PTS at the target
+  duration. No multi-second wait: the PMT is authoritative once seen.
 - Every emitted segment is prefixed with the most recently seen PAT and
   PMT packets so each segment decodes independently, as HLS requires.
 """
@@ -33,6 +35,16 @@ VIDEO_STREAM_TYPES = {
     0x02: "mpeg2",
     0x1B: "h264",
     0x24: "h265",
+}
+
+# Common audio elementary stream types in live MPEG-TS
+AUDIO_STREAM_TYPES = {
+    0x03: "mpeg1-audio",
+    0x04: "mpeg2-audio",
+    0x0F: "aac-adts",
+    0x11: "aac-latm",
+    0x81: "ac3",
+    0x87: "eac3",
 }
 
 PTS_CLOCK = 90000.0
@@ -105,27 +117,51 @@ def parse_pat(packet):
     return None
 
 
-def parse_pmt(packet):
-    """Return (video_pid, video_stream_type) from a PMT packet, or (None, None)."""
+def parse_pmt_streams(packet):
+    """Return [(stream_type, es_pid), ...] from a PMT packet, or None if unparseable."""
     base = packet_payload_offset(packet)
     if base is None or base + 1 >= TS_PACKET_SIZE:
-        return None, None
+        return None
     pointer = packet[base]
     section = base + 1 + pointer
     if section + 12 >= TS_PACKET_SIZE:
-        return None, None
+        return None
+    if packet[section] != 0x02:  # table_id must be PMT
+        return None
     section_length = ((packet[section + 1] & 0x0F) << 8) | packet[section + 2]
     program_info_length = ((packet[section + 10] & 0x0F) << 8) | packet[section + 11]
     offset = section + 12 + program_info_length
     section_end = min(section + 3 + section_length - 4, TS_PACKET_SIZE - 1)
 
+    streams = []
     while offset + 4 < section_end:
         stream_type = packet[offset]
         es_pid = ((packet[offset + 1] & 0x1F) << 8) | packet[offset + 2]
         es_info_length = ((packet[offset + 3] & 0x0F) << 8) | packet[offset + 4]
+        streams.append((stream_type, es_pid))
+        offset += 5 + es_info_length
+    return streams
+
+
+def parse_pmt(packet):
+    """Return (video_pid, video_stream_type) from a PMT packet, or (None, None)."""
+    streams = parse_pmt_streams(packet)
+    if not streams:
+        return None, None
+    for stream_type, es_pid in streams:
         if stream_type in VIDEO_STREAM_TYPES:
             return es_pid, stream_type
-        offset += 5 + es_info_length
+    return None, None
+
+
+def parse_pmt_audio(packet):
+    """Return (audio_pid, audio_stream_type) for the first audio ES, or (None, None)."""
+    streams = parse_pmt_streams(packet)
+    if not streams:
+        return None, None
+    for stream_type, es_pid in streams:
+        if stream_type in AUDIO_STREAM_TYPES:
+            return es_pid, stream_type
     return None, None
 
 
@@ -273,8 +309,10 @@ class TSSegmenter:
         self._pmt_pid = None
         self._video_pid = None
         self._video_stream_type = None
+        self._audio_pid = None
+        self._audio_only = False
         self._segment_start_pts = None
-        # First / most-recent video PTS in the current segment; used to report a
+        # First / most-recent timing PTS in the current segment; used to report a
         # MEASURED duration on the discontinuity cut instead of substituting the
         # nominal target (RFC 8216 4.3.2.1: EXTINF must be accurate).
         self._seg_first_pts = None
@@ -287,13 +325,18 @@ class TSSegmenter:
     def video_detected(self):
         return self._video_pid is not None
 
+    @property
+    def audio_only(self):
+        return self._audio_only
+
     def flag_discontinuity(self):
         """Mark a stream discontinuity (provider failover, buffer skip-ahead).
 
         Hard cut: the in-progress segment is closed IMMEDIATELY from the bytes
         already collected, so pre-gap and post-gap data can never share a
-        segment. Collection resumes at the next keyframe, and that new segment
-        is the one tagged with EXT-X-DISCONTINUITY.
+        segment. Collection resumes at the next video keyframe (or audio PES
+        with PTS in audio-only mode), and that new segment is the one tagged
+        with EXT-X-DISCONTINUITY.
 
         Returns the finished pre-gap Segment, or None when the open segment
         held nothing playable (its measured span is zero) and was discarded.
@@ -305,7 +348,7 @@ class TSSegmenter:
                 span = self._elapsed(self._seg_last_pts, self._seg_first_pts)
             if span > 0:
                 finished = self._finish_segment(span)
-        # Drop any un-finished remainder and wait for the next keyframe; the
+        # Drop any un-finished remainder and wait for the next start point; the
         # PTS timeline may jump arbitrarily across the discontinuity.
         self._collecting = False
         self._current = bytearray()
@@ -356,16 +399,38 @@ class TSSegmenter:
             return None
         if self._pmt_pid is not None and pid == self._pmt_pid:
             self._pmt_packet = packet
-            video_pid, stream_type = parse_pmt(packet)
+            streams = parse_pmt_streams(packet)
+            if streams is None:
+                return None
+            video_pid, stream_type = None, None
+            audio_pid = None
+            for st, es_pid in streams:
+                if video_pid is None and st in VIDEO_STREAM_TYPES:
+                    video_pid, stream_type = es_pid, st
+                elif audio_pid is None and st in AUDIO_STREAM_TYPES:
+                    audio_pid = es_pid
             if video_pid is not None:
                 # Re-learned continuously so PID/codec changes across
                 # provider failovers are tolerated.
                 self._video_pid = video_pid
                 self._video_stream_type = stream_type
+                self._audio_only = False
+                self._audio_pid = audio_pid
+            elif audio_pid is not None:
+                # PMT listed elementary streams with no video: audio-only
+                # (radio / music channels). Decide immediately from the table;
+                # do not wait for a video PID that will never arrive.
+                self._audio_pid = audio_pid
+                self._audio_only = True
+                self._video_pid = None
+                self._video_stream_type = None
             return None
 
-        if self._video_pid is None:
+        if self._video_pid is None and not self._audio_only:
             return None
+
+        if self._audio_only:
+            return self._handle_audio_packet(packet, pid)
 
         finished = None
         if pid == self._video_pid and packet_pusi(packet):
@@ -427,6 +492,43 @@ class TSSegmenter:
                 # reaches.
                 elapsed = self._elapsed(pts, self._segment_start_pts)
                 if elapsed >= self.max_segment_duration:
+                    finished = self._finish_segment(elapsed)
+                    self._begin_segment(pts)
+
+        if self._collecting:
+            self._current.extend(packet)
+        return finished
+
+    def _handle_audio_packet(self, packet, pid):
+        """Cut on audio PES PTS once the PMT has confirmed there is no video."""
+        finished = None
+        if pid == self._audio_pid and packet_pusi(packet):
+            pts = extract_pts(packet)
+            if (
+                pts is not None
+                and self._collecting
+                and self._segment_start_pts is not None
+                and self._is_timeline_reset(pts, self._segment_start_pts)
+            ):
+                finished = self.flag_discontinuity()
+                self._begin_segment(pts)
+                self._current.extend(packet)
+                return finished
+
+            if pts is not None:
+                if self._seg_first_pts is None:
+                    self._seg_last_pts = pts
+                elif self._elapsed(pts, self._seg_first_pts) >= self._elapsed(
+                    self._seg_last_pts, self._seg_first_pts
+                ):
+                    self._seg_last_pts = pts
+
+            if not self._collecting:
+                if pts is not None:
+                    self._begin_segment(pts)
+            elif pts is not None and self._segment_start_pts is not None:
+                elapsed = self._elapsed(pts, self._segment_start_pts)
+                if elapsed >= self.target_duration and elapsed > 0:
                     finished = self._finish_segment(elapsed)
                     self._begin_segment(pts)
 

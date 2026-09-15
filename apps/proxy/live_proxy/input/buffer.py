@@ -136,14 +136,22 @@ class StreamBuffer:
             return False
 
     def _write_chunk_unlocked(self, chunk_data):
-        """Write one packet-aligned chunk to Redis. Caller must hold self.lock."""
+        """Write one packet-aligned chunk to Redis. Caller must hold self.lock.
+
+        Index is chosen locally and published only after the chunk write
+        succeeds. A prior INCR-first approach could burn an index when the
+        subsequent pipeline failed, leaving a permanent hole that every
+        positional reader (TS / fMP4 / HLS / profile) treats as contiguous.
+        Single-writer under self.lock, so local self.index + 1 is safe.
+        """
         if not chunk_data or not self.redis_client:
             return False
-        chunk_index = self.redis_client.incr(self.buffer_index_key)
+        chunk_index = self.index + 1
         chunk_key = f"{self.buffer_prefix}{chunk_index}"
 
         pipe = self.redis_client.pipeline(transaction=False)
         pipe.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
+        pipe.set(self.buffer_index_key, chunk_index)
 
         if self.chunk_timestamps_key:
             now = time.time()
@@ -151,7 +159,15 @@ class StreamBuffer:
             pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
             pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
 
-        pipe.execute()
+        try:
+            pipe.execute()
+        except Exception as e:
+            logger.error(
+                f"Failed to write buffer chunk {chunk_index} for channel "
+                f"{self.channel_id}: {e}"
+            )
+            return False
+
         self.index = chunk_index
 
         # First Redis chunk after a discontinuity mark finishes the in-band

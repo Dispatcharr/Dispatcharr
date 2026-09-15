@@ -24,6 +24,13 @@ class _FakeRedis:
         self.kv[key] = str(self._index)
         return self._index
 
+    def set(self, key, value):
+        if isinstance(value, (bytes, bytearray)):
+            self.kv[key] = bytes(value)
+        else:
+            self.kv[key] = str(value)
+        return True
+
     def get(self, key):
         return self.kv.get(key)
 
@@ -70,6 +77,10 @@ class _FakePipeline:
 
     def setex(self, *a):
         self.ops.append(("setex", a))
+        return self
+
+    def set(self, *a):
+        self.ops.append(("set", a))
         return self
 
     def zadd(self, *a):
@@ -139,3 +150,47 @@ class MarkDiscontinuityTests(TestCase):
         buf.mark_discontinuity()  # empty buffer: records index 1
         self.assertEqual(buf.discontinuities_in_range(0, 1), [1])
         self.assertEqual(buf.discontinuities_in_range(1, 5), [])
+
+    def test_failed_chunk_write_does_not_skip_index(self):
+        """A pipeline failure must not burn the next index (no permanent hole)."""
+        buf, redis = self._buffer()
+        buf.target_chunk_size = TS_PACKET_SIZE
+        ok = buf.add_chunk(_pkt(256, 0))
+        self.assertTrue(ok)
+        self.assertEqual(buf.index, 1)
+
+        # Next write: pipeline.execute raises after nothing durable happened.
+        real_pipeline = redis.pipeline
+
+        class BoomPipeline:
+            def __init__(self, *a, **k):
+                pass
+
+            def setex(self, *a):
+                return self
+
+            def set(self, *a):
+                return self
+
+            def zadd(self, *a):
+                return self
+
+            def zremrangebyscore(self, *a):
+                return self
+
+            def expire(self, *a):
+                return self
+
+            def execute(self):
+                raise RuntimeError("redis blip")
+
+        redis.pipeline = lambda transaction=False: BoomPipeline()
+        self.assertFalse(buf._write_chunk_unlocked(_pkt(256, 1)))
+        self.assertEqual(buf.index, 1)
+        self.assertEqual(redis.kv.get(buf.buffer_index_key), "1")
+
+        redis.pipeline = real_pipeline
+        self.assertTrue(buf._write_chunk_unlocked(_pkt(256, 2)))
+        self.assertEqual(buf.index, 2)
+        self.assertIn(f"{buf.buffer_prefix}2", redis.kv)
+        self.assertNotIn(f"{buf.buffer_prefix}3", redis.kv)

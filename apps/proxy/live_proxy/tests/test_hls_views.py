@@ -1,4 +1,4 @@
-"""HLS playlist/segment HTTP session edge cases (410 paths)."""
+"""HLS playlist/segment HTTP session edge cases (410/404 paths)."""
 
 import json
 import time
@@ -85,7 +85,7 @@ class HLSPlaylistViewTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
     @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_stale_playlist_descriptor_returns_410(
+    def test_stale_playlist_descriptor_returns_404(
         self, mock_proxy_cls, _network, _close
     ):
         redis = MagicMock()
@@ -107,8 +107,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
 
         response = hls_views.hls_playlist(self._request(), CHANNEL_ID, CLIENT_ID)
 
-        self.assertEqual(response.status_code, 410)
-        self.assertIn(b"Stream stopped", response.content)
+        self.assertEqual(response.status_code, 404)
+        self.assertIn(b"Playlist stale", response.content)
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
     @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
