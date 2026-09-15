@@ -68,8 +68,9 @@ class HLSOutputManager:
         self.fmt = fmt
         self.running = False
         self._thread = None
-        # Set by the input side (StreamManager.update_url) when the upstream
-        # switched; the next emitted segment is marked as a discontinuity.
+        # Set by the input side when the upstream switched; retained as a
+        # secondary path. The primary signal is the buffer discontinuity
+        # sidecar written by StreamBuffer.mark_discontinuity().
         self._switch_pending = False
         # True only while this instance holds the output owner lock. Redis
         # cleanup is gated on it: if ownership moved to another worker, its
@@ -184,9 +185,13 @@ class HLSOutputManager:
         logger.info(f"[HLS:{self.channel_id}] Stopped")
 
     def notify_stream_switch(self):
-        """Input-side signal: the upstream stream changed (manual switch or
-        automatic failover). The next emitted segment must carry
-        EXT-X-DISCONTINUITY (RFC 8216 4.3.2.3)."""
+        """Optional input-side signal for a stream switch.
+
+        Prefer StreamBuffer.mark_discontinuity(), which both stamps the
+        MPEG-TS discontinuity_indicator into the first packets of the new
+        source and records a sidecar index HLS can cut on. This boolean is
+        kept for callers that cannot go through the buffer.
+        """
         self._switch_pending = True
 
     # ------------------------------------------------------------------
@@ -224,16 +229,7 @@ class HLSOutputManager:
             while self.running:
                 if self._switch_pending:
                     self._switch_pending = False
-                    # Hard cut: close the open segment from pre-switch bytes
-                    # only; the next segment starts at a post-switch keyframe
-                    # and carries the discontinuity tag.
-                    tail = segmenter.flag_discontinuity()
-                    if tail is not None:
-                        self._store_segment(tail)
-                    logger.info(
-                        f"[HLS:{self.channel_id}] Input stream switched; segment "
-                        f"cut, next segment will be marked as a discontinuity"
-                    )
+                    self._cut_for_discontinuity(segmenter, reason="notify_stream_switch")
 
                 now = time.time()
                 if now - last_demand_check >= DEMAND_CHECK_INTERVAL:
@@ -270,10 +266,28 @@ class HLSOutputManager:
                 chunks, new_index = self.ts_buffer.get_optimized_client_data(local_index)
 
                 if chunks:
-                    local_index = new_index
+                    # Chunks are local_index+1 .. local_index+len(chunks) when
+                    # nothing has expired (same assumption as the buffer reader).
+                    # Advance by what we actually feed so a discontinuity cut
+                    # lands on the real boundary, not a padded new_index.
+                    disc_at = set()
+                    end_index = local_index + len(chunks)
+                    if hasattr(self.ts_buffer, 'discontinuities_in_range'):
+                        disc_at = set(
+                            self.ts_buffer.discontinuities_in_range(
+                                local_index, end_index
+                            )
+                        )
+                    chunk_index = local_index
                     for chunk in chunks:
                         if not self.running:
                             break
+                        chunk_index += 1
+                        if chunk_index in disc_at:
+                            self._cut_for_discontinuity(
+                                segmenter,
+                                reason=f"buffer index {chunk_index}",
+                            )
                         for segment in segmenter.feed(chunk):
                             self._store_segment(segment)
                             if not first_segment_stored:
@@ -283,6 +297,7 @@ class HLSOutputManager:
                                     f"[HLS:{self.channel_id}] First segment stored "
                                     f"({segment.duration:.2f}s, {len(segment.data)} bytes)"
                                 )
+                    local_index = chunk_index
                 else:
                     if self.ts_buffer.index > local_index + 20:
                         # Fell too far behind (slow consumer / provider burst):
@@ -290,9 +305,7 @@ class HLSOutputManager:
                         # open segment is hard-cut so pre-gap and post-gap
                         # data never share a segment.
                         local_index = self.ts_buffer.index - 5
-                        tail = segmenter.flag_discontinuity()
-                        if tail is not None:
-                            self._store_segment(tail)
+                        self._cut_for_discontinuity(segmenter, reason="buffer skip-ahead")
                         logger.debug(
                             f"[HLS:{self.channel_id}] Skipped forward to index {local_index}"
                         )
@@ -302,6 +315,16 @@ class HLSOutputManager:
             logger.error(f"[HLS:{self.channel_id}] Segmenter loop error: {e}", exc_info=True)
         finally:
             logger.debug(f"[HLS:{self.channel_id}] Segmenter loop exited")
+
+    def _cut_for_discontinuity(self, segmenter, reason=""):
+        """Hard-cut the open segment; the next started segment is tagged."""
+        tail = segmenter.flag_discontinuity()
+        if tail is not None:
+            self._store_segment(tail)
+        logger.info(
+            f"[HLS:{self.channel_id}] Discontinuity cut"
+            f"{f' ({reason})' if reason else ''}; next segment will be marked"
+        )
 
     def _store_segment(self, segment):
         """Store one finished segment and refresh the playlist descriptor."""

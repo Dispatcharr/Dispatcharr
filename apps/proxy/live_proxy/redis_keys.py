@@ -86,6 +86,14 @@ class RedisKeys:
         return f"live:channel:{channel_id}:input:buffer:chunk_timestamps"
 
     @staticmethod
+    def buffer_discontinuities(channel_id):
+        """Sorted set of input buffer chunk indices where a source discontinuity
+        begins (score == member == chunk index). Consumers such as HLS cut
+        before reading that chunk; in-band TS discontinuity_indicator bits are
+        also stamped into the first packets of each PID in that era."""
+        return f"live:channel:{channel_id}:input:buffer:discontinuities"
+
+    @staticmethod
     def transcode_active(channel_id):
         """Key indicating active transcode process"""
         return f"live:channel:{channel_id}:transcode_active"

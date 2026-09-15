@@ -1536,8 +1536,22 @@ class StreamManager:
             # Reset retry counter to allow immediate reconnect
             self._clear_connection_failure_history()
 
-            # Also reset buffer position to prevent stale data after URL change
-            if hasattr(self.buffer, 'reset_buffer_position'):
+            # Flush the last old-source packets to Redis, record the discontinuity
+            # sidecar index, and arm in-band discontinuity_indicator stamping on
+            # the first packet of each PID from the new source (ISO 13818-1 /
+            # FFmpeg initial_discontinuity). Replaces a bare local reset that
+            # discarded complete packets still sitting in the write buffer.
+            if hasattr(self.buffer, 'mark_discontinuity'):
+                try:
+                    self.buffer.mark_discontinuity()
+                except Exception as e:
+                    logger.warning(f"Failed to mark buffer discontinuity: {e}")
+                    if hasattr(self.buffer, 'reset_buffer_position'):
+                        try:
+                            self.buffer.reset_buffer_position()
+                        except Exception:
+                            pass
+            elif hasattr(self.buffer, 'reset_buffer_position'):
                 try:
                     self.buffer.reset_buffer_position()
                     logger.debug("Reset buffer position for clean URL switch")
@@ -1555,21 +1569,6 @@ class StreamManager:
                 )
             except Exception as e:
                 logger.error(f"Could not log stream switch event: {e}")
-
-            # Tell this worker's output-format managers the input switched
-            # (manual switch and automatic failover both funnel through here)
-            # so they can mark the gap in their manifests; the HLS playlist
-            # must carry EXT-X-DISCONTINUITY across a provider change
-            # (RFC 8216 4.3.2.3). Import locally: server imports this module.
-            try:
-                from ..server import ProxyServer
-                proxy_server = ProxyServer.get_instance()
-                for output_manager in proxy_server.output_managers.get(self.channel_id, {}).values():
-                    notify = getattr(output_manager, "notify_stream_switch", None)
-                    if notify:
-                        notify()
-            except Exception as e:
-                logger.debug(f"Could not notify output managers of stream switch: {e}")
 
             return True
         except Exception as e:
