@@ -794,6 +794,9 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         payload = dict(details)
 
+        # Always identify the channel so consumers can correlate events
+        payload["channel_id"] = str(channel_id) if channel_id else None
+
         channel_obj = None
         if channel_id:
             try:
@@ -823,6 +826,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
                 stream_obj = None
 
         # Populate stream details
+        payload["stream_id"] = stream_id
         payload["stream_name"] = getattr(stream_obj, "name", None)
         payload["stream_url"] = getattr(stream_obj, "url", None)
 

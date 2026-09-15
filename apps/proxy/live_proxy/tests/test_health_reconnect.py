@@ -155,8 +155,8 @@ class HealthReconnectRetryLoopTests(TestCase):
             events.append("close")
             sm.connected = False
 
-        def fake_try_next():
-            events.append("try_next")
+        def fake_try_next(reason=None):
+            events.append(f"try_next:{reason}")
             sm.running = False
             return False
 
@@ -176,7 +176,7 @@ class HealthReconnectRetryLoopTests(TestCase):
         self.assertEqual(events.count("close"), 3)
         self.assertEqual(events.count("establish"), 3)
         self.assertEqual(sm.retry_count, 3)
-        self.assertIn("try_next", events)
+        self.assertIn("try_next:max_retries_exceeded", events)
         self.assertFalse(sm.needs_reconnect)
 
     def test_stream_switch_request_still_reaches_failover(self):
@@ -192,8 +192,8 @@ class HealthReconnectRetryLoopTests(TestCase):
             events.append("process")
             sm.needs_stream_switch = True
 
-        def fake_try_next():
-            events.append("try_next")
+        def fake_try_next(reason=None):
+            events.append(f"try_next:{reason}")
             sm.running = False
             return False
 
@@ -207,5 +207,5 @@ class HealthReconnectRetryLoopTests(TestCase):
                 patch.object(sm, "_close_socket"):
             sm.run()
 
-        self.assertEqual(events, ["establish", "process", "try_next"])
+        self.assertEqual(events, ["establish", "process", "try_next:health_monitor"])
         self.assertEqual(sm.retry_count, 0)
