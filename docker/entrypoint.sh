@@ -110,6 +110,12 @@ configure_celery_autoscale_workers() {
     export CELERY_MAX_WORKERS CELERY_MIN_WORKERS
 }
 
+# Report a shell event with a severity. The offset is explicit so the stamp is
+# unambiguous wherever the container's clock sits: log_line WARNING "message".
+log_line() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S,000 %z') $1 entrypoint $2"
+}
+
 # Set PostgreSQL environment variables
 export POSTGRES_DB=${POSTGRES_DB:-dispatcharr}
 export POSTGRES_USER=${POSTGRES_USER:-dispatch}
@@ -203,6 +209,13 @@ DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL^^}
 
 echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 
+# Celery reprints its banner in every worker and beat process. Keep it for the
+# levels that asked for detail; the flag is empty otherwise.
+case "$DISPATCHARR_LOG_LEVEL" in
+    DEBUG|TRACE) export CELERY_BANNER="" ;;
+    *) export CELERY_BANNER="--quiet" ;;
+esac
+
 # Also make the log level available in /etc/environment for all login shells
 #grep -q "DISPATCHARR_LOG_LEVEL" /etc/environment || echo "DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL}" >> /etc/environment
 
@@ -240,7 +253,7 @@ variables=(
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL CELERY_MAX_WORKERS CELERY_MIN_WORKERS UWSGI_WORKERS
-    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR
+    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR CELERY_BANNER
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
@@ -334,7 +347,8 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     prepare_pg_socket_dir
     su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
-    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    # Name a database that exists: libpq would otherwise default to the OS user and the server logs a FATAL per probe.
+    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER} -d template1" >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL to be ready..."
         sleep 1
     done
@@ -350,7 +364,7 @@ else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
     # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
     echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d template1 -q >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
         sleep 1
     done
@@ -364,11 +378,20 @@ fi
 # In modular mode Redis is external — call wait_for_redis.py here
 # because uWSGI's exec-pre runs under 'su -' which strips env vars
 # (DISPATCHARR_ENV, REDIS_HOST, etc.).
-# In AIO mode Redis is started by uWSGI (attach-daemon), so the
-# exec-pre in uwsgi.ini handles the wait + flush there instead.
+# In AIO mode the serving-era Redis is started by uWSGI (attach-daemon)
+# and the exec-pre in uwsgi.ini repeats the wait + flush for it.
 if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
     echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
     echo_with_timestamp "Waiting for Redis to be ready..."
+    python3 /app/scripts/wait_for_redis.py
+    echo "✅ Redis is ready"
+else
+    # uWSGI owns Redis, but migrate and collectstatic run first and read
+    # CoreSettings through the cache; a bootstrap instance covers that phase
+    # and hands the port back before uWSGI's attach-daemon claims it.
+    echo_with_timestamp "Starting bootstrap Redis for the migration phase..."
+    redis-server --port "$REDIS_PORT" --daemonize yes \
+        --pidfile /tmp/redis-bootstrap.pid --loglevel warning
     python3 /app/scripts/wait_for_redis.py
     echo "✅ Redis is ready"
 fi
@@ -407,6 +430,13 @@ fi
 # Run Django commands as non-root user to prevent permission issues
 su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
 su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
+
+# The attach-daemon respawns a dead child, so the port must be free first.
+if [ -f /tmp/redis-bootstrap.pid ]; then
+    bootstrap_redis_pid=$(cat /tmp/redis-bootstrap.pid)
+    kill -TERM "$bootstrap_redis_pid" 2>/dev/null || true
+    while kill -0 "$bootstrap_redis_pid" 2>/dev/null; do sleep 0.1; done
+fi
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
@@ -457,17 +487,17 @@ if [ ${#pids[@]} -gt 0 ]; then
     # Only report unexpected exits — skip if cleanup was already triggered by
     # the trap (i.e. docker stop sent SIGTERM and we shut down intentionally)
     if ! $_cleanup_done; then
-        echo "🚨 One of the processes exited unexpectedly! Checking which one..."
+        log_line ERROR "🚨 One of the processes exited unexpectedly! Checking which one..."
 
         for pid in "${pids[@]}"; do
             if ! kill -0 "$pid" 2>/dev/null; then
                 process_name=${pid_names[$pid]:-unknown}
-                echo "❌ Process $process_name (PID: $pid) has exited!"
+                log_line ERROR "❌ Process $process_name (PID: $pid) has exited!"
             fi
         done
     fi
 else
-    echo "❌ No processes started. Exiting."
+    log_line ERROR "❌ No processes started. Exiting."
     exit 1
 fi
 
