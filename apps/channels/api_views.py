@@ -3604,14 +3604,40 @@ class RecordingViewSet(viewsets.ModelViewSet):
             )
             auth_suffix = _recording_auth_query_suffix(request)
             lines = []
+            has_playlist_type = False
+            total_duration = 0.0
+            segment_count = 0
             with open(requested) as _f:
                 for line in _f:
                     stripped = line.strip()
+                    if stripped.startswith("#EXT-X-PLAYLIST-TYPE:"):
+                        has_playlist_type = True
+                    elif stripped.startswith("#EXTINF:"):
+                        try:
+                            inf_val = stripped.split(":", 1)[1].split(",", 1)[0].strip()
+                            total_duration += float(inf_val)
+                            segment_count += 1
+                        except (ValueError, IndexError):
+                            pass
+
                     if stripped and not stripped.startswith("#"):
                         lines.append(f"{base_url}{stripped}{auth_suffix}\n")
                     else:
                         lines.append(line)
-            return HttpResponse("".join(lines), content_type="application/x-mpegURL")
+
+            if not has_playlist_type:
+                insert_idx = 0
+                for i, l in enumerate(lines):
+                    if l.startswith("#EXT-X-VERSION") or l.startswith("#EXTM3U"):
+                        insert_idx = i + 1
+                lines.insert(insert_idx, "#EXT-X-PLAYLIST-TYPE:EVENT\n")
+
+            resp = HttpResponse("".join(lines), content_type="application/x-mpegURL")
+            if total_duration > 0:
+                resp["X-Recording-Total-Duration"] = f"{total_duration:.2f}"
+            if segment_count > 0:
+                resp["X-Recording-Segment-Count"] = str(segment_count)
+            return resp
 
         if seg_path.endswith(".ts"):
             # Refresh the viewer heartbeat in Redis so the Celery task knows an
