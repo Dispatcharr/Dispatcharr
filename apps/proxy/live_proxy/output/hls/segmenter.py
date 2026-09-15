@@ -118,7 +118,13 @@ def parse_pat(packet):
 
 
 def parse_pmt_streams(packet):
-    """Return [(stream_type, es_pid), ...] from a PMT packet, or None if unparseable."""
+    """Return [(stream_type, es_pid), ...] from a PMT packet, or None if unparseable.
+
+    Returns None when the declared section does not fit in this TS packet
+    (multi-packet / truncated PMT). Callers must not treat a partial ES loop
+    as authoritative, or audio descriptors in packet 1 with video in packet 2
+    would look like an audio-only stream.
+    """
     base = packet_payload_offset(packet)
     if base is None or base + 1 >= TS_PACKET_SIZE:
         return None
@@ -128,18 +134,28 @@ def parse_pmt_streams(packet):
         return None
     if packet[section] != 0x02:  # table_id must be PMT
         return None
+    # section_length: bytes after the length field, including CRC.
     section_length = ((packet[section + 1] & 0x0F) << 8) | packet[section + 2]
+    if section + 3 + section_length > TS_PACKET_SIZE:
+        return None
     program_info_length = ((packet[section + 10] & 0x0F) << 8) | packet[section + 11]
     offset = section + 12 + program_info_length
-    section_end = min(section + 3 + section_length - 4, TS_PACKET_SIZE - 1)
+    # ES loop ends before the 4-byte CRC.
+    section_end = section + 3 + section_length - 4
+    if offset > section_end:
+        return None
 
     streams = []
     while offset + 4 < section_end:
         stream_type = packet[offset]
         es_pid = ((packet[offset + 1] & 0x1F) << 8) | packet[offset + 2]
         es_info_length = ((packet[offset + 3] & 0x0F) << 8) | packet[offset + 4]
+        entry_end = offset + 5 + es_info_length
+        if entry_end > section_end:
+            # Truncated descriptor inside an otherwise sized section: refuse.
+            return None
         streams.append((stream_type, es_pid))
-        offset += 5 + es_info_length
+        offset = entry_end
     return streams
 
 

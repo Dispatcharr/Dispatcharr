@@ -16,6 +16,7 @@ from apps.proxy.live_proxy.output.hls.segmenter import (
     packet_pid,
     parse_pat,
     parse_pmt,
+    parse_pmt_streams,
     render_media_playlist,
     starts_keyframe,
 )
@@ -147,6 +148,25 @@ class ParserTests(unittest.TestCase):
         video_pid, stream_type = parse_pmt(make_pmt())
         self.assertEqual(video_pid, VIDEO_PID)
         self.assertEqual(stream_type, H264)
+        # Normal single-packet PMTs remain fully parseable.
+        self.assertEqual(parse_pmt_streams(make_pmt()), [(H264, VIDEO_PID)])
+        self.assertEqual(parse_pmt_streams(make_audio_pmt()), [(AAC, AUDIO_PID)])
+
+    def test_incomplete_pmt_section_is_not_authoritative(self):
+        """A section_length that spills past this TS packet must not yield a
+        partial ES list (audio in packet 1, video in packet 2)."""
+        # Build a valid single-packet audio PMT, then lie about section_length
+        # so the declared section continues past the packet boundary.
+        packet = bytearray(make_audio_pmt())
+        base = 4  # payload-only packet, no adaptation field
+        pointer = packet[base]
+        section = base + 1 + pointer
+        # Inflate section_length to claim more bytes than remain in the packet.
+        claimed = TS_PACKET_SIZE  # definitely overflows section+3+claimed
+        packet[section + 1] = 0xB0 | ((claimed >> 8) & 0x0F)
+        packet[section + 2] = claimed & 0xFF
+        self.assertIsNone(parse_pmt_streams(bytes(packet)))
+        self.assertEqual(parse_pmt(bytes(packet)), (None, None))
 
     def test_pts_roundtrip(self):
         packet = make_video_pes(1234.5, keyframe=True)
