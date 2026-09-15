@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **System → Logs is gated on Persist Logs to File, not a live collector process check.** The nav previously hid when this container's collector pidfile check failed, so modular installs (and any deploy where files were still being written) could have nothing in the sidebar even though logs were on disk. The entry now follows `log_persist` (default on); System Settings always shows the persist / size / keep controls so the switch can turn the page back on.
+- **Modular log `config/` is owned before the web collector starts.** Celery often creates `/data/logs/config` as root on the shared volume; the web collector (app user) could still file `dispatcharr.log` but not `collector.pid`, so the Logs page warned that nothing was running. The existing pre-collector chown now includes `config/` (after `mkdir -p`).
 
 ## [0.31.0] - 2026-09-13
 
