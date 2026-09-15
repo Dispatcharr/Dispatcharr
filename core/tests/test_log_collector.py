@@ -575,7 +575,7 @@ class ApplySettingsTests(SimpleTestCase):
 
 class EnvironmentFlagTests(TestCase):
     def test_the_environment_reports_the_collector_state(self):
-        """The frontend hides collector-dependent surfaces on this flag."""
+        """The Logs page warns when this flag is false."""
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIClient
 
