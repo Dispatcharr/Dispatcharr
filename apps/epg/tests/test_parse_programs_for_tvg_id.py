@@ -77,11 +77,11 @@ class ParseProgramsForTvgIdSwapTests(TestCase):
         self.source.save(update_fields=['file_path'])
 
     def test_replaces_programs_for_channel(self):
-        old_start = self.base_time - timedelta(days=1)
+        """A stale row inside the freshly-parsed window is replaced, not kept alongside it."""
         ProgramData.objects.create(
             epg=self.epg,
-            start_time=old_start,
-            end_time=old_start + timedelta(hours=1),
+            start_time=self.base_time,
+            end_time=self.base_time + timedelta(hours=1),
             title='Old Programme',
             tvg_id=self.epg.tvg_id,
         )
@@ -94,6 +94,105 @@ class ParseProgramsForTvgIdSwapTests(TestCase):
         programs = ProgramData.objects.filter(epg=self.epg)
         self.assertEqual(programs.count(), 1)
         self.assertEqual(programs.get().title, 'New Show')
+
+    def test_replaces_a_stale_row_that_only_overlaps_the_feed_window(self):
+        """A stale row need not be fully contained in the feed window to be superseded."""
+        overlap_start = self.base_time - timedelta(minutes=30)
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=overlap_start,
+            end_time=overlap_start + timedelta(hours=1),
+            title='Overlapping Stale Programme',
+            tvg_id=self.epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('test.channel', 'New Show', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        titles = set(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True))
+        self.assertEqual(titles, {'New Show'})
+
+    def test_retains_history_outside_the_current_pull(self):
+        """A recent programme absent from this pull survives, it's not just what the feed re-sent."""
+        recent_start = self.base_time - timedelta(hours=6)
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=recent_start,
+            end_time=recent_start + timedelta(hours=1),
+            title='Earlier Today',
+            tvg_id=self.epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('test.channel', 'New Show', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        titles = set(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True))
+        self.assertEqual(titles, {'Earlier Today', 'New Show'})
+
+    def test_prunes_programs_past_the_retention_window(self):
+        """A programme old enough that no catchup_days could reach it gets pruned regardless."""
+        stale_start = self.base_time - timedelta(days=40)
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=stale_start,
+            end_time=stale_start + timedelta(hours=1),
+            title='Ancient Programme',
+            tvg_id=self.epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('test.channel', 'New Show', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        titles = set(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True))
+        self.assertEqual(titles, {'New Show'})
+
+    def test_retains_extra_history_for_catchup_enabled_channel(self):
+        """A channel's own catchup_days extends the retention window past the one-day default."""
+        self.channel.is_catchup = True
+        self.channel.catchup_days = 7
+        self.channel.save(update_fields=['is_catchup', 'catchup_days'])
+
+        old_start = self.base_time - timedelta(days=5)
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=old_start,
+            end_time=old_start + timedelta(hours=1),
+            title='Five Days Ago',
+            tvg_id=self.epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('test.channel', 'New Show', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        titles = set(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True))
+        self.assertEqual(titles, {'Five Days Ago', 'New Show'})
+
+    def test_empty_parse_does_not_wipe_existing_guide(self):
+        """A parse that matches nothing (e.g. a transient upstream hiccup) must not clear the guide."""
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=self.base_time,
+            end_time=self.base_time + timedelta(hours=1),
+            title='Keep Me',
+            tvg_id=self.epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('some.other.channel', 'Unrelated', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        self.assertEqual(
+            ProgramData.objects.filter(epg=self.epg).get().title, 'Keep Me'
+        )
 
     def test_failed_insert_preserves_existing_programs(self):
         """A failed atomic swap must not leave the channel with no guide data."""
