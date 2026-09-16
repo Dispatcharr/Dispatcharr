@@ -9,8 +9,56 @@ can import without circular dependencies.
 import gc
 import hashlib
 import re
+from datetime import timedelta
+
+from django.db.models import Max
+from django.utils import timezone as dj_timezone
 
 from core.utils import send_websocket_update
+
+# Retention floor/ceiling for ProgramData pruning (see epg_retention_cutoffs).
+# One day so "what aired earlier today" survives a refresh even on plain live
+# channels; capped at 30 so a channel's own catchup_days can't be set high
+# enough to keep effectively-unbounded guide history.
+DEFAULT_EPG_RETENTION_DAYS = 1
+MAX_EPG_RETENTION_DAYS = 30
+
+
+def epg_retention_cutoffs(epg_ids, *, now=None):
+    """
+    Map each epg_id to the oldest ProgramData.end_time worth keeping.
+
+    A programme past its epg's cutoff is safe to prune on the next refresh:
+    no channel's catchup_days can reach back far enough to ever request it
+    again. The cutoff is the largest catchup_days among catchup-enabled
+    channels mapped to that epg, floored at DEFAULT_EPG_RETENTION_DAYS and
+    capped at MAX_EPG_RETENTION_DAYS; an epg with no catchup-enabled channel
+    still gets the floor, so non-catchup channels keep a rolling one-day
+    guide history too.
+    """
+    from apps.channels.models import Channel
+
+    epg_ids = list(epg_ids)
+    if not epg_ids:
+        return {}
+
+    if now is None:
+        now = dj_timezone.now()
+
+    max_catchup_days = dict(
+        Channel.objects.filter(epg_data_id__in=epg_ids, is_catchup=True)
+        .values("epg_data_id")
+        .annotate(days=Max("catchup_days"))
+        .values_list("epg_data_id", "days")
+    )
+
+    cutoffs = {}
+    for epg_id in epg_ids:
+        days = max_catchup_days.get(epg_id) or 0
+        days = max(DEFAULT_EPG_RETENTION_DAYS, min(days, MAX_EPG_RETENTION_DAYS))
+        cutoffs[epg_id] = now - timedelta(days=days)
+    return cutoffs
+
 
 # Matches patterns like "S12 E6", "S3E21", "S8 E8 P2/2"
 _ONSCREEN_RE = re.compile(r'S(\d+)\s*E(\d+)', re.IGNORECASE)

@@ -82,11 +82,11 @@ class ParseProgramsForSourceTests(TestCase):
     @patch('apps.epg.tasks.log_system_event')
     @patch('apps.epg.tasks.send_epg_update')
     def test_replaces_programs_for_mapped_channels(self, _send_update, _log_event):
-        old_start = self.base_time - timedelta(days=1)
+        """A stale row inside the freshly-parsed window is replaced, not kept alongside it."""
         ProgramData.objects.create(
             epg=self.mapped_epg,
-            start_time=old_start,
-            end_time=old_start + timedelta(hours=1),
+            start_time=self.base_time,
+            end_time=self.base_time + timedelta(hours=1),
             title='Old Programme',
             tvg_id=self.mapped_epg.tvg_id,
         )
@@ -112,6 +112,105 @@ class ParseProgramsForSourceTests(TestCase):
         self.assertEqual(mapped_programs.count(), 1)
         self.assertEqual(mapped_programs.get().title, 'New Show')
         self.assertFalse(ProgramData.objects.filter(epg=self.unmapped_epg).exists())
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_retains_history_outside_the_current_pull(self, _send_update, _log_event):
+        """A recent programme absent from this pull survives, it's not just what the feed re-sent."""
+        recent_start = self.base_time - timedelta(hours=6)
+        ProgramData.objects.create(
+            epg=self.mapped_epg,
+            start_time=recent_start,
+            end_time=recent_start + timedelta(hours=1),
+            title='Earlier Today',
+            tvg_id=self.mapped_epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('mapped.channel', 'New Show', self.start, self.stop)
+        )
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        titles = set(
+            ProgramData.objects.filter(epg=self.mapped_epg).values_list('title', flat=True)
+        )
+        self.assertEqual(titles, {'Earlier Today', 'New Show'})
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_prunes_programs_past_the_retention_window(self, _send_update, _log_event):
+        """A programme old enough that no catchup_days could reach it gets pruned regardless."""
+        stale_start = self.base_time - timedelta(days=40)
+        ProgramData.objects.create(
+            epg=self.mapped_epg,
+            start_time=stale_start,
+            end_time=stale_start + timedelta(hours=1),
+            title='Ancient Programme',
+            tvg_id=self.mapped_epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('mapped.channel', 'New Show', self.start, self.stop)
+        )
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        titles = set(
+            ProgramData.objects.filter(epg=self.mapped_epg).values_list('title', flat=True)
+        )
+        self.assertEqual(titles, {'New Show'})
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_retains_extra_history_for_catchup_enabled_channel(self, _send_update, _log_event):
+        """A channel's own catchup_days extends the retention window past the one-day default."""
+        channel = Channel.objects.get(epg_data=self.mapped_epg)
+        channel.is_catchup = True
+        channel.catchup_days = 7
+        channel.save(update_fields=['is_catchup', 'catchup_days'])
+
+        old_start = self.base_time - timedelta(days=5)
+        ProgramData.objects.create(
+            epg=self.mapped_epg,
+            start_time=old_start,
+            end_time=old_start + timedelta(hours=1),
+            title='Five Days Ago',
+            tvg_id=self.mapped_epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('mapped.channel', 'New Show', self.start, self.stop)
+        )
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        titles = set(
+            ProgramData.objects.filter(epg=self.mapped_epg).values_list('title', flat=True)
+        )
+        self.assertEqual(titles, {'Five Days Ago', 'New Show'})
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_empty_parse_does_not_wipe_existing_guide(self, _send_update, _log_event):
+        """A mapped channel absent from this particular pull keeps its existing guide data."""
+        ProgramData.objects.create(
+            epg=self.mapped_epg,
+            start_time=self.base_time,
+            end_time=self.base_time + timedelta(hours=1),
+            title='Keep Me',
+            tvg_id=self.mapped_epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('unmapped.channel', 'Unrelated', self.start, self.stop)
+        )
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        self.assertEqual(
+            ProgramData.objects.get(epg=self.mapped_epg).title, 'Keep Me'
+        )
 
     @patch('apps.epg.tasks.log_system_event')
     @patch('apps.epg.tasks.send_epg_update')
@@ -183,11 +282,10 @@ class ParseProgramsForSourceTests(TestCase):
         if connection.vendor != 'postgresql':
             self.skipTest('PostgreSQL staging swap is required for this assertion')
 
-        old_start = self.base_time - timedelta(days=1)
         ProgramData.objects.create(
             epg=self.mapped_epg,
-            start_time=old_start,
-            end_time=old_start + timedelta(hours=1),
+            start_time=self.base_time,
+            end_time=self.base_time + timedelta(hours=1),
             title='Old Programme',
             tvg_id=self.mapped_epg.tvg_id,
         )
