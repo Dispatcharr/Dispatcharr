@@ -1217,13 +1217,27 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
 
         with patch(
             "apps.output.views._direct_m3u_provider_url",
-            return_value="http://provider.example/live/u/p/123.ts",
+            return_value=("http://provider.example/live/u/p/123.ts", True, 7),
         ):
             request = self.factory.get("/output/m3u", {"direct": "true"})
             response = generate_m3u(request, None, self.user)
         content = _response_text(response)
         self.assertIn('catchup="default"', content)
         self.assertIn('catchup-days="7"', content)
+
+    def test_catchup_omitted_for_direct_url_when_resolved_stream_lacks_it(self):
+        """channel.is_catchup is a rollup; the one stream direct=true actually
+        resolved to may not itself be the catchup-capable one."""
+        from apps.output.views import generate_m3u
+
+        with patch(
+            "apps.output.views._direct_m3u_provider_url",
+            return_value=("http://provider.example/live/u/p/456.ts", False, 0),
+        ):
+            request = self.factory.get("/output/m3u", {"direct": "true"})
+            response = generate_m3u(request, None, self.user)
+        content = _response_text(response)
+        self.assertNotIn('catchup=', content)
 
 
 class XcGetEpgCatchupGateTests(TestCase):

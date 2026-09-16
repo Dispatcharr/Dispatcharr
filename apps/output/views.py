@@ -65,11 +65,19 @@ def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
 
     When ``allowed_m3u_profiles`` is set, walk streams in channel order and use
     the first stream whose M3U account has an allowed profile, applying that
-    profile's credential/URL transform. Returns ``None`` when no stream is
-    usable (caller should omit the channel).
+    profile's credential/URL transform. Returns ``(None, False, 0)`` when no
+    stream is usable (caller should omit the channel).
 
     When unrestricted (``allowed_m3u_profiles is None``), keep historical
     behavior: the first stream's stored URL, or ``None`` if missing.
+
+    Returns ``(url, is_catchup, catchup_days)`` for the specific stream whose
+    URL was actually used. ``Channel.is_catchup`` is a channel-wide rollup
+    (true if *any* underlying stream supports catchup), which is the wrong
+    signal here: this is a raw provider URL for one particular stream, not
+    Dispatcharr's own proxy, so a channel whose catchup-capable stream isn't
+    the one this request happened to resolve must not advertise catchup for
+    a URL that can't actually serve it.
     """
     from apps.proxy.live_proxy.url_utils import _resolve_live_stream_url
 
@@ -85,13 +93,13 @@ def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
                 continue
             url = _resolve_live_stream_url(stream, account, profile)
             if url:
-                return url
-        return None
+                return url, bool(stream.is_catchup), (stream.catchup_days or 0)
+        return None, False, 0
 
     stream = streams[0] if streams else None
     if stream and stream.url:
-        return stream.url
-    return None
+        return stream.url, bool(stream.is_catchup), (stream.catchup_days or 0)
+    return None, False, 0
 
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
@@ -331,9 +339,11 @@ def generate_m3u(request, profile_name=None, user=None):
     channel_count = 0
     for channel in channels:
         direct_provider_url = None
+        direct_stream_is_catchup = False
+        direct_stream_catchup_days = 0
         if use_direct_urls:
-            direct_provider_url = _direct_m3u_provider_url(
-                channel.streams.all(), allowed_m3u_profiles
+            direct_provider_url, direct_stream_is_catchup, direct_stream_catchup_days = (
+                _direct_m3u_provider_url(channel.streams.all(), allowed_m3u_profiles)
             )
             # Allowlisted users only get channels they can actually open with a
             # permitted provider profile. Unrestricted direct keeps the old
@@ -385,8 +395,20 @@ def generate_m3u(request, profile_name=None, user=None):
             )
 
         catchup_attrs = ""
-        if catchup_allowed and channel.is_catchup and (is_xc_request or (use_direct_urls and direct_provider_url)):
-            catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
+        if catchup_allowed:
+            catchup_days = 0
+            if is_xc_request and channel.is_catchup:
+                # Dispatcharr's own XC output always proxies through its
+                # current failover-ordered stream, matching the JSON XC API's
+                # existing tv_archive/tv_archive_duration precedent (channel
+                # rollup is the right signal here, there is no fixed stream).
+                catchup_days = getattr(channel, "catchup_days", 0) or 0
+            elif use_direct_urls and direct_provider_url and direct_stream_is_catchup:
+                # This is one specific stream's raw URL, not the proxy, so the
+                # channel-wide rollup is the wrong signal: only that stream's
+                # own catchup_days applies.
+                catchup_days = direct_stream_catchup_days
+            catchup_days = min(catchup_days, 30)
             if catchup_days > 0:
                 catchup_attrs = f'catchup="default" catchup-days="{catchup_days}" '
 
