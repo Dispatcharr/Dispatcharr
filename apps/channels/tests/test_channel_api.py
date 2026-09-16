@@ -975,3 +975,33 @@ class ChannelListOnlyCatchupFilterTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         sql = " ".join(q["sql"] for q in ctx.captured_queries).upper()
         self.assertNotIn("DISTINCT", sql)
+
+
+class ChannelListOnlyRadioFilterTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="radio_filter", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.radio_channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Radio Channel",
+            is_radio=True,
+        )
+        self.tv_channel = Channel.objects.create(
+            channel_number=2.0,
+            name="TV Channel",
+            is_radio=False,
+        )
+
+    def test_only_radio_returns_radio_channels(self):
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"only_radio": "true", "page": 1, "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.radio_channel.id})

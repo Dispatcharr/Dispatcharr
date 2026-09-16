@@ -150,6 +150,14 @@ class Stream(models.Model):
         help_text="Number of days of catch-up archive available (tv_archive_duration)",
     )
 
+    # Populated at import from the provider's stream_type (XC accounts) or the
+    # M3U radio EXTINF attribute (standard M3U accounts).
+    is_radio = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this stream is a radio (audio-only) stream, per the provider",
+    )
+
     class Meta:
         # If you use m3u_account, you might do unique_together = ('name','url','m3u_account')
         verbose_name = "Stream"
@@ -388,6 +396,14 @@ class Channel(models.Model):
     catchup_days = models.PositiveIntegerField(
         default=0,
         help_text="Max catch-up archive days across all streams on this channel",
+    )
+
+    # Populated at import; rolled up via ChannelStream signal / m3u refresh,
+    # same shape as is_catchup above.
+    is_radio = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether any stream on this channel is a radio stream",
     )
 
     # Hidden channels are excluded from HDHR, M3U, EPG, and XC output queries.
