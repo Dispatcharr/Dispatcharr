@@ -95,6 +95,25 @@ class ParseProgramsForTvgIdSwapTests(TestCase):
         self.assertEqual(programs.count(), 1)
         self.assertEqual(programs.get().title, 'New Show')
 
+    def test_replaces_a_stale_row_that_only_overlaps_the_feed_window(self):
+        """A stale row need not be fully contained in the feed window to be superseded."""
+        overlap_start = self.base_time - timedelta(minutes=30)
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=overlap_start,
+            end_time=overlap_start + timedelta(hours=1),
+            title='Overlapping Stale Programme',
+            tvg_id=self.epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('test.channel', 'New Show', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        titles = set(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True))
+        self.assertEqual(titles, {'New Show'})
+
     def test_retains_history_outside_the_current_pull(self):
         """A recent programme absent from this pull survives, it's not just what the feed re-sent."""
         recent_start = self.base_time - timedelta(hours=6)

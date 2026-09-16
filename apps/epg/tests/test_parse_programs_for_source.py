@@ -115,6 +115,30 @@ class ParseProgramsForSourceTests(TestCase):
 
     @patch('apps.epg.tasks.log_system_event')
     @patch('apps.epg.tasks.send_epg_update')
+    def test_replaces_a_stale_row_that_only_overlaps_the_feed_window(self, _send_update, _log_event):
+        """A stale row need not be fully contained in the feed window to be superseded."""
+        overlap_start = self.base_time - timedelta(minutes=30)
+        ProgramData.objects.create(
+            epg=self.mapped_epg,
+            start_time=overlap_start,
+            end_time=overlap_start + timedelta(hours=1),
+            title='Overlapping Stale Programme',
+            tvg_id=self.mapped_epg.tvg_id,
+        )
+        self._configure_source_file(
+            _programme_xml('mapped.channel', 'New Show', self.start, self.stop)
+        )
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        titles = set(
+            ProgramData.objects.filter(epg=self.mapped_epg).values_list('title', flat=True)
+        )
+        self.assertEqual(titles, {'New Show'})
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
     def test_retains_history_outside_the_current_pull(self, _send_update, _log_event):
         """A recent programme absent from this pull survives, it's not just what the feed re-sent."""
         recent_start = self.base_time - timedelta(hours=6)

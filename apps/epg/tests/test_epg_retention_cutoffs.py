@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.channels.models import Channel
+from apps.channels.models import Channel, ChannelOverride
 from apps.epg.models import EPGData, EPGSource
 from apps.epg.utils import (
     DEFAULT_EPG_RETENTION_DAYS,
@@ -150,3 +150,25 @@ class EpgRetentionCutoffsTests(TestCase):
             cutoffs[plain.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
         )
         self.assertEqual(cutoffs[catchup.id], self.now - timedelta(days=5))
+
+    def test_uses_catchup_days_from_an_override_only_mapping(self):
+        """A channel reaching this epg only through ChannelOverride still counts."""
+        own_epg = self._epg('own')
+        override_epg = self._epg('override-target')
+        channel = Channel.objects.create(
+            channel_number=1,
+            name='Override Redirected',
+            epg_data=own_epg,
+            is_catchup=True,
+            catchup_days=9,
+        )
+        ChannelOverride.objects.create(channel=channel, epg_data=override_epg)
+
+        cutoffs = epg_retention_cutoffs([own_epg.id, override_epg.id], now=self.now)
+
+        self.assertEqual(cutoffs[override_epg.id], self.now - timedelta(days=9))
+        # The channel's own epg_data is no longer its effective epg once the
+        # override redirects it, so it must not also inflate own_epg's window.
+        self.assertEqual(
+            cutoffs[own_epg.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
+        )

@@ -1931,7 +1931,7 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                     feed_start = min(p.start_time for p in programs_to_create)
                     feed_end = max(p.end_time for p in programs_to_create)
                     deleted_count = ProgramData.objects.filter(epg=epg).filter(
-                        Q(start_time__gte=feed_start, end_time__lte=feed_end)
+                        Q(start_time__lt=feed_end, end_time__gt=feed_start)
                         | Q(end_time__lt=cutoff)
                     ).delete()[0]
                     for i in range(0, len(programs_to_create), _EPG_SWAP_BATCH_SIZE):
@@ -2169,7 +2169,7 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
                 USING ranges r
                 WHERE pd.epg_id = r.epg_id
                   AND (
-                    (pd.start_time >= r.feed_start AND pd.end_time <= r.feed_end)
+                    (pd.start_time < r.feed_end AND pd.end_time > r.feed_start)
                     OR pd.end_time < r.cutoff
                   )
                 """,
@@ -2237,7 +2237,7 @@ def _swap_parsed_epg_programs(mapped_epg_ids, epg_source, programs_to_create, ba
             feed_start = min(p.start_time for p in epg_programs)
             feed_end = max(p.end_time for p in epg_programs)
             clause = Q(epg_id=epg_id) & (
-                Q(start_time__gte=feed_start, end_time__lte=feed_end)
+                Q(start_time__lt=feed_end, end_time__gt=feed_start)
                 | Q(end_time__lt=cutoffs[epg_id])
             )
             delete_q = clause if delete_q is None else delete_q | clause

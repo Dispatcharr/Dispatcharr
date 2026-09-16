@@ -11,7 +11,7 @@ import hashlib
 import re
 from datetime import timedelta
 
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone as dj_timezone
 
 from core.utils import send_websocket_update
@@ -35,6 +35,14 @@ def epg_retention_cutoffs(epg_ids, *, now=None):
     capped at MAX_EPG_RETENTION_DAYS; an epg with no catchup-enabled channel
     still gets the floor, so non-catchup channels keep a rolling one-day
     guide history too.
+
+    A channel's effective epg is its own Channel.epg_data, unless a
+    ChannelOverride redirects it elsewhere -- ChannelOverride has no
+    is_catchup/catchup_days of its own, so the base Channel's catchup fields
+    still apply either way. Both paths are checked so an override-only
+    mapping (which bulk parsing already treats as mapped, see
+    _epg_ids_mapped_to_channels) doesn't silently fall back to the
+    one-day floor for a channel that actually wants more.
     """
     from apps.channels.models import Channel
 
@@ -45,11 +53,27 @@ def epg_retention_cutoffs(epg_ids, *, now=None):
     if now is None:
         now = dj_timezone.now()
 
-    max_catchup_days = dict(
+    max_catchup_days = {}
+
+    def _merge_max(rows):
+        for epg_id, days in rows:
+            if days is None:
+                continue
+            if days > max_catchup_days.get(epg_id, -1):
+                max_catchup_days[epg_id] = days
+
+    _merge_max(
         Channel.objects.filter(epg_data_id__in=epg_ids, is_catchup=True)
+        .filter(Q(override__isnull=True) | Q(override__epg_data_id__isnull=True))
         .values("epg_data_id")
         .annotate(days=Max("catchup_days"))
         .values_list("epg_data_id", "days")
+    )
+    _merge_max(
+        Channel.objects.filter(override__epg_data_id__in=epg_ids, is_catchup=True)
+        .values("override__epg_data_id")
+        .annotate(days=Max("catchup_days"))
+        .values_list("override__epg_data_id", "days")
     )
 
     cutoffs = {}
