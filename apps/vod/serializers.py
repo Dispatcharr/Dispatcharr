@@ -8,6 +8,11 @@ from .models import (
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
 from apps.m3u.serializers import M3UAccountSerializer
+from .language import (
+    get_category_metadata,
+    match_quality_from_name,
+    validate_category_custom_properties,
+)
 
 
 class QualityInfoSerializer(serializers.Serializer):
@@ -110,10 +115,20 @@ class VODLogoSerializer(serializers.ModelSerializer):
 class M3UVODCategoryRelationSerializer(serializers.ModelSerializer):
     category = serializers.IntegerField(source="category.id")
     m3u_account = serializers.IntegerField(source="m3u_account.id")
+    custom_properties = serializers.JSONField(required=False, allow_null=True)
 
     class Meta:
         model = M3UVODCategoryRelation
-        fields = ["category", "m3u_account", "enabled"]
+        fields = ["category", "m3u_account", "enabled", "custom_properties"]
+
+    def validate_custom_properties(self, value):
+        if value is not None and not isinstance(value, dict):
+            raise serializers.ValidationError("custom_properties must be an object.")
+
+        try:
+            return validate_category_custom_properties(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
 
 
 class VODCategorySerializer(serializers.ModelSerializer):
@@ -225,18 +240,9 @@ class M3UMovieRelationSerializer(serializers.ModelSerializer):
 
         # 3. Extract from movie name/title
         if movie and movie.name:
-            name = movie.name
-            if '4K' in name or '2160p' in name:
-                quality_info['quality'] = '4K'
-                return quality_info
-            elif '1080p' in name or 'FHD' in name:
-                quality_info['quality'] = '1080p'
-                return quality_info
-            elif '720p' in name or 'HD' in name:
-                quality_info['quality'] = '720p'
-                return quality_info
-            elif '480p' in name:
-                quality_info['quality'] = '480p'
+            matched = match_quality_from_name(movie.name)
+            if matched:
+                quality_info['quality'] = matched
                 return quality_info
 
         # 4. Try bitrate as last resort
@@ -252,7 +258,13 @@ class M3UMovieRelationSerializer(serializers.ModelSerializer):
                 quality_info['bitrate'] = f"{round(bitrate/1000)}Mbps"
             return quality_info
 
-        # 5. Fallback - no quality info available
+        # 5. Category default quality (operator-assigned), before giving up
+        cat_meta = get_category_metadata().get((obj.m3u_account_id, obj.category_id))
+        if cat_meta and cat_meta.get('quality'):
+            quality_info['quality'] = cat_meta['quality']
+            return quality_info
+
+        # 6. Fallback - no quality info available
         return None
 
 
@@ -304,18 +316,9 @@ class M3UEpisodeRelationSerializer(serializers.ModelSerializer):
 
         # 3. Extract from episode name/title
         if episode and episode.name:
-            name = episode.name
-            if '4K' in name or '2160p' in name:
-                quality_info['quality'] = '4K'
-                return quality_info
-            elif '1080p' in name or 'FHD' in name:
-                quality_info['quality'] = '1080p'
-                return quality_info
-            elif '720p' in name or 'HD' in name:
-                quality_info['quality'] = '720p'
-                return quality_info
-            elif '480p' in name:
-                quality_info['quality'] = '480p'
+            matched = match_quality_from_name(episode.name)
+            if matched:
+                quality_info['quality'] = matched
                 return quality_info
 
         # 4. Try bitrate as last resort
@@ -331,7 +334,15 @@ class M3UEpisodeRelationSerializer(serializers.ModelSerializer):
                 quality_info['bitrate'] = f"{round(bitrate/1000)}Mbps"
             return quality_info
 
-        # 5. Fallback - no quality info available
+        # 5. Category default quality (operator-assigned), before giving up.
+        # Category lives on the parent series relation, not on the episode relation.
+        category_id = obj.series_relation.category_id if obj.series_relation_id else None
+        cat_meta = get_category_metadata().get((obj.m3u_account_id, category_id))
+        if cat_meta and cat_meta.get('quality'):
+            quality_info['quality'] = cat_meta['quality']
+            return quality_info
+
+        # 6. Fallback - no quality info available
         return None
 
 

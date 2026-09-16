@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 _request_times = {}
 
+# Distinguishes "no language resolved / feature not in play" (default, legacy
+# priority ordering) from "resolved language is unknown" (`None`, still a
+# real answer that should group with other unknown-language relations).
+_LANGUAGE_UNSET = object()
+
 
 def _parse_preferred_vod_params(request):
     """Parse optional m3u_account_id / stream_id query params for provider selection."""
@@ -144,6 +149,44 @@ def _vod_session_path_redirect(request, session_id, profile_id=None, user=None):
     return HttpResponse(status=301, headers={"Location": redirect_url})
 
 
+def _order_candidates_by_language(candidates, content_obj, content_language):
+    """
+    Rank candidates for a resolved language group: matching-language
+    relations first (best quality, then priority), then every other relation
+    as a fallback. This never filters candidates outright, so a title with
+    no playable relation in its language group still plays something
+    rather than 404ing.
+
+    Shared by movies and episodes: `category_id_for_relation` resolves the
+    category indirection difference between the two (a movie relation carries
+    its own `category`; an episode relation inherits one from its parent
+    `series_relation`), so this ranking is otherwise identical for both.
+
+    The anchor/winner relation that got us here is not privileged: playback
+    re-ranks the whole language group by quality independently of it.
+    """
+    from apps.vod.language import (
+        category_id_for_relation, get_category_metadata, resolve_language,
+        resolve_quality, quality_rank,
+    )
+
+    cat_meta = get_category_metadata()
+
+    def _rank(cand):
+        rel_lang = (cand.custom_properties or {}).get('language')
+        meta = cat_meta.get((cand.m3u_account_id, category_id_for_relation(cand)))
+        resolved = resolve_language(rel_lang, meta)
+        quality = resolve_quality(content_obj.name, meta)
+        return (
+            0 if resolved == content_language else 1,
+            quality_rank(quality),
+            -cand.m3u_account.priority,
+            cand.id,
+        )
+
+    return sorted(candidates, key=_rank)
+
+
 def _select_vod_stream(
     content_type,
     content_id,
@@ -152,6 +195,7 @@ def _select_vod_stream(
     profile_id=None,
     session_id=None,
     allowed_m3u_profiles=None,
+    content_language=_LANGUAGE_UNSET,
 ):
     """
     Resolve content to a provider URL and M3U profile.
@@ -159,6 +203,10 @@ def _select_vod_stream(
     Walks relations in priority order and prefers profiles with spare pool
     capacity. Redirect and proxy both use this selection; Redirect simply does
     not reserve/hold a slot after picking a URL.
+
+    `content_language`, when set (movies and episodes, resolved by the caller
+    from the requested stream_id's language group), reorders candidates by
+    quality within that group instead of the legacy priority-only order.
 
     Returns a dict with content_obj, m3u_account, m3u_profile, current_connections,
     and final_stream_url; or None when nothing usable is found.
@@ -169,7 +217,17 @@ def _select_vod_stream(
     if not content_obj or not relation:
         return None
 
-    ordered = _order_candidates(candidates, relation)
+    # An explicit provider/stream pin (query params) always wins over
+    # language-group ranking.
+    if (
+        content_language is not _LANGUAGE_UNSET
+        and content_type in ('movie', 'episode')
+        and not preferred_stream_id
+        and not preferred_m3u_account_id
+    ):
+        ordered = _order_candidates_by_language(candidates, content_obj, content_language)
+    else:
+        ordered = _order_candidates(candidates, relation)
     if allowed_m3u_profiles is not None:
         candidate_profiles = [
             (cand, selected_profile)
@@ -363,10 +421,13 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             # Materialise the active relations once (single DB hit), ordered by
             # priority. Selection below is done in memory, and the full ordered
             # list is returned so the caller can fail over without re-querying.
+            # series_relation is needed by category_id_for_relation (an episode
+            # relation has no category of its own; it inherits its parent
+            # series relation's) when language-group ranking runs.
             candidates = list(
                 content_obj.m3u_relations
                 .filter(m3u_account__is_active=True)
-                .select_related('m3u_account__user_agent')
+                .select_related('m3u_account__user_agent', 'series_relation')
                 .order_by('-m3u_account__priority', 'id')
             )
 
@@ -650,7 +711,7 @@ def _vod_playback_allowed(content_type, user):
 @api_view(["GET"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
-def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
+def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None, content_language=_LANGUAGE_UNSET):
     """
     Stream VOD content (movies or series episodes) with session-based connection reuse
 
@@ -659,6 +720,8 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         content_id: ID of the content
         session_id: Optional session ID from URL path (for persistent connections)
         profile_id: Optional M3U profile ID for authentication
+        content_language: Resolved language group (movies and episodes) from
+            the XC stream_id the client requested; see _select_vod_stream.
     """
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
@@ -786,6 +849,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                     preferred_stream_id,
                     profile_id,
                     allowed_m3u_profiles=get_allowed_m3u_profiles(user),
+                    content_language=content_language,
                 )
                 if not selected:
                     logger.error(
@@ -835,6 +899,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             preferred_stream_id,
             profile_id,
             session_id,
+            content_language=content_language,
         )
         if not selected:
             logger.error(
@@ -1459,18 +1524,38 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if not is_vod_movies_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # Users with movie access get it from all active M3U accounts
-    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
+    from apps.vod.language import (
+        vod_language_enabled, resolve_movie_relation, get_category_metadata, resolve_language,
+    )
 
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+    content_language = _LANGUAGE_UNSET
+    if vod_language_enabled():
+        # stream_id is namespaced to M3UMovieRelation.id once any category
+        # has a language assigned; falls back to the legacy Movie.id lookup
+        # for stale clients.
+        movie_relation = resolve_movie_relation(stream_id)
         if not movie_relation:
             return JsonResponse({"error": "Movie not found"}, status=404)
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
-        return JsonResponse({"error": "Movie not found"}, status=404)
+        cat_meta = get_category_metadata().get(
+            (movie_relation.m3u_account_id, movie_relation.category_id)
+        )
+        rel_lang = (movie_relation.custom_properties or {}).get('language')
+        content_language = resolve_language(rel_lang, cat_meta)
+    else:
+        # Users with movie access get it from all active M3U accounts
+        filters = {"movie_id": stream_id, "m3u_account__is_active": True}
+        try:
+            # Order by account priority to get the best relation when multiple exist
+            movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+            if not movie_relation:
+                return JsonResponse({"error": "Movie not found"}, status=404)
+        except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+            return JsonResponse({"error": "Movie not found"}, status=404)
 
-    return stream_vod(request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user,
+        content_language=content_language,
+    )
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -1499,11 +1584,32 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     if not is_vod_series_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # Users with series access get episodes from all active M3U accounts
-    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
+    from apps.vod.language import (
+        vod_language_enabled, resolve_episode_relation, get_category_metadata,
+        resolve_language, category_id_for_relation,
+    )
 
-    episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-    if not episode_relation:
-        return JsonResponse({"error": "Episode not found"}, status=404)
+    content_language = _LANGUAGE_UNSET
+    if vod_language_enabled():
+        # stream_id is namespaced to M3UEpisodeRelation.id once any category
+        # has a language assigned; falls back to the legacy Episode.id lookup
+        # for stale clients (mirrors stream_xc_movie).
+        episode_relation = resolve_episode_relation(stream_id)
+        if not episode_relation:
+            return JsonResponse({"error": "Episode not found"}, status=404)
+        cat_meta = get_category_metadata().get(
+            (episode_relation.m3u_account_id, category_id_for_relation(episode_relation))
+        )
+        rel_lang = (episode_relation.custom_properties or {}).get('language')
+        content_language = resolve_language(rel_lang, cat_meta)
+    else:
+        # Users with series access get episodes from all active M3U accounts
+        filters = {"episode_id": stream_id, "m3u_account__is_active": True}
+        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+        if not episode_relation:
+            return JsonResponse({"error": "Episode not found"}, status=404)
 
-    return stream_vod(request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user,
+        content_language=content_language,
+    )
