@@ -26,14 +26,21 @@ def backfill_stream_radio(apps, schema_editor):
 
 
 def backfill_channel_radio(apps, schema_editor):
-    """Roll up the radio flag from streams to channels."""
+    """Roll up the radio flag from streams to channels.
+
+    Matches rollup_channel_radio_flag's active-account-only rule (apps/m3u/tasks.py):
+    a stream on a disabled M3U account doesn't count, since disabled accounts
+    aren't refreshed and a channel wrongly flagged from one would stay wrong
+    indefinitely rather than self-correcting on the next import.
+    """
     with schema_editor.connection.cursor() as cursor:
         cursor.execute("""
             UPDATE dispatcharr_channels_channel c SET
                 is_radio = EXISTS (
                     SELECT 1 FROM dispatcharr_channels_channelstream cs
                     JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                    WHERE cs.channel_id = c.id AND s.is_radio = TRUE
+                    JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
+                    WHERE cs.channel_id = c.id AND s.is_radio = TRUE AND a.is_active = TRUE
                 )
         """)
 

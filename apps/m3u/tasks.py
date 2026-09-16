@@ -1410,7 +1410,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 _catchup_days_m3u = 0
             # Standard M3U convention some providers use, e.g. Kodi's PVR IPTV
             # Simple Client reads this same attribute for its Radio section.
-            _is_radio_m3u = str(_attrs.get("radio", "")).lower() in ("1", "true")
+            # Case-insensitive like the other EXTINF attributes read via this
+            # helper (RADIO="true" is valid M3U just as much as radio="true").
+            _is_radio_m3u = str(
+                get_case_insensitive_attr(_attrs, "radio", "")
+            ).lower() in ("1", "true")
 
             stream_props = {
                 "name": name,
