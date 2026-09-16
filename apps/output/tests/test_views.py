@@ -1143,6 +1143,89 @@ class XcLiveStreamsCatchupAdvertisingTests(TestCase):
         self.assertEqual(streams[0]["tv_archive_duration"], 0)
 
 
+class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
+    """catchup="default" is only ever emitted for a URL a player can already
+    turn into a timeshift request by itself; the plain proxy URL gets nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"m3u-catchup-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+        self.channel = Channel.objects.create(
+            name="Catchup Ch",
+            channel_number=1,
+            channel_group=self.group,
+            user_level=0,
+            is_catchup=True,
+            catchup_days=7,
+        )
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        super().tearDown()
+
+    def _xc_style_request(self):
+        return self.factory.get("/get.php", {"username": "x", "password": "y"})
+
+    def test_catchup_advertised_for_xc_style_output(self):
+        from apps.output.views import generate_m3u
+
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        content = _response_text(response)
+        self.assertIn('catchup="default"', content)
+        self.assertIn('catchup-days="7"', content)
+
+    def test_catchup_omitted_for_plain_proxy_output(self):
+        from apps.output.views import generate_m3u
+
+        request = self.factory.get("/output/m3u")
+        response = generate_m3u(request, None, None)
+        content = _response_text(response)
+        self.assertNotIn('catchup=', content)
+
+    def test_catchup_omitted_when_channel_is_not_catchup(self):
+        from apps.output.views import generate_m3u
+
+        self.channel.is_catchup = False
+        self.channel.save(update_fields=["is_catchup"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        content = _response_text(response)
+        self.assertNotIn('catchup=', content)
+
+    def test_catchup_omitted_when_user_disables_catchup(self):
+        from apps.output.views import generate_m3u
+
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        content = _response_text(response)
+        self.assertNotIn('catchup=', content)
+
+    def test_catchup_advertised_for_direct_url_output(self):
+        from apps.output.views import generate_m3u
+
+        with patch(
+            "apps.output.views._direct_m3u_provider_url",
+            return_value="http://provider.example/live/u/p/123.ts",
+        ):
+            request = self.factory.get("/output/m3u", {"direct": "true"})
+            response = generate_m3u(request, None, self.user)
+        content = _response_text(response)
+        self.assertIn('catchup="default"', content)
+        self.assertIn('catchup-days="7"', content)
+
+
 class XcGetEpgCatchupGateTests(TestCase):
     """Catch-up disable clears has_archive; lookback follows prev_days only."""
 

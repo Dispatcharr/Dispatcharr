@@ -317,6 +317,16 @@ def generate_m3u(request, profile_name=None, user=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
+    # Only advertise catchup where the emitted URL is one a player's own XC
+    # heuristic can already turn into a timeshift request by itself (the
+    # classic /live/user/pass/id form, whether that's Dispatcharr's own XC
+    # output or a raw upstream provider URL via direct=true). The plain proxy
+    # URL (/proxy/ts/stream/<uuid>) carries no such convention and Dispatcharr
+    # does not yet expose an unauthenticated catchup endpoint for it, so
+    # advertising catchup there would be a dead end for the client - worse
+    # than not advertising it at all.
+    catchup_allowed = is_catchup_enabled(user=user)
+
     # Start building M3U content
     channel_count = 0
     for channel in channels:
@@ -374,9 +384,15 @@ def generate_m3u(request, profile_name=None, user=None):
                 f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
+        catchup_attrs = ""
+        if catchup_allowed and channel.is_catchup and (is_xc_request or (use_direct_urls and direct_provider_url)):
+            catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
+            if catchup_days > 0:
+                catchup_attrs = f'catchup="default" catchup-days="{catchup_days}" '
+
         extinf_line = (
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
-            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
+            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}{catchup_attrs}group-title="{group_title}",{effective_name}\n'
         )
 
         # Determine the stream URL based on request type
