@@ -304,8 +304,8 @@ class TSSegmenter:
     def __init__(self, target_duration=4.0, max_segment_duration=None,
                  startup_keyframe_cuts=4):
         self.target_duration = float(target_duration)
-        # Hard ceiling: force a cut before a segment can exceed this, so no
-        # emitted EXTINF ever exceeds the frozen advertised TARGETDURATION even
+        # Hard ceiling: force a cut before a segment can exceed this, so
+        # EXTINF rounded to the nearest integer stays <= TARGETDURATION even
         # on a keyframe drought (RFC 8216 4.3.3.1). Defaults to 2x the target.
         self.max_segment_duration = float(
             max_segment_duration if max_segment_duration else 2 * target_duration)
@@ -329,8 +329,9 @@ class TSSegmenter:
         self._audio_only = False
         self._segment_start_pts = None
         # First / most-recent timing PTS in the current segment; used to report a
-        # MEASURED duration on the discontinuity cut instead of substituting the
-        # nominal target (RFC 8216 4.3.2.1: EXTINF must be accurate).
+        # measured duration on the discontinuity cut instead of substituting the
+        # nominal target (RFC 8216 4.3.2.1: EXTINF SHOULD be accurate enough
+        # that accumulated durations avoid perceptible error).
         self._seg_first_pts = None
         self._seg_last_pts = None
         self._collecting = False
@@ -469,17 +470,6 @@ class TSSegmenter:
                     self._current.extend(packet)
                 return finished
 
-            if pts is not None:
-                # Track presentation-max PTS so open-GOP leading pictures
-                # (PTS slightly before the CRA) do not pull _seg_last_pts
-                # backward and corrupt measured EXTINF.
-                if self._seg_first_pts is None:
-                    self._seg_last_pts = pts
-                elif self._elapsed(pts, self._seg_first_pts) >= self._elapsed(
-                    self._seg_last_pts, self._seg_first_pts
-                ):
-                    self._seg_last_pts = pts
-
             if not self._collecting:
                 if keyframe:
                     self._begin_segment(pts)
@@ -488,7 +478,7 @@ class TSSegmenter:
                     # Segment was opened on a keyframe PES that had no PTS
                     # (parameter-set-only AU). Close it with a measured span
                     # fallback and re-anchor on this PTS-bearing keyframe.
-                    finished = self._finish_segment(self._measured_span())
+                    finished = self._finish_segment(self._extinf_duration(self.target_duration))
                     self._begin_segment(pts)
                 else:
                     elapsed = self._elapsed(pts, self._segment_start_pts)
@@ -498,18 +488,24 @@ class TSSegmenter:
                     # applies.
                     cut_at = 0.0 if self._startup_cuts_remaining > 0 else self.target_duration
                     if elapsed >= cut_at and elapsed > 0:
-                        finished = self._finish_segment(elapsed)
+                        # Closing keyframe is not in this segment's bytes; do
+                        # not fold its PTS into EXTINF before finishing.
+                        finished = self._finish_segment(self._extinf_duration(elapsed))
                         self._begin_segment(pts)
+                    else:
+                        self._note_pts(pts)
             elif pts is not None and self._collecting and self._segment_start_pts is not None:
-                # Keyframe drought: force a cut so the segment cannot exceed the
-                # frozen TARGETDURATION. Cutting mid-GOP yields a segment that is
-                # not keyframe-independent, an accepted last resort that a healthy
-                # GOP (which cuts on its keyframes well under this ceiling) never
-                # reaches.
+                # Keyframe drought: force a cut so EXTINF cannot exceed the
+                # frozen TARGETDURATION. Mid-GOP cuts are a last resort; a
+                # healthy GOP never reaches this ceiling.
                 elapsed = self._elapsed(pts, self._segment_start_pts)
                 if elapsed >= self.max_segment_duration:
-                    finished = self._finish_segment(elapsed)
+                    finished = self._finish_segment(self._extinf_duration(elapsed))
                     self._begin_segment(pts)
+                else:
+                    self._note_pts(pts)
+            elif pts is not None and self._collecting:
+                self._note_pts(pts)
 
         if self._collecting:
             self._current.extend(packet)
@@ -531,26 +527,34 @@ class TSSegmenter:
                 self._current.extend(packet)
                 return finished
 
-            if pts is not None:
-                if self._seg_first_pts is None:
-                    self._seg_last_pts = pts
-                elif self._elapsed(pts, self._seg_first_pts) >= self._elapsed(
-                    self._seg_last_pts, self._seg_first_pts
-                ):
-                    self._seg_last_pts = pts
-
             if not self._collecting:
                 if pts is not None:
                     self._begin_segment(pts)
             elif pts is not None and self._segment_start_pts is not None:
                 elapsed = self._elapsed(pts, self._segment_start_pts)
                 if elapsed >= self.target_duration and elapsed > 0:
+                    # Audio AUs do not have open-GOP overlap; PES-to-PES
+                    # elapsed is the accurate EXTINF for the cut boundary.
                     finished = self._finish_segment(elapsed)
                     self._begin_segment(pts)
+                else:
+                    self._note_pts(pts)
 
         if self._collecting:
             self._current.extend(packet)
         return finished
+
+    def _note_pts(self, pts):
+        """Track presentation-max PTS for packets that remain in this segment."""
+        if self._seg_first_pts is None:
+            self._seg_last_pts = pts
+            return
+        # Open-GOP leading pictures (PTS slightly before the CRA) must not
+        # pull _seg_last_pts backward and corrupt measured EXTINF.
+        if self._elapsed(pts, self._seg_first_pts) >= self._elapsed(
+            self._seg_last_pts, self._seg_first_pts
+        ):
+            self._seg_last_pts = pts
 
     def _elapsed(self, pts, start):
         """Signed presentation-time delta in seconds, wrap-safe.
@@ -574,15 +578,24 @@ class TSSegmenter:
         return raw < -PTS_RESET_BACKWARD_SECONDS
 
     def _measured_span(self):
-        """Best measured duration of the segment being closed, from the first and
-        last video PTS seen. Falls back to the target only when unmeasurable or
-        nonsensical (e.g. a timeline jump)."""
+        """Presentation span of PTS already collected in the open segment, or None.
+
+        Prefer this for EXTINF so the tag matches media already in the
+        segment (RFC 8216 4.3.2.1). Keyframe-to-keyframe elapsed overstates
+        on closed GOPs (next keyframe is not in the file) and understates
+        on open GOPs (trailing pictures past the next keyframe PTS).
+        """
         if self._seg_first_pts is None or self._seg_last_pts is None:
-            return self.target_duration
+            return None
         d = self._elapsed(self._seg_last_pts, self._seg_first_pts)
         if d <= 0 or d > 4 * self.target_duration:
-            return self.target_duration
+            return None
         return d
+
+    def _extinf_duration(self, fallback):
+        """EXTINF for the segment being closed: prefer measured PTS span."""
+        span = self._measured_span()
+        return span if span is not None else fallback
 
     def _begin_segment(self, pts):
         self._current = bytearray()
@@ -624,9 +637,9 @@ def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_
     6.2.1). Without it (legacy descriptor) the per-window ceil is used.
 
     ``disc_sequence`` is how many EXT-X-DISCONTINUITY tags have already slid out
-    of the window. Emitting it keeps the discontinuity sequence numbers of the
-    segments still listed unchanged as the window rolls (RFC 8216 4.3.3.3); an
-    absent tag means zero, so it only needs to appear once it is nonzero.
+    of the window. Emitting it keeps DSNs of segments still listed unchanged
+    as the window rolls (RFC 8216 6.2.2). An absent tag means zero
+    (RFC 8216 4.3.3.3), so it only needs to appear once it is nonzero.
     """
     # Frozen live-edge offset: ~2.5 config target-durations (~10s at the 4s
     # default) so the value is a session constant and never drifts across
@@ -636,16 +649,15 @@ def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_
         return (
             "#EXTM3U\n"
             "#EXT-X-VERSION:3\n"
-            # Ceil to match the populated branch; a fractional target must never
-            # round DOWN below a real EXTINF (RFC 8216 4.3.3.1).
+            # Ceil the cut target so TARGETDURATION is >= EXTINF rounded to
+            # the nearest integer (RFC 8216 4.3.3.1).
             f"#EXT-X-TARGETDURATION:{adv_target if adv_target else int(max(target_duration, 1) + 0.999)}\n"
             "#EXT-X-MEDIA-SEQUENCE:0\n"
         )
     total_duration = sum(entry["dur"] for entry in window)
-    # TARGETDURATION: prefer the manager's frozen constant. RFC 8216 6.2.1 forbids
-    # it changing across reloads; a per-render ceil(window max) flaps on GOP
-    # jitter, and AVPlayer latches the first value and stops advancing on a
-    # contradiction. Legacy fallback keeps the ceil.
+    # Prefer the manager's frozen TARGETDURATION. RFC 8216 6.2.1 forbids it
+    # changing across reloads; a per-render ceil of the window max flaps on
+    # GOP jitter. Legacy fallback keeps the ceil.
     advertised_target = adv_target if adv_target else int(max(entry["dur"] for entry in window) + 0.999)
     lines = [
         "#EXTM3U",
@@ -655,10 +667,10 @@ def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_
     ]
     if disc_sequence:
         lines.append(f"#EXT-X-DISCONTINUITY-SEQUENCE:{disc_sequence}")
-    # Emit EXT-X-START only once the window is deep enough to honor the frozen
-    # offset, so the tag's value is stable across reloads (RFC 8216 6.2.1). It
-    # pins the join point deterministically across players; a client that sets
-    # its own offset still overrides it.
+    # Emit EXT-X-START only once the window can honor the frozen offset
+    # (|TIME-OFFSET| SHOULD NOT exceed playlist duration; RFC 8216 4.3.5.2).
+    # Keeping the offset constant also stays within the allowed live-playlist
+    # mutations in RFC 8216 6.2.1.
     if total_duration >= start_offset:
         lines.append(f"#EXT-X-START:TIME-OFFSET=-{start_offset:.3f},PRECISE=YES")
     for entry in window:

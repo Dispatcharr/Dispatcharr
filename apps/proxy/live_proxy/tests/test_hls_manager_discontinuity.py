@@ -38,7 +38,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         mgr._owns_output = True
         mgr._stopped = False
         mgr.segment_duration = 4.0
-        mgr.adv_target = 8
+        mgr.adv_target = 6
         mgr.window_size = 10
         mgr._redis = None
         mgr.segment_buffer = MagicMock()

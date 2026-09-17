@@ -143,9 +143,8 @@ def hls_playlist(request, channel_id, client_id):
         try:
             state = json.loads(playlist_json)
             if _playlist_is_stale(state):
-                # Temporary unavailability of a live playlist update (Apple
-                # WWDC17 / RFC 7231): 404 so the player retries rather than
-                # treating the session as permanently gone (410).
+                # Temporary unavailability of a live playlist update: 404 so
+                # clients retry, rather than 410 Gone for a permanent end.
                 logger.warning(
                     f"[{client_id}] HLS playlist for {channel_id} stopped advancing"
                 )

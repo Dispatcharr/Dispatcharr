@@ -78,13 +78,11 @@ class HLSOutputManager:
 
         self.segment_duration = ConfigHelper.get('HLS_SEGMENT_DURATION', DEFAULT_SEGMENT_DURATION)
         self.window_size = ConfigHelper.get('HLS_WINDOW_SIZE', DEFAULT_WINDOW_SIZE)
-        # Advertised EXT-X-TARGETDURATION, computed ONCE and frozen for the life
-        # of the playlist (RFC 8216 6.2.1: it MUST NOT change across reloads;
-        # AVPlayer latches it at first parse and revalidates every reload). 2x
-        # the cut target gives one GOP of headroom past the cut threshold so a
-        # normal segment never exceeds it; the segmenter force-cuts anything that
-        # would, keeping the frozen value truthful (RFC 8216 4.3.3.1).
-        self.adv_target = int(2 * self.segment_duration + 0.999)
+        # Frozen EXT-X-TARGETDURATION for this playlist (RFC 8216 6.2.1: MUST
+        # NOT change across reloads). Cut target + ~one GOP (~2s) of headroom
+        # covers the normal keyframe overrun past the cut threshold. 2x target
+        # was also truthful but inflated live latency roughly in proportion.
+        self.adv_target = int(self.segment_duration + 2 + 0.999)
 
         # Same Redis-backed chunk store other output managers use; it is
         # format-parameterized by design ("adding a new output format only
@@ -93,11 +91,11 @@ class HLSOutputManager:
         self.segment_buffer = OutputStreamBuffer(
             channel_id, redis_client=RedisClient.get_buffer(), fmt=fmt
         )
-        # Size the chunk TTL to the advertised window plus ~one playlist of
-        # post-removal availability (RFC 8216 6.2.2): a listed segment must stay
-        # fetchable while in the playlist and for about a playlist duration after
-        # it rolls off. A short default TTL cannot back a 10-segment window of
-        # 5-6.5s segments, which 404s the window tail during stall recovery.
+        # Size the chunk TTL for post-removal availability (RFC 8216 6.2.2):
+        # after a segment rolls off it must stay fetchable for roughly the
+        # segment duration plus the longest playlist that contained it. A short
+        # default TTL cannot back a 10-segment window of 5-6.5s segments, which
+        # 404s the window tail during stall recovery.
         try:
             self.segment_buffer.chunk_ttl = max(
                 self.segment_buffer.chunk_ttl,
@@ -318,8 +316,8 @@ class HLSOutputManager:
             "disc": bool(segment.discontinuity),
         })
         while len(self._window) > self.window_size:
-            # Count the discontinuities that roll off so the numbering of the
-            # segments still listed does not shift (RFC 8216 4.3.3.3).
+            # Count discontinuities that roll off and bump DISCONTINUITY-
+            # SEQUENCE so remaining segments keep their DSN (RFC 8216 6.2.2).
             if self._window.pop(0).get("disc"):
                 self._disc_sequence += 1
 
