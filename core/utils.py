@@ -190,7 +190,6 @@ class RedisClient:
                 # If REDIS_URL is set, use from_url and ignore REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] envvars
                 if "REDIS_URL" in os.environ:
 
-                    redis_constructor = redis.Redis.from_url
                     connstring = urlsplit(redis_url, allow_fragments = False)
 
                     # Pop the connection string arguments which would otherwise override our defaults (see https://redis.readthedocs.io/en/stable/connections.html - "In the case of conflicting arguments, querystring arguments always win.")
@@ -208,31 +207,32 @@ class RedisClient:
                     connargs = urlencode(connargs)
 
                     # Rebuilds the connection string manually, since urlunsplit(urlsplit(...)) is not necessarily idempotent
-                    url = (f"{connstring.scheme}://{connstring.netloc}{connstring.path}{'?' + connargs if connargs else ''}",)
+                    url = f"{connstring.scheme}://{connstring.netloc}{connstring.path}{'?' + connargs if connargs else ''}"
 
                     if connstring.scheme == "unix":
                         sockargs.pop("socket_keepalive", None)
 
                     redis_kwargs |= sockargs
 
+                    pool = BlockingConnectionPool.from_url(url, **redis_kwargs,
+                                                           decode_responses = decode_responses,
+                                                           health_check_interval = health_check_interval,
+                                                           retry_on_timeout = retry_on_timeout)
+
                 # If REDIS_URL turns out unset, collect REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] as kwargs to redis.Redis
                 else:
 
-                    redis_constructor = redis.Redis
                     redis_kwargs |= {"host" : redis_host, "port" : redis_port, "db" : redis_db,
                                      "username" : redis_user,
                                      "password" : redis_password} | ssl_params | sockargs
 
-                    url = ()
+                    pool = BlockingConnectionPool(**redis_kwargs,
+                                                  decode_responses = decode_responses,
+                                                  health_check_interval = health_check_interval,
+                                                  retry_on_timeout = retry_on_timeout)
 
                 # Create Redis client with our defaults, ensuring REDIS_URL does not override said defaults
-                client = redis_constructor(
-                    *url,
-                    connection_pool = BlockingConnectionPool(**redis_kwargs,
-                    decode_responses = decode_responses,
-                    health_check_interval = health_check_interval,
-                    retry_on_timeout = retry_on_timeout)
-                )
+                client = redis.Redis(connection_pool = pool)
 
                 # Validate connection with ping
                 client.ping()

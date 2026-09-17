@@ -1,5 +1,6 @@
 """Redis client pools must stay bounded under concurrent waiters."""
 
+import os
 import threading
 import time
 
@@ -7,6 +8,7 @@ from django.test import SimpleTestCase, override_settings
 from redis.connection import BlockingConnectionPool
 
 from core.utils import RedisClient
+from unittest.mock import patch
 
 
 def _live_sock_count(pool):
@@ -25,10 +27,19 @@ class RedisConnectionPoolTests(SimpleTestCase):
 
     @override_settings(REDIS_MAX_CONNECTIONS=7, REDIS_POOL_TIMEOUT=2.0)
     def test_init_client_uses_bounded_blocking_pool(self):
+
         client = RedisClient._init_client(decode_responses=True)
         pool = client.connection_pool
         self.assertIsInstance(pool, BlockingConnectionPool)
         self.assertEqual(pool.max_connections, 7)
+
+        # Test REDIS_URL path too
+        with patch.dict(os.environ, {"REDIS_URL":"redis://localhost:6379/0"}, clear=False):
+
+            client = RedisClient._init_client(decode_responses=True)
+            pool = client.connection_pool
+            self.assertIsInstance(pool, BlockingConnectionPool)
+            self.assertEqual(pool.max_connections, 7)
 
     @override_settings(REDIS_MAX_CONNECTIONS=5, REDIS_POOL_TIMEOUT=5.0)
     def test_burst_does_not_exceed_max_connections(self):
