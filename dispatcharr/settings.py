@@ -53,6 +53,18 @@ REDIS_SSL_CA_CERT = os.environ.get("REDIS_SSL_CA_CERT", "")
 REDIS_SSL_CERT = os.environ.get("REDIS_SSL_CERT", "")
 REDIS_SSL_KEY = os.environ.get("REDIS_SSL_KEY", "")
 
+if REDIS_URL:
+    if REDIS_SSL and not REDIS_URL.startswith("rediss://"):
+        raise ImproperlyConfigured(
+            "REDIS_SSL is enabled but REDIS_URL uses redis:// (plaintext). "
+            "Change the URL scheme to rediss:// or remove the REDIS_URL override."
+        )
+    if not REDIS_SSL and REDIS_URL.startswith("rediss://"):
+        raise ImproperlyConfigured(
+            "REDIS_URL uses rediss:// (TLS) but REDIS_SSL is not enabled. "
+            "Set REDIS_SSL=true and configure the TLS certificate settings."
+        )
+
 # Reusable dict of SSL kwargs for redis.Redis() constructors
 REDIS_SSL_PARAMS = {}
 if REDIS_SSL and not REDIS_URL:
