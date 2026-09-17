@@ -626,7 +626,7 @@ class TSSegmenter:
 
 
 def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_target=None,
-                          disc_sequence=0):
+                          disc_sequence=0, start_behind_seconds=None):
     """
     Render an HLS media playlist (RFC 8216, version 3) from a window of
     segment descriptors: [{"seq": int, "dur": float, "disc": bool}, ...].
@@ -640,11 +640,11 @@ def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_
     of the window. Emitting it keeps DSNs of segments still listed unchanged
     as the window rolls (RFC 8216 6.2.2). An absent tag means zero
     (RFC 8216 4.3.3.3), so it only needs to appear once it is nonzero.
+
+    ``start_behind_seconds`` is the preferred live join offset (same policy as
+    new_client_behind_seconds). When set and the window is deep enough, emit
+    EXT-X-START with a negative TIME-OFFSET from the live edge.
     """
-    # Frozen live-edge offset: ~2.5 config target-durations (~10s at the 4s
-    # default) so the value is a session constant and never drifts across
-    # reloads as the window slides (unlike a window-max derivation).
-    start_offset = 2.5 * target_duration
     if not window:
         return (
             "#EXTM3U\n"
@@ -667,12 +667,18 @@ def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_
     ]
     if disc_sequence:
         lines.append(f"#EXT-X-DISCONTINUITY-SEQUENCE:{disc_sequence}")
-    # Emit EXT-X-START only once the window can honor the frozen offset
-    # (|TIME-OFFSET| SHOULD NOT exceed playlist duration; RFC 8216 4.3.5.2).
-    # Keeping the offset constant also stays within the allowed live-playlist
-    # mutations in RFC 8216 6.2.1.
-    if total_duration >= start_offset:
-        lines.append(f"#EXT-X-START:TIME-OFFSET=-{start_offset:.3f},PRECISE=YES")
+    # Preferred join: N seconds before the end of the last listed segment.
+    # Emit only once the window can honor the offset (|TIME-OFFSET| SHOULD NOT
+    # exceed playlist duration; RFC 8216 4.3.5.2). Keep the value frozen for
+    # the session so reloads stay within allowed live-playlist mutations
+    # (RFC 8216 6.2.1). PRECISE=YES: start in the containing segment and skip
+    # samples before the offset.
+    try:
+        start_behind = float(start_behind_seconds) if start_behind_seconds is not None else 0.0
+    except (TypeError, ValueError):
+        start_behind = 0.0
+    if start_behind > 0 and total_duration >= start_behind:
+        lines.append(f"#EXT-X-START:TIME-OFFSET=-{start_behind:.3f},PRECISE=YES")
     for entry in window:
         if entry.get("disc"):
             lines.append("#EXT-X-DISCONTINUITY")

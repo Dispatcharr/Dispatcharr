@@ -154,6 +154,7 @@ def hls_playlist(request, channel_id, client_id):
                 state.get("target", 4),
                 adv_target=state.get("adv_target"),
                 disc_sequence=state.get("disc_seq", 0),
+                start_behind_seconds=state.get("start_behind"),
             )
         except (TypeError, ValueError, KeyError) as e:
             logger.error(f"[{client_id}] Malformed HLS playlist state for {channel_id}: {e}")

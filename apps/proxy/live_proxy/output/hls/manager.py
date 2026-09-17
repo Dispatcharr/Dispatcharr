@@ -83,6 +83,10 @@ class HLSOutputManager:
         # covers the normal keyframe overrun past the cut threshold. 2x target
         # was also truthful but inflated live latency roughly in proportion.
         self.adv_target = int(self.segment_duration + 2 + 0.999)
+        # Preferred client join offset; same setting the segmenter uses when
+        # seeding from the input buffer. Frozen for the playlist lifetime so
+        # EXT-X-START does not change across reloads (RFC 8216 6.2.1).
+        self.start_behind = float(ConfigHelper.new_client_behind_seconds() or 0)
 
         # Same Redis-backed chunk store other output managers use; it is
         # format-parameterized by design ("adding a new output format only
@@ -121,6 +125,8 @@ class HLSOutputManager:
                         self._window = prior["window"]
                     if prior.get("adv_target"):
                         self.adv_target = prior["adv_target"]
+                    if prior.get("start_behind") is not None:
+                        self.start_behind = float(prior["start_behind"])
                     self._disc_sequence = int(prior.get("disc_seq") or 0)
             except Exception:
                 pass
@@ -327,6 +333,7 @@ class HLSOutputManager:
                     "window": self._window,
                     "target": self.segment_duration,
                     "adv_target": self.adv_target,
+                    "start_behind": self.start_behind,
                     "disc_seq": self._disc_sequence,
                     # Last time this output produced a segment; the playlist
                     # view uses it to tell a live output from an abandoned one.

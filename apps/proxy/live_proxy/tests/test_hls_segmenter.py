@@ -416,7 +416,7 @@ class PlaylistTests(unittest.TestCase):
             {"seq": 8, "dur": 4.2, "disc": False},
             {"seq": 9, "dur": 3.9, "disc": True},
         ]
-        text = render_media_playlist(window, 4)
+        text = render_media_playlist(window, 4, start_behind_seconds=5)
         self.assertIn("#EXTM3U", text)
         self.assertIn("#EXT-X-VERSION:3", text)
         self.assertIn("#EXT-X-TARGETDURATION:5", text)       # ceil(4.2)
@@ -424,9 +424,9 @@ class PlaylistTests(unittest.TestCase):
         self.assertIn("#EXTINF:4.200,", text)
         self.assertIn("8.ts", text)
         self.assertNotIn("#EXT-X-ENDLIST", text)             # live
-        # Live-edge start frozen at 2.5x the config target (2.5*4=10), emitted
-        # because the window (12.1s) is deep enough to honor it.
-        self.assertIn("#EXT-X-START:TIME-OFFSET=-10.000,PRECISE=YES", text)
+        # Join offset matches new_client_behind_seconds; emitted once the
+        # window (12.1s) is deep enough to honor it.
+        self.assertIn("#EXT-X-START:TIME-OFFSET=-5.000,PRECISE=YES", text)
         # Discontinuity tag must precede its segment
         lines = text.splitlines()
         self.assertEqual(lines[lines.index("#EXT-X-DISCONTINUITY") + 2], "9.ts")
@@ -459,7 +459,7 @@ class PlaylistTests(unittest.TestCase):
         tds = set()
         starts = set()
         for w in (w1, w2, w3):
-            text = render_media_playlist(w, 4, adv_target=adv)
+            text = render_media_playlist(w, 4, adv_target=adv, start_behind_seconds=5)
             td = [ln for ln in text.splitlines() if ln.startswith("#EXT-X-TARGETDURATION")]
             self.assertEqual(td, ["#EXT-X-TARGETDURATION:8"])
             tds.update(td)
@@ -469,6 +469,18 @@ class PlaylistTests(unittest.TestCase):
                 self.assertLessEqual(round(e["dur"]), adv)
         self.assertEqual(len(tds), 1)      # never changed
         self.assertEqual(len(starts), 1)   # EXT-X-START also byte-stable
+
+    def test_start_behind_gated_until_window_deep_enough(self):
+        # Shallow window: offset larger than playlist duration is omitted.
+        shallow = [{"seq": 1, "dur": 4.0, "disc": False}]
+        text = render_media_playlist(shallow, 4, start_behind_seconds=5)
+        self.assertNotIn("#EXT-X-START", text)
+        deep = [
+            {"seq": 1, "dur": 4.0, "disc": False},
+            {"seq": 2, "dur": 4.0, "disc": False},
+        ]
+        text = render_media_playlist(deep, 4, start_behind_seconds=5)
+        self.assertIn("#EXT-X-START:TIME-OFFSET=-5.000,PRECISE=YES", text)
 
 
 AUDIO_PID = 256
