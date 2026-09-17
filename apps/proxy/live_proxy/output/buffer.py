@@ -159,6 +159,33 @@ class OutputStreamBuffer:
             )
             return None
 
+    def surviving_chunk_scores(self):
+        """Map chunk index -> write timestamp for chunks still tracked in Redis.
+
+        The zset is pruned to chunk_ttl on write; members here are the segments
+        that should still be fetchable (subject to key TTL race on the oldest).
+        """
+        if not self.redis_client or not self.chunk_timestamps_key:
+            return {}
+        try:
+            members = self.redis_client.zrange(
+                self.chunk_timestamps_key, 0, -1, withscores=True
+            )
+            out = {}
+            for member, score in members or []:
+                try:
+                    idx = int(member)
+                except (TypeError, ValueError):
+                    continue
+                out[idx] = float(score)
+            return out
+        except Exception as e:
+            logger.debug(
+                f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                f"Error listing surviving chunks: {e}"
+            )
+            return {}
+
     def stop(self):
         self.stopping = True
 

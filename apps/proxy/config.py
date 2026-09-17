@@ -117,7 +117,9 @@ class TSConfig(BaseConfig):
 
     # Native HLS output (code-level; not DB / UI Proxy Settings)
     HLS_SEGMENT_DURATION = 4  # Target segment length in seconds
-    HLS_WINDOW_SIZE = 10  # Rolling playlist window length
+    # Floor for HLS segment Redis TTL sizing (not the advertised playlist
+    # length; the playlist tracks surviving Redis chunks).
+    HLS_WINDOW_SIZE = 10
     # Pull-based HLS clients: treat as ghost after this many missed segment
     # intervals with no playlist/segment poll (3 x 4s = 12s). Matches the
     # spirit of the legacy hls_proxy CLIENT_TIMEOUT_FACTOR approach.
