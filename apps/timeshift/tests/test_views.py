@@ -2250,6 +2250,68 @@ class TimeshiftSessionReuseTests(TestCase):
         # Archive CDN state must survive the media_id move.
         self.assertEqual(self.redis.hget(self._pool_key(), "final_url"), cdn)
 
+    def test_session_scrub_translates_bytes_zero_restart(self):
+        """Kodi FFmpegDirect sends bytes=0- with each new timestamp URL."""
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        cdn = "http://cdn.example/archive.ts?token=ok"
+        descriptor = {
+            "account_id": "1",
+            "stream_id": "111",
+            "media_id": TEST_MEDIA_ID,
+            "provider_timestamp": "2026-06-08:19-00",
+            "provider_tz_name": "Europe/Brussels",
+            "final_url": cdn,
+            "content_length": "1800000000",
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "3600",
+        }
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": cdn,
+            "content_length": descriptor["content_length"],
+            "archive_anchor_ts": descriptor["archive_anchor_ts"],
+            "archive_duration_secs": descriptor["archive_duration_secs"],
+        })
+        expected = views._resolve_session_archive_scrub(
+            descriptor, "2026-06-08:17-30",
+        )
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=206)
+        with _patch_m3u_account_get(account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor=descriptor,
+                profile=profile,
+                channel=self.channel,
+                media_id="8_2026-06-08-17-30",
+                safe_ts="2026-06-08-17-30",
+                timestamp="2026-06-08:17-30",
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header="bytes=0-",
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        kwargs = attempt_mock.call_args.kwargs
+        self.assertEqual(kwargs.get("final_url"), cdn)
+        self.assertEqual(
+            kwargs.get("range_header"), f"bytes={expected['byte_offset']}-",
+        )
+        self.assertFalse(kwargs.get("rewrite_plain_get"))
+        self.assertTrue(kwargs.get("relative_presentation_range"))
+        self.assertEqual(
+            kwargs.get("presentation_byte_base"), expected["byte_offset"],
+        )
+        self.assertEqual(
+            kwargs.get("presentation_remaining"), expected["remaining"],
+        )
+
     def test_session_scrub_reuses_opaque_final_url(self):
         """Opaque CDNs still scrub via Range on the cached URL (no portal hop)."""
         _seed_pool_session(self.redis, session_id=self.SESSION)

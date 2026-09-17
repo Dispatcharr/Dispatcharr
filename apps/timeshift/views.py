@@ -2814,11 +2814,20 @@ def _stream_reused_session(
         # Same opened CDN archive: FF within the file opened for this session.
         keep_archive = True
         final_url = raw_final_url or None
-        if scrub_info["kind"] == "scrub" and not range_header:
+        if (
+            scrub_info["kind"] == "scrub"
+            and _is_full_restart_range(range_header)
+        ):
             effective_range = f"bytes={scrub_info['byte_offset']}-"
-            rewrite_plain_get = True
             presentation_remaining = scrub_info["remaining"]
             presentation_byte_base = scrub_info["byte_offset"]
+            if range_header:
+                # The client opened a new timestamped resource at byte zero.
+                # The cached CDN archive starts earlier, so translate its
+                # absolute Content-Range back into the client's new window.
+                relative_presentation_range = True
+            else:
+                rewrite_plain_get = True
             if debug:
                 logger.debug(
                     "Timeshift session scrub: session=%s offset=%d remaining=%d "
