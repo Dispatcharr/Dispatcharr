@@ -175,6 +175,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "password",
             "stale_stream_days",
             "priority",
+            "hash_key",
             "status",
             "last_message",
             "enable_vod",

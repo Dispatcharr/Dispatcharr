@@ -79,5 +79,12 @@ export const prepareSubmitValues = (values, expDate) => {
     prepared.server_group = null;
   }
 
+  // hash_key comes from the form as an array of selected fields (MultiSelect).
+  // An empty selection means "inherit the global default" -> send null.
+  if (Array.isArray(prepared.hash_key)) {
+    prepared.hash_key =
+      prepared.hash_key.length > 0 ? prepared.hash_key.join(',') : null;
+  }
+
   return prepared;
 };
