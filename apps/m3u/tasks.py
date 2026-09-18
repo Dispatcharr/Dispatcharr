@@ -3588,7 +3588,9 @@ def _refresh_single_m3u_account_impl(account_id):
             )
         return "Failed to update m3u account, no data available"
 
-    hash_keys = CoreSettings.get_m3u_hash_key().split(",")
+    # Use this account's own hash key override when set, otherwise fall
+    # back to the global M3U Hash Key setting.
+    hash_keys = account.get_effective_hash_keys()
 
     existing_groups = {
         group.name: group.id
