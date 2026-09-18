@@ -57,11 +57,11 @@ const M3U = ({
   const [file, setFile] = useState(null);
   const [expDate, setExpDate] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
-  const [hasHashKeyOverride, setHasHashKeyOverride] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
+  const [hasHashKeyOverride, setHasHashKeyOverride] = useState(false);
   const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
     useState(false);
 
@@ -134,8 +134,11 @@ const M3U = ({
           : [],
       });
       setHasHashKeyOverride(
-          !!(m3uAccount.hash_key && m3uAccount.hash_key.split(',').filter(Boolean).length)
-        );
+        !!(
+          m3uAccount.hash_key &&
+          m3uAccount.hash_key.split(',').filter(Boolean).length
+        )
+      );
       setExpDate(expDateFromPlaylist(m3uAccount.exp_date));
 
       // Determine schedule type from existing data
@@ -147,9 +150,9 @@ const M3U = ({
     } else {
       setPlaylist(null);
       form.reset();
-      setHasHashKeyOverride(false);
       setScheduleType('interval');
       setExpDate(null);
+      setHasHashKeyOverride(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [m3uAccount]);
@@ -157,9 +160,7 @@ const M3U = ({
   useEffect(() => {
     if (storeExpDate === undefined) return;
     const next = expDateFromPlaylist(storeExpDate);
-    setExpDate((prev) =>
-      expDateKey(prev) === expDateKey(next) ? prev : next
-    );
+    setExpDate((prev) => (expDateKey(prev) === expDateKey(next) ? prev : next));
   }, [storeExpDate]);
 
   const handleNewPlaylist = async (newPlaylist, values, create_epg) => {
@@ -442,7 +443,9 @@ const M3U = ({
                 name="hash_key"
                 label="Hash Key Override"
                 description="Fields used to generate a stable identifier for this account's streams. Leave empty to use the global default. Changing this rehashes only this account's streams."
-                placeholder={hasHashKeyOverride ? undefined : 'Use global default'}
+                placeholder={
+                  hasHashKeyOverride ? undefined : 'Use global default'
+                }
                 clearable
                 data={[
                   { value: 'name', label: 'Name' },
