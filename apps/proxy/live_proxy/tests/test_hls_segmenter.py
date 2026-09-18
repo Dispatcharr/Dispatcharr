@@ -12,7 +12,10 @@ import unittest
 from apps.proxy.live_proxy.output.hls.segmenter import (
     TSSegmenter,
     TS_PACKET_SIZE,
+    extract_parameter_sets,
     extract_pts,
+    packet_continuity_counter,
+    packet_has_decoder_init,
     packet_pid,
     parse_pat,
     parse_pmt,
@@ -410,6 +413,128 @@ class SegmenterTests(unittest.TestCase):
         out += seg.feed(make_video_pes(4.0, keyframe=True))
         self.assertEqual(len(out), 1)
         self.assertAlmostEqual(out[0].duration, 4.0, places=2)
+
+
+def _h264_sps_count(segment_data):
+    """Count H.264 SPS NALs (type 7) visible in Annex-B start codes."""
+    count = 0
+    data = segment_data
+    i = 0
+    while True:
+        found = data.find(b"\x00\x00\x01", i)
+        if found < 0:
+            break
+        hdr = found + 3
+        if hdr < len(data) and (data[hdr] & 0x1F) == 7:
+            count += 1
+        i = hdr
+    return count
+
+
+class ParameterSetInjectTests(unittest.TestCase):
+    def test_extract_and_has_decoder_init(self):
+        with_params = make_h264_pes(0.0, [7, 8, 5])
+        idr_only = make_h264_pes(0.0, [5])
+        self.assertTrue(packet_has_decoder_init(with_params, H264))
+        self.assertFalse(packet_has_decoder_init(idr_only, H264))
+        found = extract_parameter_sets(with_params, H264)
+        self.assertIn(7, found)
+        self.assertIn(8, found)
+        self.assertNotIn(5, found)
+
+    def test_extract_skips_trailing_nal_in_full_unbounded_pes(self):
+        """Unbounded PES filling the packet: trailing SPS may continue next packet."""
+        p = make_pes_header(0.0)
+        p += bytes([0x00, 0x00, 0x00, 0x01, 0x67])  # SPS, no following start code
+        packet = make_packet(VIDEO_PID, p, pusi=True)
+        # Payload-only packets pad with 0xFF, which marks PES end in our helper.
+        # Overwrite padding with 0x00 so the packet looks full of ES.
+        packet = bytearray(packet)
+        for i in range(4, TS_PACKET_SIZE):
+            if packet[i] == 0xFF:
+                packet[i] = 0x00
+        packet = bytes(packet)
+        self.assertEqual(extract_parameter_sets(packet, H264), {})
+
+    def test_injects_cached_sps_pps_when_opening_idr_lacks_them(self):
+        seg = TSSegmenter(target_duration=4.0, startup_keyframe_cuts=0)
+        seg.feed(make_pat())
+        seg.feed(make_pmt(H264))
+        # Seed cache from a full RAP, then close that segment on the next IDR.
+        seg.feed(make_h264_pes(0.0, [7, 8, 5]))
+        out = seg.feed(make_h264_pes(4.0, [5]))  # IDR only: should get inject
+        self.assertEqual(len(out), 1)
+        # First segment opened on the SPS-bearing keyframe: one SPS in-band.
+        self.assertEqual(_h264_sps_count(out[0].data), 1)
+        # Second segment opens on IDR-only; inject should add SPS before it.
+        out2 = seg.feed(make_h264_pes(8.0, [5]))
+        self.assertEqual(len(out2), 1)
+        self.assertGreaterEqual(_h264_sps_count(out2[0].data), 1)
+        # Injected packet sits after PAT/PMT and before the opening IDR.
+        third = out2[0].data[2 * TS_PACKET_SIZE:3 * TS_PACKET_SIZE]
+        self.assertEqual(packet_pid(third), VIDEO_PID)
+        self.assertIn(7, extract_parameter_sets(third, H264))
+        # Continuity: injected CC immediately precedes the opening keyframe CC.
+        idr_pkt = out2[0].data[3 * TS_PACKET_SIZE:4 * TS_PACKET_SIZE]
+        self.assertEqual(
+            (packet_continuity_counter(third) + 1) & 0x0F,
+            packet_continuity_counter(idr_pkt),
+        )
+
+    def test_skips_inject_when_opening_keyframe_already_has_params(self):
+        seg = TSSegmenter(target_duration=4.0, startup_keyframe_cuts=0)
+        seg.feed(make_pat())
+        seg.feed(make_pmt(H264))
+        seg.feed(make_h264_pes(0.0, [7, 8, 5]))
+        out = seg.feed(make_h264_pes(4.0, [7, 8, 5]))
+        self.assertEqual(len(out), 1)
+        # Only the in-band SPS from the opening RAP, not a duplicate inject.
+        self.assertEqual(_h264_sps_count(out[0].data), 1)
+
+    def test_discontinuity_clears_param_cache(self):
+        seg = TSSegmenter(target_duration=4.0, startup_keyframe_cuts=0)
+        seg.feed(make_pat())
+        seg.feed(make_pmt(H264))
+        seg.feed(make_h264_pes(0.0, [7, 8, 5]))
+        self.assertTrue(seg._param_cache_complete())
+        seg.flag_discontinuity()
+        self.assertFalse(seg._param_cache_complete())
+        # IDR-only after the clear must not receive the previous era's SPS.
+        seg.feed(make_h264_pes(100.0, [5]))
+        out = seg.feed(make_h264_pes(104.0, [5]))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(_h264_sps_count(out[0].data), 0)
+
+    def test_pts_reset_reseeds_cache_from_opening_keyframe(self):
+        """Timeline reset clears the cache, then re-seeds from the new RAP."""
+        seg = TSSegmenter(target_duration=4.0, startup_keyframe_cuts=0)
+        seg.feed(make_pat())
+        seg.feed(make_pmt(H264))
+        seg.feed(make_h264_pes(100.0, [7, 8, 5]))
+        # Encoder restart: same packet is the new RAP and carries SPS/PPS.
+        seg.feed(make_h264_pes(0.0, [7, 8, 5]))
+        self.assertTrue(seg._param_cache_complete())
+        # Close the post-reset segment, then an IDR-only RAP must get an inject.
+        out = seg.feed(make_h264_pes(4.0, [5]))
+        self.assertEqual(len(out), 1)
+        out2 = seg.feed(make_h264_pes(8.0, [5]))
+        self.assertEqual(len(out2), 1)
+        self.assertGreaterEqual(_h264_sps_count(out2[0].data), 1)
+
+    def test_hevc_injects_vps_sps_pps(self):
+        seg = TSSegmenter(target_duration=2.0, startup_keyframe_cuts=0)
+        seg.feed(make_pat())
+        seg.feed(make_pmt(HEVC))
+        seg.feed(make_hevc_pes(0.0, [32, 33, 34, 21]))
+        out = seg.feed(make_hevc_pes(2.0, [21]))
+        self.assertEqual(len(out), 1)
+        out2 = seg.feed(make_hevc_pes(4.0, [21]))
+        self.assertEqual(len(out2), 1)
+        injected = out2[0].data[2 * TS_PACKET_SIZE:3 * TS_PACKET_SIZE]
+        found = extract_parameter_sets(injected, HEVC)
+        self.assertIn(32, found)
+        self.assertIn(33, found)
+        self.assertIn(34, found)
 
 
 class PlaylistTests(unittest.TestCase):

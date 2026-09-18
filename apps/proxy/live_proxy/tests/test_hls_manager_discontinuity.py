@@ -74,6 +74,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         mgr._stopped = False
         mgr.segment_duration = 4.0
         mgr.adv_target = 6
+        mgr.start_behind = 5.0
         mgr.window_size = 10
         mgr._redis = None
         mgr.segment_buffer = MagicMock()
@@ -86,15 +87,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         mgr._last_segment_ts = 1.0
         return mgr
 
-    @patch(
-        "apps.proxy.live_proxy.output.hls.manager.ConfigHelper.new_client_behind_seconds",
-        return_value=5,
-    )
-    @patch(
-        "apps.proxy.live_proxy.output.hls.manager.TSSegmenter",
-        _TrackingSegmenter,
-    )
-    def test_sidecar_index_cuts_before_discontinuity_chunk(self, _behind):
+    def test_sidecar_index_cuts_before_discontinuity_chunk(self):
         """
         When the input buffer reports a discontinuity at chunk index D, the
         segmenter loop must hard-cut before feeding that chunk so pre-switch
@@ -143,11 +136,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         )
         ts_buffer.discontinuities_in_range.assert_called_with(0, 2)
 
-    @patch(
-        "apps.proxy.live_proxy.output.hls.manager.ConfigHelper.new_client_behind_seconds",
-        return_value=5,
-    )
-    def test_no_cut_when_sidecar_empty(self, _behind):
+    def test_no_cut_when_sidecar_empty(self):
         chunk = b"STEADY"
         ts_buffer = MagicMock()
         ts_buffer.index = 1
@@ -177,11 +166,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
 
         self.assertEqual(constructed[0].events, [("feed", chunk)])
 
-    @patch(
-        "apps.proxy.live_proxy.output.hls.manager.ConfigHelper.new_client_behind_seconds",
-        return_value=5,
-    )
-    def test_heartbeat_does_not_refresh_playlist_state(self, _behind):
+    def test_heartbeat_does_not_refresh_playlist_state(self):
         """
         Heartbeat may prune a stalled window, but a no-op prune must not
         rewrite the descriptor. Playlist "ts" is last segment production,
@@ -210,11 +195,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         mgr._prune_playlist_window.assert_called_once()
         mgr._write_playlist_state.assert_not_called()
 
-    @patch(
-        "apps.proxy.live_proxy.output.hls.manager.ConfigHelper.new_client_behind_seconds",
-        return_value=5,
-    )
-    def test_heartbeat_republishes_when_prune_changes_window(self, _behind):
+    def test_heartbeat_republishes_when_prune_changes_window(self):
         """Stalled input still drops expired advertised URIs; ts is not touched."""
         ts_buffer = MagicMock()
         ts_buffer.index = 0
@@ -235,11 +216,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
             mgr._segmenter_loop()
         mgr._write_playlist_state.assert_called_once()
 
-    @patch(
-        "apps.proxy.live_proxy.output.hls.manager.ConfigHelper.new_client_behind_seconds",
-        return_value=5,
-    )
-    def test_heartbeat_skips_republish_before_first_segment(self, _behind):
+    def test_heartbeat_skips_republish_before_first_segment(self):
         ts_buffer = MagicMock()
         ts_buffer.index = 0
         ts_buffer.find_chunk_index_by_time.return_value = 0

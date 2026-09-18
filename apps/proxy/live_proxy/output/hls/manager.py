@@ -209,8 +209,8 @@ class HLSOutputManager:
             segmenter.flag_discontinuity()
 
         # Start behind live so the first segments cover the same window a
-        # new TS client would receive, matching fMP4 writer positioning.
-        behind_seconds = ConfigHelper.new_client_behind_seconds()
+        # new TS client would receive.
+        behind_seconds = self.start_behind
         start_index = self.ts_buffer.find_chunk_index_by_time(behind_seconds) if behind_seconds > 0 else None
         if start_index is None:
             start_index = self.ts_buffer.index
