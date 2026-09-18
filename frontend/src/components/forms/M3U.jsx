@@ -437,7 +437,9 @@ const M3U = ({
                 name="hash_key"
                 label="Hash Key Override"
                 description="Fields used to generate a stable identifier for this account's streams. Leave empty to use the global default. Changing this rehashes only this account's streams."
-                placeholder="Use global default"
+                placeholder={
+                  form.values.hash_key?.length ? undefined : 'Use global default'
+                }
                 clearable
                 data={[
                   { value: 'name', label: 'Name' },
