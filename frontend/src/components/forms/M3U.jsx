@@ -57,6 +57,7 @@ const M3U = ({
   const [file, setFile] = useState(null);
   const [expDate, setExpDate] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [hasHashKeyOverride, setHasHashKeyOverride] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
@@ -132,6 +133,9 @@ const M3U = ({
           ? m3uAccount.hash_key.split(',').filter(Boolean)
           : [],
       });
+      setHasHashKeyOverride(
+          !!(m3uAccount.hash_key && m3uAccount.hash_key.split(',').filter(Boolean).length)
+        );
       setExpDate(expDateFromPlaylist(m3uAccount.exp_date));
 
       // Determine schedule type from existing data
@@ -143,6 +147,7 @@ const M3U = ({
     } else {
       setPlaylist(null);
       form.reset();
+      setHasHashKeyOverride(false);
       setScheduleType('interval');
       setExpDate(null);
     }
@@ -437,9 +442,7 @@ const M3U = ({
                 name="hash_key"
                 label="Hash Key Override"
                 description="Fields used to generate a stable identifier for this account's streams. Leave empty to use the global default. Changing this rehashes only this account's streams."
-                placeholder={
-                  form.values.hash_key?.length ? undefined : 'Use global default'
-                }
+                placeholder={hasHashKeyOverride ? undefined : 'Use global default'}
                 clearable
                 data={[
                   { value: 'name', label: 'Name' },
@@ -449,6 +452,10 @@ const M3U = ({
                   { value: 'group', label: 'Group' },
                 ]}
                 {...form.getInputProps('hash_key')}
+                onChange={(value) => {
+                  form.getInputProps('hash_key').onChange(value);
+                  setHasHashKeyOverride(!!(value && value.length));
+                }}
                 key={form.key('hash_key')}
               />
 
