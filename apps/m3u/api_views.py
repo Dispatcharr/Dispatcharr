@@ -196,6 +196,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         # If this account's hash key override changed, rehash just its own
         # streams (cheaper than a full rehash, and correct since every other
         # account's effective keys are unaffected by this account's change).
+        instance.refresh_from_db(fields=["hash_key"])
         if instance.hash_key != old_hash_key:
             new_keys = instance.get_effective_hash_keys()
             rehash_streams.delay(new_keys, account_id=instance.id)
