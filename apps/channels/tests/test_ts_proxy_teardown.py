@@ -539,8 +539,10 @@ class ClientDisconnectOwnershipTests(TestCase):
         proxy_server.extend_ownership.return_value = False
 
         redis = MagicMock()
-        redis.hget.return_value = b"viewer"
-        redis.scard.return_value = 0
+        redis.hmget.return_value = (b"viewer", None)
+        pipe = MagicMock()
+        pipe.execute.return_value = [1, 1, 0]
+        redis.pipeline.return_value = pipe
 
         manager = ClientManager(
             channel_id=CHANNEL_ID,
