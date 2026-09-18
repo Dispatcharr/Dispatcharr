@@ -76,6 +76,7 @@ from .metadata import (
     merge_episode_provider_video_metadata,
     normalize_language_code,
     normalize_video_features,
+    relation_declared_metadata,
     summarize_series_relation_metadata,
 )
 from django.utils import timezone
@@ -4758,6 +4759,9 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
                         relation_props,
                         episode.custom_properties,
                     )
+                    episode_technical = relation_declared_metadata(
+                        episode_relation
+                    )
                     raw_episode_image = episode_artwork['movie_image']
                     episode_data = {
                         'id': episode.id,
@@ -4789,6 +4793,8 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
                             m3u_account_id=account_id,
                         ),
                         'container_extension': episode_relation.container_extension or 'mp4',
+                        'resolution': episode_technical.get('resolution', ''),
+                        'video_codec': episode_technical.get('video_codec', ''),
                         'type': 'episode',
                         'series': {
                             'id': series.id,

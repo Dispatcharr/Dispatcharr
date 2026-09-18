@@ -974,109 +974,137 @@ const SeriesModal = ({
 
                   {seasons.map((season) => (
                     <TabsPanel key={season} value={`season-${season}`} pt="md">
-                      <Table striped highlightOnHover>
-                        <TableThead>
-                          <TableTr>
-                            <TableTh style={{ width: '60px' }}>Ep</TableTh>
-                            <TableTh>Title</TableTh>
-                            <TableTh style={{ width: '80px' }}>
-                              Duration
-                            </TableTh>
-                            <TableTh style={{ width: '60px' }}>Date</TableTh>
-                            <TableTh style={{ width: '70px' }}>Format</TableTh>
-                            <TableTh style={{ width: '80px' }}>Action</TableTh>
-                          </TableTr>
-                        </TableThead>
-                        <TableTbody>
-                          {episodesBySeason[season]?.map((episode) => (
-                            <React.Fragment key={episode.id}>
-                              <TableTr
-                                style={{ cursor: 'pointer' }}
-                                onClick={() => handleEpisodeRowClick(episode)}
-                              >
-                                <TableTd>
-                                  <Badge size="sm" variant="outline">
-                                    {episode.episode_number || '?'}
-                                  </Badge>
-                                </TableTd>
-                                <TableTd>
-                                  <Stack spacing={2}>
-                                    <Text size="sm" weight={500}>
-                                      {episode.name}
-                                    </Text>
-                                    {episode.genre && (
-                                      <Text size="xs" color="dimmed">
-                                        {episode.genre}
+                      <Box style={{ overflowX: 'auto' }}>
+                        <Table
+                          striped
+                          highlightOnHover
+                          style={{ minWidth: '920px' }}
+                        >
+                          <TableThead>
+                            <TableTr>
+                              <TableTh style={{ width: '60px' }}>Ep</TableTh>
+                              <TableTh>Title</TableTh>
+                              <TableTh style={{ width: '80px' }}>
+                                Duration
+                              </TableTh>
+                              <TableTh style={{ width: '60px' }}>Date</TableTh>
+                              <TableTh style={{ width: '90px' }}>
+                                Resolution
+                              </TableTh>
+                              <TableTh style={{ width: '80px' }}>Codec</TableTh>
+                              <TableTh style={{ width: '70px' }}>
+                                Format
+                              </TableTh>
+                              <TableTh style={{ width: '80px' }}>
+                                Action
+                              </TableTh>
+                            </TableTr>
+                          </TableThead>
+                          <TableTbody>
+                            {episodesBySeason[season]?.map((episode) => (
+                              <React.Fragment key={episode.id}>
+                                <TableTr
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={() => handleEpisodeRowClick(episode)}
+                                >
+                                  <TableTd>
+                                    <Badge size="sm" variant="outline">
+                                      {episode.episode_number || '?'}
+                                    </Badge>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Stack spacing={2}>
+                                      <Text size="sm" weight={500}>
+                                        {episode.name}
                                       </Text>
-                                    )}
-                                  </Stack>
-                                </TableTd>
-                                <TableTd>
-                                  <Text size="xs" color="dimmed">
-                                    {formatDuration(episode.duration_secs)}
-                                  </Text>
-                                </TableTd>
-                                <TableTd>
-                                  <Text size="xs" color="dimmed">
-                                    {getEpisodeAirdate(episode)}
-                                  </Text>
-                                </TableTd>
-                                <TableTd>
-                                  <Text size="xs" color="dimmed">
-                                    {episode.container_extension || '—'}
-                                  </Text>
-                                </TableTd>
-                                <TableTd>
-                                  <Group spacing="xs">
-                                    <ActionIcon
-                                      variant="filled"
-                                      color="blue"
-                                      size="sm"
-                                      disabled={
-                                        providers.length > 0 &&
-                                        !selectedProvider
-                                      }
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handlePlayEpisode(episode);
-                                      }}
-                                    >
-                                      <Play size={12} />
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="outline"
-                                      color="gray"
-                                      size="sm"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleCopyEpisodeLink(episode);
-                                      }}
-                                    >
-                                      <Copy size={12} />
-                                    </ActionIcon>
-                                  </Group>
-                                </TableTd>
-                              </TableTr>
-                              {expandedEpisode === episode.id && (
-                                <TableTr>
-                                  <TableTd
-                                    colSpan={5}
-                                    p={16}
-                                    style={{
-                                      backgroundColor: '#2A2A2E',
-                                    }}
-                                  >
-                                    <Episode
-                                      episode={episode}
-                                      displaySeries={displaySeries}
-                                    />
+                                      {episode.genre && (
+                                        <Text size="xs" color="dimmed">
+                                          {episode.genre}
+                                        </Text>
+                                      )}
+                                    </Stack>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Text size="xs" color="dimmed">
+                                      {formatDuration(episode.duration_secs)}
+                                    </Text>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Text size="xs" color="dimmed">
+                                      {getEpisodeAirdate(episode)}
+                                    </Text>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Text size="xs" color="dimmed">
+                                      {episode.resolution || '—'}
+                                    </Text>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Text size="xs" color="dimmed">
+                                      {episode.video_codec
+                                        ? String(
+                                            episode.video_codec
+                                          ).toUpperCase()
+                                        : '—'}
+                                    </Text>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Text size="xs" color="dimmed">
+                                      {episode.container_extension || '—'}
+                                    </Text>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Group spacing="xs">
+                                      <ActionIcon
+                                        variant="filled"
+                                        color="blue"
+                                        size="sm"
+                                        disabled={
+                                          providers.length > 0 &&
+                                          !selectedProvider
+                                        }
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handlePlayEpisode(episode);
+                                        }}
+                                      >
+                                        <Play size={12} />
+                                      </ActionIcon>
+                                      <ActionIcon
+                                        variant="outline"
+                                        color="gray"
+                                        size="sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleCopyEpisodeLink(episode);
+                                        }}
+                                      >
+                                        <Copy size={12} />
+                                      </ActionIcon>
+                                    </Group>
                                   </TableTd>
                                 </TableTr>
-                              )}
-                            </React.Fragment>
-                          ))}
-                        </TableTbody>
-                      </Table>
+                                {expandedEpisode === episode.id && (
+                                  <TableTr>
+                                    <TableTd
+                                      colSpan={8}
+                                      p={16}
+                                      style={{
+                                        backgroundColor: '#2A2A2E',
+                                      }}
+                                    >
+                                      <Episode
+                                        episode={episode}
+                                        displaySeries={displaySeries}
+                                      />
+                                    </TableTd>
+                                  </TableTr>
+                                )}
+                              </React.Fragment>
+                            ))}
+                          </TableTbody>
+                        </Table>
+                      </Box>
                     </TabsPanel>
                   ))}
                 </Tabs>

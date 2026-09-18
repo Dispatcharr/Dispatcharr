@@ -309,6 +309,8 @@ const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
     duration_secs: episode.duration_secs || null,
     rating: episode.rating || '',
     container_extension: episode.container_extension || '',
+    resolution: episode.resolution || '',
+    video_codec: episode.video_codec || '',
     series: {
       id: seriesInfo.id,
       name: seriesInfo.name,

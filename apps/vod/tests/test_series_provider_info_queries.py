@@ -133,7 +133,7 @@ class SeriesProviderInfoQueryTests(TestCase):
         )
         url = (
             f'/api/vod/series/{self.series.id}/provider-info/'
-            f'?include_episodes=false&relation_id={self.series_relation.id}'
+            f'?include_episodes=true&relation_id={self.series_relation.id}'
         )
 
         response = self.client.get(url)
@@ -162,7 +162,7 @@ class SeriesProviderInfoQueryTests(TestCase):
         episode_relation.save(update_fields=['custom_properties'])
         url = (
             f'/api/vod/series/{self.series.id}/provider-info/'
-            f'?include_episodes=false&relation_id={self.series_relation.id}'
+            f'?include_episodes=true&relation_id={self.series_relation.id}'
         )
 
         response = self.client.get(url)
@@ -171,6 +171,9 @@ class SeriesProviderInfoQueryTests(TestCase):
         values = response.data['source_metadata']['values']
         self.assertEqual(values['episode_resolutions'], ['480p'])
         self.assertEqual(values['episode_video_codecs'], ['h264'])
+        episode = response.data['episodes']['1'][0]
+        self.assertEqual(episode['resolution'], '480p')
+        self.assertEqual(episode['video_codec'], 'h264')
 
     def test_provider_info_backdrop_prefers_selected_relation_basic_data(self):
         """Shared Series.custom_properties can be stale; the selected account's

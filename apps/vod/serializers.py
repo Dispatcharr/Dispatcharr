@@ -1526,6 +1526,8 @@ class SeriesProviderInfoEpisodeSerializer(serializers.Serializer):
     imdb_id = serializers.CharField(allow_blank=True, allow_null=True)
     movie_image = serializers.CharField(allow_blank=True)
     container_extension = serializers.CharField()
+    resolution = serializers.CharField(required=False, allow_blank=True)
+    video_codec = serializers.CharField(required=False, allow_blank=True)
     type = serializers.CharField()
     series = SeriesProviderInfoEpisodeSeriesSerializer()
 
