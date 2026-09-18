@@ -476,9 +476,9 @@ class TSSegmenter:
             elif keyframe and pts is not None:
                 if self._segment_start_pts is None:
                     # Segment was opened on a keyframe PES that had no PTS
-                    # (parameter-set-only AU). Close it with a measured span
-                    # fallback and re-anchor on this PTS-bearing keyframe.
-                    finished = self._finish_segment(self._extinf_duration(self.target_duration))
+                    # (parameter-set-only AU). No keyframe boundary to use;
+                    # measured span if any pictures were timed, else target.
+                    finished = self._finish_segment(self._extinf_duration())
                     self._begin_segment(pts)
                 else:
                     elapsed = self._elapsed(pts, self._segment_start_pts)
@@ -489,7 +489,7 @@ class TSSegmenter:
                     cut_at = 0.0 if self._startup_cuts_remaining > 0 else self.target_duration
                     if elapsed >= cut_at and elapsed > 0:
                         # Closing keyframe is not in this segment's bytes; do
-                        # not fold its PTS into EXTINF before finishing.
+                        # not fold its PTS into the measured span before finish.
                         finished = self._finish_segment(self._extinf_duration(elapsed))
                         self._begin_segment(pts)
                     else:
@@ -580,10 +580,9 @@ class TSSegmenter:
     def _measured_span(self):
         """Presentation span of PTS already collected in the open segment, or None.
 
-        Prefer this for EXTINF so the tag matches media already in the
-        segment (RFC 8216 4.3.2.1). Keyframe-to-keyframe elapsed overstates
-        on closed GOPs (next keyframe is not in the file) and understates
-        on open GOPs (trailing pictures past the next keyframe PTS).
+        Used alone for hard cuts (no next-keyframe anchor), and as one input to
+        EXTINF on normal cuts so open-GOP trailing pictures past the next
+        keyframe PTS are not clipped (RFC 8216 4.3.2.1).
         """
         if self._seg_first_pts is None or self._seg_last_pts is None:
             return None
@@ -592,10 +591,22 @@ class TSSegmenter:
             return None
         return d
 
-    def _extinf_duration(self, fallback):
-        """EXTINF for the segment being closed: prefer measured PTS span."""
+    def _extinf_duration(self, boundary_elapsed=None):
+        """EXTINF for the segment being closed.
+
+        On a keyframe cut, ``boundary_elapsed`` is next_start - this_start.
+        Take max(measured, boundary) so closed-GOP includes the last picture's
+        duration (PTS marks picture start, so measured alone is ~1 frame short)
+        and open-GOP media past the next keyframe PTS is not under-counted.
+        Hard cuts omit the boundary and use the measured span only.
+        """
         span = self._measured_span()
-        return span if span is not None else fallback
+        if boundary_elapsed is not None and boundary_elapsed > 0:
+            boundary = float(boundary_elapsed)
+            return max(span, boundary) if span is not None else boundary
+        if span is not None:
+            return span
+        return self.target_duration
 
     def _begin_segment(self, pts):
         self._current = bytearray()

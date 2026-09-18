@@ -241,10 +241,10 @@ class SegmenterTests(unittest.TestCase):
         finished = feed_stream(seg, gop_seconds=2.0, gop_count=9)
         durs = [round(s.duration, 3) for s in finished]
         # Cold start: first segments cut every keyframe for a fast window;
-        # then the normal 4s target resumes. EXTINF is the in-segment PTS
-        # span, so a 2s GOP with pictures through +1.0s yields ~1.0.
-        self.assertEqual(durs[:3], [1.0, 1.0, 1.0])
-        self.assertTrue(all(2.5 < d <= 4.0 for d in durs[3:]), durs)
+        # then the normal 4s target resumes. EXTINF uses keyframe boundary
+        # elapsed (2s GOP), not the in-segment last-PTS shortfall.
+        self.assertEqual(durs[:3], [2.0, 2.0, 2.0])
+        self.assertTrue(all(abs(d - 4.0) < 0.01 for d in durs[3:]), durs)
 
     def test_cuts_on_keyframes_at_target_duration(self):
         seg = self.make_started(target=4.0)
@@ -252,9 +252,8 @@ class SegmenterTests(unittest.TestCase):
         finished = feed_stream(seg, gop_seconds=2.0, gop_count=7)
         self.assertEqual(len(finished), 3)
         for s in finished:
-            # EXTINF is the in-segment PTS span, not keyframe-to-keyframe.
-            self.assertGreater(s.duration, 2.5)
-            self.assertLessEqual(s.duration, 4.0)
+            # 2s GOPs cut every two GOPs: EXTINF is the keyframe boundary (4.0).
+            self.assertAlmostEqual(s.duration, 4.0, places=2)
 
     def test_segments_start_with_pat_pmt(self):
         seg = self.make_started()
@@ -361,10 +360,10 @@ class SegmenterTests(unittest.TestCase):
                 out += seg.feed(make_hevc_pes(pts, [34, 1]))  # PPS + TRAIL
         durs = [round(s.duration, 2) for s in out]
         # One segment per 2s GOP; no mid-GOP shredding from PPS or reorder.
-        # EXTINF is measured PTS span (~1.96 with 25fps), not keyframe delta.
+        # EXTINF follows the keyframe boundary (2.0), not last-PTS shortfall.
         self.assertEqual(len(durs), 3)
         for d in durs:
-            self.assertAlmostEqual(d, 1.96, places=2)
+            self.assertAlmostEqual(d, 2.0, places=2)
 
     def test_encoder_pts_reset_hard_cuts_and_continues(self):
         seg = self.make_started(target=2.0)
@@ -392,12 +391,16 @@ class SegmenterTests(unittest.TestCase):
             out += seg.feed(make_video_pes(t, keyframe=False))
         out += seg.feed(make_video_pes(4.104, keyframe=True))
         self.assertEqual(len(out), 1)
-        # Keyframe spacing is 4.104; media span is 4.280. EXTINF must follow span.
+        # Keyframe spacing is 4.104; media span is 4.280. EXTINF must follow
+        # the larger value so trailing open-GOP pictures are counted.
         self.assertAlmostEqual(out[0].duration, 4.28, places=2)
 
-    def test_extinf_does_not_overstate_closed_gop(self):
-        """Closed GOP: next keyframe is not in the file, so keyframe-delta
-        EXTINF would exceed the media already in the segment."""
+    def test_extinf_closed_gop_uses_keyframe_boundary(self):
+        """Closed GOP: EXTINF is next_keyframe - start, not last_pts - start.
+
+        PTS marks picture start, so last_pts - first_pts alone is ~1 frame
+        short of the presentation covered until the next segment.
+        """
         seg = TSSegmenter(target_duration=4.0, startup_keyframe_cuts=0)
         out = []
         out += seg.feed(make_pat() + make_pmt(H264))
@@ -406,7 +409,7 @@ class SegmenterTests(unittest.TestCase):
             out += seg.feed(make_video_pes(t, keyframe=False))
         out += seg.feed(make_video_pes(4.0, keyframe=True))
         self.assertEqual(len(out), 1)
-        self.assertAlmostEqual(out[0].duration, 3.9, places=2)
+        self.assertAlmostEqual(out[0].duration, 4.0, places=2)
 
 
 class PlaylistTests(unittest.TestCase):
