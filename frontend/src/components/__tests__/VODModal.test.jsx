@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import VODModal from '../VODModal';
 import useVODStore from '../../store/useVODStore';
@@ -9,6 +15,16 @@ import useSettingsStore from '../../store/settings';
 vi.mock('../../store/useVODStore');
 vi.mock('../../store/useVideoStore');
 vi.mock('../../store/settings');
+vi.mock('../VODExternalIds.jsx', () => ({
+  default: ({ tmdbId, imdbId }) => (
+    <div>
+      {imdbId && <a href={`https://www.imdb.com/title/${imdbId}`}>IMDb</a>}
+      {tmdbId && (
+        <a href={`https://www.themoviedb.org/movie/${tmdbId}`}>TMDb</a>
+      )}
+    </div>
+  ),
+}));
 
 // Mock utils
 vi.mock('../../utils', () => ({
@@ -16,9 +32,6 @@ vi.mock('../../utils', () => ({
 }));
 
 vi.mock('../../utils/components/SeriesModalUtils.js', () => ({
-  formatStreamLabel: vi.fn(
-    (provider) => `${provider.m3u_account.name} - Stream ${provider.stream_id}`
-  ),
   imdbUrl: vi.fn((id) => `https://www.imdb.com/title/${id}`),
   tmdbUrl: vi.fn((id, type) => `https://www.themoviedb.org/${type}/${id}`),
   formatDuration: vi.fn((secs) => `${Math.floor(secs / 60)} min`),
@@ -27,7 +40,9 @@ vi.mock('../../utils/components/SeriesModalUtils.js', () => ({
 
 // Mock Mantine components
 vi.mock('@mantine/core', async () => {
+  const actual = await vi.importActual('@mantine/core');
   return {
+    ...actual,
     Modal: ({ children, opened, onClose, title }) =>
       opened ? (
         <div data-testid="modal">
@@ -59,12 +74,13 @@ vi.mock('@mantine/core', async () => {
       ) : (
         <span {...props}>{children}</span>
       ),
-    Select: ({ data, value, onChange, placeholder, disabled }) => (
+    Select: ({ data, value, onChange, placeholder, disabled, ...props }) => (
       <select
-        data-testid="provider-select"
+        data-testid={`${props['aria-label']}-select`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
+        {...props}
       >
         <option value="">{placeholder}</option>
         {data.map((item) => (
@@ -75,6 +91,20 @@ vi.mock('@mantine/core', async () => {
       </select>
     ),
     Loader: () => <div data-testid="loader">Loading...</div>,
+    Alert: ({ children }) => <div>{children}</div>,
+    ActionIcon: ({ children, onClick, disabled, ...props }) => (
+      <button onClick={onClick} disabled={disabled} {...props}>
+        {children}
+      </button>
+    ),
+    ScrollArea: ({ children }) => <div>{children}</div>,
+    Tooltip: ({ children }) => <>{children}</>,
+    Table: ({ children, ...props }) => <table {...props}>{children}</table>,
+    TableThead: ({ children }) => <thead>{children}</thead>,
+    TableTbody: ({ children }) => <tbody>{children}</tbody>,
+    TableTr: ({ children, ...props }) => <tr {...props}>{children}</tr>,
+    TableTh: ({ children, ...props }) => <th {...props}>{children}</th>,
+    TableTd: ({ children, ...props }) => <td {...props}>{children}</td>,
   };
 });
 
@@ -85,6 +115,7 @@ vi.mock('lucide-react', async (importOriginal) => {
     ...actual,
     Play: () => <span>Play Icon</span>,
     Copy: () => <span>Copy Icon</span>,
+    Wrench: () => <span>Wrench Icon</span>,
   };
 });
 
@@ -122,6 +153,7 @@ describe('VODModal', () => {
     id: 1,
     stream_id: 'stream-123',
     m3u_account: { name: 'Test Provider', id: 1 },
+    category: { id: 10, name: 'GERMANY MOVIES' },
     bitrate: 6000,
   };
 
@@ -158,7 +190,27 @@ describe('VODModal', () => {
   it('should render modal when opened with vod', () => {
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
     expect(screen.getByTestId('modal')).toBeInTheDocument();
-    expect(screen.getByTestId('modal-title')).toHaveTextContent('Test Movie');
+    expect(screen.getByTestId('modal-title')).toBeEmptyDOMElement();
+    expect(
+      screen.getByRole('heading', { level: 3, name: 'Test Movie' })
+    ).toBeInTheDocument();
+  });
+
+  it('does not reload providers when the same movie is passed as a new object', async () => {
+    const view = render(
+      <VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />
+    );
+    await waitFor(() =>
+      expect(mockFetchMovieProviders).toHaveBeenCalledTimes(1)
+    );
+
+    view.rerender(
+      <VODModal vod={{ ...mockVOD }} opened={true} onClose={mockOnClose} />
+    );
+
+    await waitFor(() =>
+      expect(mockFetchMovieProviders).toHaveBeenCalledTimes(1)
+    );
   });
 
   it('should not render when closed', () => {
@@ -184,12 +236,42 @@ describe('VODModal', () => {
     expect(screen.getByText(/A test movie description/)).toBeInTheDocument();
   });
 
+  it('keeps the canonical title when provider details use a raw title', async () => {
+    mockFetchMovieDetailsFromProvider.mockResolvedValue({
+      ...mockVOD,
+      name: '┃DE┃ Test Movie UHD',
+    });
+
+    render(
+      <VODModal
+        vod={{ ...mockVOD, name: 'Canonical Test Movie' }}
+        opened={true}
+        onClose={mockOnClose}
+        allowSourceEditing={false}
+      />
+    );
+
+    expect(
+      await screen.findByRole('heading', {
+        level: 3,
+        name: 'Canonical Test Movie',
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', {
+        level: 3,
+        name: '┃DE┃ Test Movie UHD',
+      })
+    ).not.toBeInTheDocument();
+  });
+
   it('should fetch movie details on mount', async () => {
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
       expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledWith(
-        mockVOD.id
+        mockVOD.id,
+        mockProvider.id
       );
     });
   });
@@ -200,6 +282,41 @@ describe('VODModal', () => {
     await waitFor(() => {
       expect(mockFetchMovieProviders).toHaveBeenCalledWith(mockVOD.id);
     });
+  });
+
+  it('stops the source loader when profile ordering replaces the detail request', async () => {
+    mockFetchMovieDetailsFromProvider
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValueOnce(mockVOD);
+
+    render(
+      <VODModal
+        vod={mockVOD}
+        opened={true}
+        onClose={mockOnClose}
+        profileCandidates={{
+          profile_id: 7,
+          canonical_id: mockVOD.id,
+          results: [
+            { relation_id: mockProvider.id, allowed: true, position: 1 },
+          ],
+        }}
+      />
+    );
+
+    const heading = await screen.findByRole('heading', {
+      level: 3,
+      name: 'Sources (1)',
+    });
+    await waitFor(() =>
+      expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledTimes(2)
+    );
+    expect(
+      screen.queryByText('Loading additional details...')
+    ).not.toBeInTheDocument();
+    expect(
+      heading.parentElement.querySelector('[data-testid="loader"]')
+    ).not.toBeInTheDocument();
   });
 
   it('should show loading state while fetching details', () => {
@@ -221,13 +338,13 @@ describe('VODModal', () => {
       expect(mockFetchMovieProviders).toHaveBeenCalled();
     });
 
-    const playButton = screen.getByText('Play Movie');
+    const playButton = screen.getByLabelText('Play exact source');
     fireEvent.click(playButton);
 
     expect(mockShowVideo).toHaveBeenCalled();
   });
 
-  it('should disable play button when multiple providers and none selected', async () => {
+  it('should render an exact play action for every provider', async () => {
     mockFetchMovieProviders.mockResolvedValue([
       mockProvider,
       { ...mockProvider, id: 2 },
@@ -236,7 +353,7 @@ describe('VODModal', () => {
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Play Movie')).toBeInTheDocument();
+      expect(screen.getAllByLabelText('Play exact source')).toHaveLength(2);
     });
 
     // Note: Testing for disabled state would require checking the button's disabled attribute
@@ -245,33 +362,114 @@ describe('VODModal', () => {
   it('should handle provider selection', async () => {
     const providers = [
       mockProvider,
-      { ...mockProvider, id: 2, stream_id: 'stream-456' },
+      {
+        ...mockProvider,
+        id: 2,
+        stream_id: 'stream-456',
+        category: { id: 11, name: 'NETFLIX MOVIES' },
+      },
     ];
     mockFetchMovieProviders.mockResolvedValue(providers);
 
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
-    await waitFor(() => {
-      const select = screen.getByTestId('provider-select');
-      expect(select).toBeInTheDocument();
-    });
-
-    const select = screen.getByTestId('provider-select');
-    fireEvent.change(select, { target: { value: '2' } });
+    const source = await screen.findByText('Stream stream-456');
+    fireEvent.click(source.closest('tr'));
 
     await waitFor(() => {
-      const select = screen.getByTestId('provider-select');
-      expect(select).toHaveValue('2');
+      expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledWith(1, 2);
     });
   });
 
-  it('should display single provider as badge', async () => {
+  it('keeps source metadata and canonical details scoped during selection', async () => {
+    let resolveSecondDetails;
+    const providers = [
+      {
+        ...mockProvider,
+        stream_name: 'First source',
+        source_metadata: { values: { bitrate_kbps: 9000 } },
+      },
+      {
+        ...mockProvider,
+        id: 2,
+        stream_id: 'stream-456',
+        stream_name: 'Second source',
+        source_metadata: { values: {} },
+      },
+    ];
+    mockFetchMovieProviders.mockResolvedValue(providers);
+    mockFetchMovieDetailsFromProvider
+      .mockResolvedValueOnce({
+        ...mockVOD,
+        canonical: { ...mockVOD, name: 'Stable canonical title' },
+        source_metadata: { values: { bitrate_kbps: 9000 } },
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecondDetails = resolve;
+          })
+      );
+
+    render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
+
+    expect(await screen.findByText('Stable canonical title')).toBeInTheDocument();
+    const secondRow = screen.getByText('Second source').closest('tr');
+    fireEvent.click(secondRow);
+
+    expect(within(secondRow).queryByText('9.00 Mbps')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Loading additional details...')
+    ).not.toBeInTheDocument();
+
+    resolveSecondDetails({
+      ...mockVOD,
+      canonical: { ...mockVOD, name: 'Different provider canonical' },
+      source_metadata: { values: { bitrate_kbps: 4200 } },
+    });
+
+    await waitFor(() =>
+      expect(within(secondRow).getByText('4.20 Mbps')).toBeInTheDocument()
+    );
+    expect(screen.getByText('Stable canonical title')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Different provider canonical')
+    ).not.toBeInTheDocument();
+  });
+
+  it('should select the M3U account independently from the category', async () => {
+    const providers = [
+      mockProvider,
+      {
+        ...mockProvider,
+        id: 2,
+        stream_id: 'stream-other-account',
+        m3u_account: { id: 2, name: 'Backup Provider' },
+      },
+    ];
+    mockFetchMovieProviders.mockResolvedValue(providers);
+
+    render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
+
+    const account = await screen.findByText('Backup Provider');
+    fireEvent.click(account.closest('tr'));
+
+    await waitFor(() => {
+      expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledWith(1, 2);
+      expect(screen.getAllByText('GERMANY MOVIES')).toHaveLength(2);
+    });
+  });
+
+  it('should display account and category separately for one provider', async () => {
     mockFetchMovieProviders.mockResolvedValue([mockProvider]);
 
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
+      expect(screen.getByText('M3U account')).toBeInTheDocument();
       expect(screen.getByText('Test Provider')).toBeInTheDocument();
+      expect(screen.getByText('Category')).toBeInTheDocument();
+      expect(screen.getByText('GERMANY MOVIES')).toBeInTheDocument();
     });
   });
 
@@ -287,7 +485,9 @@ describe('VODModal', () => {
     });
 
     // Should still display basic VOD info
-    expect(screen.getByTestId('modal-title')).toHaveTextContent('Test Movie');
+    expect(
+      screen.getByRole('heading', { level: 3, name: 'Test Movie' })
+    ).toBeInTheDocument();
   });
 
   it('should handle fetch providers error gracefully', async () => {
@@ -303,7 +503,7 @@ describe('VODModal', () => {
     expect(screen.getByTestId('modal')).toBeInTheDocument();
   });
 
-  it('should display technical details when available', async () => {
+  it('does not duplicate technical details below the exact source list', async () => {
     const vodWithTech = {
       ...mockVOD,
       bitrate: 5000,
@@ -322,9 +522,8 @@ describe('VODModal', () => {
 
     render(<VODModal vod={vodWithTech} opened={true} onClose={mockOnClose} />);
 
-    await waitFor(() => {
-      expect(screen.getByText(/Technical Details:/)).toBeInTheDocument();
-    });
+    await screen.findByRole('heading', { level: 3, name: 'Sources (1)' });
+    expect(screen.queryByText(/Technical Details:/)).not.toBeInTheDocument();
   });
 
   it('should render IMDb and TMDb badges with correct links', () => {
@@ -350,7 +549,7 @@ describe('VODModal', () => {
       render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
       await waitFor(() => {
-        const copyButton = screen.getByText('Copy Link');
+        const copyButton = screen.getByLabelText('Copy exact source link');
         fireEvent.click(copyButton);
       });
 
@@ -368,19 +567,19 @@ describe('VODModal', () => {
 
       mockFetchMovieProviders.mockResolvedValue([
         { ...mockProvider, id: 1 },
-        { ...mockProvider, id: 2, stream_id: 'stream-456' },
+        {
+          ...mockProvider,
+          id: 2,
+          stream_id: 'stream-456',
+          category: { id: 11, name: 'NETFLIX MOVIES' },
+        },
       ]);
 
       render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
       await waitFor(() => {
-        const select = screen.getByTestId('provider-select');
-        fireEvent.change(select, { target: { value: '2' } });
-      });
-
-      await waitFor(() => {
-        const copyButton = screen.getByText('Copy Link');
-        fireEvent.click(copyButton);
+        const copyButtons = screen.getAllByLabelText('Copy exact source link');
+        fireEvent.click(copyButtons[1]);
       });
 
       expect(copyToClipboard).toHaveBeenCalledWith(
@@ -400,7 +599,7 @@ describe('VODModal', () => {
       render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
       await waitFor(() => {
-        const playButton = screen.getByText('Play Movie');
+        const playButton = screen.getByLabelText('Play exact source');
         fireEvent.click(playButton);
       });
 
@@ -415,7 +614,7 @@ describe('VODModal', () => {
       render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
       await waitFor(() => {
-        const playButton = screen.getByText('Play Movie');
+        const playButton = screen.getByLabelText('Play exact source');
         fireEvent.click(playButton);
       });
 
@@ -461,9 +660,9 @@ describe('VODModal', () => {
       render(<VODModal vod={minimalVOD} opened={true} onClose={mockOnClose} />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('modal-title')).toHaveTextContent(
-          'Test Movie'
-        );
+        expect(
+          screen.getByRole('heading', { level: 3, name: 'Test Movie' })
+        ).toBeInTheDocument();
       });
     });
   });

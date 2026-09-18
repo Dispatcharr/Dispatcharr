@@ -1,5 +1,12 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+  within,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
@@ -40,7 +47,8 @@ vi.mock('../../../utils/tables/M3UsTableUtils.js', () => ({
   formatStatusText: vi.fn((s) =>
     s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown'
   ),
-  refreshPlaylist: vi.fn().mockResolvedValue(undefined),
+  refreshLivePlaylist: vi.fn().mockResolvedValue(undefined),
+  refreshVODContent: vi.fn().mockResolvedValue(undefined),
   updatePlaylist: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -128,12 +136,25 @@ vi.mock('../CustomTable', () => ({
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
   ActionIcon: ({ children, onClick, disabled, color }) => (
-    <button data-testid="action-icon" data-color={color} onClick={onClick} disabled={disabled}>
+    <button
+      data-testid="action-icon"
+      data-color={color}
+      onClick={onClick}
+      disabled={disabled}
+    >
       {children}
     </button>
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, leftSection, disabled, loading, variant, color }) => (
+  Button: ({
+    children,
+    onClick,
+    leftSection,
+    disabled,
+    loading,
+    variant,
+    color,
+  }) => (
     <button
       data-testid="button"
       data-variant={variant}
@@ -167,12 +188,20 @@ vi.mock('@mantine/core', () => ({
     />
   ),
   Text: ({ children, size, c, fw, style }) => (
-    <span data-testid="text" data-size={size} data-color={c} data-fw={fw} style={style}>
+    <span
+      data-testid="text"
+      data-size={size}
+      data-color={c}
+      data-fw={fw}
+      style={style}
+    >
       {children}
     </span>
   ),
   Tooltip: ({ children, label }) => (
-    <div data-tooltip={typeof label === 'string' ? label : 'tooltip'}>{children}</div>
+    <div data-tooltip={typeof label === 'string' ? label : 'tooltip'}>
+      {children}
+    </div>
   ),
   useMantineTheme: vi.fn(() => ({
     palette: { background: { paper: '#1a1a1a' } },
@@ -184,6 +213,7 @@ vi.mock('@mantine/core', () => ({
 vi.mock('lucide-react', () => ({
   // Icons used by M3UsTable
   Filter: () => <svg data-testid="icon-filter" />,
+  Film: () => <svg data-testid="icon-film" />,
   RefreshCcw: () => <svg data-testid="icon-refresh" />,
   RotateCcw: () => <svg data-testid="icon-rotate-ccw" />,
   Square: () => <svg data-testid="icon-square" />,
@@ -249,6 +279,7 @@ const setupMocks = ({
   suppressWarning = vi.fn(),
   tableSize = 'default',
   typeFilter = ['STD', 'XC'],
+  columnSizing = {},
 } = {}) => {
   const mockSetRefreshProgress = vi.fn();
   const mockSetEditPlaylistId = vi.fn();
@@ -268,9 +299,12 @@ const setupMocks = ({
   );
 
   const mockSetTypeFilter = vi.fn();
+  const mockSetColumnSizing = vi.fn();
   vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
     if (key === 'table-size') return [tableSize, vi.fn()];
     if (key === 'm3u-table-type-filter') return [typeFilter, mockSetTypeFilter];
+    if (key === 'm3u-table-column-sizing')
+      return [columnSizing, mockSetColumnSizing];
     return [defaultValue, vi.fn()];
   });
 
@@ -279,7 +313,12 @@ const setupMocks = ({
     return { getRowModel: () => ({ rows: [] }), getHeaderGroups: () => [] };
   });
 
-  return { mockSetRefreshProgress, mockSetEditPlaylistId, mockSetTypeFilter };
+  return {
+    mockSetRefreshProgress,
+    mockSetEditPlaylistId,
+    mockSetTypeFilter,
+    mockSetColumnSizing,
+  };
 };
 
 const getCol = (keyOrId) =>
@@ -301,14 +340,22 @@ describe('M3UTable', () => {
     vi.clearAllMocks();
     capturedTableOptions = null;
     vi.mocked(M3UsTableUtils.deletePlaylist).mockResolvedValue(undefined);
-    vi.mocked(M3UsTableUtils.refreshPlaylist).mockResolvedValue(undefined);
+    vi.mocked(M3UsTableUtils.refreshLivePlaylist).mockResolvedValue(undefined);
+    vi.mocked(M3UsTableUtils.refreshVODContent).mockResolvedValue(undefined);
     vi.mocked(M3UsTableUtils.updatePlaylist).mockResolvedValue(undefined);
-    vi.mocked(M3UsTableUtils.getPlaylistAutoCreatedChannelsCount).mockResolvedValue({
+    vi.mocked(
+      M3UsTableUtils.getPlaylistAutoCreatedChannelsCount
+    ).mockResolvedValue({
       count: 0,
       sample_names: [],
     });
-    vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({ type: 'default', label: 'Idle' });
-    vi.mocked(DateTimeUtils.format).mockImplementation((val) => `formatted:${val}`);
+    vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({
+      type: 'default',
+      label: 'Idle',
+    });
+    vi.mocked(DateTimeUtils.format).mockImplementation(
+      (val) => `formatted:${val}`
+    );
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -346,7 +393,9 @@ describe('M3UTable', () => {
         ],
       });
       render(<M3UTable />);
-      expect(capturedTableOptions.data.every((p) => p.locked === false)).toBe(true);
+      expect(capturedTableOptions.data.every((p) => p.locked === false)).toBe(
+        true
+      );
     });
 
     it('places active playlists before inactive ones', () => {
@@ -371,6 +420,37 @@ describe('M3UTable', () => {
       render(<M3UTable />);
       expect(capturedTableOptions.data[0].name).toBe('Alpha');
       expect(capturedTableOptions.data[1].name).toBe('Zebra');
+    });
+
+    it('renders XC catalog counts on three non-wrapping lines', () => {
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        catalog_counts: {
+          live: { original: 100, selected: 80 },
+          movies: { original: 200, selected: 150 },
+          series: { original: 300, selected: 250 },
+        },
+      });
+      setupMocks({ playlists: [playlist] });
+      render(<M3UTable />);
+
+      const { getByText } = render(
+        getCol('name').cell({
+          cell: { getValue: () => playlist.name },
+          row: { original: playlist },
+        })
+      );
+
+      for (const text of [
+        'Live TV 100/80',
+        'Movies 200/150',
+        'Series 300/250',
+      ]) {
+        expect(getByText(text)).toHaveStyle({
+          display: 'block',
+          whiteSpace: 'nowrap',
+        });
+      }
     });
   });
 
@@ -399,7 +479,9 @@ describe('M3UTable', () => {
       fireEvent.click(screen.getByText('Add M3U'));
       fireEvent.click(screen.getByTestId('m3u-form-close-with-playlist'));
       expect(screen.getByTestId('m3u-form')).toBeInTheDocument();
-      expect(screen.getByTestId('m3u-form-account')).toHaveTextContent('New Playlist');
+      expect(screen.getByTestId('m3u-form-account')).toHaveTextContent(
+        'New Playlist'
+      );
     });
   });
 
@@ -418,7 +500,9 @@ describe('M3UTable', () => {
       fireEvent.click(getByTestId('icon-square-pen').closest('button'));
 
       expect(screen.getByTestId('m3u-form')).toBeInTheDocument();
-      expect(screen.getByTestId('m3u-form-account')).toHaveTextContent('My M3U');
+      expect(screen.getByTestId('m3u-form-account')).toHaveTextContent(
+        'My M3U'
+      );
     });
 
     it('closes the form after editing when onClose(null) is called', () => {
@@ -441,16 +525,23 @@ describe('M3UTable', () => {
 
   describe('editPlaylistId from store', () => {
     it('auto-opens M3UForm for the matching playlist', () => {
-      const playlists = [makePlaylist({ id: 42, name: 'Notification Playlist' })];
+      const playlists = [
+        makePlaylist({ id: 42, name: 'Notification Playlist' }),
+      ];
       setupMocks({ playlists, editPlaylistId: 42 });
       render(<M3UTable />);
       expect(screen.getByTestId('m3u-form')).toBeInTheDocument();
-      expect(screen.getByTestId('m3u-form-account')).toHaveTextContent('Notification Playlist');
+      expect(screen.getByTestId('m3u-form-account')).toHaveTextContent(
+        'Notification Playlist'
+      );
     });
 
     it('calls setEditPlaylistId(null) after handling editPlaylistId', () => {
       const playlists = [makePlaylist({ id: 42 })];
-      const { mockSetEditPlaylistId } = setupMocks({ playlists, editPlaylistId: 42 });
+      const { mockSetEditPlaylistId } = setupMocks({
+        playlists,
+        editPlaylistId: 42,
+      });
       render(<M3UTable />);
       expect(mockSetEditPlaylistId).toHaveBeenCalledWith(null);
     });
@@ -482,7 +573,7 @@ describe('M3UTable', () => {
       );
     });
 
-    it('calls refreshPlaylist with the playlist id', async () => {
+    it('calls refreshLivePlaylist with the playlist id', async () => {
       const playlist = makePlaylist({ id: 1 });
       setupMocks({ playlists: [playlist] });
       render(<M3UTable />);
@@ -494,12 +585,14 @@ describe('M3UTable', () => {
       fireEvent.click(getByTestId('icon-refresh').closest('button'));
 
       await waitFor(() =>
-        expect(M3UsTableUtils.refreshPlaylist).toHaveBeenCalledWith(1)
+        expect(M3UsTableUtils.refreshLivePlaylist).toHaveBeenCalledWith(1)
       );
     });
 
-    it('sets error progress when refreshPlaylist rejects', async () => {
-      vi.mocked(M3UsTableUtils.refreshPlaylist).mockRejectedValue(new Error('fail'));
+    it('sets error progress when refreshLivePlaylist rejects', async () => {
+      vi.mocked(M3UsTableUtils.refreshLivePlaylist).mockRejectedValue(
+        new Error('fail')
+      );
       const playlist = makePlaylist({ id: 1 });
       const { mockSetRefreshProgress } = setupMocks({ playlists: [playlist] });
       render(<M3UTable />);
@@ -570,7 +663,9 @@ describe('M3UTable', () => {
       setupMocks({ playlists: [playlist] });
       render(<M3UTable />);
       await openDeleteDialog(playlist);
-      expect(screen.getByTestId('confirm-message')).toHaveTextContent('rich-message');
+      expect(screen.getByTestId('confirm-message')).toHaveTextContent(
+        'rich-message'
+      );
     });
 
     it('calls deletePlaylist with the correct id on confirm', async () => {
@@ -591,7 +686,9 @@ describe('M3UTable', () => {
       await openDeleteDialog(playlist);
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() =>
-        expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument()
+        expect(
+          screen.queryByTestId('confirmation-dialog')
+        ).not.toBeInTheDocument()
       );
     });
 
@@ -601,13 +698,18 @@ describe('M3UTable', () => {
       render(<M3UTable />);
       await openDeleteDialog(playlist);
       fireEvent.click(screen.getByTestId('confirm-cancel'));
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
       expect(M3UsTableUtils.deletePlaylist).not.toHaveBeenCalled();
     });
 
     it('skips dialog and deletes directly when warning suppressed and 0 auto-channels', async () => {
       const playlist = makePlaylist({ id: 5 });
-      setupMocks({ playlists: [playlist], isWarningSuppressed: vi.fn(() => true) });
+      setupMocks({
+        playlists: [playlist],
+        isWarningSuppressed: vi.fn(() => true),
+      });
       render(<M3UTable />);
 
       const { row, cell } = makeRowCtx(playlist);
@@ -619,34 +721,46 @@ describe('M3UTable', () => {
       await waitFor(() =>
         expect(M3UsTableUtils.deletePlaylist).toHaveBeenCalledWith(5)
       );
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('opens dialog when warning suppressed but auto-channels count > 0', async () => {
-      vi.mocked(M3UsTableUtils.getPlaylistAutoCreatedChannelsCount).mockResolvedValue({
+      vi.mocked(
+        M3UsTableUtils.getPlaylistAutoCreatedChannelsCount
+      ).mockResolvedValue({
         count: 3,
         sample_names: ['Ch 1'],
       });
       const playlist = makePlaylist();
-      setupMocks({ playlists: [playlist], isWarningSuppressed: vi.fn(() => true) });
+      setupMocks({
+        playlists: [playlist],
+        isWarningSuppressed: vi.fn(() => true),
+      });
       render(<M3UTable />);
       await openDeleteDialog(playlist);
       expect(screen.getByTestId('confirmation-dialog')).toBeInTheDocument();
     });
 
     it('opens dialog when auto-channel count fetch fails', async () => {
-      vi.mocked(M3UsTableUtils.getPlaylistAutoCreatedChannelsCount).mockRejectedValue(
-        new Error('Network error')
-      );
+      vi.mocked(
+        M3UsTableUtils.getPlaylistAutoCreatedChannelsCount
+      ).mockRejectedValue(new Error('Network error'));
       const playlist = makePlaylist();
-      setupMocks({ playlists: [playlist], isWarningSuppressed: vi.fn(() => true) });
+      setupMocks({
+        playlists: [playlist],
+        isWarningSuppressed: vi.fn(() => true),
+      });
       render(<M3UTable />);
       await openDeleteDialog(playlist);
       expect(screen.getByTestId('confirmation-dialog')).toBeInTheDocument();
     });
 
     it('does not throw when deletePlaylist rejects', async () => {
-      vi.mocked(M3UsTableUtils.deletePlaylist).mockRejectedValue(new Error('server error'));
+      vi.mocked(M3UsTableUtils.deletePlaylist).mockRejectedValue(
+        new Error('server error')
+      );
       const playlist = makePlaylist();
       setupMocks({ playlists: [playlist] });
       render(<M3UTable />);
@@ -703,7 +817,9 @@ describe('M3UTable', () => {
     });
 
     it('does not throw when updatePlaylist rejects', async () => {
-      vi.mocked(M3UsTableUtils.updatePlaylist).mockRejectedValue(new Error('toggle error'));
+      vi.mocked(M3UsTableUtils.updatePlaylist).mockRejectedValue(
+        new Error('toggle error')
+      );
       const playlist = makePlaylist({ is_active: true });
       setupMocks({ playlists: [playlist] });
       render(<M3UTable />);
@@ -743,7 +859,9 @@ describe('M3UTable', () => {
     it('renders server_url when present', () => {
       setupMocks();
       render(<M3UTable />);
-      const playlist = makePlaylist({ server_url: 'http://example.com/list.m3u' });
+      const playlist = makePlaylist({
+        server_url: 'http://example.com/list.m3u',
+      });
       const { getByText } = render(
         getCol('server_url').cell({
           cell: { getValue: () => playlist.server_url },
@@ -756,7 +874,10 @@ describe('M3UTable', () => {
     it('falls back to file_path when server_url is empty', () => {
       setupMocks();
       render(<M3UTable />);
-      const playlist = makePlaylist({ server_url: '', file_path: '/files/list.m3u' });
+      const playlist = makePlaylist({
+        server_url: '',
+        file_path: '/files/list.m3u',
+      });
       const { getByText } = render(
         getCol('server_url').cell({
           cell: { getValue: () => '' },
@@ -773,7 +894,9 @@ describe('M3UTable', () => {
     it('returns null when status value is empty', () => {
       setupMocks();
       render(<M3UTable />);
-      expect(getCol('status').cell({ cell: { getValue: () => null } })).toBeNull();
+      expect(
+        getCol('status').cell({ cell: { getValue: () => null } })
+      ).toBeNull();
     });
 
     it('renders formatted status text', () => {
@@ -816,9 +939,14 @@ describe('M3UTable', () => {
     });
 
     it('shows progress UI when active progress (< 100) exists', () => {
-      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({ type: 'initializing' });
+      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({
+        type: 'initializing',
+      });
       const playlist = makePlaylist({ id: 1 });
-      setupMocks({ playlists: [playlist], refreshProgress: { 1: { progress: 50 } } });
+      setupMocks({
+        playlists: [playlist],
+        refreshProgress: { 1: { progress: 50 } },
+      });
       render(<M3UTable />);
       const { getByText } = render(
         getCol('last_message').cell({
@@ -829,17 +957,42 @@ describe('M3UTable', () => {
       expect(getByText('Initializing refresh...')).toBeInTheDocument();
     });
 
-    it('bypasses progress UI when progress equals 100', () => {
+    it('hides the raw completion message when timings are unavailable', () => {
       const playlist = makePlaylist({ id: 1, status: 'success' });
-      setupMocks({ playlists: [playlist], refreshProgress: { 1: { progress: 100 } } });
+      setupMocks({
+        playlists: [playlist],
+        refreshProgress: { 1: { progress: 100 } },
+      });
       render(<M3UTable />);
-      const { getByText } = render(
+      const result = getCol('last_message').cell({
+        cell: { getValue: () => 'Done' },
+        row: { original: playlist },
+      });
+      expect(result).toBeNull();
+    });
+
+    it('shows only the stored Live and VOD refresh durations on success', () => {
+      const playlist = makePlaylist({
+        id: 1,
+        status: 'success',
+        custom_properties: {
+          refresh_timings: { live_seconds: 55, vod_seconds: 90 },
+        },
+      });
+      setupMocks({ playlists: [playlist] });
+      render(<M3UTable />);
+      const { getByText, queryByText } = render(
         getCol('last_message').cell({
-          cell: { getValue: () => 'Done' },
+          cell: { getValue: () => 'VOD refresh completed in 90 seconds' },
           row: { original: playlist },
         })
       );
-      expect(getByText('Done')).toBeInTheDocument();
+
+      expect(getByText('Live 55s')).toBeInTheDocument();
+      expect(getByText('VOD 1m 30s')).toBeInTheDocument();
+      expect(
+        queryByText('VOD refresh completed in 90 seconds')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -920,9 +1073,9 @@ describe('M3UTable', () => {
     });
   });
 
-  // ── Column: Updated ────────────────────────────────────────────────────────
+  // ── Column: Last Refresh ───────────────────────────────────────────────────
 
-  describe('Updated column', () => {
+  describe('Last Refresh column', () => {
     it('renders "Never" when updated_at is absent', () => {
       setupMocks();
       render(<M3UTable />);
@@ -933,23 +1086,67 @@ describe('M3UTable', () => {
     });
 
     it('renders the formatted date string when updated_at is present', () => {
-      vi.mocked(DateTimeUtils.format).mockReturnValue('formatted:2024-01-01T12:00:00Z');
+      vi.mocked(DateTimeUtils.format).mockReturnValue(
+        'formatted:2024-01-01T12:00:00Z'
+      );
       setupMocks();
       render(<M3UTable />);
       const { getByText } = render(
-        getCol('updated_at').cell({ cell: { getValue: () => '2024-01-01T12:00:00Z' } })
+        getCol('updated_at').cell({
+          cell: { getValue: () => '2024-01-01T12:00:00Z' },
+        })
       );
-      expect(getByText('formatted:2024-01-01T12:00:00Z')).toBeInTheDocument();
+      expect(
+        getByText('Live formatted:2024-01-01T12:00:00Z')
+      ).toBeInTheDocument();
+    });
+
+    it('shows Live and VOD refresh dates on separate lines', () => {
+      vi.mocked(DateTimeUtils.format).mockImplementation(
+        (value) => `formatted:${value}`
+      );
+      setupMocks();
+      render(<M3UTable />);
+      const { getByText } = render(
+        getCol('updated_at').cell({
+          cell: { getValue: () => '2024-01-01T12:00:00Z' },
+          row: {
+            original: makePlaylist({
+              custom_properties: {
+                refresh_timings: {
+                  live_completed_at: '2024-01-02T12:00:00Z',
+                  vod_completed_at: '2024-01-03T12:00:00Z',
+                },
+              },
+            }),
+          },
+        })
+      );
+
+      expect(
+        getByText('Live formatted:2024-01-02T12:00:00Z')
+      ).toBeInTheDocument();
+      expect(
+        getByText('VOD formatted:2024-01-03T12:00:00Z')
+      ).toBeInTheDocument();
     });
   });
 
   // ── generateStatusString content types ────────────────────────────────────
 
   describe('generateStatusString via status message column', () => {
-    const renderProgressCell = (contentOverride, progressData = { progress: 50 }) => {
-      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue(contentOverride);
+    const renderProgressCell = (
+      contentOverride,
+      progressData = { progress: 50 }
+    ) => {
+      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue(
+        contentOverride
+      );
       const playlist = makePlaylist({ id: 1 });
-      setupMocks({ playlists: [playlist], refreshProgress: { 1: progressData } });
+      setupMocks({
+        playlists: [playlist],
+        refreshProgress: { 1: progressData },
+      });
       render(<M3UTable />);
       return getCol('last_message').cell({
         cell: { getValue: () => null },
@@ -959,12 +1156,15 @@ describe('M3UTable', () => {
 
     it('renders download progress with speed and time', () => {
       const { getByText } = render(
-        renderProgressCell({
-          type: 'downloading',
-          progress: 45,
-          speed: '1.2 MB/s',
-          timeRemaining: '2m',
-        }, { progress: 45 })
+        renderProgressCell(
+          {
+            type: 'downloading',
+            progress: 45,
+            speed: '1.2 MB/s',
+            timeRemaining: '2m',
+          },
+          { progress: 45 }
+        )
       );
       expect(getByText(/Downloading/)).toBeInTheDocument();
       expect(getByText('45%')).toBeInTheDocument();
@@ -973,26 +1173,55 @@ describe('M3UTable', () => {
 
     it('renders parsing progress', () => {
       const { getByText } = render(
-        renderProgressCell({
-          type: 'parsing',
-          progress: 60,
-          elapsedTime: '5s',
-          timeRemaining: '3s',
-          streamsProcessed: '300/500',
-        }, { progress: 60 })
+        renderProgressCell(
+          {
+            type: 'parsing',
+            progress: 60,
+            elapsedTime: '5s',
+            timeRemaining: '3s',
+            streamsProcessed: '300/500',
+          },
+          { progress: 60 }
+        )
       );
       expect(getByText(/Parsing/)).toBeInTheDocument();
       expect(getByText('60%')).toBeInTheDocument();
     });
 
+    it('renders VOD refresh phase and remaining time', () => {
+      const { getByText } = render(
+        renderProgressCell(
+          {
+            type: 'vod',
+            progress: 52,
+            phase: 'Processing series',
+            elapsedTime: '30s',
+            timeRemaining: '12s',
+            itemsProcessed: 1000,
+            itemsTotal: 2500,
+            providerItemsTotal: 156260,
+          },
+          { progress: 52 }
+        )
+      );
+      expect(getByText(/Processing series/)).toBeInTheDocument();
+      expect(getByText('52%')).toBeInTheDocument();
+      expect(getByText('12s')).toBeInTheDocument();
+      expect(getByText('1000 / 2500')).toBeInTheDocument();
+      expect(getByText('156260')).toBeInTheDocument();
+    });
+
     it('renders groups processing progress', () => {
       const { getByText } = render(
-        renderProgressCell({
-          type: 'groups',
-          progress: 30,
-          elapsedTime: '2s',
-          groupsProcessed: '10/50',
-        }, { progress: 30 })
+        renderProgressCell(
+          {
+            type: 'groups',
+            progress: 30,
+            elapsedTime: '2s',
+            groupsProcessed: '10/50',
+          },
+          { progress: 30 }
+        )
       );
       expect(getByText(/Processing groups/)).toBeInTheDocument();
     });
@@ -1012,9 +1241,15 @@ describe('M3UTable', () => {
     });
 
     it('returns "Idle" string when progress is 100', () => {
-      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({ type: 'downloading', progress: 100 });
+      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({
+        type: 'downloading',
+        progress: 100,
+      });
       const playlist = makePlaylist({ id: 1 });
-      setupMocks({ playlists: [playlist], refreshProgress: { 1: { progress: 100 } } });
+      setupMocks({
+        playlists: [playlist],
+        refreshProgress: { 1: { progress: 100 } },
+      });
       render(<M3UTable />);
       // progress === 100 → generateStatusString returns the string 'Idle'
       const result = getCol('last_message').cell({
@@ -1028,9 +1263,15 @@ describe('M3UTable', () => {
     });
 
     it('renders content.label for default type', () => {
-      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({ type: 'default', label: 'Queued' });
+      vi.mocked(M3UsTableUtils.getStatusContent).mockReturnValue({
+        type: 'default',
+        label: 'Queued',
+      });
       const playlist = makePlaylist({ id: 1 });
-      setupMocks({ playlists: [playlist], refreshProgress: { 1: { progress: 50 } } });
+      setupMocks({
+        playlists: [playlist],
+        refreshProgress: { 1: { progress: 50 } },
+      });
       render(<M3UTable />);
       const { getByText } = render(
         getCol('last_message').cell({
@@ -1043,24 +1284,30 @@ describe('M3UTable', () => {
 
     it('renders downloading timeRemaining when present', () => {
       const { getByText } = render(
-        renderProgressCell({
-          type: 'downloading',
-          progress: 45,
-          speed: '1.2 MB/s',
-          timeRemaining: '30s left',
-        }, { progress: 45 })
+        renderProgressCell(
+          {
+            type: 'downloading',
+            progress: 45,
+            speed: '1.2 MB/s',
+            timeRemaining: '30s left',
+          },
+          { progress: 45 }
+        )
       );
       expect(getByText('30s left')).toBeInTheDocument();
     });
 
     it('renders groups elapsedTime and groupsProcessed when present', () => {
       const { getByText } = render(
-        renderProgressCell({
-          type: 'groups',
-          progress: 30,
-          elapsedTime: '4s',
-          groupsProcessed: '20/80',
-        }, { progress: 30 })
+        renderProgressCell(
+          {
+            type: 'groups',
+            progress: 30,
+            elapsedTime: '4s',
+            groupsProcessed: '20/80',
+          },
+          { progress: 30 }
+        )
       );
       expect(getByText('4s')).toBeInTheDocument();
       expect(getByText('20/80')).toBeInTheDocument();
@@ -1068,13 +1315,16 @@ describe('M3UTable', () => {
 
     it('renders parsing elapsedTime, timeRemaining and streamsProcessed when present', () => {
       const { getByText } = render(
-        renderProgressCell({
-          type: 'parsing',
-          progress: 60,
-          elapsedTime: '10s',
-          timeRemaining: '5s',
-          streamsProcessed: '600/1000',
-        }, { progress: 60 })
+        renderProgressCell(
+          {
+            type: 'parsing',
+            progress: 60,
+            elapsedTime: '10s',
+            timeRemaining: '5s',
+            streamsProcessed: '600/1000',
+          },
+          { progress: 60 }
+        )
       );
       expect(getByText('10s')).toBeInTheDocument();
       expect(getByText('5s')).toBeInTheDocument();
@@ -1098,17 +1348,16 @@ describe('M3UTable', () => {
       expect(getByText('Parse failure')).toBeInTheDocument();
     });
 
-    it('renders success-styled text when status is "success"', () => {
+    it('hides generic success text when no refresh timings exist', () => {
       setupMocks();
       render(<M3UTable />);
       const playlist = makePlaylist({ id: 1, status: 'success' });
-      const { getByText } = render(
+      expect(
         getCol('last_message').cell({
           cell: { getValue: () => 'Loaded 500 streams' },
           row: { original: playlist },
         })
-      );
-      expect(getByText('Loaded 500 streams')).toBeInTheDocument();
+      ).toBeNull();
     });
   });
 
@@ -1133,7 +1382,9 @@ describe('M3UTable', () => {
       render(<M3UTable />);
       fireEvent.click(screen.getByText('Server Groups'));
       fireEvent.click(screen.getByTestId('server-groups-close'));
-      expect(screen.queryByTestId('server-groups-modal')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('server-groups-modal')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -1261,6 +1512,15 @@ describe('M3UTable', () => {
       expect(capturedTableOptions.manualSorting).toBe(true);
     });
 
+    it('restores and updates persisted column widths', () => {
+      const columnSizing = { name: 360 };
+      const { mockSetColumnSizing } = setupMocks({ columnSizing });
+      render(<M3UTable />);
+
+      expect(capturedTableOptions.columnSizing).toEqual(columnSizing);
+      expect(capturedTableOptions.setColumnSizing).toBe(mockSetColumnSizing);
+    });
+
     it('passes allRowIds as the playlist ids', () => {
       const playlists = [
         makePlaylist({ id: 10, name: 'A' }),
@@ -1273,18 +1533,22 @@ describe('M3UTable', () => {
       );
     });
 
-    it('actions column size is 75 in compact mode', () => {
+    it('actions column reserves space for separate refreshes in compact mode', () => {
       setupMocks({ tableSize: 'compact' });
       render(<M3UTable />);
-      const actionsCol = capturedTableOptions.columns.find((c) => c.id === 'actions');
-      expect(actionsCol.size).toBe(75);
+      const actionsCol = capturedTableOptions.columns.find(
+        (c) => c.id === 'actions'
+      );
+      expect(actionsCol.size).toBe(95);
     });
 
-    it('actions column size is 100 in default mode', () => {
+    it('actions column reserves space for separate refreshes in default mode', () => {
       setupMocks({ tableSize: 'default' });
       render(<M3UTable />);
-      const actionsCol = capturedTableOptions.columns.find((c) => c.id === 'actions');
-      expect(actionsCol.size).toBe(100);
+      const actionsCol = capturedTableOptions.columns.find(
+        (c) => c.id === 'actions'
+      );
+      expect(actionsCol.size).toBe(125);
     });
   });
 
@@ -1339,11 +1603,16 @@ describe('M3UTable', () => {
       });
       render(<M3UTable />);
       expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
-      expect(screen.getByText('No M3U accounts match this filter.')).toBeInTheDocument();
+      expect(
+        screen.getByText('No M3U accounts match this filter.')
+      ).toBeInTheDocument();
     });
 
     it('unchecking the only checked type clears the filter down to an empty array', () => {
-      const { mockSetTypeFilter } = setupMocks({ playlists, typeFilter: ['XC'] });
+      const { mockSetTypeFilter } = setupMocks({
+        playlists,
+        typeFilter: ['XC'],
+      });
       render(<M3UTable />);
       fireEvent.click(screen.getByText('XC'));
       expect(mockSetTypeFilter).toHaveBeenCalledWith([]);
@@ -1372,7 +1641,10 @@ describe('M3UTable', () => {
     });
 
     it('Reset menu item is disabled by default and restores both types when clicked', () => {
-      const { mockSetTypeFilter } = setupMocks({ playlists, typeFilter: ['XC'] });
+      const { mockSetTypeFilter } = setupMocks({
+        playlists,
+        typeFilter: ['XC'],
+      });
       render(<M3UTable />);
       const resetButton = screen.getByText('Reset').closest('button');
       expect(resetButton).not.toBeDisabled();

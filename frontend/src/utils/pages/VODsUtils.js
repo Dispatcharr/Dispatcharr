@@ -3,6 +3,16 @@ export const getCategoryOptions = (categories, filters) => {
     { value: '', label: 'All Categories' },
     ...Object.values(categories)
       .filter((cat) => {
+        if (
+          filters.m3u_account &&
+          !cat.m3u_accounts?.some(
+            (account) =>
+              String(account.m3u_account) === String(filters.m3u_account) &&
+              account.enabled
+          )
+        ) {
+          return false;
+        }
         if (filters.type === 'movies') return cat.category_type === 'movie';
         if (filters.type === 'series') return cat.category_type === 'series';
         return true; // 'all' shows all

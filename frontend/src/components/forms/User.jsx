@@ -24,6 +24,7 @@ import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import usePlaylistsStore from '../../store/playlists';
 import useOutputProfilesStore from '../../store/outputProfiles';
+import useVODStore from '../../store/useVODStore';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
 import { DVR_ACCESS } from '../../utils/dvrAccess';
 import useAuthStore from '../../store/auth';
@@ -45,6 +46,8 @@ const User = ({ user = null, isOpen, onClose }) => {
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
+  const vodProfiles = useVODStore((s) => s.accessPolicies);
+  const fetchVODProfiles = useVODStore((s) => s.fetchAccessPolicies);
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
@@ -57,6 +60,7 @@ const User = ({ user = null, isOpen, onClose }) => {
   const [generating, setGenerating] = useState(false);
   const [_generatedKey, setGeneratedKey] = useState(null);
   const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
+  const [vodPolicyId, setVODPolicyId] = useState('');
 
   const theme = useMantineTheme();
 
@@ -103,6 +107,7 @@ const User = ({ user = null, isOpen, onClose }) => {
     if (user?.id) {
       const values = userToFormValues(user);
       form.setValues(values);
+      setVODPolicyId(values.vod_policy_id || '');
       const unrestricted = values.allowed_m3u_profile_ids === null;
       setAllowedM3uProfilesUnrestricted(unrestricted);
       setSelectedAllowedM3uProfiles(
@@ -116,10 +121,18 @@ const User = ({ user = null, isOpen, onClose }) => {
       setUserAPIKey(user.api_key || null);
     } else {
       form.reset();
+      setVODPolicyId('');
       setSelectedAllowedM3uProfiles([]);
       setAllowedM3uProfilesUnrestricted(true);
     }
+    // The form object is intentionally excluded: this initialization must only
+    // run when the edited user changes, not when Mantine refreshes form state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
+
+  useEffect(() => {
+    if (isOpen) fetchVODProfiles();
+  }, [fetchVODProfiles, isOpen]);
 
   const onAllowedM3uProfilesChange = (values) => {
     // Any MultiSelect change (including clear to []) is an explicit allowlist.
@@ -140,6 +153,12 @@ const User = ({ user = null, isOpen, onClose }) => {
       xc_password: Math.random().toString(36).slice(2),
     });
   };
+
+  const effectiveVODProfile = vodPolicyId
+    ? (vodProfiles || []).find(
+        (profile) => String(profile.id) === String(vodPolicyId)
+      )
+    : (vodProfiles || []).find((profile) => profile.is_default);
 
   if (!isOpen) {
     return <></>;
@@ -218,7 +237,6 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const canGenerateKey =
     authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
-
   const onGenerateKey = async () => {
     if (!canGenerateKey) {
       return;
@@ -272,16 +290,18 @@ const User = ({ user = null, isOpen, onClose }) => {
   };
 
   return (
-    <Modal opened={isOpen} onClose={onClose} title="User" size="xl">
+    <Modal opened={isOpen} onClose={onClose} title="User" size={1120}>
       <form onSubmit={form.onSubmit(onSubmit)}>
-        <Tabs defaultValue="account">
-          <TabsList mb="md">
+        <Tabs defaultValue="account" style={{ minHeight: 500 }}>
+          <TabsList mb="md" style={{ flexWrap: 'nowrap', overflowX: 'auto' }}>
             <TabsTab value="account">Account</TabsTab>
             {showPermissions && (
               <TabsTab value="permissions">Permissions</TabsTab>
             )}
             <TabsTab value="epg">EPG Defaults</TabsTab>
             <TabsTab value="api">API &amp; XC</TabsTab>
+            {isAdmin && <TabsTab value="live-refresh">Live refresh</TabsTab>}
+            <TabsTab value="vod">VOD Profile</TabsTab>
           </TabsList>
 
           <TabsPanel value="account">
@@ -313,7 +333,6 @@ const User = ({ user = null, isOpen, onClose }) => {
               </Group>
               <PasswordInput
                 label="Password"
-                description="Used for UI authentication"
                 {...form.getInputProps('password')}
                 key={form.key('password')}
                 disabled={form.getValues().user_level == USER_LEVELS.STREAMER}
@@ -353,7 +372,6 @@ const User = ({ user = null, isOpen, onClose }) => {
                 <Stack gap="xs">
                   <MultiSelect
                     label="Allowed Provider Profiles"
-                    description="Limit which M3U account profiles this user may use when Dispatcharr hands them a provider URL (Redirect live/catchup via the channel's effective profile, and VOD when the system default is Redirect). Unrestricted allows all profiles. Clearing the list denies all provider profiles."
                     searchable
                     clearable
                     placeholder={
@@ -381,42 +399,43 @@ const User = ({ user = null, isOpen, onClose }) => {
                     </Button>
                   )}
                 </Stack>
-                <Switch
-                  label="Hide Mature Content"
-                  description="Hide channels marked as mature content (admin users not affected)"
-                  {...form.getInputProps('hide_adult_content', {
-                    type: 'checkbox',
-                  })}
-                  key={form.key('hide_adult_content')}
-                />
-                <Switch
-                  label="Enable Catchup"
-                  description="When disabled, this user cannot access timeshift or catchup endpoints, and their channels are not advertised as supporting catchup"
-                  {...form.getInputProps('catchup_enabled', {
-                    type: 'checkbox',
-                  })}
-                  key={form.key('catchup_enabled')}
-                />
-                <Switch
-                  label="Enable Movies"
-                  description="When disabled, this user cannot list or play movies via the API or Xtream Codes"
-                  {...form.getInputProps('vod_movies_enabled', {
-                    type: 'checkbox',
-                  })}
-                  key={form.key('vod_movies_enabled')}
-                />
-                <Switch
-                  label="Enable Series"
-                  description="When disabled, this user cannot list or play series/episodes via the API or Xtream Codes"
-                  {...form.getInputProps('vod_series_enabled', {
-                    type: 'checkbox',
-                  })}
-                  key={form.key('vod_series_enabled')}
-                />
+                <Group grow align="flex-start">
+                  <Stack gap="sm">
+                    <Switch
+                      label="Hide Mature Content"
+                      {...form.getInputProps('hide_adult_content', {
+                        type: 'checkbox',
+                      })}
+                      key={form.key('hide_adult_content')}
+                    />
+                    <Switch
+                      label="Enable Catchup"
+                      {...form.getInputProps('catchup_enabled', {
+                        type: 'checkbox',
+                      })}
+                      key={form.key('catchup_enabled')}
+                    />
+                  </Stack>
+                  <Stack gap="sm">
+                    <Switch
+                      label="Enable Movies"
+                      {...form.getInputProps('vod_movies_enabled', {
+                        type: 'checkbox',
+                      })}
+                      key={form.key('vod_movies_enabled')}
+                    />
+                    <Switch
+                      label="Enable Series"
+                      {...form.getInputProps('vod_series_enabled', {
+                        type: 'checkbox',
+                      })}
+                      key={form.key('vod_series_enabled')}
+                    />
+                  </Stack>
+                </Group>
                 {form.getValues().user_level != USER_LEVELS.STREAMER && (
                   <Select
                     label="DVR Access"
-                    description="None: no DVR page or playback. View: watch recordings for channels they can access (default). Manage: create, delete, and manage recordings and rules like an admin for DVR endpoints."
                     data={[
                       { value: DVR_ACCESS.NONE, label: 'None' },
                       { value: DVR_ACCESS.VIEW, label: 'View' },
@@ -432,15 +451,9 @@ const User = ({ user = null, isOpen, onClose }) => {
 
           <TabsPanel value="epg">
             <Stack gap="sm">
-              <Text size="sm" c="dimmed">
-                These defaults apply when no URL parameters are specified and
-                can be useful for XC clients that cannot pass custom query
-                parameters.
-              </Text>
               <Group grow align="flex-start">
                 <NumberInput
                   label="Days forward (0 = all)"
-                  description="How many future days of EPG data to include"
                   min={0}
                   max={365}
                   {...form.getInputProps('epg_days')}
@@ -448,7 +461,6 @@ const User = ({ user = null, isOpen, onClose }) => {
                 />
                 <NumberInput
                   label="Days back (0 = none)"
-                  description="How many past days of EPG data to include (max 30)"
                   min={0}
                   max={30}
                   {...form.getInputProps('epg_prev_days')}
@@ -462,11 +474,6 @@ const User = ({ user = null, isOpen, onClose }) => {
             <Stack gap="sm">
               <TextInput
                 label="XC Password"
-                description={
-                  isAdmin
-                    ? 'Clear to disable XC API'
-                    : 'XC password can only be changed by an administrator'
-                }
                 disabled={!isAdmin}
                 {...form.getInputProps('xc_password')}
                 key={form.key('xc_password')}
@@ -484,39 +491,36 @@ const User = ({ user = null, isOpen, onClose }) => {
                 }
               />
               {isAdmin && (
-                <Select
-                  label="Output Format Override"
-                  description="Override the system default output format for this user. Clear to use system default."
-                  clearable
-                  placeholder="System default"
-                  disabled={!isAdmin}
-                  data={[
-                    { value: 'mpegts', label: 'MPEG-TS' },
-                    { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
-                  ]}
-                  {...form.getInputProps('output_format')}
-                  key={form.key('output_format')}
-                />
-              )}
-              {isAdmin && (
-                <Select
-                  label="Output Profile Override"
-                  description="Pre-delivery transcode profile applied to streams for this user. Clear to use no transcoding."
-                  clearable
-                  searchable
-                  placeholder="No transcoding"
-                  disabled={!isAdmin}
-                  data={outputProfiles
-                    .filter((p) => p.is_active)
-                    .map((p) => ({ value: `${p.id}`, label: p.name }))}
-                  {...form.getInputProps('output_profile')}
-                  key={form.key('output_profile')}
-                />
+                <Group grow align="flex-start">
+                  <Select
+                    label="Output Format Override"
+                    clearable
+                    placeholder="System default"
+                    disabled={!isAdmin}
+                    data={[
+                      { value: 'mpegts', label: 'MPEG-TS' },
+                      { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                    ]}
+                    {...form.getInputProps('output_format')}
+                    key={form.key('output_format')}
+                  />
+                  <Select
+                    label="Output Profile Override"
+                    clearable
+                    searchable
+                    placeholder="No transcoding"
+                    disabled={!isAdmin}
+                    data={outputProfiles
+                      .filter((p) => p.is_active)
+                      .map((p) => ({ value: `${p.id}`, label: p.name }))}
+                    {...form.getInputProps('output_profile')}
+                    key={form.key('output_profile')}
+                  />
+                </Group>
               )}
               {isAdmin && (
                 <TagsInput
                   label="Allowed IPs"
-                  description="Further restrict this user by IP/CIDR within global Network Access. Leave empty to inherit global settings only."
                   placeholder="e.g. 192.168.1.1 or 192.168.1.0/24"
                   splitChars={[',', ' ']}
                   {...form.getInputProps('allowed_ips')}
@@ -577,14 +581,96 @@ const User = ({ user = null, isOpen, onClose }) => {
               )}
             </Stack>
           </TabsPanel>
+
+          {isAdmin && (
+            <TabsPanel value="live-refresh">
+              <Stack gap="sm">
+                <Group grow align="flex-start">
+                  <Stack gap="sm">
+                    <Switch
+                      label="Refresh Live TV providers after XC catalog requests"
+                      {...form.getInputProps('xc_live_refresh_on_request', {
+                        type: 'checkbox',
+                      })}
+                      key={form.key('xc_live_refresh_on_request')}
+                    />
+                    <NumberInput
+                      min={0}
+                      max={10080}
+                      allowDecimal={false}
+                      label="User request interval (minutes)"
+                      {...form.getInputProps(
+                        'xc_live_refresh_request_interval_minutes'
+                      )}
+                      key={form.key('xc_live_refresh_request_interval_minutes')}
+                    />
+                  </Stack>
+                  <Stack gap="sm">
+                    <Switch
+                      label="Wait for a fresh XC Live catalog"
+                      {...form.getInputProps(
+                        'xc_live_refresh_wait_for_completion',
+                        { type: 'checkbox' }
+                      )}
+                      key={form.key('xc_live_refresh_wait_for_completion')}
+                    />
+                    <NumberInput
+                      min={1}
+                      max={60}
+                      allowDecimal={false}
+                      label="Maximum wait for a fresh catalog (seconds)"
+                      {...form.getInputProps(
+                        'xc_live_refresh_wait_timeout_seconds'
+                      )}
+                      key={form.key('xc_live_refresh_wait_timeout_seconds')}
+                    />
+                  </Stack>
+                </Group>
+              </Stack>
+            </TabsPanel>
+          )}
+
+          <TabsPanel value="vod">
+            <Stack gap="sm">
+              <Select
+                label="VOD output profile"
+                placeholder="Use default profile"
+                clearable
+                searchable
+                data={(vodProfiles || [])
+                  .filter((profile) => profile.is_active)
+                  .map((profile) => ({
+                    value: String(profile.id),
+                    label: `${profile.name}${profile.is_default ? ' (default)' : ''}`,
+                  }))}
+                value={vodPolicyId || null}
+                onChange={(value) => {
+                  const next = value || '';
+                  setVODPolicyId(next);
+                  form.setFieldValue('vod_policy_id', next);
+                }}
+              />
+              <Text size="xs" c="dimmed">
+                {effectiveVODProfile
+                  ? `${Number(
+                      effectiveVODProfile.selection_counts?.movies
+                        ?.output_entries || 0
+                    ).toLocaleString()} movies · ${Number(
+                      effectiveVODProfile.selection_counts?.series
+                        ?.output_entries || 0
+                    ).toLocaleString()} series are currently prepared for this profile.`
+                  : 'No active default VOD profile is available.'}
+              </Text>
+            </Stack>
+          </TabsPanel>
         </Tabs>
 
         <Group justify="flex-end" mt="md">
           <Button
             type="submit"
-            variant="contained"
+            variant="filled"
             disabled={form.submitting}
-            size="small"
+            size="sm"
           >
             Save
           </Button>

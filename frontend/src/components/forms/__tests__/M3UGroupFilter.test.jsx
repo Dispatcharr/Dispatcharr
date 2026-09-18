@@ -12,8 +12,15 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 }));
 
 vi.mock('../../../utils/forms/M3uGroupFilterUtils.js', () => ({
-  saveAndRefreshPlaylist: vi.fn(),
+  savePlaylistGroupSettings: vi.fn(),
   buildGroupStates: vi.fn(),
+}));
+
+vi.mock('../../../api.js', () => ({
+  default: {
+    refreshLivePlaylist: vi.fn(),
+    refreshVODContent: vi.fn(),
+  },
 }));
 
 // ── Sub-component mocks ────────────────────────────────────────────────────────
@@ -70,48 +77,89 @@ vi.mock('../VODCategoryFilter', () => ({
   ),
 }));
 
-// ── Mantine core ───────────────────────────────────────────────────────────────
-vi.mock('@mantine/core', () => ({
-  Button: ({ children, onClick, loading, disabled, variant, color }) => (
-    <button
-      onClick={onClick}
-      disabled={disabled || loading}
-      data-loading={loading}
-      data-variant={variant}
-      data-color={color}
-    >
-      {children}
-    </button>
-  ),
-  Flex: ({ children }) => <div>{children}</div>,
-  LoadingOverlay: ({ visible }) =>
-    visible ? <div data-testid="loading-overlay" /> : null,
-  Modal: ({ children, opened, onClose, title }) =>
-    opened ? (
-      <div data-testid="modal">
-        <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>
-          ×
-        </button>
-        {children}
-      </div>
-    ) : null,
-  Stack: ({ children }) => <div>{children}</div>,
-  Tabs: ({ children, defaultValue, value }) => (
-    <div data-testid="tabs" data-value={value ?? defaultValue}>
-      {children}
-    </div>
-  ),
-  TabsList: ({ children }) => <div data-testid="tabs-list">{children}</div>,
-  TabsPanel: ({ children, value }) => (
-    <div data-testid={`tab-panel-${value}`}>{children}</div>
-  ),
-  TabsTab: ({ children, value, onClick }) => (
-    <button data-testid={`tab-${value}`} onClick={onClick}>
-      {children}
-    </button>
-  ),
+vi.mock('../M3UDeveloperCatalog', () => ({
+  default: () => <div data-testid="m3u-developer-catalog">Developer</div>,
 }));
+
+// ── Mantine core ───────────────────────────────────────────────────────────────
+vi.mock('@mantine/core', async () => {
+  const ReactModule = await import('react');
+  const TabsContext = ReactModule.createContext(null);
+  return {
+    Button: ({
+      children,
+      onClick,
+      loading,
+      disabled,
+      variant,
+      color,
+      'aria-label': ariaLabel,
+    }) => (
+      <button
+        aria-label={ariaLabel}
+        onClick={onClick}
+        disabled={disabled || loading}
+        data-loading={loading}
+        data-variant={variant}
+        data-color={color}
+      >
+        {children}
+      </button>
+    ),
+    Flex: ({ children }) => <div>{children}</div>,
+    Group: ({ children }) => <div>{children}</div>,
+    LoadingOverlay: ({ visible }) =>
+      visible ? <div data-testid="loading-overlay" /> : null,
+    Modal: ({ children, opened, onClose, title }) =>
+      opened ? (
+        <div data-testid="modal">
+          <div data-testid="modal-title">{title}</div>
+          <button data-testid="modal-close" onClick={onClose}>
+            ×
+          </button>
+          {children}
+        </div>
+      ) : null,
+    Stack: ({ children }) => <div>{children}</div>,
+    Switch: ({ label, checked, onChange }) => (
+      <label>
+        <input
+          type="checkbox"
+          aria-label={label}
+          checked={checked}
+          onChange={onChange}
+        />
+        {label}
+      </label>
+    ),
+    Tabs: ({ children, defaultValue, value, onChange }) => (
+      <TabsContext.Provider value={{ value: value ?? defaultValue, onChange }}>
+        <div data-testid="tabs" data-value={value ?? defaultValue}>
+          {children}
+        </div>
+      </TabsContext.Provider>
+    ),
+    TabsList: ({ children }) => <div data-testid="tabs-list">{children}</div>,
+    TabsPanel: ({ children, value }) => (
+      <div data-testid={`tab-panel-${value}`}>{children}</div>
+    ),
+    TabsTab: ({ children, value, onClick, disabled }) => {
+      const tabs = ReactModule.useContext(TabsContext);
+      return (
+        <button
+          data-testid={`tab-${value}`}
+          onClick={() => {
+            onClick?.();
+            tabs?.onChange?.(value);
+          }}
+          disabled={disabled}
+        >
+          {children}
+        </button>
+      );
+    },
+  };
+});
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Imports after mocks
@@ -120,6 +168,7 @@ import useChannelsStore from '../../../store/channels';
 import useVODStore from '../../../store/useVODStore';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import * as M3uGroupFilterUtils from '../../../utils/forms/M3uGroupFilterUtils.js';
+import API from '../../../api.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const makePlaylist = (overrides = {}) => ({
@@ -160,10 +209,12 @@ const setupStores = ({
 describe('M3UGroupFilter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(M3uGroupFilterUtils.saveAndRefreshPlaylist).mockResolvedValue(
+    vi.mocked(M3uGroupFilterUtils.savePlaylistGroupSettings).mockResolvedValue(
       undefined
     );
     vi.mocked(M3uGroupFilterUtils.buildGroupStates).mockReturnValue([]);
+    vi.mocked(API.refreshLivePlaylist).mockResolvedValue({ success: true });
+    vi.mocked(API.refreshVODContent).mockResolvedValue({ success: true });
   });
 
   // ── Guard conditions ───────────────────────────────────────────────────────
@@ -198,6 +249,13 @@ describe('M3UGroupFilter', () => {
       expect(screen.getByTestId('tab-live')).toBeInTheDocument();
       expect(screen.getByTestId('tab-vod-movie')).toBeInTheDocument();
       expect(screen.getByTestId('tab-vod-series')).toBeInTheDocument();
+      expect(screen.getByTestId('tab-raw-data')).toBeDisabled();
+      expect(
+        screen.queryByTestId('m3u-developer-catalog')
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByLabelText('Developer mode'));
+      expect(screen.getByTestId('tab-raw-data')).not.toBeDisabled();
+      expect(screen.getByTestId('m3u-developer-catalog')).toBeInTheDocument();
     });
 
     it('renders LiveGroupFilter panel', () => {
@@ -220,14 +278,24 @@ describe('M3UGroupFilter', () => {
     it('renders a Save button', () => {
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
-      expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /^save$/i })
+      ).toBeInTheDocument();
     });
 
-    it('renders a Cancel button', () => {
+    it('uses only the modal X for closing', () => {
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
       expect(
-        screen.getByRole('button', { name: /cancel/i })
+        screen.queryByRole('button', { name: /^close$/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders a Live TV refresh action in the Live tab', () => {
+      setupStores();
+      render(<M3UGroupFilter {...defaultProps()} />);
+      expect(
+        screen.getByRole('button', { name: /refresh live tv/i })
       ).toBeInTheDocument();
     });
   });
@@ -285,12 +353,16 @@ describe('M3UGroupFilter', () => {
       expect(onClose).toHaveBeenCalled();
     });
 
-    it('calls onClose when Cancel button is clicked', () => {
-      const onClose = vi.fn();
+    it('places the refresh action before Save', () => {
       setupStores();
-      render(<M3UGroupFilter {...defaultProps({ onClose })} />);
-      fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
-      expect(onClose).toHaveBeenCalled();
+      render(<M3UGroupFilter {...defaultProps()} />);
+      const refresh = screen.getByRole('button', {
+        name: /refresh live tv/i,
+      });
+      const save = screen.getByRole('button', { name: /^save$/i });
+      expect(
+        refresh.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
     });
   });
 
@@ -353,42 +425,45 @@ describe('M3UGroupFilter', () => {
   // ── Save ───────────────────────────────────────────────────────────────────
 
   describe('saving', () => {
-    it('calls saveAndRefreshPlaylist with playlist and current states on Save click', async () => {
+    it('saves current settings without starting a refresh', async () => {
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
-      await waitFor(() => screen.getByRole('button', { name: /save/i }));
-      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => screen.getByRole('button', { name: /^save$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
       await waitFor(() => {
-        expect(M3uGroupFilterUtils.saveAndRefreshPlaylist).toHaveBeenCalledWith(
+        expect(
+          M3uGroupFilterUtils.savePlaylistGroupSettings
+        ).toHaveBeenCalledWith(
           expect.objectContaining({ id: 1 }),
           expect.any(Array),
           expect.any(Array),
           expect.any(Array),
-          expect.objectContaining({
-            auto_enable_new_groups_live: true,
-            auto_enable_new_groups_vod: true,
-            auto_enable_new_groups_series: true,
-          })
+          {}
         );
       });
+      expect(API.refreshLivePlaylist).not.toHaveBeenCalled();
+      expect(API.refreshVODContent).not.toHaveBeenCalled();
     });
 
-    it('calls onClose after successful save', async () => {
+    it('keeps the group editor open after a successful save', async () => {
       const onClose = vi.fn();
       setupStores();
       render(<M3UGroupFilter {...defaultProps({ onClose })} />);
-      await waitFor(() => screen.getByRole('button', { name: /save/i }));
-      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => screen.getByRole('button', { name: /^save$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
       await waitFor(() => {
-        expect(onClose).toHaveBeenCalled();
+        expect(
+          M3uGroupFilterUtils.savePlaylistGroupSettings
+        ).toHaveBeenCalled();
       });
+      expect(onClose).not.toHaveBeenCalled();
     });
 
     it('shows success notification after saving', async () => {
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
-      await waitFor(() => screen.getByRole('button', { name: /save/i }));
-      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => screen.getByRole('button', { name: /^save$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -398,17 +473,53 @@ describe('M3UGroupFilter', () => {
       });
     });
 
-    it('does not call onClose when saveAndRefreshPlaylist throws', async () => {
-      vi.mocked(M3uGroupFilterUtils.saveAndRefreshPlaylist).mockRejectedValue(
-        new Error('save failed')
-      );
+    it('does not call onClose when saving throws', async () => {
+      vi.mocked(
+        M3uGroupFilterUtils.savePlaylistGroupSettings
+      ).mockRejectedValue(new Error('save failed'));
       const onClose = vi.fn();
       setupStores();
       render(<M3UGroupFilter {...defaultProps({ onClose })} />);
-      await waitFor(() => screen.getByRole('button', { name: /save/i }));
-      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => screen.getByRole('button', { name: /^save$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
       expect(onClose).not.toHaveBeenCalled();
     });
+  });
+
+  describe('refreshing', () => {
+    it('starts only a Live TV refresh from the Live tab', async () => {
+      setupStores();
+      render(<M3UGroupFilter {...defaultProps()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /refresh live tv/i }));
+
+      await waitFor(() => {
+        expect(API.refreshLivePlaylist).toHaveBeenCalledWith(1);
+      });
+      expect(API.refreshVODContent).not.toHaveBeenCalled();
+      expect(
+        M3uGroupFilterUtils.savePlaylistGroupSettings
+      ).not.toHaveBeenCalled();
+    });
+
+    it.each(['vod-movie', 'vod-series'])(
+      'starts only a VOD refresh from the %s tab',
+      async (tab) => {
+        setupStores();
+        render(<M3UGroupFilter {...defaultProps()} />);
+
+        fireEvent.click(screen.getByTestId(`tab-${tab}`));
+        fireEvent.click(screen.getByRole('button', { name: /refresh vod/i }));
+
+        await waitFor(() => {
+          expect(API.refreshVODContent).toHaveBeenCalledWith(1);
+        });
+        expect(API.refreshLivePlaylist).not.toHaveBeenCalled();
+        expect(
+          M3uGroupFilterUtils.savePlaylistGroupSettings
+        ).not.toHaveBeenCalled();
+      }
+    );
   });
 
   // ── Loading state ──────────────────────────────────────────────────────────
@@ -416,7 +527,9 @@ describe('M3UGroupFilter', () => {
   describe('loading state', () => {
     it('disables Save button while submitting', async () => {
       let resolveSave;
-      vi.mocked(M3uGroupFilterUtils.saveAndRefreshPlaylist).mockImplementation(
+      vi.mocked(
+        M3uGroupFilterUtils.savePlaylistGroupSettings
+      ).mockImplementation(
         () =>
           new Promise((res) => {
             resolveSave = res;
@@ -424,9 +537,9 @@ describe('M3UGroupFilter', () => {
       );
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
-      await waitFor(() => screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => screen.getByRole('button', { name: /^save$/i }));
 
-      const saveBtn = screen.getByRole('button', { name: /save/i });
+      const saveBtn = screen.getByRole('button', { name: /^save$/i });
       fireEvent.click(saveBtn);
 
       await waitFor(() => {

@@ -9,23 +9,31 @@ from core.models import CoreSettings
 
 
 class BootDbCleanupTests(SimpleTestCase):
+    @patch("dispatcharr.log_collector.apply_settings")
+    @patch("core.models.CoreSettings.objects.filter")
     @patch("django.db.close_old_connections")
     @patch("core.developer_notifications.sync_developer_notifications")
     def test_developer_notifications_sync_closes_connections(
-        self, _mock_sync, mock_close
+        self, mock_sync, mock_close, mock_filter, _mock_apply_settings
     ):
-        apps.get_app_config("core")._sync_developer_notifications()
+        mock_filter.return_value.values_list.return_value.first.return_value = {}
+        apps.get_app_config("core")._initialize_runtime_state()
+        mock_sync.assert_called_once()
         mock_close.assert_called_once()
 
+    @patch("dispatcharr.log_collector.apply_settings")
+    @patch("core.models.CoreSettings.objects.filter")
     @patch("django.db.close_old_connections")
     @patch(
         "core.developer_notifications.sync_developer_notifications",
         side_effect=RuntimeError("sync failed"),
     )
     def test_developer_notifications_sync_closes_on_error(
-        self, _mock_sync, mock_close
+        self, mock_sync, mock_close, mock_filter, _mock_apply_settings
     ):
-        apps.get_app_config("core")._sync_developer_notifications()
+        mock_filter.return_value.values_list.return_value.first.return_value = {}
+        apps.get_app_config("core")._initialize_runtime_state()
+        mock_sync.assert_called_once()
         mock_close.assert_called_once()
 
     @patch("django.db.close_old_connections")

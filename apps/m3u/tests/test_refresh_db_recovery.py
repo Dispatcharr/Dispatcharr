@@ -4,6 +4,7 @@ from django.test import SimpleTestCase
 
 from apps.m3u.tasks import (
     _db_query_with_retry,
+    _ensure_m3u_refresh_terminal_status,
     _get_active_m3u_account,
     _release_task_db_connection,
     refresh_single_m3u_account,
@@ -34,6 +35,26 @@ class DbQueryWithRetryTests(SimpleTestCase):
 
 
 class RefreshTaskDbStartupTests(SimpleTestCase):
+    @patch("apps.m3u.tasks.send_m3u_update")
+    @patch("apps.m3u.tasks.M3UAccount")
+    @patch("apps.m3u.tasks._release_task_db_connection")
+    def test_terminal_guard_accepts_vod_handoff(
+        self,
+        _mock_release_connection,
+        mock_account_model,
+        mock_send_update,
+    ):
+        queryset = mock_account_model.objects.filter.return_value
+        queryset.values.return_value.first.return_value = {
+            "status": mock_account_model.Status.PARSING,
+            "last_message": "VOD refresh: Fetching categories",
+        }
+
+        _ensure_m3u_refresh_terminal_status(140)
+
+        queryset.update.assert_not_called()
+        mock_send_update.assert_not_called()
+
     @patch("apps.m3u.tasks._ensure_m3u_refresh_terminal_status")
     @patch("apps.m3u.tasks._refresh_single_m3u_account_impl")
     @patch("apps.m3u.tasks.release_task_lock")

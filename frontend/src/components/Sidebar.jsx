@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
   ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Heart,
@@ -39,7 +40,7 @@ import NotificationCenter from './NotificationCenter';
 
 // ─── Small shared components ─────────────────────────────────────────────────
 
-const NAV_ICON_SIZE = 19;
+const NAV_ICON_SIZE = 20;
 const NAV_LABEL_SIZE = 'sm';
 
 const DonateButton = ({ tooltipPosition = 'top' }) => (
@@ -59,7 +60,7 @@ const DonateButton = ({ tooltipPosition = 'top' }) => (
 
 /** Horizontal rule between sidebar sections; key is supplied by the caller. */
 const NavDivider = () => (
-  <Box style={{ borderTop: '1px solid #2A2A2E', margin: '4px 4px 6px' }} />
+  <Box className="sidebar-nav-divider" />
 );
 
 /**
@@ -354,6 +355,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   return (
     <AppShellNavbar
+      className={`dispatcharr-sidebar${collapsed ? ' dispatcharr-sidebar-collapsed' : ''}`}
       width={{ base: collapsed ? miniDrawerWidth : drawerWidth }}
       p="xs"
       style={{
@@ -362,31 +364,44 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         minHeight: '100vh',
         display: 'flex',
         flexDirection: 'column',
+        overflow: 'visible',
       }}
     >
-      {/* Brand: click to toggle collapse */}
-      <Group
-        onClick={toggleDrawer}
-        style={{
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '16px 12px',
-          fontSize: 18,
-          fontWeight: 600,
-          color: '#FFFFFF',
-          justifyContent: collapsed ? 'center' : 'flex-start',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        <img width={30} src={logo} alt="Dispatcharr" />
-        {!collapsed && (
-          <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 150 }}>
-            Dispatcharr
-          </Text>
-        )}
-      </Group>
+      <Box className="sidebar-brand">
+        <Group
+          gap={12}
+          wrap="nowrap"
+          justify={collapsed ? 'center' : 'flex-start'}
+          className="sidebar-brand-content"
+        >
+          <img width={32} height={32} src={logo} alt="Dispatcharr" />
+          {!collapsed && (
+            <Text
+              fw={600}
+              size="lg"
+              c="white"
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+              }}
+            >
+              Dispatcharr
+            </Text>
+          )}
+        </Group>
+
+        <ActionIcon
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          onClick={toggleDrawer}
+          variant="default"
+          size={22}
+          className="sidebar-edge-toggle"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+        </ActionIcon>
+      </Box>
 
       <SlidingPanels
         isOpen={nav.isOpen}

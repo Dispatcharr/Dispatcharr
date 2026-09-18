@@ -16,10 +16,12 @@ export const formatDuration = (seconds) => {
 
 export const formatStreamLabel = (relation) => {
   const provider = relation.m3u_account.name;
+  const category = relation.category?.name || relation.category_name;
   const streamId = relation.stream_id;
   const quality = extractQuality(relation);
+  const source = category ? `${provider} — ${category}` : provider;
 
-  return `${provider}${quality ?? ''}${streamId ? ` (Stream ${streamId})` : ''}`;
+  return `${source}${quality ?? ''}${streamId ? ` (Stream ${streamId})` : ''}`;
 };
 
 const extractQuality = (relation) => {
@@ -132,13 +134,10 @@ export const getEpisodeStreamUrl = (episode, selectedProvider, env_mode) => {
   let streamUrl = `/proxy/vod/episode/${episode.uuid}`;
 
   const params = new URLSearchParams();
-  if (selectedProvider) {
-    if (selectedProvider.stream_id) {
-      params.set('stream_id', selectedProvider.stream_id);
-    } else {
-      params.set('m3u_account_id', selectedProvider.m3u_account.id);
-    }
-  }
+  const streamId = episode.stream_id || selectedProvider?.stream_id;
+  const accountId = selectedProvider?.m3u_account?.id;
+  if (streamId) params.set('stream_id', streamId);
+  if (accountId) params.set('m3u_account_id', accountId);
   const token = useAuthStore.getState().accessToken;
   if (token) params.set('token', token);
   if (params.toString())

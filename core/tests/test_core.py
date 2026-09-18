@@ -621,6 +621,48 @@ class CoreSettingsSerializerDvrTest(TestCase):
         self.assertEqual(obj.value.get("series_rules"), [])
 
 
+class CoreSettingsSerializerVodTest(TestCase):
+    def test_representation_redacts_tmdb_token(self):
+        from core.models import VOD_SETTINGS_KEY
+        from core.serializers import CoreSettingsSerializer
+
+        obj, _ = CoreSettings.objects.get_or_create(
+            key=VOD_SETTINGS_KEY,
+            defaults={
+                "name": "VOD Settings",
+                "value": {"tmdb_api_token": "secret", "tmdb_auto_enrich": True},
+            },
+        )
+
+        self.assertNotIn(
+            "tmdb_api_token",
+            CoreSettingsSerializer(obj).data["value"],
+        )
+
+    def test_redacted_generic_round_trip_preserves_tmdb_token(self):
+        from core.models import VOD_SETTINGS_KEY
+        from core.serializers import CoreSettingsSerializer
+
+        obj, _ = CoreSettings.objects.get_or_create(
+            key=VOD_SETTINGS_KEY,
+            defaults={
+                "name": "VOD Settings",
+                "value": {"tmdb_api_token": "secret", "tmdb_auto_enrich": True},
+            },
+        )
+        serializer = CoreSettingsSerializer(
+            obj,
+            data={"value": {"tmdb_auto_enrich": False}},
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        obj.refresh_from_db()
+
+        self.assertEqual(obj.value["tmdb_api_token"], "secret")
+        self.assertFalse(obj.value["tmdb_auto_enrich"])
+
+
 class EpgIgnoreListsTest(TestCase):
     """Verify EPG ignore list getters handle corrupted stored data."""
 

@@ -4,7 +4,7 @@ import EPGsTable from '../components/tables/EPGsTable';
 import { Box, Stack } from '@mantine/core';
 import ErrorBoundary from '../components/ErrorBoundary';
 
-const PageContent = () => {
+const PageContent = ({ section = 'all' }) => {
   const error = useUserAgentsStore((state) => state.error);
   if (error) throw new Error(error);
 
@@ -15,32 +15,38 @@ const PageContent = () => {
       style={{
         // Fill the viewport exactly; never scroll the page itself. Each table
         // scrolls internally within its own share of the height.
-        height: '100vh',
+        height: '100%',
         overflow: 'hidden',
         display: 'flex',
         flexDirection: 'column',
       }}
     >
-      {/* Takes whatever's left above the EPG table, so adding/filtering M3U
-          rows never resizes the EPG table below it. */}
-      <Box style={{ flex: '1 1 auto', minHeight: 0 }}>
-        <M3UsTable />
-      </Box>
+      {section !== 'epg' && (
+        <Box style={{ flex: '1 1 auto', minHeight: 0 }}>
+          <M3UsTable />
+        </Box>
+      )}
 
-      {/* Fixed to half the available height so it never jumps around. */}
-      <Box style={{ flex: '0 0 50%', minHeight: 0 }}>
-        <EPGsTable />
-      </Box>
+      {section !== 'm3u' && (
+        <Box
+          style={{
+            flex: section === 'all' ? '0 0 50%' : '1 1 auto',
+            minHeight: 0,
+          }}
+        >
+          <EPGsTable />
+        </Box>
+      )}
     </Stack>
   );
 };
 
-const M3UPage = () => {
+const ContentSources = ({ section = 'all' }) => {
   return (
     <ErrorBoundary inline>
-      <PageContent />
+      <PageContent section={section} />
     </ErrorBoundary>
   );
 };
 
-export default M3UPage;
+export default ContentSources;

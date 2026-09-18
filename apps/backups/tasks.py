@@ -8,6 +8,37 @@ from . import services
 logger = logging.getLogger(__name__)
 
 
+def _refresh_vod_runtime_state_after_restore() -> None:
+    """Discard runtime-only VOD state after restoring its database state."""
+    from django.core.cache import cache
+
+    from apps.vod.catalog_cache import (
+        GENERATION_KEY,
+        SELECTION_GENERATION_KEY,
+        bump_catalog_generation,
+        selection_catalog_generation,
+    )
+    from apps.vod.profile_selection import PROFILE_REBUILD_ENQUEUE_KEY
+    from apps.vod.tasks import VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY
+
+    try:
+        cache.delete_many(
+            [
+                GENERATION_KEY,
+                SELECTION_GENERATION_KEY,
+                PROFILE_REBUILD_ENQUEUE_KEY,
+                VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY,
+            ]
+        )
+    except Exception as exc:
+        logger.warning("Could not clear VOD runtime state after restore: %s", exc)
+
+    # Output responses need a new runtime generation, while prepared profile
+    # validity must be reloaded from the durable generation in the restored DB.
+    bump_catalog_generation(invalidate_selections=False)
+    selection_catalog_generation()
+
+
 def _cleanup_old_backups(retention_count: int) -> int:
     """Delete old backups, keeping only the most recent N. Returns count deleted."""
     if retention_count <= 0:
@@ -64,6 +95,7 @@ def restore_backup_task(self, filename: str):
         services.restore_backup(backup_file)
         logger.info(f"[RESTORE] Running migrations after restore...")
         call_command('migrate', '--noinput', verbosity=1)
+        _refresh_vod_runtime_state_after_restore()
         logger.info(f"[RESTORE] Task {self.request.id} completed successfully")
         return {
             "status": "completed",

@@ -24,6 +24,7 @@ unchanged for the happy case. Both branches (movie + episode) exercise:
 """
 
 from unittest.mock import MagicMock, patch
+from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
 
@@ -103,6 +104,26 @@ class TestStreamIdFallbackMovie(SimpleTestCase):
             any('[STREAMID-FALLBACK]' in m for m in logs.output),
             f"expected [STREAMID-FALLBACK] in warnings, got: {logs.output}",
         )
+
+    def test_invalid_uuid_resolves_via_stream_id(self):
+        recovered_movie = MagicMock(name='Movie', uuid='new-uuid', id=99)
+        recovered_movie.name = 'Recovered Movie'
+        fallback_rel = MagicMock(movie=recovered_movie, stream_id='S1')
+        fallback_rel.m3u_account.name = 'AcmeProvider'
+        _wire_m3u_relations(recovered_movie, [fallback_rel])
+
+        with patch('apps.proxy.vod_proxy.views.Movie') as MovieMock, \
+             patch('apps.proxy.vod_proxy.views.M3UMovieRelation') as RelMock:
+            MovieMock.objects.filter.side_effect = ValidationError('invalid UUID')
+            RelMock.objects.filter.return_value.select_related.return_value.order_by.return_value.first.return_value = fallback_rel
+            content, relation, _ = self._call(
+                content_type='movie',
+                content_id='undefined',
+                preferred_stream_id='S1',
+            )
+
+        self.assertIs(content, recovered_movie)
+        self.assertIs(relation, fallback_rel)
 
     def test_uuid_miss_prefers_requested_account_first(self):
         """When preferred_m3u_account_id is set AND a matching relation exists
@@ -219,6 +240,26 @@ class TestStreamIdFallbackEpisode(SimpleTestCase):
             any('[STREAMID-FALLBACK]' in m and 'Episode' in m for m in logs.output),
             f"expected episode-flavoured [STREAMID-FALLBACK] warning, got: {logs.output}",
         )
+
+    def test_invalid_uuid_resolves_via_stream_id(self):
+        recovered_episode = MagicMock(uuid='new-uuid', id=77)
+        recovered_episode.name = 'Recovered S01E01'
+        recovered_episode.series.name = 'Recovered Show'
+        fallback_rel = MagicMock(episode=recovered_episode, stream_id='S99')
+        fallback_rel.m3u_account.name = 'AcmeProvider'
+        _wire_m3u_relations(recovered_episode, [fallback_rel])
+
+        with patch('apps.proxy.vod_proxy.views.Episode') as EpisodeMock, \
+             patch('apps.proxy.vod_proxy.views.M3UEpisodeRelation') as RelMock:
+            EpisodeMock.objects.filter.side_effect = ValidationError('invalid UUID')
+            RelMock.objects.filter.return_value.select_related.return_value.order_by.return_value.first.return_value = fallback_rel
+            content, relation, _ = self._call(
+                content_id='undefined',
+                preferred_stream_id='S99',
+            )
+
+        self.assertIs(content, recovered_episode)
+        self.assertIs(relation, fallback_rel)
 
     def test_uuid_hit_no_fallback_attempted(self):
         live_episode = MagicMock(uuid='live-uuid', id=42)

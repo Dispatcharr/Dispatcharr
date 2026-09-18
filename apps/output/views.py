@@ -526,7 +526,11 @@ def xc_player_api(request, full=False):
         return JsonResponse(xc_get_live_categories(user), safe=False)
     elif action == "get_live_streams":
         return StreamingHttpResponse(
-            _xc_stream_live_streams(request, user, request.GET.get("category_id")),
+            _xc_stream_live_streams_then_refresh(
+                request,
+                user,
+                request.GET.get("category_id"),
+            ),
             content_type="application/json",
         )
     elif action == "get_short_epg":
@@ -534,11 +538,11 @@ def xc_player_api(request, full=False):
     elif action == "get_simple_data_table":
         return JsonResponse(xc_get_epg(request, user, short=False), safe=False)
     elif action == "get_vod_categories":
-        return JsonResponse(xc_get_vod_categories(user), safe=False)
+        return JsonResponse(xc_get_vod_categories(user, request=request), safe=False)
     elif action == "get_vod_streams":
         return JsonResponse(xc_get_vod_streams(request, user, request.GET.get("category_id")), safe=False)
     elif action == "get_series_categories":
-        return JsonResponse(xc_get_series_categories(user), safe=False)
+        return JsonResponse(xc_get_series_categories(user, request=request), safe=False)
     elif action == "get_series":
         return JsonResponse(xc_get_series(request, user, request.GET.get("category_id")), safe=False)
     elif action == "get_series_info":
@@ -851,6 +855,58 @@ def _xc_stream_live_streams(request, user, category_id=None):
     yield "]"
 
 
+def _xc_stream_live_streams_then_refresh(request, user, category_id=None):
+    """Optionally refresh XC Live providers before or after serving the catalog."""
+    refresh_already_requested = False
+    try:
+        from apps.m3u.client_refresh import (
+            get_xc_live_refresh_wait_timeout,
+            handle_xc_live_catalog_request,
+            wait_for_xc_live_refresh,
+        )
+
+        wait_timeout = get_xc_live_refresh_wait_timeout(user)
+        if wait_timeout is not None:
+            refresh_already_requested = True
+            refresh = handle_xc_live_catalog_request(
+                request,
+                user,
+                wait_for_completion=True,
+                wait_timeout_seconds=wait_timeout,
+            )
+            wait_for_xc_live_refresh(
+                refresh.get("completion_keys", []),
+                wait_timeout,
+            )
+            yield from _xc_stream_live_streams(request, user, category_id)
+            return
+    except Exception:
+        # Experimental same-response waiting must always fall back to the
+        # existing catalog instead of returning a broken XC response.
+        logger.warning(
+            "Could not wait for an XC Live catalog refresh",
+            exc_info=True,
+        )
+
+    completed = False
+    try:
+        yield from _xc_stream_live_streams(request, user, category_id)
+        completed = True
+    finally:
+        if completed and not refresh_already_requested:
+            try:
+                from apps.m3u.client_refresh import handle_xc_live_catalog_request
+
+                handle_xc_live_catalog_request(request, user)
+            except Exception:
+                # Observability and background freshness must never corrupt an
+                # otherwise valid XC response that has already been streamed.
+                logger.warning(
+                    "Could not process XC Live catalog refresh request",
+                    exc_info=True,
+                )
+
+
 def xc_get_epg(request, user, short=False):
     from apps.channels.managers import with_effective_values
 
@@ -1092,22 +1148,145 @@ def xc_get_epg(request, user, short=False):
 
 
 XC_MOVIE_VALUE_FIELDS = (
-    'id', 'movie_id', 'category_id', 'container_extension',
-    'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
+    'id', 'movie_id', 'category_id', 'container_extension', 'tmdb_override_id',
+    'movie__id', 'movie__name', 'movie__clean_title', 'movie__display_name',
+    'movie__rating', 'movie__created_at',
     'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
     'movie__year', 'movie__is_adult', 'movie__custom_properties', 'movie__logo_id',
+    'movie__tmdb_match_id', 'movie__tmdb_imdb_id',
+    'movie__tmdb_poster_url', 'movie__tmdb_backdrop_url',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
-    'rel_movie_image', 'rel_backdrop',
+    'rel_movie_image', 'rel_backdrop', 'rel_source_name',
 )
 
 XC_SERIES_VALUE_FIELDS = (
-    'id', 'series_id', 'category_id', 'updated_at',
-    'series__id', 'series__name', 'series__description', 'series__genre',
+    'id', 'series_id', 'category_id', 'updated_at', 'tmdb_override_id',
+    'series__id', 'series__name', 'series__clean_title', 'series__display_name',
+    'series__description', 'series__genre',
     'series__year', 'series__rating', 'series__custom_properties', 'series__logo_id',
     'series__tmdb_id', 'series__imdb_id',
+    'series__tmdb_match_id', 'series__tmdb_imdb_id',
+    'series__tmdb_poster_url', 'series__tmdb_backdrop_url',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
-    'rel_movie_image', 'rel_backdrop',
+    'rel_movie_image', 'rel_backdrop', 'rel_source_name',
 )
+
+XC_CURATED_VALUE_FIELDS = (
+    'rel_curated_title', 'rel_curated_overview',
+    'rel_curated_release_date', 'rel_curated_rating',
+    'rel_curated_runtime', 'rel_curated_genres',
+)
+
+
+def _xc_uses_curated_metadata(policy):
+    """Whether the profile projects canonical/TMDB descriptive metadata."""
+    if not policy:
+        return False
+    return getattr(policy, "metadata_source", "provider") == "canonical"
+
+
+def _xc_genre_names(value):
+    if not isinstance(value, list):
+        return ""
+    return ", ".join(
+        str(row.get("name") or "").strip()
+        for row in value
+        if isinstance(row, dict) and str(row.get("name") or "").strip()
+    )
+
+
+def _xc_curated_row_values(row, prefix):
+    """Return lightweight enriched values selected for an XC list row."""
+    release_date = str(row.get("rel_curated_release_date") or "").strip()
+    year = row.get(f"{prefix}__year") or ""
+    if release_date[:4].isdigit():
+        year = int(release_date[:4])
+    rating = row.get("rel_curated_rating")
+    if rating in (None, ""):
+        rating = row.get(f"{prefix}__rating")
+    elif isinstance(rating, str):
+        try:
+            rating = float(rating)
+        except ValueError:
+            pass
+    runtime = row.get("rel_curated_runtime")
+    if isinstance(runtime, str) and runtime.isdigit():
+        runtime = int(runtime)
+    return {
+        "title": str(row.get("rel_curated_title") or "").strip(),
+        "overview": str(row.get("rel_curated_overview") or "").strip()
+        or row.get(f"{prefix}__description")
+        or "",
+        "release_date": release_date,
+        "year": year,
+        "rating": rating,
+        "runtime": runtime,
+        "genre": _xc_genre_names(row.get("rel_curated_genres"))
+        or row.get(f"{prefix}__genre")
+        or "",
+    }
+
+
+def _xc_curated_object_values(content):
+    """Resolve the same enriched fields for a single movie/series detail."""
+    metadata = content.tmdb_metadata if isinstance(content.tmdb_metadata, dict) else {}
+    languages = CoreSettings.get_tmdb_languages()
+    localized = metadata.get("localized") or {}
+    localized_values = localized.get(languages[0]) or {}
+    if not localized_values:
+        localized_values = next(
+            (row for row in localized.values() if isinstance(row, dict)),
+            {},
+        )
+    release_date = str(metadata.get("release_date") or "").strip()
+    year = content.year or ""
+    if release_date[:4].isdigit():
+        year = int(release_date[:4])
+    rating = metadata.get("rating")
+    if rating in (None, ""):
+        rating = content.rating
+    provider_properties = content.custom_properties or {}
+    return {
+        "title": str(localized_values.get("title") or content.display_name or "").strip(),
+        "overview": str(
+            localized_values.get("overview")
+            or metadata.get("overview")
+            or content.description
+            or ""
+        ).strip(),
+        "release_date": release_date,
+        "year": year,
+        "rating": rating,
+        "runtime": metadata.get("runtime_minutes"),
+        "genre": _xc_genre_names(metadata.get("genres")) or content.genre or "",
+        "director": (
+            metadata.get("director")
+            or provider_properties.get("director")
+            or ""
+        ),
+        "actors": (
+            metadata.get("actors")
+            or provider_properties.get("actors")
+            or provider_properties.get("cast")
+            or ""
+        ),
+        "crew": metadata.get("crew") or provider_properties.get("crew") or "",
+        "country": (
+            metadata.get("country")
+            or provider_properties.get("country")
+            or ""
+        ),
+        "age_rating": (
+            metadata.get("age_rating")
+            or provider_properties.get("age")
+            or ""
+        ),
+        "youtube_trailer": (
+            metadata.get("youtube_trailer")
+            or provider_properties.get("youtube_trailer")
+            or ""
+        ),
+    }
 
 
 # Same key precedence get_relation_artwork uses for a single cover/still.
@@ -1124,12 +1303,20 @@ def _xc_annotate_relation_artwork(qs):
     empty backdrop arrays are treated as missing, matching the Python helper,
     since raw basic_data is stored uncleaned and often carries empty image keys.
     """
-    from django.db.models import CharField, Value
+    from django.db.models import CharField, F, Value
     from django.db.models.fields.json import JSONField, KeyTextTransform, KeyTransform
     from django.db.models.functions import Coalesce, NullIf, Trim
 
     basic = KeyTransform('basic_data', 'custom_properties')
     detailed = KeyTransform('detailed_info', 'custom_properties')
+    movie_data = KeyTransform('movie_data', 'custom_properties')
+    content_field = (
+        "movie" if qs.model.__name__ == "M3UMovieRelation" else "series"
+    )
+    tmdb_metadata = F(f"{content_field}__tmdb_metadata")
+    localized = KeyTransform("localized", tmdb_metadata)
+    primary_language = CoreSettings.get_tmdb_languages()[0]
+    primary_values = KeyTransform(primary_language, localized)
 
     def image_candidates(container):
         return [
@@ -1159,10 +1346,44 @@ def _xc_annotate_relation_artwork(qs):
             *backdrop_candidates(detailed),
             *backdrop_candidates(basic),
         ),
+        # Extract only the source title instead of selecting the often-large
+        # relation JSON payload for every XC list row.
+        rel_source_name=Coalesce(
+            NullIf(Trim(KeyTextTransform('name', basic)), Value('')),
+            NullIf(Trim(KeyTextTransform('name', movie_data)), Value('')),
+            NullIf(Trim(KeyTextTransform('name', detailed)), Value('')),
+            NullIf(Trim(KeyTextTransform('original_name', detailed)), Value('')),
+            NullIf(Trim(KeyTextTransform('o_name', detailed)), Value('')),
+            NullIf(Trim(KeyTextTransform('original_name', basic)), Value('')),
+            NullIf(Trim(KeyTextTransform('o_name', basic)), Value('')),
+            Value(''),
+            output_field=CharField(),
+        ),
+        rel_curated_title=Coalesce(
+            NullIf(Trim(KeyTextTransform('title', primary_values)), Value('')),
+            Value(''),
+            output_field=CharField(),
+        ),
+        rel_curated_overview=Coalesce(
+            NullIf(Trim(KeyTextTransform('overview', primary_values)), Value('')),
+            NullIf(Trim(KeyTextTransform('overview', tmdb_metadata)), Value('')),
+            Value(''),
+            output_field=CharField(),
+        ),
+        rel_curated_release_date=Coalesce(
+            NullIf(Trim(KeyTextTransform('release_date', tmdb_metadata)), Value('')),
+            Value(''),
+            output_field=CharField(),
+        ),
+        rel_curated_rating=KeyTextTransform('rating', tmdb_metadata),
+        rel_curated_runtime=KeyTextTransform('runtime_minutes', tmdb_metadata),
+        rel_curated_genres=KeyTransform('genres', tmdb_metadata),
     )
 
 
-def _xc_relation_artwork_from_row(row, object_custom_properties):
+def _xc_relation_artwork_from_row(
+    row, object_custom_properties, *, prefix, prefer_tmdb
+):
     """Build prefer_relation_artwork input from lean list-row extracts."""
     return prefer_relation_artwork(
         {
@@ -1170,6 +1391,9 @@ def _xc_relation_artwork_from_row(row, object_custom_properties):
             'backdrop_path': row.get('rel_backdrop') or [],
         },
         object_custom_properties,
+        tmdb_poster_url=row.get(f'{prefix}__tmdb_poster_url') or '',
+        tmdb_backdrop_url=row.get(f'{prefix}__tmdb_backdrop_url') or '',
+        prefer_tmdb=prefer_tmdb,
     )
 
 
@@ -1211,38 +1435,95 @@ def _xc_fetch_priority_distinct_relations(
     distinct_field,
     value_fields,
     order_by_name_field,
+    policy=None,
+    canonical_field=None,
+    prepared_filters=None,
 ):
     """
-    Return one row dict per distinct content ID (highest account priority wins).
+    Return one row dict per selected source key.
 
     On PostgreSQL, dedupe on narrow relation rows first, then fetch display
     columns via values() (no ORM model instantiation). That avoids sorting
     wide joined rows during DISTINCT ON and reduces parallel worker /dev/shm
-    pressure in Docker.
+    pressure in Docker. With a VOD user policy, the streaming selector chooses
+    by language, subtitles, and resolution before the wide rows are fetched.
     """
     from django.db import connection, transaction
 
     narrow_qs = manager.filter(**rel_filters)
+    distinct_fields = (
+        (distinct_field,)
+        if isinstance(distinct_field, str)
+        else tuple(distinct_field)
+    )
 
     def _fetch_by_ids(ids):
-        return list(
-            _xc_annotate_relation_artwork(manager.filter(pk__in=ids))
-            .values(*value_fields)
-            .order_by(Lower(order_by_name_field))
+        # Avoid database parameter limits and oversized SQL statements on very
+        # large libraries. Sorting is done once after all narrow chunks arrive.
+        rows = []
+        chunk_size = 2000
+        for offset in range(0, len(ids), chunk_size):
+            chunk = ids[offset:offset + chunk_size]
+            rows.extend(
+                _xc_annotate_relation_artwork(manager.filter(pk__in=chunk))
+                .values(*value_fields)
+            )
+        rows.sort(key=lambda row: (row[order_by_name_field] or '').lower())
+        return rows
+
+    if policy is not None:
+        from apps.vod.policies import (
+            allowed_category_query,
+            select_relation_ids_for_policy,
         )
+        from apps.vod.profile_selection import prepared_relation_rows
+
+        narrow_qs = narrow_qs.filter(allowed_category_query(policy))
+
+        prepared_rows = prepared_relation_rows(
+            policy,
+            manager.model,
+            rel_filters,
+            selection_filters=prepared_filters,
+        )
+        if prepared_rows is not None:
+            rows = _fetch_by_ids(list(prepared_rows))
+            for row in rows:
+                snapshot = prepared_rows.get(row["id"], {})
+                row.update(
+                    profile_edition_key=snapshot.get("edition_key", ""),
+                    profile_edition_name=snapshot.get("edition_name", ""),
+                    profile_edition_suffix=snapshot.get("edition_suffix", ""),
+                    profile_output_name=snapshot.get("output_name", ""),
+                )
+            return rows
+
+        candidate_iterator = (
+            narrow_qs.select_related(
+                "m3u_account",
+            )
+            .order_by("pk")
+            .iterator(chunk_size=2000)
+        )
+        selected_ids = select_relation_ids_for_policy(
+            candidate_iterator,
+            policy,
+            canonical_field=canonical_field,
+        )
+        return _fetch_by_ids(selected_ids)
 
     if connection.vendor == 'postgresql':
         winning_ids_qs = (
             narrow_qs
-            .order_by(distinct_field, '-m3u_account__priority', 'id')
-            .distinct(distinct_field)
+            .order_by(
+                *distinct_fields,
+                '-m3u_account__priority',
+                'id',
+            )
+            .distinct(*distinct_fields)
             .values('pk')
         )
         with transaction.atomic():
-            # Optional: disable parallel gather for this DISTINCT ON query if Docker
-            # /dev/shm pressure causes worker OOM on very large VOD libraries.
-            #with connection.cursor() as cursor:
-            #    cursor.execute("SET LOCAL max_parallel_workers_per_gather = 0")
             winning_ids = list(winning_ids_qs.values_list('pk', flat=True))
             if not winning_ids:
                 return []
@@ -1252,7 +1533,7 @@ def _xc_fetch_priority_distinct_relations(
     for row in _xc_annotate_relation_artwork(narrow_qs).values(*value_fields).order_by(
         '-m3u_account__priority', 'id'
     ):
-        key = row[distinct_field]
+        key = tuple(row[field] for field in distinct_fields)
         if key not in seen:
             seen[key] = row
     rows = list(seen.values())
@@ -1260,135 +1541,51 @@ def _xc_fetch_priority_distinct_relations(
     return rows
 
 
-def _xc_movie_language_relations(*, rel_filters, value_fields, order_by_name_field):
-    """Language-aware movie fetch: dedup key is (movie_id, resolved language).
+def _xc_policy_for_user(user):
+    from apps.vod.policies import policy_for_user
 
-    Nominates the anchor relation (min id) per group as the ID-bearing
-    row. The anchor is purely an identifier: playback (`_select_vod_stream`)
-    re-ranks the whole language group by quality independently of it, so
-    nominating a stable relation costs nothing here.
-
-    Pass 1 (this function's narrow query) transfers a handful of scalar
-    columns per relation; pass 2 (the hydration fetch) is the same wide
-    fetch the non-language path uses, restricted to the nominated ids.
-    """
-    from django.db.models.fields.json import KeyTextTransform
-    from apps.vod.models import M3UMovieRelation
-    from apps.vod.language import get_category_metadata, resolve_language
-
-    cat_meta = get_category_metadata()
-
-    narrow_rows = (
-        M3UMovieRelation.objects.filter(**rel_filters)
-        .annotate(rel_lang=KeyTextTransform('language', 'custom_properties'))
-        .values('id', 'movie_id', 'category_id', 'm3u_account_id', 'rel_lang')
-        .order_by('movie_id', 'id')
-    )
-
-    seen_groups = set()
-    anchor_ids = []
-    anchor_language = {}
-    for row in narrow_rows:
-        language = resolve_language(
-            row['rel_lang'], cat_meta.get((row['m3u_account_id'], row['category_id']))
-        )
-        key = (row['movie_id'], language)
-        if key in seen_groups:
-            continue
-        # Ascending (movie_id, id) order means the first row seen for a group
-        # is already the minimum id in that group.
-        seen_groups.add(key)
-        anchor_ids.append(row['id'])
-        anchor_language[row['id']] = language
-
-    if not anchor_ids:
-        return []
-
-    rows = list(
-        _xc_annotate_relation_artwork(M3UMovieRelation.objects.filter(pk__in=anchor_ids))
-        .values(*value_fields)
-        .order_by(Lower(order_by_name_field))
-    )
-    for row in rows:
-        row['_resolved_language'] = anchor_language.get(row['id'])
-    return rows
+    if not hasattr(user, "_vod_access_policy"):
+        user._vod_access_policy = policy_for_user(user)
+    return user._vod_access_policy
 
 
-def _xc_series_language_relations(*, rel_filters, value_fields, order_by_name_field):
-    """Language-aware series fetch: dedup key is (series_id, resolved language).
-
-    Nominates the winner relation (best quality, then priority, then id)
-    per group. This keeps the pre-existing winner-ID behaviour for series;
-    only the dedup key changes.
-
-    `xc_get_series_info` additionally re-derives this same series_relation's
-    resolved language and re-ranks each episode's own candidate relations
-    against it (quality, then priority). Picking a provider for the series
-    card here doesn't pin the episode list too; `M3UEpisodeRelation` rows
-    are looked up per-episode, independently.
-    """
-    from django.db.models.fields.json import KeyTextTransform
-    from apps.vod.models import M3USeriesRelation
-    from apps.vod.language import (
-        get_category_metadata, resolve_language, resolve_quality, quality_rank,
-    )
-
-    cat_meta = get_category_metadata()
-
-    narrow_rows = (
-        M3USeriesRelation.objects.filter(**rel_filters)
-        .annotate(rel_lang=KeyTextTransform('language', 'custom_properties'))
-        .values(
-            'id', 'series_id', 'series__name', 'category_id',
-            'm3u_account_id', 'm3u_account__priority', 'rel_lang',
-        )
-    )
-
-    best_rank = {}
-    winner_id = {}
-    winner_language = {}
-    for row in narrow_rows:
-        meta = cat_meta.get((row['m3u_account_id'], row['category_id']))
-        language = resolve_language(row['rel_lang'], meta)
-        quality = resolve_quality(row['series__name'], meta)
-        # Lower sorts better: best quality first, then higher priority, then
-        # lowest id as a stable final tiebreak (matches the non-language path).
-        rank = (quality_rank(quality), -row['m3u_account__priority'], row['id'])
-        key = (row['series_id'], language)
-        if key not in best_rank or rank < best_rank[key]:
-            best_rank[key] = rank
-            winner_id[key] = row['id']
-            winner_language[row['id']] = language
-
-    if not winner_id:
-        return []
-
-    rows = list(
-        _xc_annotate_relation_artwork(
-            M3USeriesRelation.objects.filter(pk__in=winner_id.values())
-        )
-        .values(*value_fields)
-        .order_by(Lower(order_by_name_field))
-    )
-    for row in rows:
-        row['_resolved_language'] = winner_language.get(row['id'])
-    return rows
-
-
-def xc_get_vod_categories(user):
+def xc_get_vod_categories(user, request=None):
     """Get VOD categories for XtreamCodes API"""
     if not is_vod_movies_enabled(user=user):
         return []
 
     from apps.vod.models import VODCategory, M3UMovieRelation
 
+    from apps.vod.catalog_cache import (
+        catalog_cache_key, safe_cache_get, safe_cache_set,
+    )
+
+    policy = _xc_policy_for_user(user)
+    cache_key = catalog_cache_key(request, user, "movie-categories")
+    cached = safe_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     response = []
 
-    # Users with VOD access get it from all active M3U accounts
+    # Before the first post-migration provider refresh, an upgraded catalog can
+    # contain concrete movie relations but no category-inventory rows yet. In
+    # that short compatibility window, keep the existing categories visible.
+    # As soon as inventory exists, it becomes the hard enabled-source boundary.
+    from apps.vod.policies import policy_category_map
+
+    allowed_categories = policy_category_map(policy)
     categories = VODCategory.objects.filter(
         category_type='movie',
-        m3umovierelation__m3u_account__is_active=True
-    ).distinct().order_by(Lower("name"))
+        m3umovierelation__m3u_account__is_active=True,
+    )
+    if allowed_categories:
+        categories = categories.filter(
+            m3u_relations__enabled=True,
+            m3u_relations__m3u_account__is_active=True,
+            pk__in={category_id for _account_id, category_id in allowed_categories},
+        )
+    categories = categories.distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -1397,6 +1594,7 @@ def xc_get_vod_categories(user):
             "parent_id": 0,
         })
 
+    safe_cache_set(cache_key, response, timeout=3600)
     return response
 
 
@@ -1406,36 +1604,54 @@ def xc_get_vod_streams(request, user, category_id=None):
         return []
 
     from apps.vod.models import M3UMovieRelation
-    from apps.vod.language import vod_language_enabled, apply_language_suffix
+    from apps.vod.utils import canonical_output_name
+
+    from apps.vod.catalog_cache import (
+        catalog_cache_key, safe_cache_get, safe_cache_set,
+    )
+
+    policy = _xc_policy_for_user(user)
+    use_curated_metadata = _xc_uses_curated_metadata(policy)
+    cache_key = catalog_cache_key(request, user, "movies", category_id)
+    cached = safe_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     rel_filters = {"m3u_account__is_active": True}
-    if category_id:
+    compact_policy = bool(policy and policy.export_mode == "compact")
+    if category_id and not compact_policy:
         rel_filters["category_id"] = category_id
     # Non-admins with Hide Mature Content skip adult VODs.
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
         rel_filters["movie__is_adult"] = False
 
-    language_enabled = vod_language_enabled()
-    if language_enabled:
-        # Namespace switches uniformly to relation IDs the moment any
-        # category is language-assigned.
-        relations = _xc_movie_language_relations(
-            rel_filters=rel_filters,
-            value_fields=XC_MOVIE_VALUE_FIELDS,
-            order_by_name_field='movie__name',
-        )
-    else:
-        relations = _xc_fetch_priority_distinct_relations(
-            manager=M3UMovieRelation.objects,
-            rel_filters=rel_filters,
-            distinct_field='movie_id',
-            value_fields=XC_MOVIE_VALUE_FIELDS,
-            order_by_name_field='movie__name',
-        )
+    relations = _xc_fetch_priority_distinct_relations(
+        manager=M3UMovieRelation.objects,
+        rel_filters=rel_filters,
+        distinct_field=('movie_id', 'category_id'),
+        value_fields=(
+            XC_MOVIE_VALUE_FIELDS + XC_CURATED_VALUE_FIELDS
+            if use_curated_metadata
+            else XC_MOVIE_VALUE_FIELDS
+        ),
+        order_by_name_field='movie__name',
+        policy=policy,
+        canonical_field="movie_id",
+        prepared_filters={"category_id": category_id}
+        if category_id and compact_policy
+        else None,
+    )
+    if category_id and compact_policy:
+        relations = [
+            row
+            for row in relations
+            if str(row["category_id"] or "0") == str(category_id)
+        ]
 
     _logo_url_parts = _xc_vodlogo_url_parts(request)
     # One reverse for the fallback-icon proxy rewrites below.
     _movie_image_parts = vod_image_url_parts(request, "movie")
+    _prefer_tmdb_artwork = CoreSettings.get_tmdb_prefer_artwork()
 
     streams = []
     append = streams.append
@@ -1444,19 +1660,34 @@ def xc_get_vod_streams(request, user, category_id=None):
         category_id = row['category_id']
         category_id_str = str(category_id) if category_id else "0"
         category_id_list = [category_id] if category_id else []
-        rating = row['movie__rating']
-        artwork = _xc_relation_artwork_from_row(row, custom_props)
-        name = row['movie__name']
-        stream_id = row['movie__id']
-        if language_enabled:
-            name = apply_language_suffix(name, row.get('_resolved_language'))
-            stream_id = row['id']
+        curated = (
+            _xc_curated_row_values(row, "movie")
+            if use_curated_metadata
+            else None
+        )
+        rating = curated["rating"] if curated else row['movie__rating']
+        artwork = _xc_relation_artwork_from_row(
+            row,
+            custom_props,
+            prefix='movie',
+            prefer_tmdb=_prefer_tmdb_artwork,
+        )
 
         append({
             "num": num,
-            "name": name,
+            "name": row.get("profile_output_name") or (
+                canonical_output_name(
+                    row['movie__name'],
+                    display_name=(
+                        row['movie__display_name'] or row['movie__clean_title']
+                    ),
+                    year=row['movie__year'],
+                )
+                if compact_policy
+                else row['rel_source_name'] or row['movie__name']
+            ),
             "stream_type": "movie",
-            "stream_id": stream_id,
+            "stream_id": row['id'],
             "stream_icon": _xc_cover_or_logo(
                 request,
                 'movie',
@@ -1470,39 +1701,70 @@ def xc_get_vod_streams(request, user, category_id=None):
             "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
             "added": str(int(row['movie__created_at'].timestamp())),
             "is_adult": int(bool(row['movie__is_adult'])),
-            "tmdb_id": row['movie__tmdb_id'] or "",
-            "imdb_id": row['movie__imdb_id'] or "",
+            "tmdb_id": (
+                row['tmdb_override_id']
+                or row['movie__tmdb_match_id']
+                or row['movie__tmdb_id']
+                or ""
+            ),
+            "imdb_id": row['movie__tmdb_imdb_id'] or row['movie__imdb_id'] or "",
             "trailer": custom_props.get('youtube_trailer') or "",
-            "plot": row['movie__description'] or "",
-            "genre": row['movie__genre'] or "",
-            "year": row['movie__year'] or "",
+            "plot": curated["overview"] if curated else row['movie__description'] or "",
+            "genre": curated["genre"] if curated else row['movie__genre'] or "",
+            "year": curated["year"] if curated else row['movie__year'] or "",
             "director": custom_props.get('director', ''),
             "cast": custom_props.get('actors', ''),
-            "release_date": custom_props.get('release_date', ''),
+            "release_date": (
+                curated["release_date"]
+                if curated and curated["release_date"]
+                else custom_props.get('release_date', '')
+            ),
             "category_id": category_id_str,
             "category_ids": category_id_list,
             "container_extension": row['container_extension'] or "mp4",
             "custom_sid": None,
             "direct_source": "",
+            "edition": row.get("profile_edition_name", ""),
+            "edition_suffix": row.get("profile_edition_suffix", ""),
         })
 
+    safe_cache_set(cache_key, streams, timeout=3600)
     return streams
 
 
-def xc_get_series_categories(user):
+def xc_get_series_categories(user, request=None):
     """Get series categories for XtreamCodes API"""
     if not is_vod_series_enabled(user=user):
         return []
 
     from apps.vod.models import VODCategory, M3USeriesRelation
 
+    from apps.vod.catalog_cache import (
+        catalog_cache_key, safe_cache_get, safe_cache_set,
+    )
+
+    policy = _xc_policy_for_user(user)
+    cache_key = catalog_cache_key(request, user, "series-categories")
+    cached = safe_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     response = []
 
-    # Users with VOD access get series from all active M3U accounts
+    from apps.vod.policies import policy_category_map
+
+    allowed_categories = policy_category_map(policy)
     categories = VODCategory.objects.filter(
         category_type='series',
-        m3useriesrelation__m3u_account__is_active=True
-    ).distinct().order_by(Lower("name"))
+        m3useriesrelation__m3u_account__is_active=True,
+    )
+    if allowed_categories:
+        categories = categories.filter(
+            m3u_relations__enabled=True,
+            m3u_relations__m3u_account__is_active=True,
+            pk__in={category_id for _account_id, category_id in allowed_categories},
+        )
+    categories = categories.distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -1511,6 +1773,7 @@ def xc_get_series_categories(user):
             "parent_id": 0,
         })
 
+    safe_cache_set(cache_key, response, timeout=3600)
     return response
 
 
@@ -1520,26 +1783,46 @@ def xc_get_series(request, user, category_id=None):
         return []
 
     from apps.vod.models import M3USeriesRelation
-    from apps.vod.language import vod_language_enabled, apply_language_suffix
+    from apps.vod.utils import canonical_output_name
+
+    from apps.vod.catalog_cache import (
+        catalog_cache_key, safe_cache_get, safe_cache_set,
+    )
+
+    policy = _xc_policy_for_user(user)
+    use_curated_metadata = _xc_uses_curated_metadata(policy)
+    cache_key = catalog_cache_key(request, user, "series", category_id)
+    cached = safe_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     rel_filters = {"m3u_account__is_active": True}
-    if category_id:
+    compact_policy = bool(policy and policy.export_mode == "compact")
+    if category_id and not compact_policy:
         rel_filters["category_id"] = category_id
 
-    if vod_language_enabled():
-        relations = _xc_series_language_relations(
-            rel_filters=rel_filters,
-            value_fields=XC_SERIES_VALUE_FIELDS,
-            order_by_name_field='series__name',
-        )
-    else:
-        relations = _xc_fetch_priority_distinct_relations(
-            manager=M3USeriesRelation.objects,
-            rel_filters=rel_filters,
-            distinct_field='series_id',
-            value_fields=XC_SERIES_VALUE_FIELDS,
-            order_by_name_field='series__name',
-        )
+    relations = _xc_fetch_priority_distinct_relations(
+        manager=M3USeriesRelation.objects,
+        rel_filters=rel_filters,
+        distinct_field=('series_id', 'category_id'),
+        value_fields=(
+            XC_SERIES_VALUE_FIELDS + XC_CURATED_VALUE_FIELDS
+            if use_curated_metadata
+            else XC_SERIES_VALUE_FIELDS
+        ),
+        order_by_name_field='series__name',
+        policy=policy,
+        canonical_field="series_id",
+        prepared_filters={"category_id": category_id}
+        if category_id and compact_policy
+        else None,
+    )
+    if category_id and compact_policy:
+        relations = [
+            row
+            for row in relations
+            if str(row["category_id"] or "0") == str(category_id)
+        ]
 
     _logo_url_parts = _xc_vodlogo_url_parts(request)
     # One reverse for all series backdrop rewrites.
@@ -1547,18 +1830,43 @@ def xc_get_series(request, user, category_id=None):
 
     series_list = []
     append = series_list.append
+    _prefer_tmdb_artwork = CoreSettings.get_tmdb_prefer_artwork()
     for num, row in enumerate(relations, 1):
         custom_props = row['series__custom_properties'] or {}
         category_id = row['category_id']
-        rating = row['series__rating']
-        year_str = str(row['series__year']) if row['series__year'] else ""
-        release_date = custom_props.get('release_date', year_str)
-        artwork = _xc_relation_artwork_from_row(row, custom_props)
-        name = apply_language_suffix(row['series__name'], row.get('_resolved_language'))
+        curated = (
+            _xc_curated_row_values(row, "series")
+            if use_curated_metadata
+            else None
+        )
+        rating = curated["rating"] if curated else row['series__rating']
+        year_value = curated["year"] if curated else row['series__year']
+        year_str = str(year_value) if year_value else ""
+        release_date = (
+            curated["release_date"]
+            if curated and curated["release_date"]
+            else custom_props.get('release_date', year_str)
+        )
+        artwork = _xc_relation_artwork_from_row(
+            row,
+            custom_props,
+            prefix='series',
+            prefer_tmdb=_prefer_tmdb_artwork,
+        )
 
         append({
             "num": num,
-            "name": name,
+            "name": row.get("profile_output_name") or (
+                canonical_output_name(
+                    row['series__name'],
+                    display_name=(
+                        row['series__display_name'] or row['series__clean_title']
+                    ),
+                    year=row['series__year'],
+                )
+                if compact_policy
+                else row['rel_source_name'] or row['series__name']
+            ),
             "series_id": row['id'],
             "cover": _xc_cover_or_logo(
                 request,
@@ -1569,10 +1877,10 @@ def xc_get_series(request, user, category_id=None):
                 logo_url_parts=_logo_url_parts,
                 url_parts=_series_image_parts,
             ),
-            "plot": row['series__description'] or "",
+            "plot": curated["overview"] if curated else row['series__description'] or "",
             "cast": custom_props.get('cast', ''),
             "director": custom_props.get('director', ''),
-            "genre": row['series__genre'] or "",
+            "genre": curated["genre"] if curated else row['series__genre'] or "",
             "release_date": release_date,
             "releaseDate": release_date,
             "last_modified": str(int(row['updated_at'].timestamp())),
@@ -1586,13 +1894,25 @@ def xc_get_series(request, user, category_id=None):
                 url_parts=_series_image_parts,
             ),
             "youtube_trailer": custom_props.get('youtube_trailer', ''),
-            "episode_run_time": custom_props.get('episode_run_time', ''),
+            "episode_run_time": (
+                curated["runtime"]
+                if curated and curated["runtime"]
+                else custom_props.get('episode_run_time', '')
+            ),
             "category_id": str(category_id) if category_id else "0",
             "category_ids": [category_id] if category_id else [],
-            "tmdb_id": row['series__tmdb_id'] or "",
-            "imdb_id": row['series__imdb_id'] or "",
+            "tmdb_id": (
+                row['tmdb_override_id']
+                or row['series__tmdb_match_id']
+                or row['series__tmdb_id']
+                or ""
+            ),
+            "imdb_id": row['series__tmdb_imdb_id'] or row['series__imdb_id'] or "",
+            "edition": row.get("profile_edition_name", ""),
+            "edition_suffix": row.get("profile_edition_suffix", ""),
         })
 
+    safe_cache_set(cache_key, series_list, timeout=3600)
     return series_list
 
 
@@ -1606,13 +1926,36 @@ def xc_get_series_info(request, user, series_id):
     if not series_id:
         raise Http404()
 
-    # Users with VOD access get series from all active M3U accounts
+    from apps.vod.catalog_cache import (
+        catalog_cache_key, safe_cache_get, safe_cache_set,
+    )
+    from apps.vod.policies import relation_allowed
+
+    policy = _xc_policy_for_user(user)
+    use_curated_metadata = _xc_uses_curated_metadata(policy)
+    cache_key = catalog_cache_key(request, user, "series-info", series_id)
+    cached = safe_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Access flags are checked above; the profile policy further scopes sources.
     filters = {"id": series_id, "m3u_account__is_active": True}
 
-    try:
-        series_relation = M3USeriesRelation.objects.select_related('series', 'series__logo').get(**filters)
-        series = series_relation.series
-    except M3USeriesRelation.DoesNotExist:
+    series_relations = M3USeriesRelation.objects.select_related(
+        'series', 'series__logo', 'm3u_account', 'category'
+    )
+    series_relation = series_relations.filter(**filters).first()
+    if not series_relation:
+        # Accept older XC clients whose cached catalog contains the canonical
+        # series id rather than the source-relation id.
+        series_relation = series_relations.filter(
+            series_id=series_id,
+            m3u_account__is_active=True,
+        ).order_by('-m3u_account__priority', 'id').first()
+    if not series_relation:
+        raise Http404()
+    series = series_relation.series
+    if policy and not relation_allowed(series_relation, policy):
         raise Http404()
 
     # Check if we need to refresh detailed info (similar to vod api_views pattern)
@@ -1640,134 +1983,119 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
-    # Include episodes from any active provider for this shared Series (XC
-    # clients see a unified catalog). Which provider's relation wins per
-    # episode depends on whether the VOD language feature is on: off, it's
-    # the highest-priority account (legacy, unchanged); on, it's the best
-    # (quality, then priority) relation whose resolved language matches the
-    # language of the specific series_relation the client asked for
-    # (`series_id`), falling back to the best of the rest rather than
-    # 404ing when nothing matches that language (mirrors
-    # _order_candidates_by_language's playback-time fallback for movies).
-    from apps.vod.models import Episode, M3UEpisodeRelation
-    from apps.vod.language import (
-        vod_language_enabled, get_category_metadata, resolve_language,
-        resolve_quality, quality_rank, category_id_for_relation,
-    )
-
-    episodes = list(
-        Episode.objects.filter(
-            series=series,
-            m3u_relations__m3u_account__is_active=True,
-        ).distinct().order_by('season_number', 'episode_number')
-    )
-    episodes_by_id = {ep.id: ep for ep in episodes}
-
-    language_enabled = vod_language_enabled()
-    requested_language = None
-    if language_enabled:
-        cat_meta = get_category_metadata()
-        series_rel_lang = (
-            (series_relation.custom_properties or {}).get('language')
-            if series_relation.custom_properties else None
-        )
-        requested_language = resolve_language(
-            series_rel_lang,
-            cat_meta.get((series_relation.m3u_account_id, series_relation.category_id)),
-        )
-
-    relations_by_episode_id = {}
-    best_rank_by_episode_id = {}
-    for rel in M3UEpisodeRelation.objects.filter(
-        episode_id__in=[ep.id for ep in episodes],
+    # Keep the selected source relation through the episode list. This is one
+    # joined query and cannot merge another category's language or season set.
+    episode_relations = M3UEpisodeRelation.objects.filter(
+        series_relation=series_relation,
         m3u_account__is_active=True,
-    ).select_related('m3u_account', 'series_relation'):
-        if language_enabled:
-            meta = cat_meta.get((rel.m3u_account_id, category_id_for_relation(rel)))
-            resolved = resolve_language((rel.custom_properties or {}).get('language'), meta)
-            quality = resolve_quality(episodes_by_id[rel.episode_id].name, meta)
-            rank = (
-                0 if resolved == requested_language else 1,
-                quality_rank(quality),
-                -rel.m3u_account.priority,
-                rel.id,
-            )
-        else:
-            # Legacy behaviour: highest priority wins, then lowest id.
-            rank = (-rel.m3u_account.priority, rel.id)
-
-        key = rel.episode_id
-        if key not in best_rank_by_episode_id or rank < best_rank_by_episode_id[key]:
-            best_rank_by_episode_id[key] = rank
-            relations_by_episode_id[key] = rel
+    ).select_related('episode').order_by(
+        'episode__season_number', 'episode__episode_number', 'id'
+    )
 
     # Group episodes by season
     seasons = {}
     # One reverse for all episode image rewrites in this response.
     _episode_image_parts = vod_image_url_parts(request, "episode")
-    for episode in episodes:
+    for episode_relation in episode_relations:
+        episode = episode_relation.episode
         season_num = (
             episode.season_number if episode.season_number is not None else 1
         )
         if season_num not in seasons:
             seasons[season_num] = []
 
-        best_relation = relations_by_episode_id.get(episode.id)
+        relation_props = episode_relation.custom_properties or {}
+        provider_episode = relation_props.get('info') or {}
+        if not isinstance(provider_episode, dict):
+            provider_episode = {}
+        provider_info = provider_episode.get('info') or {}
+        if not isinstance(provider_info, dict):
+            provider_info = {}
 
-        video = audio = bitrate = None
-        container_extension = "mp4"
-        added_timestamp = str(int(episode.created_at.timestamp()))
+        episode_title = (
+            provider_episode.get('title')
+            or provider_info.get('name')
+            or episode.name
+        )
+        episode_description = (
+            provider_info.get('plot')
+            or provider_info.get('overview')
+            or episode.description
+            or ""
+        )
+        video = provider_info.get('video') or (
+            episode.custom_properties.get('video', {})
+            if episode.custom_properties else {}
+        )
+        audio = provider_info.get('audio') or (
+            episode.custom_properties.get('audio', {})
+            if episode.custom_properties else {}
+        )
+        bitrate = provider_info.get('bitrate') or (
+            episode.custom_properties.get('bitrate', 0)
+            if episode.custom_properties else 0
+        )
+        provider_duration = provider_info.get('duration_secs')
+        raw_duration_secs = (
+            provider_duration
+            if provider_duration not in (None, '')
+            else episode.duration_secs
+        )
+        try:
+            duration_secs = int(float(raw_duration_secs or 0))
+        except (TypeError, ValueError):
+            duration_secs = int(episode.duration_secs or 0)
+        provider_air_date = (
+            provider_info.get('air_date')
+            or provider_info.get('release_date')
+            or provider_info.get('releasedate')
+        )
+        air_date = provider_air_date or episode.air_date
+        rating = provider_info.get('rating')
+        if rating in (None, ''):
+            rating = episode.rating
+        try:
+            rating = float(rating or 0)
+        except (TypeError, ValueError):
+            try:
+                rating = float(episode.rating or 0)
+            except (TypeError, ValueError):
+                rating = 0.0
 
-        if best_relation:
-            container_extension = best_relation.container_extension or "mp4"
-            added_timestamp = str(int(best_relation.created_at.timestamp()))
-            if best_relation.custom_properties:
-                info = best_relation.custom_properties.get('info')
-                if info and isinstance(info, dict):
-                    info_info = info.get('info')
-                    if info_info and isinstance(info_info, dict):
-                        video = info_info.get('video', {})
-                        audio = info_info.get('audio', {})
-                        bitrate = info_info.get('bitrate', 0)
-
-        if video is None:
-            video = episode.custom_properties.get('video', {}) if episode.custom_properties else {}
-        if audio is None:
-            audio = episode.custom_properties.get('audio', {}) if episode.custom_properties else {}
-        if bitrate is None:
-            bitrate = episode.custom_properties.get('bitrate', 0) if episode.custom_properties else 0
+        episode_custom = episode.custom_properties or {}
+        crew = provider_info.get('crew') or episode_custom.get('crew', '')
+        director = (
+            provider_info.get('director')
+            or provider_info.get('directed_by')
+            or episode_custom.get('director', '')
+        )
+        imdb_id = provider_info.get('imdb_id') or episode.imdb_id or ""
 
         episode_artwork = prefer_relation_artwork(
-            best_relation.custom_properties if best_relation else None,
+            relation_props,
             episode.custom_properties,
         )
 
-        # stream_id is namespaced to M3UEpisodeRelation.id once any category
-        # has a language assigned, so playback (stream_xc_episode) resolves
-        # the exact provider relation this listing chose for this episode,
-        # not just whichever provider happens to have the highest priority
-        # overall (mirrors movies).
-        episode_stream_id = (
-            best_relation.id if (language_enabled and best_relation) else episode.id
-        )
-
         seasons[season_num].append({
-            "id": episode_stream_id,
+            "id": episode_relation.id,
             "season": season_num,
-            "episode_num": episode.episode_number or 0,
-            "title": episode.name,
-            "container_extension": container_extension,
-            "added": added_timestamp,
+            "episode_num": provider_episode.get(
+                'episode_num', episode.episode_number or 0
+            ),
+            "title": episode_title,
+            "container_extension": episode_relation.container_extension or "mp4",
+            "added": str(int(episode_relation.created_at.timestamp())),
             "custom_sid": None,
             "direct_source": "",
             "info": {
-                "id": int(episode.id),
-                "name": episode.name,
-                "overview": episode.description or "",
-                "crew": str(episode.custom_properties.get('crew', "") if episode.custom_properties else ""),
-                "directed_by": episode.custom_properties.get('director', '') if episode.custom_properties else "",
-                "imdb_id": episode.imdb_id or "",
-                "air_date": f"{episode.air_date}" if episode.air_date else "",
+                "id": int(episode_relation.id),
+                "name": episode_title,
+                "overview": episode_description,
+                "crew": str(crew),
+                "directed_by": director,
+                "imdb_id": imdb_id,
+                "tmdb_id": provider_info.get('tmdb_id') or episode.tmdb_id or "",
+                "air_date": f"{air_date}" if air_date else "",
                 "backdrop_path": rewrite_backdrop_paths(
                     request,
                     'episode',
@@ -1783,10 +2111,10 @@ def xc_get_series_info(request, user, series_id):
                     episode_artwork['movie_image'],
                     url_parts=_episode_image_parts,
                 ),
-                "rating": float(episode.rating or 0),
-                "release_date": f"{episode.air_date}" if episode.air_date else "",
-                "duration_secs": (episode.duration_secs or 0),
-                "duration": format_duration_hms(episode.duration_secs),
+                "rating": rating,
+                "release_date": f"{air_date}" if air_date else "",
+                "duration_secs": (duration_secs or 0),
+                "duration": format_duration_hms(duration_secs),
                 "video": video,
                 "audio": audio,
                 "bitrate": bitrate,
@@ -1802,6 +2130,9 @@ def xc_get_series_info(request, user, series_id):
         'rating': series.rating or '0',
         'cast': '',
         'director': '',
+        'crew': '',
+        'country': '',
+        'age': '',
         'youtube_trailer': '',
         'episode_run_time': '',
         'backdrop_path': [],
@@ -1825,26 +2156,43 @@ def xc_get_series_info(request, user, series_id):
 
             # Override with detailed_info values where available
             for key in ['name', 'description', 'year', 'genre', 'rating']:
-                if detailed_info.get(key):
+                if not use_curated_metadata and detailed_info.get(key):
                     series_data[key] = detailed_info[key]
 
             # Handle plot vs description
-            if detailed_info.get('plot'):
+            if not use_curated_metadata and detailed_info.get('plot'):
                 series_data['description'] = detailed_info['plot']
-            elif detailed_info.get('description'):
+            elif not use_curated_metadata and detailed_info.get('description'):
                 series_data['description'] = detailed_info['description']
 
             # Update additional fields from detailed info
             series_data.update({
-                'cast': detailed_info.get('cast', series_data['cast']),
-                'director': detailed_info.get('director', series_data['director']),
-                'youtube_trailer': detailed_info.get('youtube_trailer', series_data['youtube_trailer']),
-                'episode_run_time': detailed_info.get('episode_run_time', series_data['episode_run_time']),
-                'backdrop_path': detailed_info.get('backdrop_path', series_data['backdrop_path']),
+                'cast': series_data['cast'] if use_curated_metadata else detailed_info.get('cast', series_data['cast']),
+                'director': series_data['director'] if use_curated_metadata else detailed_info.get('director', series_data['director']),
+                'youtube_trailer': series_data['youtube_trailer'] if use_curated_metadata else detailed_info.get('youtube_trailer', series_data['youtube_trailer']),
+                'episode_run_time': series_data['episode_run_time'] if use_curated_metadata else detailed_info.get('episode_run_time', series_data['episode_run_time']),
+                'backdrop_path': series_data['backdrop_path'] if use_curated_metadata else detailed_info.get('backdrop_path', series_data['backdrop_path']),
             })
 
     except Exception as e:
         logger.error(f"Error parsing series custom_properties: {str(e)}")
+
+    if use_curated_metadata:
+        curated = _xc_curated_object_values(series)
+        series_data.update(
+            name=curated["title"] or series_data["name"],
+            description=curated["overview"],
+            year=curated["year"],
+            genre=curated["genre"],
+            rating=curated["rating"],
+            episode_run_time=curated["runtime"] or series_data["episode_run_time"],
+            cast=curated["actors"],
+            director=curated["director"],
+            crew=curated["crew"],
+            country=curated["country"],
+            age=curated["age_rating"],
+            youtube_trailer=curated["youtube_trailer"],
+        )
 
     seasons_list = [
         {"season_number": int(season_num), "name": f"Season {season_num}"}
@@ -1854,6 +2202,9 @@ def xc_get_series_info(request, user, series_id):
     series_artwork = prefer_relation_artwork(
         series_relation.custom_properties,
         series.custom_properties,
+        tmdb_poster_url=series.tmdb_poster_url,
+        tmdb_backdrop_url=series.tmdb_backdrop_url,
+        prefer_tmdb=CoreSettings.get_tmdb_prefer_artwork(),
     )
     if is_proxyable_image_url(series_artwork['movie_image']):
         series_cover = rewrite_single_image_url(
@@ -1871,17 +2222,47 @@ def xc_get_series_info(request, user, series_id):
     else:
         series_cover = None
 
+    from apps.vod.utils import get_series_display_name, get_vod_source_name
+
+    clean_series_name = get_series_display_name(series, series_relation)
+    source_series_name = get_vod_source_name(
+        series_relation,
+        clean_series_name,
+    )
+    if policy:
+        from apps.vod.profile_selection import prepared_relation_snapshot
+
+        output_snapshot = prepared_relation_snapshot(
+            policy,
+            M3USeriesRelation,
+            series_relation.id,
+        )
+        if output_snapshot and output_snapshot.get("output_name"):
+            source_series_name = output_snapshot["output_name"]
+
     info = {
         'seasons': seasons_list,
         "info": {
-            "name": series_data['name'],
+            "name": source_series_name,
+            "o_name": clean_series_name,
             "cover": series_cover,
             "plot": series_data['description'],
             "cast": series_data['cast'],
             "director": series_data['director'],
+            "crew": series_data['crew'],
+            "country": series_data['country'],
+            "age": series_data['age'],
             "genre": series_data['genre'],
-            "release_date": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
-            "releaseDate": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
+            "release_date": (
+                curated["release_date"]
+                if use_curated_metadata and curated["release_date"]
+                else series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else "")
+            ),
+            "releaseDate": (
+                curated["release_date"]
+                if use_curated_metadata and curated["release_date"]
+                else series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else "")
+            ),
             "added": str(int(series_relation.created_at.timestamp())),
             "last_modified": str(int(series_relation.updated_at.timestamp())),
             "rating": str(series_data['rating']),
@@ -1893,14 +2274,24 @@ def xc_get_series_info(request, user, series_id):
                 series_artwork['backdrop_path'],
             ),
             "youtube_trailer": series_data['youtube_trailer'],
-            "imdb": str(series.imdb_id) if series.imdb_id else "",
-            "tmdb": str(series.tmdb_id) if series.tmdb_id else "",
+            "imdb": str(
+                (series.tmdb_metadata or {}).get("imdb_id")
+                or series.imdb_id
+                or ""
+            ),
+            "tmdb": str(
+                series_relation.tmdb_override_id
+                or series.tmdb_match_id
+                or series.tmdb_id
+                or ""
+            ),
             "episode_run_time": str(series_data['episode_run_time']),
             "category_id": str(series_relation.category.id) if series_relation.category else "0",
             "category_ids": [int(series_relation.category.id)] if series_relation.category else [],
         },
         "episodes": dict(seasons)
     }
+    safe_cache_set(cache_key, info, timeout=3600)
     return info
 
 
@@ -1910,38 +2301,48 @@ def xc_get_vod_info(request, user, vod_id):
         raise Http404()
 
     from apps.vod.models import M3UMovieRelation
-    from apps.vod.language import vod_language_enabled, resolve_movie_relation
     from django.utils import timezone
     from datetime import timedelta
 
     if not vod_id:
         raise Http404()
 
-    extra_filters = {}
-    if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
-        extra_filters["movie__is_adult"] = False
+    from apps.vod.catalog_cache import (
+        catalog_cache_key, safe_cache_get, safe_cache_set,
+    )
+    from apps.vod.policies import relation_allowed
 
-    language_enabled = vod_language_enabled()
-    if language_enabled:
-        # vod_id is namespaced to M3UMovieRelation.id once any category has a
-        # language assigned; falls back to Movie.id for stale clients.
-        movie_relation = resolve_movie_relation(
-            vod_id, extra_filters=extra_filters, select_related=('movie', 'movie__logo')
-        )
-        if not movie_relation:
-            raise Http404()
-        movie = movie_relation.movie
-    else:
-        # Users with VOD access get it from all active M3U accounts
-        filters = {"movie_id": vod_id, "m3u_account__is_active": True, **extra_filters}
-        try:
-            # Order by account priority to get the best relation when multiple exist
-            movie_relation = M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-            if not movie_relation:
-                raise Http404()
-            movie = movie_relation.movie
-        except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
-            raise Http404()
+    policy = _xc_policy_for_user(user)
+    use_curated_metadata = _xc_uses_curated_metadata(policy)
+    cache_key = catalog_cache_key(request, user, "movie-info", vod_id)
+    cached = safe_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Access flags are checked above; the profile policy further scopes sources.
+    filters = {"id": vod_id, "m3u_account__is_active": True}
+    if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
+        filters["movie__is_adult"] = False
+
+    movie_relations = M3UMovieRelation.objects.select_related(
+        'movie', 'movie__logo', 'm3u_account', 'category'
+    )
+    movie_relation = movie_relations.filter(**filters).first()
+    if not movie_relation:
+        fallback_filters = {
+            'movie_id': vod_id,
+            'm3u_account__is_active': True,
+        }
+        if 'movie__is_adult' in filters:
+            fallback_filters['movie__is_adult'] = filters['movie__is_adult']
+        movie_relation = movie_relations.filter(**fallback_filters).order_by(
+            '-m3u_account__priority', 'id'
+        ).first()
+    if not movie_relation:
+        raise Http404()
+    movie = movie_relation.movie
+    if policy and not relation_allowed(movie_relation, policy):
+        raise Http404()
 
     # Initialize basic movie data first
     movie_data = {
@@ -1954,7 +2355,9 @@ def xc_get_vod_info(request, user, vod_id):
         'imdb_id': movie.imdb_id or '',
         'director': '',
         'actors': '',
+        'crew': '',
         'country': '',
+        'age': '',
         'release_date': '',
         'youtube_trailer': '',
         'backdrop_path': [],
@@ -1991,13 +2394,13 @@ def xc_get_vod_info(request, user, vod_id):
             detailed_info = movie_relation.custom_properties.get('detailed_info', {})
             # Update movie_data with detailed info
             movie_data.update({
-                'director': custom_data.get('director') or detailed_info.get('director', ''),
-                'actors': custom_data.get('actors') or detailed_info.get('actors', ''),
-                'country': custom_data.get('country') or detailed_info.get('country', ''),
-                'release_date': custom_data.get('release_date') or detailed_info.get('release_date') or detailed_info.get('releasedate', ''),
-                'youtube_trailer': custom_data.get('youtube_trailer') or detailed_info.get('youtube_trailer') or detailed_info.get('trailer', ''),
-                'backdrop_path': custom_data.get('backdrop_path') or detailed_info.get('backdrop_path', []),
-                'cover_big': detailed_info.get('cover_big', ''),
+                'director': custom_data.get('director') or ('' if use_curated_metadata else detailed_info.get('director', '')),
+                'actors': custom_data.get('actors') or ('' if use_curated_metadata else detailed_info.get('actors', '')),
+                'country': custom_data.get('country') or ('' if use_curated_metadata else detailed_info.get('country', '')),
+                'release_date': custom_data.get('release_date') or ('' if use_curated_metadata else detailed_info.get('release_date') or detailed_info.get('releasedate', '')),
+                'youtube_trailer': custom_data.get('youtube_trailer') or ('' if use_curated_metadata else detailed_info.get('youtube_trailer') or detailed_info.get('trailer', '')),
+                'backdrop_path': custom_data.get('backdrop_path') or ([] if use_curated_metadata else detailed_info.get('backdrop_path', [])),
+                'cover_big': '' if use_curated_metadata else detailed_info.get('cover_big', ''),
                 'bitrate': detailed_info.get('bitrate', 0),
                 'video': detailed_info.get('video', {}),
                 'audio': detailed_info.get('audio', {}),
@@ -2005,17 +2408,34 @@ def xc_get_vod_info(request, user, vod_id):
 
             # Override with detailed_info values where available
             for key in ['name', 'description', 'year', 'genre', 'rating', 'tmdb_id', 'imdb_id']:
-                if detailed_info.get(key):
+                if not use_curated_metadata and detailed_info.get(key):
                     movie_data[key] = detailed_info[key]
 
             # Handle plot vs description
-            if detailed_info.get('plot'):
+            if not use_curated_metadata and detailed_info.get('plot'):
                 movie_data['description'] = detailed_info['plot']
-            elif detailed_info.get('description'):
+            elif not use_curated_metadata and detailed_info.get('description'):
                 movie_data['description'] = detailed_info['description']
 
     except Exception as e:
         logger.error(f"Failed to process movie data: {e}")
+
+    if use_curated_metadata:
+        curated = _xc_curated_object_values(movie)
+        movie_data.update(
+            name=curated["title"] or movie_data["name"],
+            description=curated["overview"],
+            year=curated["year"],
+            genre=curated["genre"],
+            rating=curated["rating"],
+            release_date=curated["release_date"] or movie_data["release_date"],
+            director=curated["director"],
+            actors=curated["actors"],
+            crew=curated["crew"],
+            country=curated["country"],
+            age=curated["age_rating"],
+            youtube_trailer=curated["youtube_trailer"],
+        )
 
     # Real XC servers return the same URL for cover_big and movie_image, so both
     # are set from a single resolved cover: winning-provider still first, synced
@@ -2023,6 +2443,9 @@ def xc_get_vod_info(request, user, vod_id):
     movie_artwork = prefer_relation_artwork(
         movie_relation.custom_properties,
         movie.custom_properties,
+        tmdb_poster_url=movie.tmdb_poster_url,
+        tmdb_backdrop_url=movie.tmdb_backdrop_url,
+        prefer_tmdb=CoreSettings.get_tmdb_prefer_artwork(),
     )
     if is_proxyable_image_url(movie_artwork['movie_image']):
         movie_cover = rewrite_single_image_url(
@@ -2040,10 +2463,24 @@ def xc_get_vod_info(request, user, vod_id):
     else:
         movie_cover = None
 
+    from apps.vod.utils import get_vod_source_name
+
+    source_name = get_vod_source_name(movie_relation, movie_data['name'])
+    if policy:
+        from apps.vod.profile_selection import prepared_relation_snapshot
+
+        output_snapshot = prepared_relation_snapshot(
+            policy,
+            M3UMovieRelation,
+            movie_relation.id,
+        )
+        if output_snapshot and output_snapshot.get("output_name"):
+            source_name = output_snapshot["output_name"]
+
     # Transform API response to XtreamCodes format
     info = {
         "info": {
-            "name": movie_data.get('name', movie.name),
+            "name": source_name,
             "o_name": movie_data.get('name', movie.name),
             "cover_big": movie_cover,
             "movie_image": movie_cover,
@@ -2055,10 +2492,19 @@ def xc_get_vod_info(request, user, vod_id):
             'director': movie_data.get('director', ''),
             'actors': movie_data.get('actors', ''),
             'cast': movie_data.get('actors', ''),
+            'crew': movie_data.get('crew', ''),
             'country': movie_data.get('country', ''),
+            'age': movie_data.get('age', ''),
             'rating': movie_data.get('rating', 0),
-            'imdb_id': movie_data.get('imdb_id', ''),
-            "tmdb_id": movie_data.get('tmdb_id', ''),
+            'imdb_id': (
+                (movie.tmdb_metadata or {}).get('imdb_id')
+                or movie_data.get('imdb_id', '')
+            ),
+            "tmdb_id": (
+                movie_relation.tmdb_override_id
+                or movie.tmdb_match_id
+                or movie_data.get('tmdb_id', '')
+            ),
             'youtube_trailer': movie_data.get('youtube_trailer', ''),
             'backdrop_path': rewrite_backdrop_paths(
                 request,
@@ -2072,8 +2518,8 @@ def xc_get_vod_info(request, user, vod_id):
             'audio': movie_data.get('audio', {}),
         },
         "movie_data": {
-            "stream_id": movie_relation.id if language_enabled else movie.id,
-            "name": movie.name,
+            "stream_id": movie_relation.id,
+            "name": source_name,
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
@@ -2083,6 +2529,7 @@ def xc_get_vod_info(request, user, vod_id):
         }
     }
 
+    safe_cache_set(cache_key, info, timeout=3600)
     return info
 
 

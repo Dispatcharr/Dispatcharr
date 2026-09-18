@@ -5,6 +5,8 @@ import * as M3UsTableUtils from '../M3UsTableUtils';
 vi.mock('../../../api.js', () => ({
   default: {
     refreshPlaylist: vi.fn(),
+    refreshLivePlaylist: vi.fn(),
+    refreshVODContent: vi.fn(),
     getPlaylistAutoCreatedChannelsCount: vi.fn(),
     deletePlaylist: vi.fn(),
     updatePlaylist: vi.fn(),
@@ -35,6 +37,18 @@ describe('M3UsTableUtils', () => {
       const result = M3UsTableUtils.refreshPlaylist(3);
       expect(API.refreshPlaylist).toHaveBeenCalledWith(3);
       expect(result).toBe(mockReturn);
+    });
+  });
+
+  describe('separate content refreshes', () => {
+    it('calls the Live TV refresh endpoint wrapper', () => {
+      M3UsTableUtils.refreshLivePlaylist(4);
+      expect(API.refreshLivePlaylist).toHaveBeenCalledWith(4);
+    });
+
+    it('calls the VOD refresh endpoint wrapper', () => {
+      M3UsTableUtils.refreshVODContent(5);
+      expect(API.refreshVODContent).toHaveBeenCalledWith(5);
     });
   });
 
@@ -436,6 +450,33 @@ describe('M3UsTableUtils', () => {
           elapsed_time: 60,
         });
         expect(result.timeRemaining).toBe('calculating...');
+      });
+    });
+
+    describe('vod_refresh', () => {
+      it('returns phase, counts, and formatted ETA', () => {
+        formatDuration.mockImplementation((value) => `duration:${value}`);
+        expect(
+          M3UsTableUtils.getStatusContent({
+            action: 'vod_refresh',
+            progress: 52,
+            phase: 'Processing series',
+            elapsed_time: 30,
+            time_remaining: 12,
+            items_processed: 1000,
+            items_total: 2500,
+            provider_items_total: 156260,
+          })
+        ).toEqual({
+          type: 'vod',
+          progress: 52,
+          phase: 'Processing series',
+          elapsedTime: 'duration:30',
+          timeRemaining: 'duration:12',
+          itemsProcessed: 1000,
+          itemsTotal: 2500,
+          providerItemsTotal: 156260,
+        });
       });
     });
 

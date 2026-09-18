@@ -1,44 +1,92 @@
-.mantine-Stack-root .navlink {
+.dispatcharr-sidebar .sidebar-brand {
+  position: relative;
+  margin: 0 4px;
+  padding: 14px 8px 18px;
+  border-bottom: 1px solid #2a2a2e;
+}
+
+.dispatcharr-sidebar .sidebar-brand-content {
+  min-width: 0;
+  min-height: 32px;
+}
+
+.dispatcharr-sidebar .sidebar-edge-toggle {
+  position: absolute;
+  top: 18px;
+  right: -25px;
+  z-index: 20;
+  color: #d4d4d8;
+  background: #202025;
+  border: 1px solid #3d3d42;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 22%);
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.dispatcharr-sidebar .sidebar-edge-toggle:hover {
+  color: #ffffff;
+  background: #2a2f34;
+  border-color: #4b4b52;
+}
+
+.dispatcharr-sidebar .sidebar-nav-divider {
+  border-top: 1px solid #2a2a2e;
+  margin: 8px 6px;
+}
+
+.dispatcharr-sidebar .navlink {
   display: flex;
-  flex-direction: row; /* Ensures horizontal layout */
+  flex-direction: row;
   flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
-  padding: 4px 8px !important;
-  border-radius: 6px;
-  background-color: transparent; /* Default background when not active */
+  min-height: 38px;
+  padding: 7px 10px !important;
   border: 1px solid transparent;
-  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
-  margin-left: 2px;
+  border-radius: 8px;
+  background-color: transparent;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
-/* Active state styles */
-.navlink.navlink-active {
+.dispatcharr-sidebar .navlink.navlink-active {
   color: #ffffff;
   background-color: #245043;
-  border: 1px solid #3ba882;
+  border-color: #3ba882;
 }
 
-/* Hover effect */
-.navlink:hover {
-  background-color: #2A2F34;
-  border: 1px solid #3D3D42;
+.dispatcharr-sidebar .navlink:hover {
+  background-color: #2a2f34;
+  border-color: #3d3d42;
 }
 
-/* Hover effect for active state */
-.navlink.navlink-active:hover {
-  background-color: #3a3a40;
-  border: 1px solid #3ba882;
+.dispatcharr-sidebar .navlink.navlink-active:hover {
+  background-color: #2e5e50;
+  border-color: #3ba882;
 }
 
-/* Collapse condition for justifyContent */
-.navlink.navlink-collapsed {
+.dispatcharr-sidebar .navlink.navlink-collapsed {
   justify-content: center;
-  padding: 4px !important;
+  width: 40px !important;
+  height: 40px;
+  min-height: 40px;
+  margin-inline: auto;
+  padding: 0 !important;
+  border-radius: 9px;
 }
 
-.navlink:not(.navlink-collapsed) {
+.dispatcharr-sidebar .navlink:not(.navlink-collapsed) {
   justify-content: flex-start;
 }
 
+.dispatcharr-sidebar-collapsed .sidebar-brand {
+  margin-inline: 2px;
+  padding-inline: 0;
+}
 
+.dispatcharr-sidebar-collapsed .sidebar-edge-toggle {
+  right: -23px;
+}
+
+.dispatcharr-sidebar-collapsed .sidebar-nav-divider {
+  margin: 10px 8px;
+}

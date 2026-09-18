@@ -1,13 +1,159 @@
 """Tests for M3U stream filter compilation and batch application."""
+import tempfile
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
+from rest_framework.test import APIRequestFactory, force_authenticate
 
+from apps.accounts.models import User
+from apps.channels.models import ChannelGroup, Stream
+from apps.m3u.api_views import M3UFilterViewSet
+from apps.m3u.models import M3UAccount, M3UFilter
 from apps.m3u.tasks import (
     _compile_m3u_stream_filters,
     _stream_passes_m3u_filters,
     process_m3u_batch_direct,
+    write_live_filter_catalog,
 )
+
+
+class M3UStreamFilterAPITests(TestCase):
+    def setUp(self):
+        self.media_root = tempfile.TemporaryDirectory()
+        self.settings_override = override_settings(MEDIA_ROOT=self.media_root.name)
+        self.settings_override.enable()
+        self.factory = APIRequestFactory()
+        self.admin = User.objects.create_user(
+            username="stream-filter-admin",
+            password="test-password",
+            user_level=10,
+        )
+        self.account = M3UAccount.objects.create(
+            name="stream-filter-account",
+            server_url="https://provider.example",
+        )
+
+    def tearDown(self):
+        self.settings_override.disable()
+        self.media_root.cleanup()
+        super().tearDown()
+
+    def test_identical_stream_filters_are_rejected(self):
+        payload = {
+            "filter_type": "name",
+            "regex_pattern": "NEWS.*",
+            "exclude": True,
+            "order": 0,
+            "custom_properties": {"case_sensitive": False},
+        }
+        create = M3UFilterViewSet.as_view({"post": "create"})
+        first_request = self.factory.post("/filters/", payload, format="json")
+        force_authenticate(first_request, user=self.admin)
+        first_response = create(first_request, account_id=self.account.id)
+        second_request = self.factory.post("/filters/", payload, format="json")
+        force_authenticate(second_request, user=self.admin)
+        second_response = create(second_request, account_id=self.account.id)
+
+        self.assertEqual(first_response.status_code, 201, first_response.data)
+        self.assertEqual(second_response.status_code, 400)
+        self.assertEqual(
+            M3UFilter.objects.filter(m3u_account=self.account).count(),
+            1,
+        )
+
+    def test_draft_preview_respects_first_match_order(self):
+        group = ChannelGroup.objects.create(name="Preview News")
+        Stream.objects.create(
+            name="Block News",
+            url="https://provider.example/block",
+            stream_hash="preview-block",
+            m3u_account=self.account,
+            channel_group=group,
+        )
+        matching = Stream.objects.create(
+            name="Daily News",
+            url="https://provider.example/daily",
+            stream_hash="preview-daily",
+            m3u_account=self.account,
+            channel_group=group,
+        )
+        Stream.objects.create(
+            name="Sports",
+            url="https://provider.example/sports",
+            stream_hash="preview-sports",
+            m3u_account=self.account,
+            channel_group=group,
+        )
+        M3UFilter.objects.create(
+            m3u_account=self.account,
+            filter_type="name",
+            regex_pattern="^Block",
+            exclude=True,
+            order=0,
+            custom_properties={"case_sensitive": False},
+        )
+        request = self.factory.post(
+            "/filters/preview-draft/",
+            {
+                "filter_type": "name",
+                "regex_pattern": "News",
+                "exclude": False,
+                "order": 1,
+                "custom_properties": {"case_sensitive": False},
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.admin)
+
+        response = M3UFilterViewSet.as_view({"post": "preview_draft"})(
+            request,
+            account_id=self.account.id,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], matching.id)
+        self.assertTrue(response.data["first_match_wins"])
+
+    def test_preview_uses_pre_filter_catalog_for_excluded_streams(self):
+        write_live_filter_catalog(
+            self.account.id,
+            [
+                {
+                    "name": "### Hidden channel",
+                    "url": "https://provider.example/hidden",
+                    "attributes": {"group-title": "Enabled Group"},
+                },
+                {
+                    "name": "Visible channel",
+                    "url": "https://provider.example/visible",
+                    "attributes": {"group-title": "Enabled Group"},
+                },
+            ],
+        )
+        request = self.factory.post(
+            "/filters/preview-draft/",
+            {
+                "filter_type": "name",
+                "regex_pattern": "###",
+                "exclude": True,
+                "order": 0,
+                "custom_properties": {"case_sensitive": True},
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.admin)
+
+        response = M3UFilterViewSet.as_view({"post": "preview_draft"})(
+            request,
+            account_id=self.account.id,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["inventory_count"], 2)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "### Hidden channel")
+        self.assertTrue(response.data["catalog_complete"])
 
 
 class CompileM3UStreamFiltersTests(SimpleTestCase):

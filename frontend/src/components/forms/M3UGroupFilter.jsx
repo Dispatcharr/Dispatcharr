@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Button,
   Flex,
+  Group,
   LoadingOverlay,
   Modal,
   Stack,
@@ -15,12 +16,14 @@ import useChannelsStore from '../../store/channels';
 import useVODStore from '../../store/useVODStore';
 import LiveGroupFilter from './LiveGroupFilter';
 import VODCategoryFilter from './VODCategoryFilter';
+import M3UDeveloperCatalog from './M3UDeveloperCatalog';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
   buildGroupStates,
-  saveAndRefreshPlaylist,
+  savePlaylistGroupSettings,
 } from '../../utils/forms/M3uGroupFilterUtils.js';
 import { detectGroupReservationOverlaps } from '../../utils/forms/GroupSyncUtils';
+import API from '../../api.js';
 
 const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
@@ -30,21 +33,20 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [movieCategoryStates, setMovieCategoryStates] = useState([]);
   const [seriesCategoryStates, setSeriesCategoryStates] = useState([]);
-  const [autoEnableNewGroupsLive, setAutoEnableNewGroupsLive] = useState(true);
-  const [autoEnableNewGroupsVod, setAutoEnableNewGroupsVod] = useState(true);
-  const [autoEnableNewGroupsSeries, setAutoEnableNewGroupsSeries] =
-    useState(true);
+  const [activeTab, setActiveTab] = useState('live');
+  const [developerMode, setDeveloperMode] = useState(false);
+  const [activeAction, setActiveAction] = useState(null);
+
+  const toggleDeveloperMode = (enabled) => {
+    setDeveloperMode(enabled);
+    if (!enabled && activeTab === 'raw-data') setActiveTab('live');
+  };
 
   useEffect(() => {
-    if (!playlist) return;
-
-    // Initialize account-level settings
-    setAutoEnableNewGroupsLive(playlist.auto_enable_new_groups_live ?? true);
-    setAutoEnableNewGroupsVod(playlist.auto_enable_new_groups_vod ?? true);
-    setAutoEnableNewGroupsSeries(
-      playlist.auto_enable_new_groups_series ?? true
-    );
-  }, [playlist]);
+    if (isOpen) return;
+    setDeveloperMode(false);
+    setActiveTab('live');
+  }, [isOpen]);
 
   useEffect(() => {
     if (Object.keys(channelGroups).length === 0) return;
@@ -80,41 +82,81 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
     }
 
     setIsLoading(true);
+    setActiveAction('save');
     try {
-      await saveAndRefreshPlaylist(
+      await savePlaylistGroupSettings(
         playlist,
         groupStates,
         movieCategoryStates,
         seriesCategoryStates,
-        {
-          auto_enable_new_groups_live: autoEnableNewGroupsLive,
-          auto_enable_new_groups_vod: autoEnableNewGroupsVod,
-          auto_enable_new_groups_series: autoEnableNewGroupsSeries,
-        }
+        {}
       );
 
       showNotification({
         title: 'Group Settings Updated',
-        message: 'Settings saved. Starting M3U refresh to apply changes...',
+        message:
+          'Settings saved. Use the refresh action in this tab when you want to update the provider catalog.',
         color: 'green',
         autoClose: 3000,
       });
-
-      showNotification({
-        title: 'M3U Refresh Started',
-        message:
-          'The M3U account is being refreshed. Channel sync will occur automatically after parsing completes.',
-        color: 'blue',
-        autoClose: 5000,
-      });
-
-      onClose();
+      setMovieCategoryStates((current) =>
+        current.map((category) => ({
+          ...category,
+          original_enabled: category.enabled,
+        }))
+      );
+      setSeriesCategoryStates((current) =>
+        current.map((category) => ({
+          ...category,
+          original_enabled: category.enabled,
+        }))
+      );
     } catch (error) {
       console.error('Error updating group settings:', error);
     } finally {
       setIsLoading(false);
+      setActiveAction(null);
     }
   };
+
+  const refreshCurrentTab = async () => {
+    const isLive = activeTab === 'live';
+    const isVod = activeTab === 'vod-movie' || activeTab === 'vod-series';
+    if (!isLive && !isVod) return;
+
+    setIsLoading(true);
+    setActiveAction('refresh');
+    try {
+      const response = isLive
+        ? await API.refreshLivePlaylist(playlist.id)
+        : await API.refreshVODContent(playlist.id);
+      // API methods display server errors and rethrow. Guard against an empty
+      // response so a failed or aborted request cannot report success.
+      if (!response) return;
+
+      showNotification({
+        title: isLive ? 'Live TV Refresh Started' : 'VOD Refresh Started',
+        message: isLive
+          ? 'The saved Live TV settings are being applied. Channel sync runs after parsing completes.'
+          : 'The saved VOD settings are being applied to movies and series.',
+        color: 'blue',
+        autoClose: 5000,
+      });
+    } catch (error) {
+      console.error('Error starting account refresh:', error);
+    } finally {
+      setIsLoading(false);
+      setActiveAction(null);
+    }
+  };
+
+  const isVodTab = activeTab === 'vod-movie' || activeTab === 'vod-series';
+  const refreshLabel = isVodTab ? 'Refresh VOD' : 'Refresh Live TV';
+  const showRefreshAction = activeTab === 'live' || isVodTab;
+  const refreshDisabled =
+    isLoading ||
+    (isVodTab &&
+      (playlist.account_type !== 'XC' || playlist.enable_vod === false));
 
   if (!isOpen) {
     return <></>;
@@ -124,68 +166,122 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
     <Modal
       opened={isOpen}
       onClose={onClose}
-      title="M3U Group Filter & Auto Channel Sync"
-      size={1000}
-      styles={{ content: { '--mantine-color-body': '#27272A' } }}
-      scrollAreaComponent={Modal.NativeScrollArea}
+      title={
+        <Group justify="space-between" wrap="nowrap" w="100%">
+          <span>Source import</span>
+          <Button
+            size="xs"
+            aria-label="Developer mode"
+            variant={developerMode ? 'filled' : 'default'}
+            color={developerMode ? 'yellow' : 'gray'}
+            onClick={() => toggleDeveloperMode(!developerMode)}
+          >
+            Developer mode
+          </Button>
+        </Group>
+      }
+      size="90vw"
+      styles={{
+        content: {
+          '--mantine-color-body': '#27272A',
+          height: '92vh',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        },
+        body: {
+          flex: 1,
+          minHeight: 0,
+          overflow: 'hidden',
+        },
+        title: { flex: 1 },
+      }}
       lockScroll={false}
       withinPortal={true}
-      yOffset="2vh"
+      yOffset="4vh"
     >
       <LoadingOverlay visible={isLoading} overlayBlur={2} />
-      <Stack>
-        <Tabs defaultValue="live">
+      <Stack h="100%" mih={0}>
+        <Tabs
+          value={activeTab}
+          onChange={setActiveTab}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           <TabsList>
             <TabsTab value="live">Live</TabsTab>
             <TabsTab value="vod-movie">VOD - Movies</TabsTab>
             <TabsTab value="vod-series">VOD - Series</TabsTab>
+            <TabsTab value="raw-data" disabled={!developerMode}>
+              Raw Data
+            </TabsTab>
           </TabsList>
 
-          <TabsPanel value="live">
+          <TabsPanel
+            value="live"
+            style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
+          >
             <LiveGroupFilter
               playlist={playlist}
               groupStates={groupStates}
               setGroupStates={setGroupStates}
-              autoEnableNewGroupsLive={autoEnableNewGroupsLive}
-              setAutoEnableNewGroupsLive={setAutoEnableNewGroupsLive}
             />
           </TabsPanel>
 
-          <TabsPanel value="vod-movie">
+          <TabsPanel
+            value="vod-movie"
+            style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
+          >
             <VODCategoryFilter
               playlist={playlist}
               categoryStates={movieCategoryStates}
               setCategoryStates={setMovieCategoryStates}
               type="movie"
-              autoEnableNewGroups={autoEnableNewGroupsVod}
-              setAutoEnableNewGroups={setAutoEnableNewGroupsVod}
             />
           </TabsPanel>
 
-          <TabsPanel value="vod-series">
+          <TabsPanel
+            value="vod-series"
+            style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
+          >
             <VODCategoryFilter
               playlist={playlist}
               categoryStates={seriesCategoryStates}
               setCategoryStates={setSeriesCategoryStates}
               type="series"
-              autoEnableNewGroups={autoEnableNewGroupsSeries}
-              setAutoEnableNewGroups={setAutoEnableNewGroupsSeries}
             />
+          </TabsPanel>
+
+          <TabsPanel value="raw-data">
+            {developerMode && <M3UDeveloperCatalog accountId={playlist.id} />}
           </TabsPanel>
         </Tabs>
 
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-          <Button variant="default" onClick={onClose} size="xs">
-            Cancel
-          </Button>
+          {showRefreshAction && (
+            <Button
+              type="button"
+              variant="default"
+              disabled={refreshDisabled}
+              loading={activeAction === 'refresh'}
+              onClick={refreshCurrentTab}
+            >
+              {refreshLabel}
+            </Button>
+          )}
           <Button
-            type="submit"
+            type="button"
             variant="filled"
             color="blue"
             disabled={isLoading}
+            loading={activeAction === 'save'}
             onClick={submit}
           >
-            Save and Refresh
+            Save
           </Button>
         </Flex>
       </Stack>

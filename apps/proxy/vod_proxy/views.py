@@ -3,11 +3,13 @@ VOD (Video on Demand) proxy views for handling movie and series streaming.
 Supports M3U profiles for authentication and URL transformation.
 """
 
+import json
 import time
 import random
 import logging
 import requests
 from urllib.parse import urlencode
+from django.core.exceptions import ValidationError
 from django.db import close_old_connections
 from django.http import JsonResponse, Http404, HttpResponse, HttpResponseRedirect
 from django.shortcuts import get_object_or_404
@@ -15,7 +17,11 @@ from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
 from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from apps.m3u.models import M3UAccountProfile
-from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
+from apps.proxy.vod_proxy.multi_worker_connection_manager import (
+    MultiWorkerVODConnectionManager,
+    disconnect_grace_deadline,
+    infer_content_type_from_url,
+)
 from .utils import get_client_info
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.response import Response
@@ -32,10 +38,15 @@ logger = logging.getLogger(__name__)
 
 _request_times = {}
 
-# Distinguishes "no language resolved / feature not in play" (default, legacy
-# priority ordering) from "resolved language is unknown" (`None`, still a
-# real answer that should group with other unknown-language relations).
-_LANGUAGE_UNSET = object()
+
+def _record_playback_best_effort(**kwargs):
+    """Persist playback history without ever turning playback into an error."""
+    try:
+        from apps.vod.playback import record_playback_selection
+
+        record_playback_selection(**kwargs)
+    except Exception as exc:
+        logger.warning("[VOD-HISTORY] Could not persist playback history: %s", exc)
 
 
 def _parse_preferred_vod_params(request):
@@ -76,19 +87,33 @@ def _find_idle_vod_session(
     utc_start=None,
     utc_end=None,
     offset=None,
+    user=None,
 ):
     """
-    Return an idle Redis session_id matching this viewer/content, or None.
+    Return a logical Redis session_id matching this viewer/content, or None.
 
     Used before minting a new session or Redirecting, so a reconnect that
     omitted session_id can resume an existing proxy pool instead of starting
-    a new provider hop.
+    a new provider hop. The previous physical Range request may still be
+    winding down when the replacement request arrives.
     """
-    content_obj, _relation, _candidates = _get_content_and_relation(
-        content_type, content_id, preferred_m3u_account_id, preferred_stream_id
+    from apps.vod.policies import ordered_candidates, policy_for_user
+
+    policy = policy_for_user(user)
+    content_obj, relation, _candidates = _get_content_and_relation(
+        content_type,
+        content_id,
+        preferred_m3u_account_id,
+        preferred_stream_id,
+        scope_preferred_category=False,
     )
-    if not content_obj:
+    if not content_obj or not relation:
         return None
+
+    allowed = ordered_candidates(_candidates, policy, relation)
+    if not allowed:
+        return None
+    relation = allowed[0]
 
     try:
         manager = MultiWorkerVODConnectionManager.get_instance()
@@ -100,6 +125,8 @@ def _find_idle_vod_session(
             utc_start=utc_start,
             utc_end=utc_end,
             offset=offset,
+            source_key=_vod_source_key(content_type, relation),
+            user_id=user.id if user else None,
         )
     except Exception as e:
         logger.warning("[VOD-SESSION] Idle session match failed: %s", e)
@@ -149,44 +176,6 @@ def _vod_session_path_redirect(request, session_id, profile_id=None, user=None):
     return HttpResponse(status=301, headers={"Location": redirect_url})
 
 
-def _order_candidates_by_language(candidates, content_obj, content_language):
-    """
-    Rank candidates for a resolved language group: matching-language
-    relations first (best quality, then priority), then every other relation
-    as a fallback. This never filters candidates outright, so a title with
-    no playable relation in its language group still plays something
-    rather than 404ing.
-
-    Shared by movies and episodes: `category_id_for_relation` resolves the
-    category indirection difference between the two (a movie relation carries
-    its own `category`; an episode relation inherits one from its parent
-    `series_relation`), so this ranking is otherwise identical for both.
-
-    The anchor/winner relation that got us here is not privileged: playback
-    re-ranks the whole language group by quality independently of it.
-    """
-    from apps.vod.language import (
-        category_id_for_relation, get_category_metadata, resolve_language,
-        resolve_quality, quality_rank,
-    )
-
-    cat_meta = get_category_metadata()
-
-    def _rank(cand):
-        rel_lang = (cand.custom_properties or {}).get('language')
-        meta = cat_meta.get((cand.m3u_account_id, category_id_for_relation(cand)))
-        resolved = resolve_language(rel_lang, meta)
-        quality = resolve_quality(content_obj.name, meta)
-        return (
-            0 if resolved == content_language else 1,
-            quality_rank(quality),
-            -cand.m3u_account.priority,
-            cand.id,
-        )
-
-    return sorted(candidates, key=_rank)
-
-
 def _select_vod_stream(
     content_type,
     content_id,
@@ -194,8 +183,8 @@ def _select_vod_stream(
     preferred_stream_id=None,
     profile_id=None,
     session_id=None,
+    user=None,
     allowed_m3u_profiles=None,
-    content_language=_LANGUAGE_UNSET,
 ):
     """
     Resolve content to a provider URL and M3U profile.
@@ -204,30 +193,55 @@ def _select_vod_stream(
     capacity. Redirect and proxy both use this selection; Redirect simply does
     not reserve/hold a slot after picking a URL.
 
-    `content_language`, when set (movies and episodes, resolved by the caller
-    from the requested stream_id's language group), reorders candidates by
-    quality within that group instead of the legacy priority-only order.
-
-    Returns a dict with content_obj, m3u_account, m3u_profile, current_connections,
-    and final_stream_url; or None when nothing usable is found.
+    Returns the selected content, profile, URL, and compact source metadata;
+    or None when nothing usable is found.
     """
+    from apps.vod.policies import ordered_candidates, policy_for_user
+
+    policy = policy_for_user(user)
     content_obj, relation, candidates = _get_content_and_relation(
-        content_type, content_id, preferred_m3u_account_id, preferred_stream_id
+        content_type,
+        content_id,
+        preferred_m3u_account_id,
+        preferred_stream_id,
+        scope_preferred_category=False,
     )
     if not content_obj or not relation:
         return None
 
-    # An explicit provider/stream pin (query params) always wins over
-    # language-group ranking.
-    if (
-        content_language is not _LANGUAGE_UNSET
-        and content_type in ('movie', 'episode')
-        and not preferred_stream_id
-        and not preferred_m3u_account_id
-    ):
-        ordered = _order_candidates_by_language(candidates, content_obj, content_language)
-    else:
-        ordered = _order_candidates(candidates, relation)
+    ordered = ordered_candidates(candidates, policy, relation)
+    pinned_source_key = _session_pinned_source_key(session_id)
+    if pinned_source_key:
+        ordered = [
+            candidate
+            for candidate in ordered
+            if _vod_source_key(content_type, candidate) == pinned_source_key
+        ]
+        if not ordered:
+            logger.warning(
+                "[VOD-SESSION] Session %s is pinned to unavailable source %s",
+                session_id,
+                pinned_source_key,
+            )
+            return None
+    failover_chain = []
+
+    def failover_step(candidate, result):
+        return {
+            "relation_id": candidate.id,
+            "m3u_account_id": candidate.m3u_account_id,
+            "m3u_account_name": candidate.m3u_account.name,
+            "category_id": getattr(candidate, "category_id", None),
+            "category_name": getattr(
+                getattr(candidate, "category", None), "name", ""
+            ),
+            "provider_asset_id": str(
+                getattr(candidate, "stream_id", None)
+                or getattr(candidate, "external_series_id", None)
+                or ""
+            ),
+            "result": result,
+        }
     if allowed_m3u_profiles is not None:
         candidate_profiles = [
             (cand, selected_profile)
@@ -239,7 +253,6 @@ def _select_vod_stream(
 
     for cand, selected_profile in candidate_profiles:
         cand_account = cand.m3u_account
-
         restrict_to_profile_ids = (
             {p.id for p in allowed_m3u_profiles.get(cand.m3u_account_id, [])}
             if allowed_m3u_profiles is not None
@@ -252,6 +265,7 @@ def _select_vod_stream(
             restrict_to_profile_ids=restrict_to_profile_ids,
         )
         if not profile_result or not profile_result[0]:
+            failover_chain.append(failover_step(cand, "at_capacity"))
             logger.warning(
                 "[VOD-FAILOVER] Account %s at capacity or has no profile, trying next",
                 cand_account.name,
@@ -263,13 +277,13 @@ def _select_vod_stream(
         if not final_stream_url or not final_stream_url.startswith(
             ("http://", "https://")
         ):
-            if final_stream_url:
-                logger.warning(
-                    "[VOD-FAILOVER] Invalid stream URL from account %s profile %s: %s",
-                    cand_account.name,
-                    getattr(m3u_profile, "id", None),
-                    final_stream_url,
-                )
+            failover_chain.append(failover_step(cand, "invalid_url"))
+            logger.warning(
+                "[VOD-FAILOVER] Invalid stream URL from account %s profile %s: %s",
+                cand_account.name,
+                getattr(m3u_profile, "id", None),
+                final_stream_url,
+            )
             continue
 
         logger.info(
@@ -277,18 +291,113 @@ def _select_vod_stream(
             cand_account.name,
             cand_account.priority,
         )
+        failover_chain.append(failover_step(cand, "selected"))
+        source_metadata = _build_vod_source_metadata_best_effort(
+            content_type,
+            content_obj,
+            cand,
+        )
+        if policy:
+            source_metadata["access_policy_id"] = policy.id
+            source_metadata["access_policy_export_mode"] = policy.export_mode
         return {
             "content_obj": content_obj,
             "m3u_account": cand_account,
             "m3u_profile": m3u_profile,
             "current_connections": current_connections,
             "final_stream_url": final_stream_url,
+            "relation": cand,
+            "failover_chain": failover_chain,
+            "source_metadata": source_metadata,
         }
 
     return None
 
 
-def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
+def _session_pinned_source_key(session_id):
+    """Return the concrete source already leased by a logical VOD session."""
+    if not session_id:
+        return None
+    try:
+        from core.utils import RedisClient
+
+        redis_client = RedisClient.get_client()
+        if not redis_client:
+            return None
+        value = redis_client.hget(
+            f"vod_persistent_connection:{session_id}", "source_key"
+        )
+        if isinstance(value, bytes):
+            value = value.decode()
+        if value:
+            return value
+        pending = _pending_vod_source_switch(redis_client, session_id)
+        return pending.get("source_key") if pending else None
+    except Exception as exc:
+        logger.warning(
+            "[VOD-SESSION] Could not read pinned source for %s: %s",
+            session_id,
+            exc,
+        )
+        return None
+
+
+def _vod_source_switch_key(session_id):
+    return f"vod_proxy:source_switch:{session_id}"
+
+
+def _pending_vod_source_switch(redis_client, session_id):
+    """Return a validated pending manual source choice, if one exists."""
+    if not redis_client or not session_id:
+        return None
+    try:
+        raw = redis_client.get(_vod_source_switch_key(session_id))
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        value = json.loads(raw or "{}")
+        if not isinstance(value, dict) or not value.get("source_key"):
+            return None
+        return value
+    except (TypeError, ValueError):
+        return None
+
+
+def _prepare_pending_vod_source_switch(connection_manager, session_id):
+    """Retire an idle source lease before the player's next Range request.
+
+    An active provider response is never replaced underneath its generator.
+    Immediate switches first signal that generator to stop; either mode is
+    applied only once the old physical request is idle.
+    """
+    redis_client = connection_manager.redis_client
+    pending = _pending_vod_source_switch(redis_client, session_id)
+    if not pending:
+        return None
+    connection_key = f"vod_persistent_connection:{session_id}"
+    if not redis_client.exists(connection_key):
+        return pending
+    try:
+        active_streams = int(
+            redis_client.hget(connection_key, "active_streams") or 0
+        )
+    except (TypeError, ValueError):
+        active_streams = 0
+    if active_streams > 0:
+        return None
+    if connection_manager.stop_logical_session(
+        session_id, reason="manual_source_switch"
+    ):
+        return pending
+    return None
+
+
+def _get_content_and_relation(
+    content_type,
+    content_id,
+    preferred_m3u_account_id=None,
+    preferred_stream_id=None,
+    scope_preferred_category=False,
+):
     """Get the content object and its M3U relation"""
     try:
         logger.info(f"[CONTENT-LOOKUP] Looking up {content_type} with UUID {content_id}")
@@ -298,7 +407,10 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             logger.info(f"[CONTENT-LOOKUP] Preferred stream ID: {preferred_stream_id}")
 
         if content_type == 'movie':
-            content_obj = Movie.objects.filter(uuid=content_id).first()
+            try:
+                content_obj = Movie.objects.filter(uuid=content_id).first()
+            except (ValidationError, ValueError, TypeError):
+                content_obj = None
             if content_obj is None and preferred_stream_id:
                 # UUIDs are regenerated when process_movie_batch
                 # (apps/vod/tasks.py) creates duplicate vod_movie records
@@ -315,7 +427,9 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account_id=preferred_m3u_account_id,
                                 m3u_account__is_active=True)
-                        .select_related('movie', 'm3u_account__user_agent')
+                        .select_related(
+                            'movie', 'm3u_account__user_agent', 'category',
+                        )
                         .first()
                     )
                 if rel is None:
@@ -323,7 +437,9 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         M3UMovieRelation.objects
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account__is_active=True)
-                        .select_related('movie', 'm3u_account__user_agent')
+                        .select_related(
+                            'movie', 'm3u_account__user_agent', 'category',
+                        )
                         .order_by('-m3u_account__priority', 'id')
                         .first()
                     )
@@ -349,14 +465,31 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             candidates = list(
                 content_obj.m3u_relations
                 .filter(m3u_account__is_active=True)
-                .select_related('m3u_account__user_agent')
+                .select_related(
+                    'm3u_account__user_agent', 'category'
+                )
                 .order_by('-m3u_account__priority', 'id')
             )
 
             if preferred_stream_id:
                 specific_relation = next(
-                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
+                    (
+                        r for r in candidates
+                        if str(r.stream_id) == str(preferred_stream_id)
+                        and (
+                            not preferred_m3u_account_id
+                            or r.m3u_account_id == preferred_m3u_account_id
+                        )
+                    ),
+                    None,
+                )
                 if specific_relation:
+                    if scope_preferred_category:
+                        candidates = _category_scoped_candidates(
+                            content_type,
+                            candidates,
+                            specific_relation,
+                        )
                     logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
                     return content_obj, specific_relation, candidates
                 else:
@@ -378,7 +511,10 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             return content_obj, relation, candidates
 
         elif content_type == 'episode':
-            content_obj = Episode.objects.filter(uuid=content_id).first()
+            try:
+                content_obj = Episode.objects.filter(uuid=content_id).first()
+            except (ValidationError, ValueError, TypeError):
+                content_obj = None
             if content_obj is None and preferred_stream_id:
                 # Same rationale as the movie branch above — episode UUIDs
                 # are regenerated when process_series_batch creates
@@ -390,7 +526,11 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account_id=preferred_m3u_account_id,
                                 m3u_account__is_active=True)
-                        .select_related('episode', 'm3u_account__user_agent')
+                        .select_related(
+                            'episode__series',
+                            'm3u_account__user_agent',
+                            'series_relation__category',
+                        )
                         .first()
                     )
                 if rel is None:
@@ -398,7 +538,11 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         M3UEpisodeRelation.objects
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account__is_active=True)
-                        .select_related('episode', 'm3u_account__user_agent')
+                        .select_related(
+                            'episode__series',
+                            'm3u_account__user_agent',
+                            'series_relation__category',
+                        )
                         .order_by('-m3u_account__priority', 'id')
                         .first()
                     )
@@ -421,20 +565,36 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             # Materialise the active relations once (single DB hit), ordered by
             # priority. Selection below is done in memory, and the full ordered
             # list is returned so the caller can fail over without re-querying.
-            # series_relation is needed by category_id_for_relation (an episode
-            # relation has no category of its own; it inherits its parent
-            # series relation's) when language-group ranking runs.
             candidates = list(
                 content_obj.m3u_relations
                 .filter(m3u_account__is_active=True)
-                .select_related('m3u_account__user_agent', 'series_relation')
+                .select_related(
+                    'episode__series',
+                    'm3u_account__user_agent',
+                    'series_relation__category',
+                )
                 .order_by('-m3u_account__priority', 'id')
             )
 
             if preferred_stream_id:
                 specific_relation = next(
-                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
+                    (
+                        r for r in candidates
+                        if str(r.stream_id) == str(preferred_stream_id)
+                        and (
+                            not preferred_m3u_account_id
+                            or r.m3u_account_id == preferred_m3u_account_id
+                        )
+                    ),
+                    None,
+                )
                 if specific_relation:
+                    if scope_preferred_category:
+                        candidates = _category_scoped_candidates(
+                            content_type,
+                            candidates,
+                            specific_relation,
+                        )
                     logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
                     return content_obj, specific_relation, candidates
                 else:
@@ -470,14 +630,33 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             candidates = list(
                 episode.m3u_relations
                 .filter(m3u_account__is_active=True)
-                .select_related('m3u_account__user_agent')
+                .select_related(
+                    'episode__series',
+                    'm3u_account__user_agent',
+                    'series_relation__category',
+                )
                 .order_by('-m3u_account__priority', 'id')
             )
 
             if preferred_stream_id:
                 specific_relation = next(
-                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
+                    (
+                        r for r in candidates
+                        if str(r.stream_id) == str(preferred_stream_id)
+                        and (
+                            not preferred_m3u_account_id
+                            or r.m3u_account_id == preferred_m3u_account_id
+                        )
+                    ),
+                    None,
+                )
                 if specific_relation:
+                    if scope_preferred_category:
+                        candidates = _category_scoped_candidates(
+                            content_type,
+                            candidates,
+                            specific_relation,
+                        )
                     logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
                     return episode, specific_relation, candidates
                 else:
@@ -504,6 +683,152 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
     except Exception as e:
         logger.error(f"Error getting content object: {e}")
         return None, None, []
+
+
+def _category_scoped_candidates(content_type, candidates, preferred_relation):
+    """Keep failover inside the category represented by an exact source."""
+    if content_type == 'movie':
+        category_id = preferred_relation.category_id
+        return [r for r in candidates if r.category_id == category_id]
+
+    series_relation = getattr(preferred_relation, 'series_relation', None)
+    category_id = getattr(series_relation, 'category_id', None)
+    return [
+        r for r in candidates
+        if getattr(getattr(r, 'series_relation', None), 'category_id', None)
+        == category_id
+    ]
+
+
+def _vod_source_key(content_type, relation):
+    """Stable identity used to prevent cross-source idle-session reuse."""
+    if not relation:
+        return ''
+    media_type = 'movie' if content_type == 'movie' else 'episode'
+    return f'{media_type}:{relation.m3u_account_id}:{relation.stream_id}'
+
+
+def _build_vod_source_metadata(content_type, content_obj, relation):
+    """Build compact source metadata once, while joined relations are loaded."""
+    from apps.vod.utils import (
+        get_series_display_name,
+        get_vod_display_name,
+        get_vod_source_name,
+    )
+    from apps.vod.metadata import effective_relation_metadata
+
+    if not relation:
+        return {}
+
+    if content_type == 'movie':
+        category = relation.category
+        source_name = get_vod_source_name(relation, content_obj.name)
+        display_name = get_vod_display_name(content_obj, relation)
+        episode_name = ''
+        detail_content_type = 'movie'
+        detail_canonical_id = content_obj.id
+        detail_relation_id = relation.id
+    else:
+        episode = relation.episode
+        series_relation = relation.series_relation
+        category = series_relation.category if series_relation else None
+        series = episode.series
+        source_name = get_vod_source_name(series_relation, series.name)
+        display_name = get_series_display_name(series, series_relation)
+        relation_props = relation.custom_properties or {}
+        provider_episode = relation_props.get('info') or {}
+        if not isinstance(provider_episode, dict):
+            provider_episode = {}
+        provider_info = provider_episode.get('info') or {}
+        if not isinstance(provider_info, dict):
+            provider_info = {}
+        episode_name = (
+            provider_episode.get('title')
+            or provider_info.get('name')
+            or episode.name
+        )
+        detail_content_type = 'series'
+        detail_canonical_id = series.id
+        detail_relation_id = (
+            series_relation.id if series_relation is not None else None
+        )
+
+    account_name = relation.m3u_account.name
+    category_name = category.name if category else ''
+    return {
+        'key': _vod_source_key(content_type, relation),
+        'relation_id': relation.id,
+        'canonical_id': content_obj.id,
+        'detail_content_type': detail_content_type,
+        'detail_canonical_id': detail_canonical_id,
+        'detail_relation_id': detail_relation_id,
+        'account_id': relation.m3u_account_id,
+        'account_name': account_name,
+        'category_id': category.id if category else None,
+        'category_name': category_name,
+        'label': (
+            f'{account_name} — {category_name}'
+            if category_name else account_name
+        ),
+        'stream_id': str(relation.stream_id),
+        'source_name': source_name,
+        'display_name': display_name,
+        'episode_name': episode_name,
+        'technical_metadata': effective_relation_metadata(relation).get(
+            'values', {}
+        ),
+    }
+
+
+def _build_vod_source_metadata_best_effort(content_type, content_obj, relation):
+    """Never let optional stats/history metadata block media playback."""
+    try:
+        return _build_vod_source_metadata(content_type, content_obj, relation)
+    except Exception as exc:
+        logger.warning(
+            "[VOD-METADATA] Source metadata unavailable for relation %s: %s",
+            getattr(relation, "id", None),
+            exc,
+            exc_info=True,
+        )
+        category = (
+            getattr(relation, "category", None)
+            or getattr(getattr(relation, "series_relation", None), "category", None)
+        )
+        account_name = getattr(getattr(relation, "m3u_account", None), "name", "")
+        category_name = getattr(category, "name", "")
+        return {
+            "key": _vod_source_key(content_type, relation),
+            "relation_id": getattr(relation, "id", None),
+            "canonical_id": getattr(content_obj, "id", None),
+            "detail_content_type": (
+                "movie" if content_type == "movie" else "series"
+            ),
+            "detail_canonical_id": (
+                getattr(content_obj, "id", None)
+                if content_type == "movie"
+                else getattr(getattr(content_obj, "series", None), "id", None)
+            ),
+            "detail_relation_id": (
+                getattr(relation, "id", None)
+                if content_type == "movie"
+                else getattr(
+                    getattr(relation, "series_relation", None), "id", None
+                )
+            ),
+            "account_id": getattr(relation, "m3u_account_id", None),
+            "account_name": account_name,
+            "category_id": getattr(category, "id", None),
+            "category_name": category_name,
+            "label": (
+                f"{account_name} — {category_name}"
+                if category_name
+                else account_name
+            ),
+            "stream_id": str(getattr(relation, "stream_id", "")),
+            "technical_metadata": {},
+        }
+
 
 def _order_candidates(candidates, preferred_relation=None):
     """In-memory ordering helper (no DB access).
@@ -563,6 +888,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profi
         from apps.m3u.connection_pool import (
             get_profile_connection_count,
             pool_has_capacity_for_profile,
+            reconcile_profile_connection_count,
         )
         redis_client = RedisClient.get_client()
 
@@ -590,6 +916,20 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profi
                     **profile_filters
                 ).select_related('m3u_account__user_agent').first()
             return (selected_profile, 0) if selected_profile else None
+
+        def capacity(profile):
+            current = get_profile_connection_count(profile, redis_client)
+            available = pool_has_capacity_for_profile(profile, redis_client)
+            if (
+                not available
+                and profile.max_streams > 0
+                and current >= profile.max_streams
+            ):
+                current = reconcile_profile_connection_count(
+                    profile.id, redis_client
+                )
+                available = pool_has_capacity_for_profile(profile, redis_client)
+            return available, current
 
         # Check if this session already has an active connection
         if session_id:
@@ -639,9 +979,9 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profi
                     m3u_account=m3u_account,
                     is_active=True
                 )
-                current_connections = get_profile_connection_count(profile, redis_client)
+                available, current_connections = capacity(profile)
 
-                if pool_has_capacity_for_profile(profile, redis_client):
+                if available:
                     logger.info(f"[PROFILE-SELECTION] Using requested profile {profile.id}: {current_connections}/{profile.max_streams} connections")
                     return (profile, current_connections)
                 logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
@@ -673,9 +1013,9 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profi
             profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
 
         for profile in profiles:
-            current_connections = get_profile_connection_count(profile, redis_client)
+            available, current_connections = capacity(profile)
 
-            if pool_has_capacity_for_profile(profile, redis_client):
+            if available:
                 logger.info(f"[PROFILE-SELECTION] Selected profile {profile.id} ({profile.name}): {current_connections}/{profile.max_streams} connections")
                 return (profile, current_connections)
             else:
@@ -708,10 +1048,10 @@ def _vod_playback_allowed(content_type, user):
     return True
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
-def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None, content_language=_LANGUAGE_UNSET):
+def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
     """
     Stream VOD content (movies or series episodes) with session-based connection reuse
 
@@ -720,9 +1060,16 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         content_id: ID of the content
         session_id: Optional session ID from URL path (for persistent connections)
         profile_id: Optional M3U profile ID for authentication
-        content_language: Resolved language group (movies and episodes) from
-            the XC stream_id the client requested; see _select_vod_stream.
     """
+    if request.method == "HEAD":
+        return head_vod(
+            request._request,
+            content_type,
+            content_id,
+            session_id,
+            profile_id,
+            user,
+        )
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
     user = _user_from_vod_request(request, user)
@@ -806,38 +1153,33 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             request
         )
 
-        # First request (no session_id): decide Redirect vs mint. The idle
-        # fingerprint match (ip/user-agent/content, same as the connection
-        # manager already uses for reconnects) only needs checking when
-        # Redirect is the active default; proxy-mode installs mint exactly
-        # as before, with no extra Redis lookup on this path.
+        # First request (no session_id): adopt an existing logical playback before
+        # deciding Redirect vs proxy mint. Some IPTV clients return to the
+        # original XC URL for every buffered Range request and do not retain
+        # Dispatcharr's prior session path.
         if not session_id:
-            if CoreSettings.is_default_stream_profile_redirect():
-                # A reconnect/retry for content we're already proxying should
-                # keep using that session rather than hopping to the provider,
-                # so an idle match wins over Redirect and adopts that session
-                # directly (redirecting the client to its own URL, so later
-                # Range/seek requests keep targeting the right session).
-                matched_session_id = _find_idle_vod_session(
-                    content_type,
-                    content_id,
-                    preferred_m3u_account_id,
-                    preferred_stream_id,
-                    client_ip,
-                    client_user_agent,
-                    utc_start=utc_start,
-                    utc_end=utc_end,
-                    offset=offset,
+            matched_session_id = _find_idle_vod_session(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                client_ip,
+                client_user_agent,
+                utc_start=utc_start,
+                utc_end=utc_end,
+                offset=offset,
+                user=user,
+            )
+            if matched_session_id:
+                logger.info(
+                    "[VOD-SESSION] Adopting logical session %s",
+                    matched_session_id,
                 )
-                if matched_session_id:
-                    logger.info(
-                        "[VOD-SESSION] Adopting idle session %s (skip Redirect/mint)",
-                        matched_session_id,
-                    )
-                    return _vod_session_path_redirect(
-                        request, matched_session_id, profile_id=profile_id, user=user
-                    )
+                return _vod_session_path_redirect(
+                    request, matched_session_id, profile_id=profile_id, user=user
+                )
 
+            if CoreSettings.is_default_stream_profile_redirect():
                 # 301 to provider (no session mint, no slot hold, no probe).
                 # Capacity still gates provider selection.
                 from apps.m3u.utils import get_allowed_m3u_profiles
@@ -848,8 +1190,8 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                     preferred_m3u_account_id,
                     preferred_stream_id,
                     profile_id,
+                    user=user,
                     allowed_m3u_profiles=get_allowed_m3u_profiles(user),
-                    content_language=content_language,
                 )
                 if not selected:
                     logger.error(
@@ -862,6 +1204,32 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                     "[VOD-REDIRECT] Redirecting to provider URL: %s",
                     selected["final_stream_url"],
                 )
+                selected_relation = selected.get("relation")
+                if selected_relation is not None:
+                    from apps.vod.models import VODPlaybackSession
+
+                    redirect_session_id = (
+                        f"redirect_{int(time.time() * 1000)}_"
+                        f"{random.randint(1000, 9999)}"
+                    )
+                    _record_playback_best_effort(
+                        session_id=redirect_session_id,
+                        user=user,
+                        relation=selected_relation,
+                        mode=VODPlaybackSession.Mode.REDIRECT,
+                        status=VODPlaybackSession.Status.REDIRECTED,
+                        client_ip=client_ip,
+                        user_agent=client_user_agent,
+                        failover_chain=selected.get("failover_chain"),
+                        custom_properties={
+                            "source_effective_metadata": selected.get(
+                                "source_metadata", {}
+                            ).get("technical_metadata", {}),
+                            "episode_name": selected.get(
+                                "source_metadata", {}
+                            ).get("episode_name", ""),
+                        },
+                    )
                 close_old_connections()
                 return HttpResponseRedirect(selected["final_stream_url"])
 
@@ -885,12 +1253,26 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             except Exception:
                 pass
 
+        connection_manager = MultiWorkerVODConnectionManager.get_instance()
+        connection_manager.retire_other_idle_sessions_for_viewer(
+            client_ip=client_ip,
+            client_user_agent=client_user_agent,
+            user_id=user.id if user else None,
+            keep_session_id=session_id,
+        )
+        pending_source_switch = _prepare_pending_vod_source_switch(
+            connection_manager,
+            session_id,
+        )
+
         if user:
             if not check_user_stream_limits(user, session_id, media_id=content_id):
                 return JsonResponse(
                     {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
                     status=429
                 )
+
+        from apps.m3u.utils import get_allowed_m3u_profiles
 
         selected = _select_vod_stream(
             content_type,
@@ -899,7 +1281,8 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             preferred_stream_id,
             profile_id,
             session_id,
-            content_language=content_language,
+            user=user,
+            allowed_m3u_profiles=get_allowed_m3u_profiles(user),
         )
         if not selected:
             logger.error(
@@ -914,6 +1297,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         m3u_profile = selected["m3u_profile"]
         current_connections = selected["current_connections"]
         final_stream_url = selected["final_stream_url"]
+        source_metadata = selected.get("source_metadata", {})
 
         logger.info(f"[VOD-CONTENT] Found content: {getattr(content_obj, 'name', 'Unknown')}")
         logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
@@ -924,8 +1308,6 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         )
 
         # Get connection manager (Redis-backed for multi-worker support)
-        connection_manager = MultiWorkerVODConnectionManager.get_instance()
-
         # Release ORM checkout before returning a long-lived StreamingHttpResponse.
         close_old_connections()
 
@@ -944,7 +1326,47 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             offset=offset,
             range_header=range_header,
             user=user,
+            source_metadata=source_metadata,
         )
+
+        if response.status_code < 400 and pending_source_switch:
+            try:
+                connection_manager.redis_client.delete(
+                    _vod_source_switch_key(session_id)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[VOD-SWITCH] Could not clear applied switch for %s: %s",
+                    session_id,
+                    exc,
+                )
+
+        selected_relation = selected.get("relation")
+        if selected_relation is not None and response.status_code < 400:
+            from apps.vod.models import VODPlaybackSession
+
+            _record_playback_best_effort(
+                session_id=response.get("X-Dispatcharr-Session", session_id),
+                user=user,
+                relation=selected_relation,
+                mode=VODPlaybackSession.Mode.PROXY,
+                status=VODPlaybackSession.Status.PROXYING,
+                client_ip=client_ip,
+                user_agent=client_user_agent,
+                failover_chain=selected.get("failover_chain"),
+                custom_properties={
+                    "source_effective_metadata": source_metadata.get(
+                        "technical_metadata", {}
+                    ),
+                    "episode_name": source_metadata.get("episode_name", ""),
+                    "manual_source_switch": bool(pending_source_switch),
+                    "previous_relation_id": (
+                        pending_source_switch.get("from_relation_id")
+                        if pending_source_switch
+                        else None
+                    ),
+                },
+            )
 
         logger.info(f"[VOD-SUCCESS] Stream response created successfully, type: {type(response)}")
         return response
@@ -956,7 +1378,14 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 @api_view(["HEAD"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
-def head_vod(request, content_type, content_id, session_id=None, profile_id=None):
+def head_vod(
+    request,
+    content_type,
+    content_id,
+    session_id=None,
+    profile_id=None,
+    user=None,
+):
     """
     Handle HEAD requests for FUSE filesystem integration
 
@@ -971,6 +1400,8 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
     logger.info(f"[VOD-HEAD] HEAD request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
 
     try:
+        if user is None:
+            user = request.user if request.user.is_authenticated else None
         # Get client info for M3U profile selection
         client_ip, client_user_agent = get_client_info(request)
         logger.info(f"[VOD-HEAD] Client info - IP: {client_ip}, User-Agent: {client_user_agent[:50] if client_user_agent else 'None'}...")
@@ -995,6 +1426,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                     preferred_stream_id,
                     client_ip,
                     client_user_agent,
+                    user=user,
                 )
                 if not matched_session_id:
                     from apps.m3u.utils import get_allowed_m3u_profiles
@@ -1005,6 +1437,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                         preferred_m3u_account_id,
                         preferred_stream_id,
                         profile_id,
+                        user=user,
                         allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                     )
                     if not selected:
@@ -1018,6 +1451,29 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                         "[VOD-HEAD] Redirecting to provider URL: %s",
                         selected["final_stream_url"],
                     )
+                    selected_relation = selected.get("relation")
+                    if selected_relation is not None:
+                        from apps.vod.models import VODPlaybackSession
+
+                        _record_playback_best_effort(
+                            session_id=(
+                                f"head_redirect_{int(time.time() * 1000)}_"
+                                f"{random.randint(1000, 9999)}"
+                            ),
+                            user=user,
+                            relation=selected_relation,
+                            mode=VODPlaybackSession.Mode.REDIRECT,
+                            status=VODPlaybackSession.Status.REDIRECTED,
+                            client_ip=client_ip,
+                            user_agent=client_user_agent,
+                            failover_chain=selected.get("failover_chain"),
+                            custom_properties={
+                                "request_method": "HEAD",
+                                "source_effective_metadata": selected.get(
+                                    "source_metadata", {}
+                                ).get("technical_metadata", {}),
+                            },
+                        )
                     return HttpResponseRedirect(selected["final_stream_url"])
 
             path_parts = request.path.rstrip('/').split('/')
@@ -1040,6 +1496,8 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             session_url = request.path
             logger.info(f"[VOD-HEAD] Using existing session: {session_id}")
 
+        from apps.m3u.utils import get_allowed_m3u_profiles
+
         selected = _select_vod_stream(
             content_type,
             content_id,
@@ -1047,6 +1505,8 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             preferred_stream_id,
             profile_id,
             session_id,
+            user=user,
+            allowed_m3u_profiles=get_allowed_m3u_profiles(user),
         )
         if not selected:
             logger.error(
@@ -1161,6 +1621,29 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
         head_response['X-Session-URL'] = session_url
         head_response['X-Dispatcharr-Session'] = session_id
 
+        selected_relation = selected.get("relation")
+        if selected_relation is not None:
+            from apps.vod.models import VODPlaybackSession
+
+            _record_playback_best_effort(
+                session_id=session_id,
+                user=user,
+                relation=selected_relation,
+                mode=VODPlaybackSession.Mode.PROXY,
+                status=VODPlaybackSession.Status.REQUESTED,
+                client_ip=client_ip,
+                user_agent=client_user_agent,
+                failover_chain=selected.get("failover_chain"),
+                custom_properties={
+                    "request_method": "HEAD",
+                    "provider_content_type": content_type_header,
+                    "provider_content_length": total_size,
+                    "source_effective_metadata": selected.get(
+                        "source_metadata", {}
+                    ).get("technical_metadata", {}),
+                },
+            )
+
         logger.info(f"[VOD-HEAD] Returning HEAD response with session URL: {session_url}")
         return head_response
 
@@ -1197,10 +1680,41 @@ def build_vod_stats_data(redis_client):
                         for k, v in connection_data.items():
                             combined_data[k] = v
 
+                        source_metadata = {}
+                        try:
+                            source_metadata = json.loads(
+                                combined_data.get('source_metadata') or '{}'
+                            )
+                            if not isinstance(source_metadata, dict):
+                                source_metadata = {}
+                        except (TypeError, ValueError):
+                            source_metadata = {}
+
                         # Get content info from the connection data (using correct field names)
                         content_type = combined_data.get('content_obj_type', 'unknown')
                         content_uuid = combined_data.get('content_uuid', 'unknown')
                         client_id = session_id
+                        active_streams = int(
+                            combined_data.get('active_streams', 0) or 0
+                        )
+                        grace_key = f"vod_proxy:disconnect_grace:{session_id}"
+                        grace_token = redis_client.get(grace_key)
+                        if isinstance(grace_token, bytes):
+                            grace_token = grace_token.decode()
+                        reconnecting = bool(grace_token)
+                        reconnect_expires_at = disconnect_grace_deadline(
+                            grace_token
+                        )
+                        pending_source_switch = _pending_vod_source_switch(
+                            redis_client,
+                            session_id,
+                        )
+
+                        # HEAD requests may pre-create provider/session state.
+                        # Only expose sessions that are transferring bytes or
+                        # waiting briefly for a seek/reconnect request.
+                        if active_streams <= 0 and not reconnecting:
+                            continue
 
                         # Get content info with enhanced metadata
                         content_name = "Unknown"
@@ -1242,7 +1756,7 @@ def build_vod_stats_data(redis_client):
                                 }
                             elif content_type == 'episode':
                                 content_obj = Episode.objects.select_related('series', 'series__logo').get(uuid=content_uuid)
-                                content_name = f"{content_obj.series.name} - {content_obj.name}"
+                                content_name = content_obj.name
 
                                 # Get duration from content object
                                 duration_secs = None
@@ -1271,6 +1785,24 @@ def build_vod_stats_data(redis_client):
                                 }
                         except:
                             pass
+
+                        # Source details were captured at selection time, so
+                        # stats stay exact without another relation query per
+                        # active connection.
+                        if content_type == 'movie':
+                            content_name = (
+                                source_metadata.get('display_name')
+                                or content_name
+                            )
+                        elif content_type == 'episode':
+                            content_metadata['series_name'] = (
+                                source_metadata.get('display_name')
+                                or content_metadata.get('series_name')
+                            )
+                            content_metadata['episode_name'] = (
+                                source_metadata.get('episode_name')
+                                or content_metadata.get('episode_name')
+                            )
 
                         # Get M3U profile information
                         m3u_profile_info = {}
@@ -1343,8 +1875,55 @@ def build_vod_stats_data(redis_client):
                             'content_uuid': content_uuid,
                             'content_name': content_name,
                             'content_metadata': content_metadata,
+                            'source': source_metadata,
+                            'technical_metadata': source_metadata.get(
+                                'technical_metadata', {}
+                            ),
+                            # The VOD proxy forwards provider bytes unchanged.
+                            # Keep source and delivery details separate from
+                            # live-TV output profiles, which may run ffmpeg.
+                            'delivery_mode': 'proxy_passthrough',
+                            'source_container': str(
+                                source_metadata.get('technical_metadata', {}).get(
+                                    'container_extension',
+                                    '',
+                                )
+                                or ''
+                            ).lower(),
+                            'delivered_container': str(
+                                source_metadata.get('technical_metadata', {}).get(
+                                    'container_extension',
+                                    '',
+                                )
+                                or ''
+                            ).lower(),
+                            'delivered_content_type': combined_data.get(
+                                'content_type',
+                                '',
+                            ),
                             'm3u_profile': m3u_profile_info,
                             'client_id': client_id,
+                            'active_streams': active_streams,
+                            'connection_state': (
+                                'streaming' if active_streams > 0 else 'reconnecting'
+                            ),
+                            'provider_connection_active': active_streams > 0,
+                            'slot_reserved': True,
+                            'reconnect_expires_at': reconnect_expires_at,
+                            'reconnect_seconds_remaining': (
+                                max(
+                                    0,
+                                    int(reconnect_expires_at - current_time),
+                                )
+                                if reconnect_expires_at is not None
+                                else None
+                            ),
+                            'source_switch_pending': bool(pending_source_switch),
+                            'requested_relation_id': (
+                                pending_source_switch.get('relation_id')
+                                if pending_source_switch
+                                else None
+                            ),
                             'client_ip': combined_data.get('client_ip', 'Unknown'),
                             'user_id': combined_data.get('user_id', '0'),
                             'user_agent': combined_data.get('client_user_agent', 'Unknown'),
@@ -1481,23 +2060,189 @@ def stop_vod_client(request):
             logger.warning(f"VOD connection not found: {client_id}")
             return JsonResponse({'error': 'Connection not found'}, status=404)
 
-        # Set a stop signal key that the worker will check
-        stop_key = get_vod_client_stop_key(client_id)
-        redis_client.setex(stop_key, 60, "true")  # 60 second TTL
+        if not connection_manager.stop_logical_session(client_id):
+            return JsonResponse({'error': 'Connection not found'}, status=404)
 
-        logger.info(f"Set stop signal for VOD client: {client_id}")
+        logger.info(f"Stopped or signalled VOD client: {client_id}")
 
         return JsonResponse({
             'message': 'VOD client stop signal sent',
             'client_id': client_id,
-            'stop_key': stop_key
         })
 
     except Exception as e:
         logger.error(f"Error stopping VOD client: {e}", exc_info=True)
         return JsonResponse({'error': str(e)}, status=500)
 
-@api_view(["GET"])
+
+@csrf_exempt
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def switch_vod_source(request):
+    """Queue one eligible Compact source for an existing logical playback."""
+    client_id = str(request.data.get("client_id") or "").strip()
+    mode = str(request.data.get("mode") or "next_request").strip()
+    try:
+        relation_id = int(request.data.get("relation_id"))
+    except (TypeError, ValueError):
+        relation_id = 0
+    if not client_id or relation_id <= 0:
+        return JsonResponse(
+            {"error": "client_id and relation_id are required"}, status=400
+        )
+    if mode not in {"next_request", "now"}:
+        return JsonResponse(
+            {"error": "mode must be next_request or now"}, status=400
+        )
+
+    connection_manager = MultiWorkerVODConnectionManager.get_instance()
+    redis_client = connection_manager.redis_client
+    if not redis_client:
+        return JsonResponse({"error": "Redis not available"}, status=500)
+    raw_state = redis_client.hgetall(
+        f"vod_persistent_connection:{client_id}"
+    )
+    if not raw_state:
+        return JsonResponse({"error": "Connection not found"}, status=404)
+    state = {
+        (key.decode() if isinstance(key, bytes) else key): (
+            value.decode() if isinstance(value, bytes) else value
+        )
+        for key, value in raw_state.items()
+    }
+    content_type = state.get("content_obj_type")
+    content_uuid = state.get("content_uuid")
+    if content_type == "movie":
+        relation = (
+            M3UMovieRelation.objects.select_related(
+                "movie", "m3u_account", "category"
+            )
+            .filter(
+                pk=relation_id,
+                movie__uuid=content_uuid,
+                m3u_account__is_active=True,
+            )
+            .first()
+        )
+    elif content_type == "episode":
+        relation = (
+            M3UEpisodeRelation.objects.select_related(
+                "episode",
+                "m3u_account",
+                "series_relation__category",
+            )
+            .filter(
+                pk=relation_id,
+                episode__uuid=content_uuid,
+                m3u_account__is_active=True,
+            )
+            .first()
+        )
+    else:
+        relation = None
+    if relation is None:
+        return JsonResponse(
+            {"error": "Source does not belong to this playback"}, status=404
+        )
+
+    try:
+        source_metadata = json.loads(state.get("source_metadata") or "{}")
+        if not isinstance(source_metadata, dict):
+            source_metadata = {}
+    except (TypeError, ValueError):
+        source_metadata = {}
+    current_source_key = state.get("source_key") or ""
+    requested_source_key = _vod_source_key(content_type, relation)
+    if current_source_key == requested_source_key:
+        return JsonResponse({"error": "Source is already active"}, status=400)
+
+    from apps.vod.models import VODAccessPolicy
+    from apps.vod.policies import (
+        policy_category_map,
+        policy_for_user,
+        relation_category_id,
+        relation_metadata,
+        relation_policy_evaluation,
+    )
+
+    policy = None
+    policy_id = source_metadata.get("access_policy_id")
+    if policy_id:
+        policy = VODAccessPolicy.objects.filter(pk=policy_id).first()
+    if policy is None:
+        try:
+            playback_user_id = int(state.get("user_id") or 0)
+        except (TypeError, ValueError):
+            playback_user_id = 0
+        playback_user = (
+            User.objects.filter(pk=playback_user_id).first()
+            if playback_user_id
+            else None
+        )
+        policy = policy_for_user(playback_user)
+    if policy is None:
+        return JsonResponse(
+            {"error": "This playback has no VOD output profile"}, status=409
+        )
+    if policy.export_mode != VODAccessPolicy.ExportMode.COMPACT:
+        return JsonResponse(
+            {"error": "Manual source switching is available in Compact mode"},
+            status=409,
+        )
+
+    category_mapping = policy_category_map(policy)
+    metadata = relation_metadata(
+        relation,
+        category_mapping.get(
+            (relation.m3u_account_id, relation_category_id(relation))
+        ),
+    )
+    evaluation = relation_policy_evaluation(
+        relation,
+        policy,
+        category_mapping=category_mapping,
+        metadata=metadata,
+    )
+    if not evaluation["allowed"]:
+        return JsonResponse(
+            {
+                "error": "Source is excluded by the VOD output profile",
+                "reason": evaluation["reason"],
+            },
+            status=409,
+        )
+
+    pending = {
+        "relation_id": relation.id,
+        "source_key": requested_source_key,
+        "from_relation_id": source_metadata.get("relation_id"),
+        "mode": mode,
+        "requested_at": time.time(),
+    }
+    redis_client.setex(
+        _vod_source_switch_key(client_id),
+        600,
+        json.dumps(pending, separators=(",", ":")),
+    )
+    if mode == "now":
+        connection_manager.stop_logical_session(
+            client_id, reason="manual_source_switch"
+        )
+    connection_manager._trigger_vod_stats_update()
+    return JsonResponse(
+        {
+            "message": (
+                "Source switch requested now"
+                if mode == "now"
+                else "Source will change on the next provider request"
+            ),
+            "client_id": client_id,
+            "relation_id": relation.id,
+            "mode": mode,
+        }
+    )
+
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def stream_xc_movie(request, username, password, stream_id, extension):
     if not network_access_allowed(request, "STREAMS"):
@@ -1524,40 +2269,42 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if not is_vod_movies_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    from apps.vod.language import (
-        vod_language_enabled, resolve_movie_relation, get_category_metadata, resolve_language,
+    movie_relations = M3UMovieRelation.objects.select_related(
+        'movie', 'm3u_account', 'category'
+    )
+    movie_relation = movie_relations.filter(
+        id=stream_id,
+        m3u_account__is_active=True,
+    ).order_by('-m3u_account__priority', 'id').first()
+    if not movie_relation:
+        # Keep compatibility with pre-profile XC URLs that exposed a canonical
+        # movie id instead of the concrete source-relation id.
+        movie_relation = movie_relations.filter(
+            movie_id=stream_id,
+            m3u_account__is_active=True,
+        ).order_by('-m3u_account__priority', 'id').first()
+    if not movie_relation:
+        return JsonResponse({"error": "Movie not found"}, status=404)
+    from apps.vod.policies import policy_for_user, relation_allowed
+    policy = policy_for_user(user)
+    if policy and not relation_allowed(movie_relation, policy):
+        return JsonResponse({"error": "Movie not found"}, status=404)
+
+    raw_request = request._request
+    raw_request.GET = raw_request.GET.copy()
+    raw_request.GET['m3u_account_id'] = str(movie_relation.m3u_account_id)
+    raw_request.GET['stream_id'] = str(movie_relation.stream_id)
+    handler = head_vod if request.method == "HEAD" else stream_vod
+    return handler(
+        raw_request,
+        'movie',
+        movie_relation.movie.uuid,
+        session_id,
+        profile_id,
+        user,
     )
 
-    content_language = _LANGUAGE_UNSET
-    if vod_language_enabled():
-        # stream_id is namespaced to M3UMovieRelation.id once any category
-        # has a language assigned; falls back to the legacy Movie.id lookup
-        # for stale clients.
-        movie_relation = resolve_movie_relation(stream_id)
-        if not movie_relation:
-            return JsonResponse({"error": "Movie not found"}, status=404)
-        cat_meta = get_category_metadata().get(
-            (movie_relation.m3u_account_id, movie_relation.category_id)
-        )
-        rel_lang = (movie_relation.custom_properties or {}).get('language')
-        content_language = resolve_language(rel_lang, cat_meta)
-    else:
-        # Users with movie access get it from all active M3U accounts
-        filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-        try:
-            # Order by account priority to get the best relation when multiple exist
-            movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-            if not movie_relation:
-                return JsonResponse({"error": "Movie not found"}, status=404)
-        except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
-            return JsonResponse({"error": "Movie not found"}, status=404)
-
-    return stream_vod(
-        request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user,
-        content_language=content_language,
-    )
-
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def stream_xc_episode(request, username, password, stream_id, extension):
     if not network_access_allowed(request, "STREAMS"):
@@ -1584,32 +2331,36 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     if not is_vod_series_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    from apps.vod.language import (
-        vod_language_enabled, resolve_episode_relation, get_category_metadata,
-        resolve_language, category_id_for_relation,
+    episode_relations = M3UEpisodeRelation.objects.select_related(
+        'episode', 'm3u_account', 'series_relation__category'
     )
+    episode_relation = episode_relations.filter(
+        id=stream_id,
+        m3u_account__is_active=True,
+    ).order_by('-m3u_account__priority', 'id').first()
+    if not episode_relation:
+        # Older XC catalogs used the canonical episode id in this path.
+        episode_relation = episode_relations.filter(
+            episode_id=stream_id,
+            m3u_account__is_active=True,
+        ).order_by('-m3u_account__priority', 'id').first()
+    if not episode_relation:
+        return JsonResponse({"error": "Episode not found"}, status=404)
+    from apps.vod.policies import policy_for_user, relation_allowed
+    policy = policy_for_user(user)
+    if policy and not relation_allowed(episode_relation, policy):
+        return JsonResponse({"error": "Episode not found"}, status=404)
 
-    content_language = _LANGUAGE_UNSET
-    if vod_language_enabled():
-        # stream_id is namespaced to M3UEpisodeRelation.id once any category
-        # has a language assigned; falls back to the legacy Episode.id lookup
-        # for stale clients (mirrors stream_xc_movie).
-        episode_relation = resolve_episode_relation(stream_id)
-        if not episode_relation:
-            return JsonResponse({"error": "Episode not found"}, status=404)
-        cat_meta = get_category_metadata().get(
-            (episode_relation.m3u_account_id, category_id_for_relation(episode_relation))
-        )
-        rel_lang = (episode_relation.custom_properties or {}).get('language')
-        content_language = resolve_language(rel_lang, cat_meta)
-    else:
-        # Users with series access get episodes from all active M3U accounts
-        filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not episode_relation:
-            return JsonResponse({"error": "Episode not found"}, status=404)
-
-    return stream_vod(
-        request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user,
-        content_language=content_language,
+    raw_request = request._request
+    raw_request.GET = raw_request.GET.copy()
+    raw_request.GET['m3u_account_id'] = str(episode_relation.m3u_account_id)
+    raw_request.GET['stream_id'] = str(episode_relation.stream_id)
+    handler = head_vod if request.method == "HEAD" else stream_vod
+    return handler(
+        raw_request,
+        'episode',
+        episode_relation.episode.uuid,
+        session_id,
+        profile_id,
+        user,
     )

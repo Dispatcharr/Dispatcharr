@@ -15,7 +15,6 @@ import {
   Tooltip,
 } from '@mantine/core';
 import {
-  convertToSec,
   formatDuration,
   fromNow,
   toFriendlyDuration,
@@ -23,7 +22,9 @@ import {
 } from '../../utils/dateTimeUtils.js';
 import {
   ChevronDown,
+  Eye,
   HardDriveUpload,
+  Shuffle,
   SquareX,
   Timer,
   Video,
@@ -38,8 +39,12 @@ import {
   getMovieSubtitle,
 } from '../../utils/cards/VodConnectionCardUtils.js';
 import useUsersStore from '../../store/users.jsx';
+import VODCandidateSourcesModal from '../VODCandidateSourcesModal.jsx';
 
 const ClientDetails = ({ connection, connectionStartTime }) => {
+  const technical = connection.technical_metadata || {};
+  const audio = technical.audio_languages || technical.languages || [];
+  const subtitles = technical.subtitle_languages || [];
   return (
     <Stack
       gap="xs"
@@ -92,6 +97,35 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
         </Group>
       )}
 
+      {typeof connection.provider_connection_active === 'boolean' && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Provider HTTP:
+          </Text>
+          <Text size="xs">
+            {connection.provider_connection_active ? 'Connected' : 'Closed'}
+          </Text>
+        </Group>
+      )}
+
+      {connection.slot_reserved && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Provider slot:
+          </Text>
+          <Text size="xs">
+            Reserved
+            {connection.reconnect_seconds_remaining !== null &&
+            connection.reconnect_seconds_remaining !== undefined
+              ? ` · up to ${toFriendlyDuration(
+                  connection.reconnect_seconds_remaining,
+                  'seconds'
+                )}`
+              : ''}
+          </Text>
+        </Group>
+      )}
+
       {/* Seek/Position Information */}
       {(connection.last_seek_percentage > 0 ||
         connection.last_seek_byte > 0) && (
@@ -120,7 +154,7 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
                 Seek Time:
               </Text>
               <Text size="xs">
-                {fromNow(convertToSec(Number(connection.last_seek_timestamp)))}
+                {fromNow(Number(connection.last_seek_timestamp) * 1000)}
               </Text>
             </Group>
           )}
@@ -135,6 +169,78 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
           <Text size="xs">
             {(connection.bytes_sent / (1024 * 1024)).toFixed(1)} MB
           </Text>
+        </Group>
+      )}
+
+      {connection.delivery_mode && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Delivery:
+          </Text>
+          <Text size="xs">
+            {connection.delivery_mode === 'proxy_passthrough'
+              ? 'Byte proxy (pass-through)'
+              : connection.delivery_mode}
+          </Text>
+        </Group>
+      )}
+
+      {(connection.source_container || technical.container_extension) && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Source Format:
+          </Text>
+          <Text size="xs">
+            {(
+              connection.source_container || technical.container_extension
+            ).toUpperCase()}
+          </Text>
+        </Group>
+      )}
+
+      {(connection.delivered_container ||
+        connection.delivered_content_type) && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Delivered Format:
+          </Text>
+          <Text size="xs">
+            {connection.delivered_container
+              ? connection.delivered_container.toUpperCase()
+              : connection.delivered_content_type}
+            {connection.delivered_content_type &&
+              connection.delivered_container &&
+              ` (${connection.delivered_content_type})`}
+          </Text>
+        </Group>
+      )}
+
+      {(technical.resolution || technical.height) && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Resolution:
+          </Text>
+          <Text size="xs">
+            {technical.resolution || `${technical.height}p`}
+          </Text>
+        </Group>
+      )}
+
+      {audio.length > 0 && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Audio:
+          </Text>
+          <Text size="xs">{audio.join(', ')}</Text>
+        </Group>
+      )}
+
+      {subtitles.length > 0 && (
+        <Group gap={8}>
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            Subtitles:
+          </Text>
+          <Text size="xs">{subtitles.join(', ')}</Text>
         </Group>
       )}
     </Stack>
@@ -172,9 +278,15 @@ const ConnectionProgress = ({ connection, durationSecs }) => {
 };
 
 // Create a VOD Card component similar to ChannelCard
-const VodConnectionCard = ({ vodContent, stopVODClient }) => {
+const VodConnectionCard = ({
+  vodContent,
+  stopVODClient,
+  switchVODSource,
+  openVODDetails,
+}) => {
   const { fullDateTimeFormat } = useDateTimeFormat();
   const [isClientExpanded, setIsClientExpanded] = useState(false);
+  const [sourceOrderOpen, setSourceOrderOpen] = useState(false);
   const users = useUsersStore((s) => s.users);
   const usersMap = useMemo(() => {
     const map = {};
@@ -204,6 +316,28 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
   const connection =
     vodContent.individual_connection ||
     (vodContent.connections && vodContent.connections[0]);
+  const source = connection?.source || {};
+  const technical = connection?.technical_metadata || {};
+  const reconnectSecondsRemaining = connection?.reconnect_expires_at
+    ? Math.max(
+        0,
+        Math.ceil(connection.reconnect_expires_at - Date.now() / 1000)
+      )
+    : connection?.reconnect_seconds_remaining;
+  const canInspectSources = Boolean(
+    connection?.client_id &&
+    source.access_policy_id &&
+    source.access_policy_export_mode === 'compact' &&
+    source.canonical_id &&
+    source.relation_id
+  );
+  const detailContentType =
+    source.detail_content_type || (isMovie ? 'movie' : null);
+  const detailCanonicalId =
+    source.detail_canonical_id || (isMovie ? source.canonical_id : null);
+  const canOpenDetails = Boolean(
+    openVODDetails && detailContentType && detailCanonicalId
+  );
 
   // Get poster/logo URL
   const posterUrl = metadata.logo_url || logo;
@@ -289,6 +423,25 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
           </Box>
 
           <Group>
+            {connection?.connection_state === 'reconnecting' && (
+              <Tooltip
+                multiline
+                maw={360}
+                label={`The provider HTTP connection is closed. Dispatcharr keeps only the logical source and provider slot reserved for the player's next Range request${Number.isFinite(reconnectSecondsRemaining) ? ` for up to ${toFriendlyDuration(reconnectSecondsRemaining, 'seconds')}` : ''}.`}
+              >
+                <Badge color="yellow" variant="light">
+                  Buffered / reconnecting
+                  {Number.isFinite(reconnectSecondsRemaining)
+                    ? ` · ${toFriendlyDuration(reconnectSecondsRemaining, 'seconds')}`
+                    : ''}
+                </Badge>
+              </Tooltip>
+            )}
+            {connection?.source_switch_pending && (
+              <Badge color="orange" variant="light">
+                Source switch pending
+              </Badge>
+            )}
             {connection && (
               <Tooltip
                 label={`Connected at ${getConnectionStartTime(connection)}`}
@@ -312,6 +465,42 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
                 </Tooltip>
               </Center>
             )}
+            {canInspectSources && switchVODSource && (
+              <Center>
+                <Tooltip label="View or switch Compact source">
+                  <ActionIcon
+                    variant="transparent"
+                    color="blue"
+                    aria-label="View or switch Compact source"
+                    onClick={() => setSourceOrderOpen(true)}
+                  >
+                    <Shuffle size="22" />
+                  </ActionIcon>
+                </Tooltip>
+              </Center>
+            )}
+            {canOpenDetails && (
+              <Center>
+                <Tooltip label="Open VOD details">
+                  <ActionIcon
+                    variant="transparent"
+                    color="blue"
+                    aria-label={`Open details for ${getDisplayTitle()}`}
+                    onClick={() =>
+                      openVODDetails({
+                        id: detailCanonicalId,
+                        name: getDisplayTitle(),
+                        contentType: detailContentType,
+                        content_type: detailContentType,
+                        relation_id: source.detail_relation_id,
+                      })
+                    }
+                  >
+                    <Eye size="22" />
+                  </ActionIcon>
+                </Tooltip>
+              </Center>
+            )}
           </Group>
         </Group>
 
@@ -331,23 +520,32 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
 
         {/* Display M3U profile information - matching channel card style */}
         {connection &&
-          connection.m3u_profile &&
-          (connection.m3u_profile.profile_name ||
-            connection.m3u_profile.account_name) && (
+          (source.label ||
+            connection.m3u_profile?.profile_name ||
+            connection.m3u_profile?.account_name) && (
             <Flex justify="flex-end" align="flex-start" mt={-8}>
               <Group gap={5} align="flex-start">
                 <HardDriveUpload size="18" mt={2} />
                 <Stack gap={0}>
-                  <Tooltip label="M3U Account">
+                  <Tooltip label="M3U account and VOD category">
                     <Text size="xs" fw={500}>
-                      {connection.m3u_profile.account_name || 'Unknown Account'}
+                      {source.label ||
+                        connection.m3u_profile?.account_name ||
+                        'Unknown Account'}
                     </Text>
                   </Tooltip>
-                  <Tooltip label="M3U Profile">
+                  {connection.m3u_profile?.profile_name && (
+                    <Tooltip label="M3U Profile">
+                      <Text size="xs" c="dimmed">
+                        {connection.m3u_profile.profile_name}
+                      </Text>
+                    </Tooltip>
+                  )}
+                  {source.stream_id && (
                     <Text size="xs" c="dimmed">
-                      {connection.m3u_profile.profile_name || 'Default Profile'}
+                      Stream ID: {source.stream_id}
                     </Text>
-                  </Tooltip>
+                  )}
                 </Stack>
               </Group>
             </Flex>
@@ -387,6 +585,23 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
               </Badge>
             </Tooltip>
           )}
+          {(technical.resolution || technical.height) && (
+            <Badge size="sm" variant="light" color="cyan">
+              {technical.resolution || `${technical.height}p`}
+            </Badge>
+          )}
+          {(technical.audio_languages || technical.languages || []).map(
+            (language) => (
+              <Badge key={`audio-${language}`} size="sm" variant="light">
+                Audio {language}
+              </Badge>
+            )
+          )}
+          {(technical.subtitle_languages || []).map((language) => (
+            <Badge key={`subtitle-${language}`} size="sm" variant="outline">
+              Subs {language}
+            </Badge>
+          ))}
         </Group>
 
         {/* Progress bar - show current position in content */}
@@ -458,6 +673,18 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
           </Stack>
         )}
       </Stack>
+      <VODCandidateSourcesModal
+        opened={sourceOrderOpen}
+        onClose={() => setSourceOrderOpen(false)}
+        profileId={source.access_policy_id}
+        contentType={contentType}
+        canonicalId={source.canonical_id}
+        currentRelationId={source.relation_id}
+        title={getDisplayTitle()}
+        onSwitch={(relationId, mode) =>
+          switchVODSource(connection.client_id, relationId, mode)
+        }
+      />
     </Card>
   );
 };

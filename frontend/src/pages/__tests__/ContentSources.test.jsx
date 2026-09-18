@@ -24,6 +24,20 @@ describe('ContentSourcesPage', () => {
     expect(element).toBeInTheDocument();
   });
 
+  it('can show only M3U providers', () => {
+    useUserAgentsStore.mockReturnValue(null);
+    render(<ContentSourcesPage section="m3u" />);
+    expect(screen.getByTestId('m3us-table')).toBeInTheDocument();
+    expect(screen.queryByTestId('epgs-table')).not.toBeInTheDocument();
+  });
+
+  it('can show only EPG providers', () => {
+    useUserAgentsStore.mockReturnValue(null);
+    render(<ContentSourcesPage section="epg" />);
+    expect(screen.queryByTestId('m3us-table')).not.toBeInTheDocument();
+    expect(screen.getByTestId('epgs-table')).toBeInTheDocument();
+  });
+
   it('no error renders tables', () => {
     useUserAgentsStore.mockReturnValue(null);
     render(<ContentSourcesPage />);

@@ -504,7 +504,7 @@ const setupMocks = ({
       setSelectedChannelIds: vi.fn(),
       setExpandedChannelId: vi.fn(),
       setPagination: vi.fn(),
-       setSorting,
+      setSorting,
       setAllQueryIds: vi.fn(),
     })
   );
@@ -514,7 +514,9 @@ const setupMocks = ({
 
   vi.mocked(useChannelsStore).mockImplementation((sel) =>
     sel({
-      channelIds: channels.filter(Boolean).map((c) => c.id),
+      channelIds: (Array.isArray(channels) ? channels : [])
+        .filter(Boolean)
+        .map((c) => c.id),
       profiles,
       selectedProfileId,
       channelGroups,
@@ -1256,9 +1258,7 @@ describe('ChannelsTable', () => {
       setupMocks({ setSorting });
       vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
         defaultValue,
-        key === 'channels-table-column-sizing'
-          ? setColumnSizing
-          : vi.fn(),
+        key === 'channels-table-column-sizing' ? setColumnSizing : vi.fn(),
       ]);
       render(<ChannelsTable />);
 
@@ -1318,24 +1318,27 @@ describe('ChannelsTable', () => {
       expect(() => render(<ChannelsTable />)).not.toThrow();
     });
 
+    it('does not crash and refetches when the channels store is undefined', async () => {
+      setupMocks({ channels: undefined });
+
+      expect(() => render(<ChannelsTable />)).not.toThrow();
+      await waitFor(() => expect(queryChannels).toHaveBeenCalledTimes(2));
+    });
+
     it('refetches only once while the channels array contains nullish entries', async () => {
       const channel = makeChannel({ id: 14, streams: [] });
       const channels = [channel, null];
       setupMocks({ channels });
       const view = render(<ChannelsTable />);
       // Once from the normal mount fetch, once from the self-heal effect.
-      await waitFor(() =>
-        expect(queryChannels).toHaveBeenCalledTimes(2)
-      );
+      await waitFor(() => expect(queryChannels).toHaveBeenCalledTimes(2));
 
       setupMocks({ channels });
       view.rerender(<ChannelsTable />);
 
       // The regular fetch effect runs again because the test store creates a
       // new pagination object, but the repair effect does not issue another fetch.
-      await waitFor(() =>
-        expect(queryChannels).toHaveBeenCalledTimes(3)
-      );
+      await waitFor(() => expect(queryChannels).toHaveBeenCalledTimes(3));
     });
   });
 

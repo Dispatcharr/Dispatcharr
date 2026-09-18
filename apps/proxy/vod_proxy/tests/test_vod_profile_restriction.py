@@ -1,6 +1,7 @@
 """_get_m3u_profile must never fall back to a profile outside the Redirect-mode
 allowlist, even when the requested/default profile is at capacity."""
 
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -41,11 +42,21 @@ class GetM3uProfileRestrictionTests(TestCase):
             max_streams=1,
         )
 
+    @contextmanager
     def _patch_redis(self, values=None):
-        return patch(
+        redis_client = FakeRedis(values)
+
+        def keep_observed_count(profile_id, client):
+            return int(client.get(f"profile_connections:{profile_id}") or 0)
+
+        with patch(
             "core.utils.RedisClient.get_client",
-            return_value=FakeRedis(values),
-        )
+            return_value=redis_client,
+        ), patch(
+            "apps.m3u.connection_pool.reconcile_profile_connection_count",
+            side_effect=keep_observed_count,
+        ):
+            yield redis_client
 
     def test_unrestricted_falls_back_to_default_profile(self):
         with self._patch_redis():

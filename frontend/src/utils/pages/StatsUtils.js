@@ -12,6 +12,10 @@ export const stopVODClient = async (clientId) => {
   await API.stopVODClient(clientId);
 };
 
+export const switchVODSource = async (clientId, relationId, mode) => {
+  return await API.switchVODSource(clientId, relationId, mode);
+};
+
 export const stopTimeshiftSession = async (sessionId) => {
   await API.stopTimeshiftSession(sessionId);
 };

@@ -1242,6 +1242,35 @@ class BackupTasksTestCase(TestCase):
         if Path(self.temp_backup_dir).exists():
             shutil.rmtree(self.temp_backup_dir)
 
+    @patch("apps.vod.catalog_cache.selection_catalog_generation")
+    @patch("apps.vod.catalog_cache.bump_catalog_generation")
+    @patch("django.core.cache.cache.delete_many")
+    def test_restore_refreshes_vod_runtime_state(
+        self,
+        mock_delete_many,
+        mock_bump_catalog_generation,
+        mock_selection_catalog_generation,
+    ):
+        from apps.vod.catalog_cache import GENERATION_KEY, SELECTION_GENERATION_KEY
+        from apps.vod.profile_selection import PROFILE_REBUILD_ENQUEUE_KEY
+        from apps.vod.tasks import VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY
+        from apps.backups.tasks import _refresh_vod_runtime_state_after_restore
+
+        _refresh_vod_runtime_state_after_restore()
+
+        mock_delete_many.assert_called_once_with(
+            [
+                GENERATION_KEY,
+                SELECTION_GENERATION_KEY,
+                PROFILE_REBUILD_ENQUEUE_KEY,
+                VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY,
+            ]
+        )
+        mock_bump_catalog_generation.assert_called_once_with(
+            invalidate_selections=False
+        )
+        mock_selection_catalog_generation.assert_called_once_with()
+
     @patch('apps.backups.tasks.services.list_backups')
     @patch('apps.backups.tasks.services.delete_backup')
     def test_cleanup_old_backups_keeps_recent(self, mock_delete, mock_list):

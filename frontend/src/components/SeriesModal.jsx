@@ -7,7 +7,6 @@ import {
   Image,
   Text,
   Title,
-  Select,
   Badge,
   Loader,
   Stack,
@@ -24,6 +23,7 @@ import {
   TabsList,
   TabsPanel,
   TabsTab,
+  Alert,
 } from '@mantine/core';
 import { Play, Copy } from 'lucide-react';
 import { copyToClipboard } from '../utils';
@@ -32,7 +32,6 @@ import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
 import {
   formatDuration,
-  formatStreamLabel,
   getEpisodeAirdate,
   getEpisodeStreamUrl,
   getTmdbUrlLink,
@@ -41,13 +40,19 @@ import {
   imdbUrl,
   sortBySeasonNumber,
   sortEpisodesList,
-  tmdbUrl,
 } from '../utils/components/SeriesModalUtils.js';
 import { YouTubeTrailerModal } from './modals/YouTubeTrailerModal.jsx';
+import VODSourceList from './VODSourceList.jsx';
+import VODSourceMetadataModal from './VODSourceMetadataModal.jsx';
+import VODExternalIds from './VODExternalIds.jsx';
+import VODEnrichmentButton from './VODEnrichmentButton.jsx';
+import VODCanonicalMetadataModal from './VODCanonicalMetadataModal.jsx';
+import API from '../api';
+import { showNotification } from '../utils/notificationUtils';
 
 const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
   return (
-    <Flex gap="md">
+    <Flex gap="md" wrap="wrap">
       {displaySeries.series_image ||
       displaySeries.logo?.cache_url ||
       displaySeries.logo?.url ? (
@@ -107,32 +112,17 @@ const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
           {displaySeries.episode_count && (
             <Badge color="gray">{displaySeries.episode_count} episodes</Badge>
           )}
-          {/* imdb_id and tmdb_id badges */}
-          {displaySeries.imdb_id && (
-            <Badge
-              color="yellow"
-              component="a"
-              href={imdbUrl(displaySeries.imdb_id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ cursor: 'pointer' }}
-            >
-              IMDb
-            </Badge>
-          )}
-          {displaySeries.tmdb_id && (
-            <Badge
-              color="cyan"
-              component="a"
-              href={tmdbUrl(displaySeries.tmdb_id, 'tv')}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ cursor: 'pointer' }}
-            >
-              TMDb
-            </Badge>
-          )}
+          {displaySeries.is_anime && <Badge color="pink">Anime</Badge>}
+          {displaySeries.adult && <Badge color="red">Adult</Badge>}
         </Group>
+
+        <VODExternalIds
+          contentType="series"
+          contentId={displaySeries.id}
+          tmdb={displaySeries.tmdb}
+          tmdbId={displaySeries.tmdb_id}
+          imdbId={displaySeries.imdb_id}
+        />
 
         {/* Release date */}
         {displaySeries.release_date && (
@@ -147,6 +137,16 @@ const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
           </Text>
         )}
 
+        {displaySeries.keywords?.length > 0 && (
+          <Text size="sm" c="dimmed">
+            <strong>Keywords:</strong>{' '}
+            {displaySeries.keywords
+              .map((row) => (typeof row === 'string' ? row : row?.name))
+              .filter(Boolean)
+              .join(', ')}
+          </Text>
+        )}
+
         {displaySeries.director && (
           <Text size="sm" c="dimmed">
             <strong>Director:</strong> {displaySeries.director}
@@ -156,6 +156,12 @@ const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
         {displaySeries.cast && (
           <Text size="sm" c="dimmed">
             <strong>Cast:</strong> {displaySeries.cast}
+          </Text>
+        )}
+
+        {displaySeries.crew && (
+          <Text size="sm" c="dimmed">
+            <strong>Crew:</strong> {displaySeries.crew}
           </Text>
         )}
 
@@ -341,12 +347,29 @@ const Episode = ({ episode, displaySeries }) => {
   );
 };
 
-const SeriesModal = ({ series, opened, onClose }) => {
-  const { fetchSeriesInfo, fetchSeriesProviders } = useVODStore();
+const SeriesModal = ({
+  series,
+  opened,
+  onClose,
+  onMetadataChanged,
+  onCanonicalMoved,
+  initialRelationId = null,
+  allowSourceEditing = true,
+  profileCandidates = null,
+  profileCandidatesLoading = false,
+  profileCandidatesError = '',
+}) => {
+  const fetchSeriesInfo = useVODStore((state) => state.fetchSeriesInfo);
+  const fetchSeriesProviders = useVODStore(
+    (state) => state.fetchSeriesProviders
+  );
   const showVideo = useVideoStore((s) => s.showVideo);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
   const [detailedSeries, setDetailedSeries] = useState(null);
+  const [canonicalSeriesDetails, setCanonicalSeriesDetails] = useState(null);
+  const [detailedSeriesProviderId, setDetailedSeriesProviderId] =
+    useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [activeTab, setActiveTab] = useState(null);
   const [expandedEpisode, setExpandedEpisode] = useState(null);
@@ -354,62 +377,148 @@ const SeriesModal = ({ series, opened, onClose }) => {
   const [trailerUrl, setTrailerUrl] = useState('');
   const [providers, setProviders] = useState([]);
   const [selectedProvider, setSelectedProvider] = useState(null);
+  const [editingProvider, setEditingProvider] = useState(null);
+  const [editingCanonical, setEditingCanonical] = useState(false);
+  const [unlockingMetadata, setUnlockingMetadata] = useState(false);
+  const [dataView, setDataView] = useState('primary');
   const [loadingProviders, setLoadingProviders] = useState(false);
+  const providersRequestIdRef = useRef(0);
   const detailsRequestIdRef = useRef(0);
+  const profilePreferenceAppliedRef = useRef('');
+  const seriesRef = useRef(series);
+  seriesRef.current = series;
 
   useEffect(() => {
-    if (opened && series) {
-      const requestId = ++detailsRequestIdRef.current;
-      // Fetch detailed series info which now includes episodes
+    if (opened && series?.id) {
+      const providersRequestId = ++providersRequestIdRef.current;
+      const detailsRequestId = ++detailsRequestIdRef.current;
       setLoadingDetails(true);
-      fetchSeriesInfo(series.id)
-        .then((details) => {
-          if (detailsRequestIdRef.current !== requestId) return;
-          setDetailedSeries(details);
-        })
-        .catch((error) => {
-          if (detailsRequestIdRef.current !== requestId) return;
-          console.warn(
-            'Failed to fetch series details, using basic info:',
-            error
-          );
-          setDetailedSeries(series); // Fallback to basic data
-        })
-        .finally(() => {
-          if (detailsRequestIdRef.current === requestId) {
-            setLoadingDetails(false);
-          }
-        });
-
-      // Fetch available providers (does not re-trigger series info fetch)
       setLoadingProviders(true);
       fetchSeriesProviders(series.id)
         .then((providersData) => {
+          if (providersRequestIdRef.current !== providersRequestId) return null;
           setProviders(providersData);
-          if (providersData.length > 0) {
-            setSelectedProvider(providersData[0]);
+          // Profile ordering can supersede only the detail/episode request.
+          // The provider list itself is already complete at this point.
+          setLoadingProviders(false);
+          const provider =
+            providersData.find(
+              (item) => String(item.id) === String(initialRelationId)
+            ) ||
+            providersData[0] ||
+            null;
+          setSelectedProvider(provider);
+          return (
+            provider
+              ? fetchSeriesInfo(series.id, provider.id)
+              : fetchSeriesInfo(series.id)
+          ).then((details) => ({ details, providerId: provider?.id || null }));
+        })
+        .then((result) => {
+          if (
+            !result?.details ||
+            detailsRequestIdRef.current !== detailsRequestId
+          ) {
+            return;
+          }
+          const { details, providerId } = result;
+          setDetailedSeries(details);
+          setCanonicalSeriesDetails(details);
+          setDetailedSeriesProviderId(providerId);
+          if (providerId && details.source_metadata) {
+            setProviders((current) =>
+              current.map((provider) =>
+                String(provider.id) === String(providerId)
+                  ? { ...provider, source_metadata: details.source_metadata }
+                  : provider
+              )
+            );
           }
         })
         .catch((error) => {
+          if (detailsRequestIdRef.current !== detailsRequestId) return;
           console.error('Failed to fetch series providers:', error);
-          setProviders([]);
+          setDetailedSeries(seriesRef.current);
         })
         .finally(() => {
-          setLoadingProviders(false);
+          if (providersRequestIdRef.current === providersRequestId) {
+            setLoadingProviders(false);
+          }
+          if (detailsRequestIdRef.current === detailsRequestId) {
+            setLoadingDetails(false);
+          }
         });
     }
-  }, [opened, series, fetchSeriesInfo, fetchSeriesProviders]);
+  }, [
+    initialRelationId,
+    opened,
+    series?.id,
+    fetchSeriesInfo,
+    fetchSeriesProviders,
+  ]);
 
   useEffect(() => {
     if (!opened) {
+      providersRequestIdRef.current += 1;
       detailsRequestIdRef.current += 1;
+      profilePreferenceAppliedRef.current = '';
       setDetailedSeries(null);
+      setCanonicalSeriesDetails(null);
+      setDetailedSeriesProviderId(null);
       setLoadingDetails(false);
       setProviders([]);
       setSelectedProvider(null);
+      setEditingProvider(null);
+      setEditingCanonical(false);
+      setDataView('primary');
       setLoadingProviders(false);
     }
   }, [opened]);
+
+  useEffect(() => {
+    if (!opened || !providers.length || !profileCandidates?.results?.length) {
+      return;
+    }
+    const preferred = profileCandidates.results.find(
+      (row) => row.allowed && row.position === 1
+    );
+    const signature = `${profileCandidates.profile_id}:${profileCandidates.canonical_id}:${profileCandidates.edition_key || ''}:${preferred?.relation_id || ''}`;
+    if (!preferred || profilePreferenceAppliedRef.current === signature) return;
+    const provider = providers.find(
+      (candidate) => String(candidate.id) === String(preferred.relation_id)
+    );
+    if (!provider) return;
+    profilePreferenceAppliedRef.current = signature;
+    setSelectedProvider(provider);
+    setDetailedSeriesProviderId(null);
+    const requestId = ++detailsRequestIdRef.current;
+    setLoadingDetails(true);
+    setDetailedSeries((current) =>
+      current
+        ? { ...current, episodesList: [], source_metadata: null }
+        : current
+    );
+    fetchSeriesInfo(series.id, provider.id)
+      .then((details) => {
+        if (detailsRequestIdRef.current !== requestId) return;
+        setCanonicalSeriesDetails((current) => current || details);
+        setDetailedSeries(details);
+        setDetailedSeriesProviderId(provider.id);
+        if (details.source_metadata) {
+          setProviders((current) =>
+            current.map((candidate) =>
+              String(candidate.id) === String(provider.id)
+                ? { ...candidate, source_metadata: details.source_metadata }
+                : candidate
+            )
+          );
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (detailsRequestIdRef.current === requestId) setLoadingDetails(false);
+      });
+  }, [fetchSeriesInfo, opened, profileCandidates, providers, series?.id]);
 
   // Get episodes from the store based on the series ID
   const seriesEpisodes = React.useMemo(() => {
@@ -475,20 +584,32 @@ const SeriesModal = ({ series, opened, onClose }) => {
     setTrailerModalOpened(true);
   };
 
-  const onChangeSelectedProvider = (value) => {
-    const provider = providers.find((p) => p.id.toString() === value);
+  const onChangeSelectedProvider = (provider) => {
+    if (!provider || provider.id === selectedProvider?.id) return;
     setSelectedProvider(provider);
     if (provider) {
+      setDetailedSeriesProviderId(null);
       const requestId = ++detailsRequestIdRef.current;
       setLoadingDetails(true);
       // Clear episodes immediately so the previous provider's list cannot flash
       setDetailedSeries((prev) =>
-        prev ? { ...prev, episodesList: [] } : prev
+        prev ? { ...prev, episodesList: [], source_metadata: null } : prev
       );
       fetchSeriesInfo(series.id, provider.id)
         .then((details) => {
           if (detailsRequestIdRef.current !== requestId) return;
+          setCanonicalSeriesDetails((current) => current || details);
           setDetailedSeries(details);
+          setDetailedSeriesProviderId(provider.id);
+          if (details.source_metadata) {
+            setProviders((current) =>
+              current.map((candidate) =>
+                String(candidate.id) === String(provider.id)
+                  ? { ...candidate, source_metadata: details.source_metadata }
+                  : candidate
+              )
+            );
+          }
         })
         .catch(() => {})
         .finally(() => {
@@ -499,21 +620,200 @@ const SeriesModal = ({ series, opened, onClose }) => {
     }
   };
 
+  const updateProvider = (updatedProvider) => {
+    setProviders((current) =>
+      current.map((provider) =>
+        provider.id === updatedProvider.id ? updatedProvider : provider
+      )
+    );
+    setSelectedProvider((current) =>
+      current?.id === updatedProvider.id ? updatedProvider : current
+    );
+    setDetailedSeries((current) =>
+      String(detailedSeriesProviderId || '') ===
+        String(updatedProvider.id || '') && current
+        ? { ...current, source_metadata: updatedProvider.source_metadata }
+        : current
+    );
+    onMetadataChanged?.();
+  };
+
+  const reloadAfterEnrichment = async (result = null) => {
+    if (result?.target && Number(result.target.id) !== Number(series.id)) {
+      await onMetadataChanged?.();
+      if (onCanonicalMoved) {
+        onCanonicalMoved({
+          ...result.target,
+          name: result.target.title,
+          contentType: 'series',
+        });
+      } else {
+        onClose();
+      }
+      return;
+    }
+    const requestId = ++detailsRequestIdRef.current;
+    const details = await fetchSeriesInfo(
+      series.id,
+      selectedProvider?.id || null
+    );
+    if (detailsRequestIdRef.current === requestId) {
+      setDetailedSeries(details);
+      setCanonicalSeriesDetails(details);
+      setDetailedSeriesProviderId(selectedProvider?.id || null);
+    }
+    await onMetadataChanged?.();
+  };
+
+  const unlockMetadata = async () => {
+    setUnlockingMetadata(true);
+    try {
+      await API.unlockVODMetadata([
+        { id: series.id, content_type: 'series' },
+      ]);
+      await reloadAfterEnrichment();
+      showNotification({
+        title: 'Automatic metadata matching unlocked',
+        message: 'This title can be processed by automatic cleanup and TMDB matching again.',
+        color: 'green',
+      });
+    } catch (error) {
+      showNotification({
+        title: 'Metadata matching could not be unlocked',
+        message: error?.body?.detail || error?.message || 'Please retry.',
+        color: 'red',
+      });
+    } finally {
+      setUnlockingMetadata(false);
+    }
+  };
+
   if (!series) return null;
 
-  // Use detailed data if available, otherwise use basic series data
-  const displaySeries = detailedSeries || series;
+  const canonicalDetails = canonicalSeriesDetails || detailedSeries;
+  const tmdb = canonicalDetails?.tmdb || series.tmdb || {};
+  const metadataAutoLocked = Boolean(
+    tmdb.metadata_auto_locked ?? series.metadata_auto_locked
+  );
+  const primaryLanguage = tmdb.primary_language || tmdb.languages?.[0] || '';
+  const secondaryLanguage =
+    tmdb.secondary_language || tmdb.languages?.[1] || '';
+  const localized = tmdb.localized || {};
+  const metadataMatched = (tmdb.status || series.tmdb_status) === 'matched';
+  const metadataAvailable =
+    metadataMatched ||
+    (tmdb.status || series.tmdb_status) === 'manual' ||
+    Object.keys(localized).length > 0;
+  const canonicalSeries = canonicalDetails?.canonical || series;
+  const localizedCanonical = (language, secondary = false) => {
+    const values = localized[language] || {};
+    return {
+      ...series,
+      ...canonicalSeries,
+      name: values.title || canonicalSeries.name || series.name,
+      description:
+        values.overview ||
+        (secondary ? '' : canonicalSeries.description || series.description),
+      genre:
+        (tmdb.genres || [])
+          .map((row) => row.name)
+          .filter(Boolean)
+          .join(', ') ||
+        canonicalSeries.genre ||
+        series.genre,
+      rating: tmdb.rating || canonicalSeries.rating || series.rating,
+      release_date: tmdb.release_date || canonicalSeries.release_date || '',
+      director: tmdb.director || canonicalSeries.director || '',
+      cast: tmdb.actors || canonicalSeries.cast || '',
+      crew: tmdb.crew || canonicalSeries.crew || '',
+      country: tmdb.country || canonicalSeries.country || '',
+      age: tmdb.age_rating || canonicalSeries.age || '',
+      youtube_trailer:
+        tmdb.youtube_trailer || canonicalSeries.youtube_trailer || '',
+      keywords: tmdb.keywords || [],
+      is_anime: Boolean(tmdb.is_anime),
+      adult: Boolean(tmdb.adult),
+      series_image:
+        series.artwork_url ||
+        tmdb.poster_url ||
+        canonicalSeries.movie_image ||
+        series.series_image ||
+        '',
+      backdrop_path: tmdb.backdrop_url
+        ? [tmdb.backdrop_url]
+        : canonicalSeries.backdrop_path || series.backdrop_path || [],
+      tmdb,
+      tmdb_id: tmdb.id || series.tmdb_id,
+      imdb_id: tmdb.external_ids?.imdb_id || series.imdb_id,
+      o_name: series.o_name || '',
+    };
+  };
+  const providerIds = selectedProvider?.provider_external_ids || {};
+  const activeProviderDetails =
+    String(detailedSeriesProviderId || '') ===
+    String(selectedProvider?.id || '')
+      ? detailedSeries
+      : null;
+  const providerSeries = activeProviderDetails
+    ? {
+        ...activeProviderDetails,
+        tmdb_id: providerIds.tmdb_id || '',
+        imdb_id: providerIds.imdb_id || '',
+        tmdb: {
+          id: providerIds.tmdb_id || '',
+          external_ids: { imdb_id: providerIds.imdb_id || '' },
+        },
+      }
+    : series;
+  const displaySeries =
+    dataView === 'provider'
+      ? providerSeries
+      : localizedCanonical(
+          dataView === 'secondary' ? secondaryLanguage : primaryLanguage,
+          dataView === 'secondary'
+        );
+  const secondaryValues = localized[secondaryLanguage] || {};
+  const secondaryTranslationAvailable = Boolean(
+    secondaryValues.title || secondaryValues.overview || secondaryValues.tagline
+  );
 
   return (
     <>
       <Modal
         opened={opened}
         onClose={onClose}
-        title={displaySeries.name}
-        size="xl"
+        size="96vw"
         centered
+        yOffset="2vh"
+        lockScroll={false}
+        scrollAreaComponent={Modal.NativeScrollArea}
+        styles={{
+          content: {
+            maxWidth: 1400,
+            maxHeight: '96vh',
+            backgroundColor: 'var(--mantine-color-body)',
+          },
+          header: {
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            zIndex: 10,
+            background: 'transparent',
+            padding: 'var(--mantine-spacing-md)',
+          },
+          body: {
+            padding: 0,
+            backgroundColor: 'var(--mantine-color-body)',
+          },
+        }}
       >
-        <Box style={{ position: 'relative', minHeight: 400 }}>
+        <Box
+          style={{
+            position: 'relative',
+            minHeight: 400,
+            backgroundColor: 'var(--mantine-color-body)',
+          }}
+        >
           {/* Backdrop image as background */}
           {displaySeries.backdrop_path &&
             displaySeries.backdrop_path.length > 0 && (
@@ -552,9 +852,62 @@ const SeriesModal = ({ series, opened, onClose }) => {
             )}
 
           {/* Modal content above backdrop */}
-          <Box style={{ position: 'relative', zIndex: 2 }}>
+          <Box p="md" pt="xl" style={{ position: 'relative', zIndex: 2 }}>
             <Stack spacing="md">
-              {loadingDetails && (
+              <Group
+                justify="space-between"
+                align="flex-start"
+                wrap="wrap"
+                pr="xl"
+              >
+                {allowSourceEditing ? (
+                  <VODEnrichmentButton
+                    onClick={() => setEditingCanonical(true)}
+                    loading={loadingDetails}
+                    locked={metadataAutoLocked}
+                    unlocking={unlockingMetadata}
+                    onUnlock={unlockMetadata}
+                  />
+                ) : (
+                  <Box />
+                )}
+                <Group gap={2} wrap="wrap" aria-label="Metadata source">
+                  <Button
+                    size="xs"
+                    variant={dataView === 'primary' ? 'filled' : 'default'}
+                    onClick={() => setDataView('primary')}
+                  >
+                    {metadataAvailable ? 'Primary' : 'Canonical'}
+                    {metadataAvailable && primaryLanguage
+                      ? ` · ${primaryLanguage}`
+                      : ''}
+                  </Button>
+                  {metadataAvailable && secondaryLanguage && (
+                    <Button
+                      size="xs"
+                      variant={dataView === 'secondary' ? 'filled' : 'default'}
+                      onClick={() => setDataView('secondary')}
+                    >
+                      Secondary · {secondaryLanguage}
+                    </Button>
+                  )}
+                  <Button
+                    size="xs"
+                    variant={dataView === 'provider' ? 'filled' : 'default'}
+                    onClick={() => setDataView('provider')}
+                  >
+                    Provider
+                  </Button>
+                </Group>
+              </Group>
+              {dataView === 'secondary' && !secondaryTranslationAvailable && (
+                <Alert color="yellow" py="xs">
+                  TMDB returned no separate {secondaryLanguage} translation for
+                  this title. Shared facts remain visible, but primary text is
+                  not copied into the secondary view.
+                </Alert>
+              )}
+              {loadingDetails && !canonicalSeriesDetails && (
                 <Group spacing="xs" mb={8}>
                   <Loader size="xs" />
                   <Text size="xs" color="dimmed">
@@ -569,47 +922,30 @@ const SeriesModal = ({ series, opened, onClose }) => {
                 onClickYouTubeTrailer={onClickYouTubeTrailer}
               />
 
-              {/* Provider Information */}
-              <Box mt="md">
-                <Text size="sm" weight={500} mb={4}>
-                  Stream Selection
-                  {loadingProviders && (
-                    <Loader size="xs" style={{ marginLeft: 8 }} />
-                  )}
+              <Group gap="xs" mt="md">
+                <Title order={4}>Sources ({providers.length})</Title>
+                {(loadingProviders || loadingDetails) && <Loader size="xs" />}
+              </Group>
+              {providers.length > 0 ? (
+                <VODSourceList
+                  providers={providers}
+                  selectedProvider={selectedProvider}
+                  selectedSourceMetadata={
+                    activeProviderDetails?.source_metadata
+                  }
+                  contentType="series"
+                  disabled={loadingProviders || loadingDetails}
+                  onSelect={onChangeSelectedProvider}
+                  onEdit={allowSourceEditing ? setEditingProvider : undefined}
+                  profileCandidates={profileCandidates}
+                  profileCandidatesLoading={profileCandidatesLoading}
+                  profileCandidatesError={profileCandidatesError}
+                />
+              ) : !loadingProviders ? (
+                <Text c="dimmed" ta="center" py="md">
+                  No exact source relation is available for this series.
                 </Text>
-                {providers.length === 0 &&
-                !loadingProviders &&
-                displaySeries.m3u_account ? (
-                  <Group spacing="md">
-                    <Badge color="blue" variant="light">
-                      {displaySeries.m3u_account.name}
-                    </Badge>
-                  </Group>
-                ) : providers.length === 1 ? (
-                  <Group spacing="md">
-                    <Badge color="blue" variant="light">
-                      {providers[0].m3u_account.name}
-                    </Badge>
-                    {providers[0].stream_id && (
-                      <Badge color="orange" variant="outline" size="xs">
-                        Stream {providers[0].stream_id}
-                      </Badge>
-                    )}
-                  </Group>
-                ) : providers.length > 1 ? (
-                  <Select
-                    data={providers.map((provider) => ({
-                      value: provider.id.toString(),
-                      label: formatStreamLabel(provider),
-                    }))}
-                    value={selectedProvider?.id?.toString() || ''}
-                    onChange={(value) => onChangeSelectedProvider(value)}
-                    placeholder="Select stream..."
-                    style={{ maxWidth: 350 }}
-                    disabled={loadingProviders}
-                  />
-                ) : null}
-              </Box>
+              ) : null}
 
               <Divider />
 
@@ -618,7 +954,11 @@ const SeriesModal = ({ series, opened, onClose }) => {
                 {seriesEpisodes.length > 0 && <> ({seriesEpisodes.length})</>}
               </Title>
 
-              {loadingDetails ? (
+              {!selectedProvider ? (
+                <Text color="dimmed" align="center" py="xl">
+                  Select an exact source above to load its seasons and episodes.
+                </Text>
+              ) : loadingDetails ? (
                 <Flex justify="center" py="xl">
                   <Loader />
                 </Flex>
@@ -639,8 +979,11 @@ const SeriesModal = ({ series, opened, onClose }) => {
                           <TableTr>
                             <TableTh style={{ width: '60px' }}>Ep</TableTh>
                             <TableTh>Title</TableTh>
-                            <TableTh style={{ width: '80px' }}>Duration</TableTh>
+                            <TableTh style={{ width: '80px' }}>
+                              Duration
+                            </TableTh>
                             <TableTh style={{ width: '60px' }}>Date</TableTh>
+                            <TableTh style={{ width: '70px' }}>Format</TableTh>
                             <TableTh style={{ width: '80px' }}>Action</TableTh>
                           </TableTr>
                         </TableThead>
@@ -676,6 +1019,11 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                 <TableTd>
                                   <Text size="xs" color="dimmed">
                                     {getEpisodeAirdate(episode)}
+                                  </Text>
+                                </TableTd>
+                                <TableTd>
+                                  <Text size="xs" color="dimmed">
+                                    {episode.container_extension || '—'}
                                   </Text>
                                 </TableTd>
                                 <TableTd>
@@ -747,6 +1095,34 @@ const SeriesModal = ({ series, opened, onClose }) => {
         opened={trailerModalOpened}
         onClose={() => setTrailerModalOpened(false)}
         trailerUrl={trailerUrl}
+      />
+      <VODSourceMetadataModal
+        provider={editingProvider}
+        contentType="series"
+        opened={Boolean(editingProvider)}
+        onClose={() => setEditingProvider(null)}
+        onSaved={updateProvider}
+        onMoved={(result) => {
+          setEditingProvider(null);
+          onMetadataChanged?.();
+          if (result?.target && onCanonicalMoved) {
+            onCanonicalMoved({
+              ...result.target,
+              name: result.target.title,
+              contentType: 'series',
+            });
+          } else {
+            onClose();
+          }
+        }}
+      />
+      <VODCanonicalMetadataModal
+        opened={editingCanonical}
+        onClose={() => setEditingCanonical(false)}
+        content={localizedCanonical(primaryLanguage, false)}
+        contentId={series.id}
+        contentType="series"
+        onSaved={reloadAfterEnrichment}
       />
     </>
   );

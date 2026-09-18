@@ -621,4 +621,3 @@ class PeriodicTaskCleanupOnExecutionTests(TestCase):
 
         self.assertFalse(PeriodicTask.objects.filter(name=task_name).exists())
         self.assertFalse(ClockedSchedule.objects.filter(id=clocked_id).exists())
-

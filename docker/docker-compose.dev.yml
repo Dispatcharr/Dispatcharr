@@ -6,6 +6,7 @@ services:
     image: ghcr.io/dispatcharr/dispatcharr:base
     container_name: dispatcharr_dev
     restart: unless-stopped
+    shm_size: 256mb
     ports:
       - 5656:5656
       - 9191:9191

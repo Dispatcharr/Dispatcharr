@@ -1,5 +1,6 @@
 """VOD proxy must release geventpool checkouts after ORM on stream and stats paths."""
 
+import time
 from unittest.mock import MagicMock, patch
 
 from django.http import StreamingHttpResponse
@@ -84,6 +85,12 @@ class BuildVodStatsDbCleanupTests(SimpleTestCase):
             "connected_at": "1000.0",
             "last_activity": "1001.0",
             "active_streams": "1",
+            "content_type": "video/x-matroska",
+            "source_metadata": (
+                '{"label":"Account — Movies DE",'
+                '"display_name":"Clean Movie","stream_id":"123",'
+                '"technical_metadata":{"container_extension":"mkv"}}'
+            ),
         }
 
         movie_obj = MagicMock(
@@ -109,6 +116,97 @@ class BuildVodStatsDbCleanupTests(SimpleTestCase):
             stats = build_vod_stats_data(redis_client)
 
         self.assertEqual(stats["total_connections"], 1)
+        connection = stats["vod_connections"][0]["connections"][0]
+        self.assertEqual(stats["vod_connections"][0]["content_name"], "Clean Movie")
+        self.assertEqual(connection["source"]["label"], "Account — Movies DE")
+        self.assertEqual(connection["source"]["stream_id"], "123")
+        self.assertEqual(connection["delivery_mode"], "proxy_passthrough")
+        self.assertEqual(connection["source_container"], "mkv")
+        self.assertEqual(connection["delivered_container"], "mkv")
+        self.assertEqual(
+            connection["delivered_content_type"], "video/x-matroska"
+        )
+        self.assertEqual(connection["connection_state"], "streaming")
+        self.assertEqual(connection["active_streams"], 1)
+        mock_close.assert_called_once()
+
+    @patch("apps.proxy.vod_proxy.views.close_old_connections")
+    def test_stats_omit_inactive_head_only_session(self, mock_close):
+        redis_client = MagicMock()
+        redis_client.scan.return_value = (
+            0,
+            ["vod_persistent_connection:head-only"],
+        )
+        redis_client.hgetall.return_value = {
+            "content_obj_type": "movie",
+            "content_uuid": "movie-uuid",
+            "active_streams": "0",
+        }
+        redis_client.get.return_value = None
+        redis_client.exists.return_value = False
+
+        from apps.proxy.vod_proxy.views import build_vod_stats_data
+
+        stats = build_vod_stats_data(redis_client)
+
+        self.assertEqual(stats["total_connections"], 0)
+        self.assertEqual(stats["vod_connections"], [])
+        mock_close.assert_called_once()
+
+    @patch("apps.proxy.vod_proxy.views.close_old_connections")
+    @patch("apps.proxy.vod_proxy.views.Movie")
+    def test_stats_keep_session_visible_during_disconnect_grace(
+        self,
+        mock_movie,
+        mock_close,
+    ):
+        redis_client = MagicMock()
+        redis_client.scan.return_value = (
+            0,
+            ["vod_persistent_connection:seeking"],
+        )
+        redis_client.hgetall.return_value = {
+            "content_obj_type": "movie",
+            "content_uuid": "movie-uuid",
+            "content_name": "Test Movie",
+            "client_ip": "127.0.0.1",
+            "client_user_agent": "agent",
+            "created_at": "1000.0",
+            "last_activity": "1001.0",
+            "active_streams": "0",
+        }
+        reconnect_deadline = time.time() + 120
+        redis_client.get.side_effect = lambda key: (
+            f"{reconnect_deadline:.6f}|test-token"
+            if key == "vod_proxy:disconnect_grace:seeking"
+            else None
+        )
+        mock_movie.objects.select_related.return_value.get.return_value = MagicMock(
+            name="Test Movie",
+            logo=None,
+            year=2020,
+            rating=7.5,
+            genre="Action",
+            description="Desc",
+            tmdb_id="1",
+            imdb_id="tt1",
+        )
+
+        from apps.proxy.vod_proxy.views import build_vod_stats_data
+
+        stats = build_vod_stats_data(redis_client)
+
+        self.assertEqual(stats["total_connections"], 1)
+        connection = stats["vod_connections"][0]["connections"][0]
+        self.assertEqual(connection["connection_state"], "reconnecting")
+        self.assertEqual(connection["active_streams"], 0)
+        self.assertFalse(connection["provider_connection_active"])
+        self.assertTrue(connection["slot_reserved"])
+        self.assertAlmostEqual(
+            connection["reconnect_expires_at"], reconnect_deadline, places=3
+        )
+        self.assertGreaterEqual(connection["reconnect_seconds_remaining"], 118)
+        self.assertLessEqual(connection["reconnect_seconds_remaining"], 120)
         mock_close.assert_called_once()
 
     @patch("apps.proxy.vod_proxy.views.close_old_connections")

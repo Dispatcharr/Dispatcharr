@@ -7,6 +7,24 @@ const emptyStreams = [];
 const DEFAULT_CHANNELS_SORTING = [{ id: 'channel_number', desc: false }];
 const CHANNELS_SORTING_KEY = 'channels-table-sorting';
 
+const normalizeChannelPage = (payload) => {
+  if (Array.isArray(payload)) {
+    return {
+      results: payload,
+      count: payload.length,
+      hasUnassignedEPGChannels: undefined,
+    };
+  }
+  if (!payload || !Array.isArray(payload.results)) return null;
+  return {
+    results: payload.results,
+    count: Number.isFinite(Number(payload.count))
+      ? Number(payload.count)
+      : payload.results.length,
+    hasUnassignedEPGChannels: payload.has_unassigned_epg_channels,
+  };
+};
+
 const useChannelsTableStore = create((set, get) => ({
   channels: [],
   pageCount: 0,
@@ -27,28 +45,37 @@ const useChannelsTableStore = create((set, get) => ({
   allQueryIds: [],
   isUnlocked: false,
 
-  queryChannels: ({ results, count, has_unassigned_epg_channels } = {}, params) => {
-    set((state) => ({
-      // Never store a non-array; a missing results field would crash
-      // ChannelsTable (and any .map/.find consumers) on the next render.
-      channels: Array.isArray(results) ? results : [],
-      totalCount: count ?? 0,
-      pageCount: Math.ceil((count ?? 0) / (Number(params?.get('page_size')) || 1)),
-      ...(has_unassigned_epg_channels !== undefined && {
-        hasUnassignedEPGChannels: has_unassigned_epg_channels,
+  queryChannels: (payload, params) => {
+    const page = normalizeChannelPage(payload);
+    if (!page) {
+      console.error(
+        '[channelsTable] Ignored a channel-list response without an array.'
+      );
+      return false;
+    }
+    const pageSize = Math.max(1, Number(params?.get?.('page_size')) || 50);
+    set(() => ({
+      channels: page.results,
+      totalCount: page.count,
+      pageCount: Math.ceil(page.count / pageSize),
+      ...(page.hasUnassignedEPGChannels !== undefined && {
+        hasUnassignedEPGChannels: page.hasUnassignedEPGChannels,
       }),
     }));
+    return true;
   },
 
   setAllQueryIds: (allQueryIds) => {
-    set((state) => ({
-      allQueryIds,
+    set(() => ({
+      allQueryIds: Array.isArray(allQueryIds) ? allQueryIds : [],
     }));
   },
 
   setSelectedChannelIds: (selectedChannelIds) => {
     set({
-      selectedChannelIds,
+      selectedChannelIds: Array.isArray(selectedChannelIds)
+        ? selectedChannelIds
+        : [],
     });
   },
 
@@ -59,12 +86,15 @@ const useChannelsTableStore = create((set, get) => ({
   },
 
   getChannelStreams: (id) => {
-    const channel = get().channels.find((c) => c.id === id);
+    const channels = get().channels;
+    const channel = (Array.isArray(channels) ? channels : []).find(
+      (c) => c?.id === id
+    );
     return channel?.streams || emptyStreams;
   },
 
   setPagination: (pagination) => {
-    set((state) => ({
+    set(() => ({
       pagination,
     }));
   },
@@ -82,8 +112,9 @@ const useChannelsTableStore = create((set, get) => ({
 
   updateChannel: (updatedChannel) => {
     set((state) => ({
-      channels: state.channels.map((channel) =>
-        channel.id === updatedChannel.id ? updatedChannel : channel
+      channels: (Array.isArray(state.channels) ? state.channels : []).map(
+        (channel) =>
+          channel?.id === updatedChannel.id ? updatedChannel : channel
       ),
     }));
   },
@@ -98,8 +129,10 @@ const useChannelsTableStore = create((set, get) => ({
     set((state) => {
       const updateMap = new Map(updates.map((u) => [u.id, u]));
       let channelChanged = false;
-      const nextChannels = state.channels.map((channel) => {
-        if (channel.id !== channelId) return channel;
+      const nextChannels = (
+        Array.isArray(state.channels) ? state.channels : []
+      ).map((channel) => {
+        if (!channel || channel.id !== channelId) return channel;
         const streams = channel.streams || [];
         let streamsChanged = false;
         const nextStreams = streams.map((stream) => {

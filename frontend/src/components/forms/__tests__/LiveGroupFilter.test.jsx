@@ -27,18 +27,20 @@ vi.mock('../GroupConfigureModal', () => ({
     ) : null,
 }));
 
-vi.mock('../AutoSyncOrphanCleanup.jsx', () => ({
-  default: ({ playlist }) => (
-    <div data-testid="orphan-cleanup" data-playlist-id={String(playlist?.id)} />
-  ),
-}));
-
 vi.mock('../AutoSyncBasic.jsx', () => ({
   default: () => <div data-testid="auto-sync-basic" />,
 }));
 
 vi.mock('../../ErrorBoundary.jsx', () => ({
   default: ({ children }) => <>{children}</>,
+}));
+
+vi.mock('../M3UGroupRules.jsx', () => ({
+  default: () => <div data-testid="discovery-rules" />,
+}));
+
+vi.mock('../M3UDeveloperCatalog.jsx', () => ({
+  default: () => <div data-testid="group-preview">Preview</div>,
 }));
 
 vi.mock('../AutoSyncAdvanced.jsx', () => ({
@@ -144,24 +146,28 @@ vi.mock('@mantine/core', async () => ({
   ),
   Alert: ({ children }) => <div data-testid="alert">{children}</div>,
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, disabled, variant, color }) => (
+  Button: ({ children, onClick, disabled, variant, color, ...props }) => (
     <button
       onClick={onClick}
       disabled={disabled}
       data-variant={variant}
       data-color={color}
+      {...props}
     >
       {children}
     </button>
   ),
-  Checkbox: ({ label, checked, onChange, description, disabled }) => (
+  Checkbox: ({ label, checked, onChange, description, disabled, ...props }) => (
     <label>
       <input
         type="checkbox"
         checked={checked ?? false}
         onChange={onChange}
         disabled={disabled}
-        aria-label={typeof label === 'string' ? label : 'checkbox'}
+        aria-label={
+          props['aria-label'] ||
+          (typeof label === 'string' ? label : 'checkbox')
+        }
       />
       {typeof label === 'string' ? label : label}
       {description && <span>{description}</span>}
@@ -169,12 +175,33 @@ vi.mock('@mantine/core', async () => ({
   ),
   Divider: () => <hr />,
   Flex: ({ children }) => <div>{children}</div>,
-  Group: ({ children, style }) => (
-    <div data-testid="group-card" style={style}>
-      {children}
-    </div>
-  ),
+  Group: ({ children, style }) => <div style={style}>{children}</div>,
   Loader: () => <div data-testid="loader" />,
+  Modal: ({ opened, children, title }) =>
+    opened ? (
+      <div data-testid="bulk-modal">
+        <span>{title}</span>
+        {children}
+      </div>
+    ) : null,
+  Pagination: () => <div data-testid="pagination" />,
+  ScrollArea: ({ children }) => <div>{children}</div>,
+  Select: ({ label, value, onChange, data = [] }) => (
+    <label>
+      {label}
+      <select
+        aria-label={label}
+        value={value || ''}
+        onChange={(event) => onChange?.(event.target.value || null)}
+      >
+        {data.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  ),
   SegmentedControl: ({ onChange, data }) => (
     <div>
       {(data || []).map((item) => (
@@ -190,6 +217,24 @@ vi.mock('@mantine/core', async () => ({
   ),
   SimpleGrid: ({ children }) => <div>{children}</div>,
   Stack: ({ children, style }) => <div style={style}>{children}</div>,
+  Switch: ({ label, checked, onChange, disabled }) => (
+    <label>
+      <input
+        type="checkbox"
+        checked={checked ?? false}
+        onChange={onChange}
+        disabled={disabled}
+        aria-label={typeof label === 'string' ? label : 'switch'}
+      />
+      {label}
+    </label>
+  ),
+  Table: ({ children }) => <table>{children}</table>,
+  TableTbody: ({ children }) => <tbody>{children}</tbody>,
+  TableTd: ({ children }) => <td>{children}</td>,
+  TableTh: ({ children }) => <th>{children}</th>,
+  TableThead: ({ children }) => <thead>{children}</thead>,
+  TableTr: ({ children }) => <tr>{children}</tr>,
   Text: ({ children }) => <span>{children}</span>,
   TextInput: ({ placeholder, value, onChange }) => (
     <input
@@ -206,7 +251,8 @@ vi.mock('@mantine/core', async () => ({
 vi.mock('lucide-react', () => ({
   CircleCheck: () => <svg data-testid="icon-circle-check" />,
   CircleX: () => <svg data-testid="icon-circle-x" />,
-  Info: () => <svg data-testid="icon-info" />,
+  Eye: () => <svg data-testid="icon-eye" />,
+  Info: (props) => <svg data-testid="icon-info" {...props} />,
   Settings: () => <svg data-testid="icon-cog" />,
 }));
 
@@ -328,45 +374,23 @@ describe('LiveGroupFilter', () => {
   // ── Rendering ──────────────────────────────────────────────────────────────
 
   describe('rendering', () => {
-    it('renders the info alert', () => {
+    it('shows Auto sync help beside the table heading', () => {
       renderWith();
-      expect(screen.getByTestId('alert')).toBeInTheDocument();
-      expect(screen.getByText(/Auto Channel Sync/i)).toBeInTheDocument();
+      expect(screen.getByText('Auto Sync')).toBeInTheDocument();
+      expect(screen.getByTestId('icon-info')).toBeInTheDocument();
     });
 
-    it('renders the auto-enable new groups checkbox', () => {
+    it('shows import rules and stream filters instead of an auto-enable switch', () => {
       renderWith();
       expect(
-        screen.getByRole('checkbox', {
-          name: /Automatically enable new groups/i,
-        })
+        screen.getByRole('button', { name: 'Import rules' })
       ).toBeInTheDocument();
-    });
-
-    it('reflects initialAutoEnable=true on the checkbox', () => {
-      renderWith({ initialAutoEnable: true });
       expect(
-        screen.getByRole('checkbox', {
-          name: /Automatically enable new groups/i,
-        })
-      ).toBeChecked();
-    });
-
-    it('reflects initialAutoEnable=false on the checkbox', () => {
-      renderWith({ initialAutoEnable: false });
+        screen.getByRole('button', { name: 'Stream filters' })
+      ).toBeInTheDocument();
       expect(
-        screen.getByRole('checkbox', {
-          name: /Automatically enable new groups/i,
-        })
-      ).not.toBeChecked();
-    });
-
-    it('renders OrphanCleanupControl with the playlist', () => {
-      renderWith({ playlist: makePlaylist({ id: 7 }) });
-      expect(screen.getByTestId('orphan-cleanup')).toHaveAttribute(
-        'data-playlist-id',
-        '7'
-      );
+        screen.getByText('New unmatched groups are imported inactive.')
+      ).toBeInTheDocument();
     });
 
     it('renders the group name filter input', () => {
@@ -381,10 +405,14 @@ describe('LiveGroupFilter', () => {
       expect(screen.getByTestId('seg-disabled')).toBeInTheDocument();
     });
 
-    it('renders Select Visible and Deselect Visible buttons', () => {
+    it('renders bulk-selection and update controls', () => {
       renderWith();
-      expect(screen.getByText('Select Visible')).toBeInTheDocument();
-      expect(screen.getByText('Deselect Visible')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Select visible groups')
+      ).toBeInTheDocument();
+      expect(screen.getByText('Enable selected')).toBeInTheDocument();
+      expect(screen.getByText('Disable selected')).toBeInTheDocument();
+      expect(screen.getByText('Edit settings (0)')).toBeInTheDocument();
     });
 
     it('renders a card for each group in groupStates', () => {
@@ -521,28 +549,6 @@ describe('LiveGroupFilter', () => {
     });
   });
 
-  // ── autoEnableNewGroupsLive checkbox ──────────────────────────────────────
-
-  describe('autoEnableNewGroupsLive checkbox', () => {
-    it('toggles off when clicked while checked', () => {
-      renderWith({ initialAutoEnable: true });
-      const cb = screen.getByRole('checkbox', {
-        name: /Automatically enable new groups/i,
-      });
-      fireEvent.click(cb);
-      expect(cb).not.toBeChecked();
-    });
-
-    it('toggles on when clicked while unchecked', () => {
-      renderWith({ initialAutoEnable: false });
-      const cb = screen.getByRole('checkbox', {
-        name: /Automatically enable new groups/i,
-      });
-      fireEvent.click(cb);
-      expect(cb).toBeChecked();
-    });
-  });
-
   // ── Group text filter ──────────────────────────────────────────────────────
 
   describe('group text filter', () => {
@@ -647,34 +653,59 @@ describe('LiveGroupFilter', () => {
     });
   });
 
-  // ── Select Visible / Deselect Visible ─────────────────────────────────────
+  // ── Bulk selection and changes ────────────────────────────────────────────
 
-  describe('Select Visible / Deselect Visible', () => {
-    it('Select Visible enables all currently visible groups', () => {
+  describe('bulk selection and changes', () => {
+    it('selects every filtered group across pagination pages', () => {
+      renderWith({
+        initialGroups: Array.from({ length: 26 }, (_, index) =>
+          makeGroup({
+            channel_group: index + 1,
+            name: `Group ${String(index + 1).padStart(2, '0')}`,
+          })
+        ),
+      });
+
+      fireEvent.click(screen.getByLabelText('Select visible groups'));
+
+      expect(screen.getByText('Edit settings (26)')).toBeInTheDocument();
+    });
+
+    it('enables all selected visible groups', () => {
       renderWith({
         initialGroups: [
           makeGroup({ channel_group: 1, name: 'Sports', enabled: false }),
           makeGroup({ channel_group: 2, name: 'News', enabled: false }),
         ],
       });
-      fireEvent.click(screen.getByText('Select Visible'));
-      // Both groups remain visible (isGroupVisible still returns true)
-      expect(screen.getAllByTestId('group-card')).toHaveLength(2);
+      fireEvent.click(screen.getByLabelText('Select visible groups'));
+      fireEvent.click(screen.getByText('Enable selected'));
+      expect(
+        screen.getByRole('button', { name: 'Enable Sports' })
+      ).toHaveAttribute('aria-pressed', 'true');
+      expect(
+        screen.getByRole('button', { name: 'Enable News' })
+      ).toHaveAttribute('aria-pressed', 'true');
     });
 
-    it('Deselect Visible disables all currently visible groups', () => {
+    it('disables all selected visible groups', () => {
       renderWith({
         initialGroups: [
           makeGroup({ channel_group: 1, name: 'Sports', enabled: true }),
           makeGroup({ channel_group: 2, name: 'News', enabled: true }),
         ],
       });
-      // With status=all, isGroupVisible still returns true after deselect
-      fireEvent.click(screen.getByText('Deselect Visible'));
-      expect(screen.getAllByTestId('group-card')).toHaveLength(2);
+      fireEvent.click(screen.getByLabelText('Select visible groups'));
+      fireEvent.click(screen.getByText('Disable selected'));
+      expect(
+        screen.getByRole('button', { name: 'Enable Sports' })
+      ).toHaveAttribute('aria-pressed', 'false');
+      expect(
+        screen.getByRole('button', { name: 'Enable News' })
+      ).toHaveAttribute('aria-pressed', 'false');
     });
 
-    it('Select Visible only applies to groups passing the current filter', () => {
+    it('bulk changes only apply to groups passing the current filter', () => {
       // With Enabled filter active, only already-enabled groups are "visible"
       // so disabling one and clicking Select Visible should not re-enable the hidden one
       renderWith({
@@ -684,7 +715,8 @@ describe('LiveGroupFilter', () => {
         ],
       });
       fireEvent.click(screen.getByTestId('seg-enabled'));
-      fireEvent.click(screen.getByText('Select Visible'));
+      fireEvent.click(screen.getByLabelText('Select visible groups'));
+      fireEvent.click(screen.getByText('Enable selected'));
       // News (disabled) is not visible in Enabled filter, so it stays hidden
       expect(screen.queryByText('News')).not.toBeInTheDocument();
     });

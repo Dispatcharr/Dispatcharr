@@ -4,6 +4,8 @@ import { formatDuration } from '../dateTimeUtils.js';
 import { formatSpeed } from '../networkUtils.js';
 
 export const refreshPlaylist = (id) => API.refreshPlaylist(id);
+export const refreshLivePlaylist = (id) => API.refreshLivePlaylist(id);
+export const refreshVODContent = (id) => API.refreshVODContent(id);
 
 export const getPlaylistAutoCreatedChannelsCount = (id) =>
   API.getPlaylistAutoCreatedChannelsCount(id);
@@ -15,12 +17,18 @@ export const updatePlaylist = (values, playlist, isToggle = false) =>
 
 export const formatStatusText = (status) => {
   switch (status) {
-    case 'idle':          return 'Idle';
-    case 'fetching':      return 'Fetching';
-    case 'parsing':       return 'Parsing';
-    case 'error':         return 'Error';
-    case 'success':       return 'Success';
-    case 'pending_setup': return 'Pending Setup';
+    case 'idle':
+      return 'Idle';
+    case 'fetching':
+      return 'Fetching';
+    case 'parsing':
+      return 'Parsing';
+    case 'error':
+      return 'Error';
+    case 'success':
+      return 'Success';
+    case 'pending_setup':
+      return 'Pending Setup';
     default:
       return status
         ? status.charAt(0).toUpperCase() + status.slice(1)
@@ -30,13 +38,20 @@ export const formatStatusText = (status) => {
 
 export const getStatusColor = (status) => {
   switch (status) {
-    case 'idle':          return 'gray.5';
-    case 'fetching':      return 'blue.5';
-    case 'parsing':       return 'indigo.5';
-    case 'error':         return 'red.5';
-    case 'success':       return 'green.5';
-    case 'pending_setup': return 'orange.5';
-    default:              return 'gray.5';
+    case 'idle':
+      return 'gray.5';
+    case 'fetching':
+      return 'blue.5';
+    case 'parsing':
+      return 'indigo.5';
+    case 'error':
+      return 'red.5';
+    case 'success':
+      return 'green.5';
+    case 'pending_setup':
+      return 'orange.5';
+    default:
+      return 'gray.5';
   }
 };
 
@@ -61,7 +76,11 @@ export const getExpirationInfo = (daysLeft, earliest, fullDateFormat) => {
   return { color, label };
 };
 
-export const getExpirationTooltip = (allExpirations, fullDateTimeFormat, label) => {
+export const getExpirationTooltip = (
+  allExpirations,
+  fullDateTimeFormat,
+  label
+) => {
   return allExpirations.length > 0
     ? allExpirations
         .map(
@@ -88,7 +107,11 @@ export const getSortedPlaylists = (playlists, compareColumn, compareDesc) => {
       const comparison =
         typeof aVal === 'string'
           ? aVal.localeCompare(bVal)
-          : aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+          : aVal < bVal
+            ? -1
+            : aVal > bVal
+              ? 1
+              : 0;
 
       return compareDesc ? -comparison : comparison;
     });
@@ -102,7 +125,8 @@ export const getStatusContent = (data) => {
       return { type: 'initializing' };
 
     case 'downloading':
-      if (data.progress === 0) return { type: 'simple', label: 'Downloading...' };
+      if (data.progress === 0)
+        return { type: 'simple', label: 'Downloading...' };
       return {
         type: 'downloading',
         progress: parseInt(data.progress),
@@ -113,7 +137,8 @@ export const getStatusContent = (data) => {
       };
 
     case 'processing_groups':
-      if (data.progress === 0) return { type: 'simple', label: 'Processing groups...' };
+      if (data.progress === 0)
+        return { type: 'simple', label: 'Processing groups...' };
       return {
         type: 'groups',
         progress: parseInt(data.progress),
@@ -133,10 +158,25 @@ export const getStatusContent = (data) => {
         streamsProcessed: data.streams_processed,
       };
 
+    case 'vod_refresh':
+      return {
+        type: 'vod',
+        progress: parseInt(data.progress || 0),
+        phase: data.phase || 'Refreshing VOD catalog',
+        elapsedTime: data.elapsed_time
+          ? formatDuration(data.elapsed_time)
+          : null,
+        timeRemaining: data.time_remaining
+          ? formatDuration(data.time_remaining)
+          : 'calculating...',
+        itemsProcessed: data.items_processed,
+        itemsTotal: data.items_total,
+        providerItemsTotal: data.provider_items_total,
+      };
+
     default:
       return data.status === 'error'
         ? { type: 'error', error: data.error }
         : { type: 'simple', label: `${data.action || 'Processing'}...` };
   }
 };
-

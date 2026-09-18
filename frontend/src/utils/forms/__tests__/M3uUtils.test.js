@@ -216,6 +216,28 @@ describe('M3uUtils', () => {
         expect(result.cron_expression).toBe('');
         expect(result.refresh_interval).toBe(30);
       });
+
+      it('sets vod_refresh_interval to 0 when VOD cron is configured', () => {
+        const values = {
+          account_type: 'XC',
+          vod_cron_expression: '0 2 * * *',
+          vod_refresh_interval: 24,
+        };
+        const result = prepareSubmitValues(values, null);
+        expect(result.vod_refresh_interval).toBe(0);
+        expect(result.vod_cron_expression).toBe('0 2 * * *');
+      });
+
+      it('preserves the VOD interval when the VOD cron is blank', () => {
+        const values = {
+          account_type: 'XC',
+          vod_cron_expression: '  ',
+          vod_refresh_interval: 24,
+        };
+        const result = prepareSubmitValues(values, null);
+        expect(result.vod_refresh_interval).toBe(24);
+        expect(result.vod_cron_expression).toBe('');
+      });
     });
 
     describe('password handling for XC', () => {

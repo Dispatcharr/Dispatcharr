@@ -1,5 +1,5 @@
 from django.apps import AppConfig
-from django.conf import settings
+from django.db.models.signals import post_migrate
 import logging
 
 # Define TRACE level (5 is below DEBUG which is 10)
@@ -23,42 +23,33 @@ class CoreConfig(AppConfig):
     def ready(self):
         # Import signals to ensure they get registered
         import core.signals
-        from dispatcharr.app_initialization import should_skip_initialization
+        post_migrate.connect(
+            self._initialize_runtime_state,
+            sender=self,
+            dispatch_uid="core.initialize_runtime_state",
+            weak=False,
+        )
 
-        from django.conf import settings as django_settings
+    def _initialize_runtime_state(self, **kwargs):
+        """Apply database-backed runtime state after migrations finish."""
+        from django.db import close_old_connections
+        from django.conf import settings
+        from core.models import CoreSettings, SYSTEM_SETTINGS_KEY
+        from core.developer_notifications import sync_developer_notifications
         from dispatcharr.log_collector import apply_settings
 
         try:
-            from core.models import CoreSettings
-
             apply_settings(
-                getattr(django_settings, "LOG_FILE_DIR", None),
-                CoreSettings.get_system_settings(),
+                getattr(settings, "LOG_FILE_DIR", None),
+                CoreSettings.objects.filter(key=SYSTEM_SETTINGS_KEY)
+                .values_list("value", flat=True)
+                .first()
+                or {},
             )
-        except Exception:
-            # Database not migrated yet: the collector keeps its defaults.
-            pass
-
-        # Sync developer notifications and check for version updates on startup
-        # Only run in the main process (not in management commands, migrations, or workers)
-        if should_skip_initialization():
-            return
-
-        self._sync_developer_notifications()
-
-    def _sync_developer_notifications(self):
-        """Sync developer notifications from JSON file to database."""
-        from django.db import close_old_connections
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        try:
-            from core.developer_notifications import sync_developer_notifications
             sync_developer_notifications()
         except Exception as e:
-            logger.warning(f"Failed to sync developer notifications on startup: {e}")
+            logging.getLogger(__name__).warning(
+                "Failed to initialize core runtime state: %s", e
+            )
         finally:
-            # Boot ORM runs outside a request cycle; return geventpool checkouts.
             close_old_connections()
-

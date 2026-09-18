@@ -1,6 +1,9 @@
 # core/models.py
 
 import logging
+import os
+import re
+import sys
 import time
 from shlex import split as shlex_split
 
@@ -57,7 +60,7 @@ class StreamProfile(models.Model):
         blank=True,
     )
     parameters = models.TextField(
-        help_text="Command-line parameters. Use {userAgent}, {streamUrl}, and {channelId} as placeholders.",
+        help_text="Command-line parameters. Use {userAgent} and {streamUrl} as placeholders.",
         blank=True,
     )
     locked = models.BooleanField(
@@ -263,6 +266,7 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+VOD_SETTINGS_KEY = "vod_settings"
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
@@ -309,7 +313,10 @@ def _log_group_cache_backend_error(operation, key, exc):
     if now - _last_group_cache_error_log_at < _GROUP_CACHE_ERROR_LOG_INTERVAL_SECONDS:
         return
     _last_group_cache_error_log_at = now
-    logger.warning(
+    log = logger.debug if any(
+        command in sys.argv for command in ("migrate", "collectstatic", "makemigrations")
+    ) else logger.warning
+    log(
         "CoreSettings group cache %s failed for %s (%s: %s); falling back to Postgres",
         operation,
         key,
@@ -766,6 +773,7 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "vod_reconnect_grace_seconds": 300,
             "validate_redirect_urls": True,
         })
 
@@ -832,6 +840,135 @@ class CoreSettings(models.Model):
             "terminate_oldest": True,
         })
 
+    @classmethod
+    def get_vod_settings(cls):
+        """Get lightweight VOD library and playback-history settings."""
+        return cls._get_group(VOD_SETTINGS_KEY, {
+            "playback_history_retention_days": 0,
+            "tmdb_api_token": "",
+            "tmdb_languages": ["en-US"],
+            "tmdb_auto_enrich": True,
+            "tmdb_match_missing": False,
+            "tmdb_prefer_artwork": True,
+            "tmdb_title_rules": [],
+        })
+
+    @classmethod
+    def get_tmdb_api_token(cls):
+        """Return an environment token first, then the stored VOD token."""
+        return (
+            os.environ.get("TMDB_API_READ_ACCESS_TOKEN", "").strip()
+            or os.environ.get("TMDB_API_KEY", "").strip()
+            or str(cls.get_vod_settings().get("tmdb_api_token") or "").strip()
+        )
+
+    @classmethod
+    def get_tmdb_languages(cls):
+        """Return at most two stable TMDB IETF language tags."""
+        raw = cls.get_vod_settings().get("tmdb_languages") or []
+        if not isinstance(raw, list):
+            raw = []
+        languages = []
+        for value in raw:
+            language = str(value or "").strip()
+            if not re.fullmatch(r"[a-z]{2}(?:-[A-Z]{2})?", language):
+                continue
+            if language not in languages:
+                languages.append(language)
+            if len(languages) == 2:
+                break
+        return languages or ["en-US"]
+
+    @classmethod
+    def get_tmdb_auto_enrich(cls):
+        return cls.get_vod_settings().get("tmdb_auto_enrich", True) is not False
+
+    @classmethod
+    def get_tmdb_match_missing(cls):
+        return cls.get_vod_settings().get("tmdb_match_missing", False) is True
+
+    @classmethod
+    def get_tmdb_prefer_artwork(cls):
+        return (
+            cls.get_vod_settings().get("tmdb_prefer_artwork", True) is not False
+        )
+
+    @classmethod
+    def get_tmdb_title_rules(cls):
+        """Return ordered literal prefixes removed from VOD titles."""
+        raw = cls.get_vod_settings().get("tmdb_title_rules") or []
+        if not isinstance(raw, list):
+            return []
+        rules = []
+        for row in raw[:20]:
+            if isinstance(row, str):
+                value = row.strip()
+                enabled = True
+            elif isinstance(row, dict):
+                value = str(
+                    row.get("value")
+                    if row.get("value") is not None
+                    else row.get("pattern") or ""
+                ).strip()
+                enabled = row.get("enabled") is not False
+            else:
+                continue
+            if not value:
+                continue
+            rules.append(
+                {
+                    "match_type": "starts_with",
+                    "value": value[:255],
+                    "action": "remove",
+                    "replacement": "",
+                    "enabled": enabled,
+                }
+            )
+        return rules
+
+    @classmethod
+    def set_vod_metadata_settings(
+        cls,
+        *,
+        languages,
+        auto_enrich,
+        match_missing,
+        prefer_artwork=True,
+        api_token=None,
+        title_rules=None,
+    ):
+        updates = {
+            "tmdb_languages": list(languages)[:2],
+            "tmdb_auto_enrich": bool(auto_enrich),
+            "tmdb_match_missing": bool(match_missing),
+            "tmdb_prefer_artwork": bool(prefer_artwork),
+        }
+        if api_token is not None:
+            updates["tmdb_api_token"] = str(api_token).strip()
+        if title_rules is not None:
+            updates["tmdb_title_rules"] = list(title_rules)[:20]
+        return cls._update_group(VOD_SETTINGS_KEY, "VOD Settings", updates)
+
+    @classmethod
+    def get_vod_playback_history_retention_days(cls):
+        raw = cls.get_vod_settings().get("playback_history_retention_days", 0)
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def set_vod_playback_history_retention_days(cls, days):
+        days = int(days)
+        if days < 0 or days > 3650:
+            raise ValueError("Playback history retention must be 0-3650 days")
+        cls._update_group(
+            VOD_SETTINGS_KEY,
+            "VOD Settings",
+            {"playback_history_retention_days": days},
+        )
+        return days
+
 
 class SystemEvent(models.Model):
     """
@@ -852,6 +989,7 @@ class SystemEvent(models.Model):
         ('stream_switch', 'Stream Switched'),
         ('m3u_refresh', 'M3U Refreshed'),
         ('m3u_download', 'M3U Downloaded'),
+        ('xc_live_catalog_request', 'XC Live Catalog Requested'),
         ('m3u_error', 'M3U Error'),
         ('epg_refresh', 'EPG Refreshed'),
         ('epg_download', 'EPG Downloaded'),

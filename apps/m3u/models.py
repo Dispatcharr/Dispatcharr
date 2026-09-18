@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator
 from core.models import CoreSettings, UserAgent
 import re
 from django.dispatch import receiver
@@ -89,8 +90,31 @@ class M3UAccount(models.Model):
     password = models.CharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     refresh_interval = models.IntegerField(default=0)
+    xc_live_refresh_min_age_minutes = models.PositiveIntegerField(
+        default=55,
+        validators=[MaxValueValidator(10080)],
+        help_text=(
+            "Minimum age of the last successful Live TV refresh before an XC "
+            "client request may queue another one. Use 0 to always allow it."
+        ),
+    )
     refresh_task = models.ForeignKey(
         PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    vod_refresh_interval = models.IntegerField(default=0)
+    vod_refresh_task = models.ForeignKey(
+        PeriodicTask,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    vod_refresh_after_live = models.BooleanField(
+        default=True,
+        help_text=(
+            "Refresh VOD after every successful Live TV refresh instead of "
+            "using the separate VOD schedule."
+        ),
     )
     stale_stream_days = models.PositiveIntegerField(
         default=7,
@@ -211,6 +235,127 @@ class M3UFilter(models.Model):
         )
         exclude_status = "Exclude" if self.exclude else "Include"
         return f"[{self.m3u_account.name}] {filter_type_display}: {self.regex_pattern} ({exclude_status})"
+
+
+class M3UGroupRule(models.Model):
+    """Ordered discovery policy for newly discovered Live/VOD groups.
+
+    Stream filters and discovery rules intentionally remain separate: an
+    ``M3UFilter`` decides whether an individual live stream is imported, while
+    this model decides what to do with a previously unseen group/category.
+    """
+
+    class Scope(models.TextChoices):
+        LIVE = "live", "Live TV"
+        MOVIE = "movie", "VOD Movies"
+        SERIES = "series", "VOD Series"
+
+    class MatchField(models.TextChoices):
+        GROUP_NAME = "group_name", "Group name"
+        ITEM_NAME = "item_name", "Contained item name"
+
+    class MatchMode(models.TextChoices):
+        ANY = "any", "Any item"
+        ALL = "all", "All items"
+
+    class Action(models.TextChoices):
+        ENABLE = "enable", "Enable"
+        DISABLE = "disable", "Import disabled"
+        IGNORE = "ignore", "Ignore"
+
+    m3u_account = models.ForeignKey(
+        M3UAccount,
+        on_delete=models.CASCADE,
+        related_name="group_rules",
+    )
+    scope = models.CharField(max_length=10, choices=Scope.choices)
+    match_field = models.CharField(
+        max_length=20,
+        choices=MatchField.choices,
+        default=MatchField.GROUP_NAME,
+    )
+    match_mode = models.CharField(
+        max_length=10,
+        choices=MatchMode.choices,
+        default=MatchMode.ANY,
+        help_text="Used only when matching contained item names.",
+    )
+    regex_pattern = models.CharField(max_length=500)
+    exclude_regex_pattern = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Optional regular expression which vetoes an otherwise matching rule.",
+    )
+    action = models.CharField(
+        max_length=10,
+        choices=Action.choices,
+        default=Action.DISABLE,
+    )
+    case_sensitive = models.BooleanField(default=False)
+    enabled = models.BooleanField(default=True)
+    metadata_defaults = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Default VOD source metadata assigned to newly discovered "
+            "matching categories."
+        ),
+    )
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("scope", "order", "id")
+        indexes = [
+            models.Index(
+                fields=("m3u_account", "scope", "enabled", "order"),
+                name="m3u_group_rule_lookup_idx",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        for field in ("regex_pattern", "exclude_regex_pattern"):
+            pattern = getattr(self, field)
+            if not pattern:
+                continue
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                errors[field] = f"Invalid regex: {exc}"
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return (
+            f"[{self.m3u_account}] {self.scope}:{self.match_field} "
+            f"/{self.regex_pattern}/ -> {self.action}"
+        )
+
+
+class M3UAccountTemplate(models.Model):
+    """Portable non-secret M3U settings plus copied filters/import rules."""
+
+    name = models.CharField(max_length=255, unique=True)
+    description = models.TextField(blank=True, default="")
+    account_type = models.CharField(
+        max_length=3,
+        choices=M3UAccount.Types.choices,
+        default=M3UAccount.Types.XC,
+    )
+    account_settings = models.JSONField(default=dict, blank=True)
+    filters = models.JSONField(default=list, blank=True)
+    group_rules = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name", "id")
+
+    def __str__(self):
+        return self.name
 
 
 class ServerGroup(models.Model):

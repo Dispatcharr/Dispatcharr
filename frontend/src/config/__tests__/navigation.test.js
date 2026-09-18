@@ -13,8 +13,6 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.channels).toBeDefined();
       expect(NAV_ITEMS.vods).toBeDefined();
       expect(NAV_ITEMS.sources).toBeDefined();
-      expect(NAV_ITEMS.guide).toBeDefined();
-      expect(NAV_ITEMS.dvr).toBeDefined();
       expect(NAV_ITEMS.stats).toBeDefined();
       expect(NAV_ITEMS.plugins).toBeDefined();
       expect(NAV_ITEMS.system).toBeDefined();
@@ -39,14 +37,32 @@ describe('navigation config', () => {
       expect(connectEntry.label).toBe('Connect');
     });
 
+    it('keeps the implemented VOD pages together', () => {
+      expect(NAV_ITEMS.vods.paths.map((entry) => entry.label)).toEqual([
+        'Library',
+        'VOD Profiles',
+        'Playback History',
+      ]);
+    });
+
+    it('groups M3U accounts and EPG sources under Sources', () => {
+      expect(NAV_ITEMS.sources.label).toBe('Sources');
+      expect(NAV_ITEMS.sources.paths.map((entry) => entry.label)).toEqual([
+        'M3U Accounts',
+        'EPG Sources',
+      ]);
+      expect(NAV_ITEMS.sources.paths.map((entry) => entry.path)).toEqual([
+        '/sources/m3u',
+        '/sources/epg',
+      ]);
+    });
+
     it('has correct adminOnly flags', () => {
       expect(NAV_ITEMS.channels.adminOnly).toBe(false);
-      expect(NAV_ITEMS.guide.adminOnly).toBe(false);
       expect(NAV_ITEMS.settings.adminOnly).toBe(false);
 
       expect(NAV_ITEMS.vods.adminOnly).toBe(true);
       expect(NAV_ITEMS.sources.adminOnly).toBe(true);
-      expect(NAV_ITEMS.dvr.adminOnly).toBe(true);
       expect(NAV_ITEMS.stats.adminOnly).toBe(true);
       expect(NAV_ITEMS.plugins.adminOnly).toBe(true);
       expect(NAV_ITEMS.system.adminOnly).toBe(true);
@@ -77,9 +93,8 @@ describe('navigation config', () => {
       });
     });
 
-    it('includes channels, guide, and settings', () => {
+    it('includes the Live group and settings', () => {
       expect(DEFAULT_USER_ORDER).toContain('channels');
-      expect(DEFAULT_USER_ORDER).toContain('guide');
       expect(DEFAULT_USER_ORDER).toContain('settings');
     });
   });
@@ -109,8 +124,6 @@ describe('navigation config', () => {
         'channels',
         'vods',
         'sources',
-        'guide',
-        'dvr',
         'stats',
         'plugins',
       ];
@@ -134,32 +147,28 @@ describe('navigation config', () => {
 
       // Missing items should be appended at the end
       const resultIds = result.map((item) => item.id);
-      expect(resultIds).toContain('guide');
       expect(resultIds).toContain('system');
     });
 
     it('filters out admin-only items for non-admin users', () => {
-      const customOrder = [
-        'channels',
-        'vods',
-        'sources',
-        'guide',
-        'dvr',
-        'settings',
-      ];
+      const customOrder = ['channels', 'vods', 'sources', 'settings'];
       const result = getOrderedNavItems(customOrder, false);
 
       const resultIds = result.map((item) => item.id);
 
-      // Should only include non-admin items (vods/dvr need access flags)
+      // Should only include non-admin top-level groups.
       expect(resultIds).toContain('channels');
-      expect(resultIds).toContain('guide');
       expect(resultIds).toContain('settings');
 
       // Should not include admin-only items when access flags are off
       expect(resultIds).not.toContain('vods');
       expect(resultIds).not.toContain('sources');
-      expect(resultIds).not.toContain('dvr');
+      const livePaths = result.find((item) => item.id === 'channels').paths;
+      expect(livePaths.map((entry) => entry.path)).toEqual([
+        '/channels',
+        '/guide',
+        '/dvr',
+      ]);
     });
 
     it('drops the Logs entry when no log collector is running', () => {
@@ -173,20 +182,18 @@ describe('navigation config', () => {
 
     it('includes dvr for non-admin users when canViewDvr is true', () => {
       const result = getOrderedNavItems(null, false, [], { canViewDvr: true });
-      const resultIds = result.map((item) => item.id);
-
-      expect(resultIds).toContain('dvr');
-      expect(resultIds).toContain('channels');
-      expect(resultIds).toContain('guide');
-      expect(resultIds).toContain('settings');
-      expect(resultIds.indexOf('dvr')).toBeGreaterThan(
-        resultIds.indexOf('guide')
-      );
+      const live = result.find((item) => item.id === 'channels');
+      expect(live.paths.map((entry) => entry.path)).toEqual([
+        '/channels',
+        '/guide',
+        '/dvr',
+      ]);
     });
 
     it('keeps dvr out for non-admin users when canViewDvr is false', () => {
       const result = getOrderedNavItems(null, false, [], { canViewDvr: false });
-      expect(result.map((item) => item.id)).not.toContain('dvr');
+      const live = result.find((item) => item.id === 'channels');
+      expect(live.paths.map((entry) => entry.path)).not.toContain('/dvr');
     });
 
     it('includes vods for non-admin users when canViewVod is true', () => {
@@ -198,7 +205,7 @@ describe('navigation config', () => {
         resultIds.indexOf('channels')
       );
       expect(resultIds.indexOf('vods')).toBeLessThan(
-        resultIds.indexOf('guide')
+        resultIds.indexOf('settings')
       );
     });
 
@@ -215,10 +222,13 @@ describe('navigation config', () => {
       expect(result.map((item) => item.id)).toEqual([
         'channels',
         'vods',
-        'guide',
-        'dvr',
         'settings',
       ]);
+      expect(
+        result
+          .find((item) => item.id === 'channels')
+          .paths.map((entry) => entry.path)
+      ).toContain('/dvr');
     });
 
     it('filters out unknown items from saved order', () => {
@@ -245,7 +255,9 @@ describe('navigation config', () => {
       const result = getOrderedNavItems(null, true, channels);
 
       const channelItem = result.find((item) => item.id === 'channels');
-      expect(channelItem.badge).toBe('(3)');
+      expect(
+        channelItem.paths.find((entry) => entry.path === '/channels').badge
+      ).toBe('(3)');
     });
 
     it('returns items with correct structure', () => {
@@ -282,10 +294,9 @@ describe('navigation config', () => {
       // Order should be preserved for allowed items
       expect(resultIds[0]).toBe('settings');
       expect(resultIds[1]).toBe('channels');
-      expect(resultIds[2]).toBe('guide');
-
-      // Should only have non-admin items
-      expect(resultIds).toHaveLength(3);
+      // Should only have the two non-admin top-level items. TV Guide remains
+      // inside the Live group rather than occupying a separate order slot.
+      expect(resultIds).toHaveLength(2);
     });
   });
 

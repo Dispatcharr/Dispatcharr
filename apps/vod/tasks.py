@@ -1,37 +1,1374 @@
 from celery import shared_task, current_app, group
 from django.utils import timezone
 from django.db import transaction, IntegrityError
-from django.db.models import Q
+from django.db.models import Count, Q
 from apps.m3u.models import M3UAccount
 from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
+from core.utils import (
+    TaskLockRenewer,
+    acquire_task_lock,
+    is_task_lock_held,
+    release_task_lock,
+)
 from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
-    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
+    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation,
+    M3UVODCategoryRelation, VODMovieProfileSelection,
+    VODSeriesProfileSelection, VODPlaybackSession,
 )
-from .language import extract_provider_language
-from datetime import datetime
+from datetime import datetime, timedelta
+import hashlib
 import logging
 import json
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
+VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY = (
+    "vod_profile_selection:rebuild_after_provider_refresh"
+)
 
-def _with_provider_language(custom_properties, provider_data):
-    """Set/clear the top-level `language` key from the provider's raw payload.
+TMDB_ENRICHMENT_LOCK_NAME = "vod_tmdb_enrichment"
+TMDB_ENRICHMENT_LOCK_ID = "global"
+TMDB_PROGRESS_INTERVAL = 25
+TMDB_ENRICHMENT_LOCK_VALUE = "locked"
 
-    Recomputed on every scan (like `basic_data` itself) so a provider that
-    stops reporting a language for a stream doesn't leave a stale value
-    behind. Category-assigned language is applied at read time instead,
-    in apps/vod/language.py.
+
+def _import_source_metadata(category_relation, container_extension=None):
+    """Snapshot operator-owned category defaults onto one source relation."""
+    from .metadata import normalize_source_metadata
+
+    metadata = dict(
+        getattr(category_relation, "metadata_defaults", None) or {}
+    )
+    if container_extension:
+        metadata["container_extension"] = str(container_extension).lower()
+    return normalize_source_metadata(metadata)
+
+
+def _episode_import_metadata(relation, category_metadata):
+    """Add trustworthy episode video facts to the category metadata snapshot."""
+    from .metadata import normalize_source_metadata, relation_declared_metadata
+
+    return normalize_source_metadata(
+        {**category_metadata, **relation_declared_metadata(relation)}
+    )
+
+
+VOD_PROFILE_FINGERPRINT_FIELDS = (
+    "stream_id",
+    "series_id",
+    "category_id",
+    "name",
+    "title",
+    "tmdb",
+    "tmdb_id",
+    "imdb",
+    "imdb_id",
+    "year",
+    "releaseDate",
+    "release_date",
+    "container_extension",
+    "bitrate",
+    "file_size",
+    "duration",
+    "duration_secs",
+    "plot",
+    "description",
+    "rating",
+    "genre",
+    "stream_icon",
+    "cover",
+    "cover_big",
+    "backdrop_path",
+    "trailer",
+    "youtube_trailer",
+    "director",
+    "actors",
+    "cast",
+    "crew",
+    "country",
+    "origin_country",
+    "age",
+    "age_rating",
+)
+
+VOD_PROVIDER_METADATA_SCHEMA = 2
+
+
+@shared_task
+def cleanup_vod_playback_history():
+    """Delete playback audit rows outside their configured retention window."""
+    from core.models import CoreSettings
+    from .models import VODPlaybackSession
+
+    retention_days = CoreSettings.get_vod_playback_history_retention_days()
+    if retention_days <= 0:
+        return {"retention_days": 0, "deleted_sessions": 0}
+
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    deleted, _ = VODPlaybackSession.objects.filter(
+        started_at__lt=cutoff
+    ).delete()
+    logger.info(
+        "VOD playback history cleanup removed %s rows older than %s days",
+        deleted,
+        retention_days,
+    )
+    return {"retention_days": retention_days, "deleted_sessions": deleted}
+
+
+def _merge_canonical_tmdb_duplicate(
+    model,
+    source_id,
+    target_id,
+    *,
+    set_override=False,
+):
+    """Move every durable reference to one canonical title and remove its duplicate."""
+    if source_id == target_id:
+        return 0
+    with transaction.atomic():
+        source = model.objects.select_for_update().filter(pk=source_id).first()
+        target = model.objects.select_for_update().filter(pk=target_id).first()
+        if source is None or target is None:
+            return 0
+        target_tmdb_id = str(target.tmdb_match_id or target.tmdb_id or "")
+
+        if model is Movie:
+            relation_ids = list(
+                M3UMovieRelation.objects.filter(movie_id=source.id).values_list(
+                    "id", flat=True
+                )
+            )
+            if relation_ids:
+                relation_update = {"movie_id": target.id}
+                if set_override:
+                    relation_update["tmdb_override_id"] = target_tmdb_id
+                M3UMovieRelation.objects.filter(pk__in=relation_ids).update(
+                    **relation_update
+                )
+            VODMovieProfileSelection.objects.filter(movie_id=source.id).update(
+                movie_id=target.id
+            )
+            content_type = "movie"
+        else:
+            relations = list(
+                M3USeriesRelation.objects.filter(series_id=source.id).order_by("id")
+            )
+            relation_ids = [relation.id for relation in relations]
+            for relation in relations:
+                episode_relations = list(
+                    relation.episode_relations.select_related("episode").order_by("id")
+                )
+                for episode_relation in episode_relations:
+                    source_episode = episode_relation.episode
+                    target_episode = Episode.objects.filter(
+                        series_id=target.id,
+                        season_number=source_episode.season_number,
+                        episode_number=source_episode.episode_number,
+                    ).order_by("id").first()
+                    if target_episode is None:
+                        target_episode = Episode.objects.create(
+                            series_id=target.id,
+                            name=source_episode.name,
+                            description=source_episode.description,
+                            air_date=source_episode.air_date,
+                            rating=source_episode.rating,
+                            duration_secs=source_episode.duration_secs,
+                            season_number=source_episode.season_number,
+                            episode_number=source_episode.episode_number,
+                            tmdb_id=source_episode.tmdb_id,
+                            imdb_id=source_episode.imdb_id,
+                            custom_properties=source_episode.custom_properties,
+                            library_added_at=source_episode.library_added_at,
+                        )
+                    M3UEpisodeRelation.objects.filter(
+                        pk=episode_relation.pk
+                    ).update(episode_id=target_episode.id)
+                relation_update = {"series_id": target.id}
+                if set_override:
+                    relation_update["tmdb_override_id"] = target_tmdb_id
+                M3USeriesRelation.objects.filter(pk=relation.id).update(
+                    **relation_update
+                )
+            VODSeriesProfileSelection.objects.filter(series_id=source.id).update(
+                series_id=target.id
+            )
+            content_type = "series"
+
+        VODPlaybackSession.objects.filter(
+            content_type=content_type,
+            canonical_id=source.id,
+        ).update(canonical_id=target.id)
+        source.delete()
+        return len(relation_ids)
+
+
+def _merge_duplicate_tmdb_canonicals(model):
+    """Collapse canonical rows that resolve to the same curated TMDB ID."""
+    merged = 0
+    target_ids = set()
+    duplicate_ids = list(
+        model.objects.exclude(tmdb_match_id="")
+        .values("tmdb_match_id")
+        .annotate(row_count=Count("id"))
+        .filter(row_count__gt=1)
+        .values_list("tmdb_match_id", flat=True)
+    )
+    for tmdb_id in duplicate_ids:
+        candidates = list(
+            model.objects.filter(tmdb_match_id=tmdb_id)
+            .annotate(source_count=Count("m3u_relations"))
+            .order_by("id")
+        )
+        if len(candidates) < 2:
+            continue
+        candidates.sort(
+            key=lambda content: (
+                content.tmdb_status != "matched",
+                -content.source_count,
+                content.id,
+            )
+        )
+        target = candidates[0]
+        target_ids.add(target.id)
+        for source in candidates[1:]:
+            if not model.objects.filter(pk=source.id).exists():
+                continue
+            _merge_canonical_tmdb_duplicate(model, source.id, target.id)
+            merged += 1
+    return merged, target_ids
+
+
+def _filter_manual_tmdb_selection(queryset, media_type, filters):
+    """Restrict a manual batch to the exact canonical VOD list selection.
+
+    The list filter owns a few relation-aware predicates (account, category,
+    source languages and technical properties). Reuse that query here so a
+    select-all action cannot silently extend beyond what the administrator saw.
+    The import is deliberately local: api_views already imports task entry
+    points during application startup.
     """
-    language = extract_provider_language(provider_data)
-    if language:
-        custom_properties['language'] = language
+    filters = filters if isinstance(filters, dict) else {}
+    from .api_views import _filtered_vod_content
+
+    movies, series = _filtered_vod_content(filters)
+    selected = movies if media_type == "movie" else series
+    return queryset.filter(id__in=selected.values("id"))
+
+
+def _set_tmdb_state(status, *, task_id=None, progress=None, error=None, **dates):
+    from .models import VODMetadataState
+
+    defaults = {"status": status}
+    if task_id is not None:
+        defaults["task_id"] = task_id
+    if progress is not None:
+        defaults["progress"] = progress
+    if error is not None:
+        defaults["error"] = error
+    defaults.update(dates)
+    VODMetadataState.objects.update_or_create(pk=1, defaults=defaults)
+
+
+def enqueue_tmdb_enrichment(
+    *,
+    force=False,
+    search_missing=None,
+    rebuild_profiles=False,
+    trigger_reason="Manual TMDB metadata refresh",
+    movie_ids=None,
+    series_ids=None,
+    selection_filters=None,
+    exclude_movie_ids=None,
+    exclude_series_ids=None,
+):
+    """Publish at most one durable global enrichment task."""
+    from .models import VODMetadataState
+
+    now = timezone.now()
+    with transaction.atomic():
+        state, _ = VODMetadataState.objects.select_for_update().get_or_create(pk=1)
+        active = state.status in {
+            VODMetadataState.Status.QUEUED,
+            VODMetadataState.Status.RUNNING,
+        }
+        # A worker/container may disappear without writing a terminal state.
+        # Six hours is far beyond a normal batch but still permits recovery.
+        fresh = state.updated_at and state.updated_at >= now - timedelta(hours=6)
+        if active and fresh:
+            update_fields = ["updated_at"]
+            if rebuild_profiles and not state.rebuild_profiles_after_completion:
+                state.rebuild_profiles_after_completion = True
+                update_fields.append("rebuild_profiles_after_completion")
+            # The active worker has already snapshotted its work set. Record
+            # one follow-up pass so a provider refresh or manual ID correction
+            # arriving during that pass cannot be lost.
+            if not state.rerun_requested:
+                state.rerun_requested = True
+                update_fields.append("rerun_requested")
+            state.save(update_fields=update_fields)
+            return {"queued": False, "task_id": state.task_id, "status": state.status}
+        state.status = VODMetadataState.Status.QUEUED
+        state.task_id = ""
+        state.rebuild_profiles_after_completion = bool(rebuild_profiles)
+        state.rerun_requested = False
+        state.progress = {
+            "phase": "Waiting for worker",
+            "percent": 0,
+            "trigger_reason": trigger_reason,
+        }
+        state.started_at = now
+        state.completed_at = None
+        state.error = ""
+        state.save()
+
+        def publish():
+            try:
+                result = enrich_vod_metadata.delay(
+                    force=force,
+                    search_missing=search_missing,
+                    rebuild_profiles=rebuild_profiles,
+                    trigger_reason=trigger_reason,
+                    movie_ids=movie_ids,
+                    series_ids=series_ids,
+                    selection_filters=selection_filters,
+                    exclude_movie_ids=exclude_movie_ids,
+                    exclude_series_ids=exclude_series_ids,
+                )
+                VODMetadataState.objects.filter(
+                    pk=1,
+                    status=VODMetadataState.Status.QUEUED,
+                ).update(task_id=result.id)
+            except Exception as exc:
+                logger.exception("Could not enqueue TMDB metadata enrichment")
+                _set_tmdb_state(
+                    VODMetadataState.Status.FAILED,
+                    progress={"phase": "Could not publish background task", "percent": 100},
+                    error=str(exc)[:2000],
+                    completed_at=timezone.now(),
+                )
+
+        transaction.on_commit(publish)
+    return {"queued": True, "task_id": "", "status": "queued"}
+
+
+@shared_task
+def reconcile_vod_metadata_queue():
+    """End a stale TMDB status after a worker or broker restart.
+
+    This task only repairs durable status. It never starts enrichment merely
+    because an administrator opened the VOD page.
+    """
+    from celery.result import AsyncResult
+    from .models import VODMetadataState
+
+    state = VODMetadataState.objects.filter(pk=1).first()
+    if state is None or state.status not in {
+        VODMetadataState.Status.QUEUED,
+        VODMetadataState.Status.RUNNING,
+    }:
+        return {"repaired": False}
+
+    now = timezone.now()
+    task_state = ""
+    if state.task_id:
+        try:
+            task_state = str(AsyncResult(state.task_id).state or "")
+        except Exception:
+            task_state = "UNKNOWN"
+    terminal = task_state in {"SUCCESS", "FAILURE", "REVOKED"}
+    unpublished = (
+        state.status == VODMetadataState.Status.QUEUED
+        and not state.task_id
+        and state.updated_at < now - timedelta(minutes=2)
+    )
+    lost_running_worker = False
+    if (
+        state.status == VODMetadataState.Status.RUNNING
+        and state.updated_at < now - timedelta(minutes=10)
+    ):
+        try:
+            lost_running_worker = not is_task_lock_held(
+                TMDB_ENRICHMENT_LOCK_NAME,
+                TMDB_ENRICHMENT_LOCK_ID,
+            )
+        except Exception:
+            # An unavailable Redis instance is not evidence that the worker
+            # disappeared; leave the durable state untouched and retry later.
+            lost_running_worker = False
+    if not (terminal or unpublished or lost_running_worker):
+        return {"repaired": False, "task_state": task_state}
+
+    reason = (
+        "The TMDB background task ended without recording completion. "
+        "Start the metadata refresh again; already enriched titles will be skipped."
+    )
+    _set_tmdb_state(
+        VODMetadataState.Status.FAILED,
+        task_id=state.task_id,
+        progress={"phase": "TMDB metadata refresh was interrupted", "percent": 100},
+        error=reason,
+        completed_at=now,
+    )
+    return {"repaired": True, "task_state": task_state}
+
+
+@shared_task(bind=True, track_started=True)
+def enrich_vod_metadata(
+    self,
+    *,
+    force=False,
+    search_missing=None,
+    rebuild_profiles=False,
+    trigger_reason="Manual TMDB metadata refresh",
+    movie_ids=None,
+    series_ids=None,
+    selection_filters=None,
+    exclude_movie_ids=None,
+    exclude_series_ids=None,
+):
+    """Enrich canonical movies and series in one resumable TMDB batch."""
+    from core.models import CoreSettings
+    from .models import Movie, Series, VODMetadataState
+    from .tmdb import (
+        Client as TMDBClient,
+        TMDBAuthenticationError,
+        TMDBError,
+        TMDBNotFound,
+        apply_manual_overrides,
+        canonical_fields_from_metadata,
+        clean_lookup_title,
+    )
+    from django.db.models.fields.json import KeyTransform
+
+    if not acquire_task_lock(TMDB_ENRICHMENT_LOCK_NAME, TMDB_ENRICHMENT_LOCK_ID):
+        return {"skipped": "TMDB enrichment is already running"}
+    lock_renewer = TaskLockRenewer(
+        TMDB_ENRICHMENT_LOCK_NAME,
+        TMDB_ENRICHMENT_LOCK_ID,
+    )
+    lock_renewer.start()
+    started_at = timezone.now()
+    changed_movies = 0
+    changed_series = 0
+    changed_movie_ids = set()
+    changed_series_ids = set()
+    rerun_after = False
+    try:
+        token = CoreSettings.get_tmdb_api_token()
+        if not token:
+            raise ValueError("Configure a TMDB API read access token first")
+        languages = CoreSettings.get_tmdb_languages()
+        match_missing = CoreSettings.get_tmdb_match_missing()
+        should_search_missing = (
+            match_missing if search_missing is None else bool(search_missing)
+        )
+        title_rules = CoreSettings.get_tmdb_title_rules()
+        # Keep only the lightweight identity columns in memory. In particular,
+        # do not load every existing tmdb_metadata JSON document just to find
+        # the relatively small incremental work set.
+        work = []
+        query_fields = (
+            "id",
+            "name",
+            "display_name",
+            "clean_title",
+            "year",
+            "tmdb_id",
+            "tmdb_match_id",
+            "tmdb_enrichment_signature",
+        )
+        for model, media_type, relation_name in (
+            (Movie, "movie", "m3u_relations"),
+            (Series, "tv", "m3u_relations"),
+        ):
+            queryset = (
+                model.objects.filter(
+                    **{f"{relation_name}__m3u_account__is_active": True}
+                )
+                .annotate(
+                    manual_overrides=KeyTransform(
+                        "_manual_overrides", "tmdb_metadata"
+                    )
+                )
+                .distinct()
+                .values(*query_fields, "manual_overrides")
+                .order_by("id")
+            )
+            selected_ids = movie_ids if media_type == "movie" else series_ids
+            if selected_ids is not None:
+                queryset = queryset.filter(id__in=selected_ids)
+            if selection_filters is not None:
+                queryset = _filter_manual_tmdb_selection(
+                    queryset, media_type, selection_filters
+                )
+            excluded_ids = (
+                exclude_movie_ids if media_type == "movie" else exclude_series_ids
+            )
+            if excluded_ids:
+                queryset = queryset.exclude(id__in=excluded_ids)
+            for content in queryset.iterator(chunk_size=1000):
+                if force or not content["tmdb_enrichment_signature"]:
+                    work.append((model, media_type, content))
+
+        total = len(work)
+        counters = {
+            "processed": 0,
+            "total": total,
+            "matched": 0,
+            "enriched": 0,
+            "not_found": 0,
+            "ambiguous": 0,
+            "missing_id": 0,
+            "errors": 0,
+        }
+
+        def progress(phase, current=None):
+            processed = counters["processed"]
+            percent = round((processed / total) * 100) if total else 100
+            _set_tmdb_state(
+                VODMetadataState.Status.RUNNING,
+                task_id=str(self.request.id or ""),
+                progress={
+                    "phase": phase,
+                    "percent": percent,
+                    "current": current or "",
+                    "trigger_reason": trigger_reason,
+                    **counters,
+                },
+                error="",
+                started_at=started_at,
+                completed_at=None,
+            )
+
+        progress("Preparing TMDB metadata batch")
+        client = TMDBClient(token)
+        consecutive_errors = 0
+        for model, media_type, content in work:
+            content_id = content["id"]
+            content_name = content["name"]
+            lookup_title = content["clean_title"] or clean_lookup_title(
+                content_name,
+                display_name=content["display_name"],
+                year=content["year"],
+                rules=title_rules,
+            )
+            tmdb_id = str(
+                content["tmdb_match_id"] or content["tmdb_id"] or ""
+            ).strip()
+            match_method = (
+                "stored_tmdb_match"
+                if content["tmdb_match_id"]
+                else ("provider_tmdb_id" if tmdb_id else "")
+            )
+            metadata = {}
+            search_status = None
+            candidate_count = 0
+            try:
+                if not tmdb_id and should_search_missing:
+                    tmdb_id, search_status, candidate_count = client.search_outcome(
+                        lookup_title,
+                        content["year"],
+                        media_type,
+                        languages[0],
+                    )
+                    if tmdb_id:
+                        match_method = "exact_title_year"
+                if not tmdb_id:
+                    metadata = {
+                        "schema": 1,
+                        "status": (
+                            search_status
+                            if should_search_missing and search_status
+                            else "missing_id"
+                        ),
+                        "candidate_count": (
+                            candidate_count
+                            if should_search_missing
+                            else 0
+                        ),
+                        "localized": {},
+                        "fetched_at": timezone.now().isoformat(),
+                    }
+                    counters["missing_id"] += 1
+                    if search_status == "ambiguous":
+                        counters["ambiguous"] += 1
+                    elif search_status == "not_found":
+                        counters["not_found"] += 1
+                else:
+                    metadata = client.details(
+                        tmdb_id,
+                        media_type,
+                        languages,
+                        match_method=match_method,
+                    )
+                    metadata["status"] = "matched"
+                    counters["matched"] += int(not content["tmdb_id"])
+                    counters["enriched"] += 1
+                metadata = apply_manual_overrides(
+                    metadata,
+                    content.get("manual_overrides"),
+                )
+                consecutive_errors = 0
+            except TMDBNotFound:
+                metadata = {
+                    "schema": 1,
+                    "status": "not_found",
+                    "id": tmdb_id,
+                    "localized": {},
+                    "fetched_at": timezone.now().isoformat(),
+                }
+                metadata = apply_manual_overrides(
+                    metadata,
+                    content.get("manual_overrides"),
+                )
+                counters["not_found"] += 1
+                consecutive_errors = 0
+            except TMDBAuthenticationError:
+                raise
+            except TMDBError as exc:
+                # Request failures remain retryable on the next automatic run.
+                counters["errors"] += 1
+                counters["processed"] += 1
+                consecutive_errors += 1
+                if counters["processed"] % TMDB_PROGRESS_INTERVAL == 0:
+                    progress("Fetching TMDB metadata", content_name)
+                logger.warning(
+                    "TMDB enrichment failed for %s %s: %s",
+                    media_type,
+                    content_id,
+                    exc,
+                )
+                if consecutive_errors >= 10:
+                    raise RuntimeError(
+                        "TMDB failed repeatedly; stopping the batch for a later retry"
+                    ) from exc
+                continue
+
+            update = {
+                "clean_title": lookup_title[:255],
+                "tmdb_metadata": metadata,
+                "tmdb_match_id": str(metadata.get("id") or ""),
+                "tmdb_imdb_id": str(metadata.get("imdb_id") or ""),
+                "tmdb_poster_url": str(metadata.get("poster_url") or ""),
+                "tmdb_backdrop_url": str(metadata.get("backdrop_url") or ""),
+                "tmdb_status": metadata.get("status") or "",
+                "tmdb_enriched_at": timezone.now(),
+                "tmdb_enrichment_signature": TMDB_ENRICHMENT_LOCK_VALUE,
+            }
+            if metadata.get("status") == "matched":
+                update.update(
+                    canonical_fields_from_metadata(
+                        metadata,
+                        languages[0],
+                        media_type,
+                    )
+                )
+            model.objects.filter(pk=content_id).update(**update)
+            if media_type == "movie":
+                changed_movies += 1
+                changed_movie_ids.add(content_id)
+            else:
+                changed_series += 1
+                changed_series_ids.add(content_id)
+            counters["processed"] += 1
+            if (
+                counters["processed"] % TMDB_PROGRESS_INTERVAL == 0
+                or counters["processed"] == total
+            ):
+                progress("Fetching TMDB metadata", content_name)
+
+        merged_movies, merged_movie_targets = _merge_duplicate_tmdb_canonicals(
+            Movie
+        )
+        merged_series, merged_series_targets = _merge_duplicate_tmdb_canonicals(
+            Series
+        )
+        if merged_movies:
+            changed_movies += merged_movies
+            changed_movie_ids.update(merged_movie_targets)
+        if merged_series:
+            changed_series += merged_series
+            changed_series_ids.update(merged_series_targets)
+
+        completed_at = timezone.now()
+        _set_tmdb_state(
+            VODMetadataState.Status.COMPLETE,
+            task_id=str(self.request.id or ""),
+            progress={
+                "phase": "TMDB metadata is up to date",
+                "percent": 100,
+                "trigger_reason": trigger_reason,
+                **counters,
+            },
+            error="",
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        rerun_after = bool(
+            VODMetadataState.objects.filter(pk=1, rerun_requested=True).update(
+                rerun_requested=False
+            )
+        )
+        must_rebuild_profiles = bool(
+            rebuild_profiles
+            or VODMetadataState.objects.filter(
+                pk=1,
+                rebuild_profiles_after_completion=True,
+            ).exists()
+        )
+        # A provider refresh that landed during this pass needs one more
+        # incremental TMDB scan. Keep the rebuild request pending so clients
+        # switch only after that final scan has enriched the newest catalog.
+        if must_rebuild_profiles and not rerun_after:
+            from .profile_selection import enqueue_all_profile_selection_rebuilds
+
+            enqueue_all_profile_selection_rebuilds(
+                trigger_reason="A changed provider catalog was enriched with TMDB metadata"
+            )
+            VODMetadataState.objects.filter(pk=1).update(
+                rebuild_profiles_after_completion=False
+            )
+        if changed_movies or changed_series:
+            from .catalog_cache import bump_catalog_generation
+            from core.utils import send_websocket_update
+
+            # Artwork and external IDs change XC and VOD responses, but do not
+            # start an output build unless this pass belongs to a changed
+            # provider catalog. Manual enrichment leaves the completed output
+            # active and asks the administrator to rebuild explicitly.
+            bump_catalog_generation(invalidate_selections=False)
+            send_websocket_update(
+                "updates",
+                "update",
+                {
+                    "type": "vod_library_updated",
+                    "changed_movies": changed_movies,
+                    "changed_series": changed_series,
+                },
+                collect_garbage=False,
+            )
+            if not must_rebuild_profiles:
+                from .profile_selection import (
+                    mark_profile_selections_outdated,
+                    profile_ids_using_canonical_content,
+                )
+
+                mark_profile_selections_outdated(
+                    trigger_reason="Canonical VOD metadata was enriched manually",
+                    policy_ids=profile_ids_using_canonical_content(
+                        movie_ids=changed_movie_ids,
+                        series_ids=changed_series_ids,
+                    ),
+                )
+        return {
+            **counters,
+            "changed_movies": changed_movies,
+            "changed_series": changed_series,
+        }
+    except Exception as exc:
+        logger.exception("TMDB metadata enrichment failed")
+        _set_tmdb_state(
+            VODMetadataState.Status.FAILED,
+            task_id=str(self.request.id or ""),
+            progress={"phase": "TMDB metadata refresh failed", "percent": 100},
+            error=str(exc)[:2000],
+            started_at=started_at,
+            completed_at=timezone.now(),
+        )
+        must_rebuild_profiles = bool(
+            rebuild_profiles
+            or VODMetadataState.objects.filter(
+                pk=1,
+                rebuild_profiles_after_completion=True,
+            ).exists()
+        )
+        if must_rebuild_profiles:
+            from .profile_selection import enqueue_all_profile_selection_rebuilds
+
+            enqueue_all_profile_selection_rebuilds(
+                trigger_reason="Provider catalog changed; TMDB enrichment failed"
+            )
+            VODMetadataState.objects.filter(pk=1).update(
+                rebuild_profiles_after_completion=False
+            )
+        rerun_after = bool(
+            VODMetadataState.objects.filter(pk=1, rerun_requested=True).update(
+                rerun_requested=False
+            )
+        )
+        raise
+    finally:
+        lock_renewer.stop()
+        release_task_lock(TMDB_ENRICHMENT_LOCK_NAME, TMDB_ENRICHMENT_LOCK_ID)
+        if rerun_after:
+            pending_profile_rebuild = bool(
+                rebuild_profiles
+                or VODMetadataState.objects.filter(
+                    pk=1,
+                    rebuild_profiles_after_completion=True,
+                ).exists()
+            )
+            enqueue_tmdb_enrichment(
+                search_missing=search_missing,
+                rebuild_profiles=pending_profile_rebuild,
+                trigger_reason="VOD metadata changed during the previous TMDB pass",
+            )
+
+
+def _provider_vod_fingerprint(rows):
+    """Return an order-independent digest of output-relevant provider rows.
+
+    XC providers do not guarantee row ordering. XORing fixed SHA-256 row
+    digests lets scheduled refreshes cheaply recognize an unchanged catalog
+    without retaining another copy of a potentially very large VOD response.
+    """
+    digest = bytearray(32)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        payload = {
+            key: row.get(key)
+            for key in VOD_PROFILE_FINGERPRINT_FIELDS
+            if row.get(key) not in (None, "", [], {})
+        }
+        row_digest = hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).digest()
+        for index, value in enumerate(row_digest):
+            digest[index] ^= value
+    return f"{len(rows)}:{bytes(digest).hex()}"
+
+
+def _remember_profile_rebuild_after_vod_refresh():
+    """Record one catalog invalidation without publishing a premature task.
+
+    The 60-second profile watchdog publishes this only after no provider is in
+    FETCHING/PARSING anymore. This also covers refresh jobs already waiting in
+    the same Celery queue, which have not set their account status yet.
+    """
+    from .catalog_cache import safe_cache_set
+
+    safe_cache_set(
+        VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY,
+        True,
+        timeout=6 * 60 * 60,
+    )
+
+
+def _enqueue_deferred_profile_rebuild_after_vod_refreshes():
+    """Publish profile and enrichment work after every running refresh ended."""
+    from django.core.cache import cache
+
+    from .catalog_cache import safe_cache_get
+
+    if M3UAccount.objects.filter(
+        is_active=True,
+        status__in=[M3UAccount.Status.FETCHING, M3UAccount.Status.PARSING],
+    ).exists():
+        return False
+    if not safe_cache_get(VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY, False):
+        return False
+
+    try:
+        cache.delete(VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY)
+    except Exception:
+        pass
+
+    from core.models import CoreSettings
+
+    from .profile_selection import enqueue_all_profile_selection_rebuilds
+
+    # Enrichment processes only new or explicitly unlocked canonical titles.
+    # When enabled, let that pass finish before rebuilding profiles so clients
+    # switch once to the final catalog. Without a configured enrichment pass,
+    # the cleanup stage locks new titles and the changed source catalog is
+    # rebuilt immediately.
+    if (
+        CoreSettings.get_tmdb_auto_enrich()
+        and CoreSettings.get_tmdb_api_token()
+    ):
+        result = enqueue_tmdb_enrichment(
+            rebuild_profiles=True,
+            trigger_reason="A completed provider VOD refresh changed the catalog",
+        )
+        return result["queued"] or result["status"] in {"queued", "running"}
+
+    return enqueue_all_profile_selection_rebuilds(
+        trigger_reason=(
+            "One or more completed VOD provider refreshes changed the source "
+            "catalog"
+        )
+    )
+
+
+@shared_task(bind=True, max_retries=180, track_started=True)
+def rebuild_vod_profile_selection(self, policy_id):
+    """Prepare one reusable VOD output profile outside request handling."""
+    from apps.m3u.models import M3UAccount
+    from .models import VODAccessPolicy
+    from .profile_selection import (
+        SINGLE_PROFILE_TASK_NAME,
+        _set_pending_profiles_progress,
+    )
+
+    _set_pending_profiles_progress(
+        VODAccessPolicy.objects.filter(pk=policy_id),
+        "Starting VOD profile catalog build",
+        0,
+        queue="celery",
+        task_id=str(self.request.id or ""),
+        task_name=SINGLE_PROFILE_TASK_NAME,
+        batch=False,
+        attempt=int(getattr(self.request, "retries", 0) or 0) + 1,
+    )
+
+    if M3UAccount.objects.filter(
+        is_active=True,
+        status__in=[M3UAccount.Status.FETCHING, M3UAccount.Status.PARSING],
+    ).exists():
+        _set_pending_profiles_progress(
+            VODAccessPolicy.objects.filter(pk=policy_id),
+            "Waiting for an active M3U/VOD refresh",
+            0,
+            queue="celery",
+            task_id=str(self.request.id or ""),
+            task_name=SINGLE_PROFILE_TASK_NAME,
+            batch=False,
+            attempt=int(getattr(self.request, "retries", 0) or 0) + 1,
+        )
+        raise self.retry(countdown=10)
+    from .profile_selection import (
+        CatalogChangedDuringBuild,
+        ProfileBuildAlreadyRunning,
+        ProfileBuildNotPending,
+        build_vod_profile_selection,
+    )
+
+    try:
+        return build_vod_profile_selection(policy_id, require_pending=True)
+    except ProfileBuildNotPending as exc:
+        # A second Celery delivery may arrive after the authoritative build has
+        # already activated its generation. Treat it as a harmless no-op.
+        return {"skipped": str(exc)}
+    except (CatalogChangedDuringBuild, ProfileBuildAlreadyRunning) as exc:
+        raise self.retry(exc=exc, countdown=5)
+
+
+@shared_task(bind=True, max_retries=180, track_started=True)
+def rebuild_all_vod_profile_selections(self):
+    """Refresh all active VOD profiles after a completed catalog import."""
+    from apps.m3u.models import M3UAccount
+    from .models import VODAccessPolicy
+    from .profile_selection import (
+        BATCH_PROFILE_TASK_NAME,
+        _set_pending_profiles_progress,
+    )
+
+    _set_pending_profiles_progress(
+        VODAccessPolicy.objects.filter(is_active=True),
+        "VOD profile catalog batch started",
+        0,
+        include_batch_position=True,
+        queue="celery",
+        task_id=str(self.request.id or ""),
+        task_name=BATCH_PROFILE_TASK_NAME,
+        batch=True,
+        attempt=int(getattr(self.request, "retries", 0) or 0) + 1,
+    )
+
+    if M3UAccount.objects.filter(
+        is_active=True,
+        status__in=[M3UAccount.Status.FETCHING, M3UAccount.Status.PARSING],
+    ).exists():
+        _set_pending_profiles_progress(
+            VODAccessPolicy.objects.filter(is_active=True),
+            "Waiting for an active M3U/VOD refresh",
+            0,
+            include_batch_position=True,
+            queue="celery",
+            task_id=str(self.request.id or ""),
+            task_name=BATCH_PROFILE_TASK_NAME,
+            batch=True,
+            attempt=int(getattr(self.request, "retries", 0) or 0) + 1,
+        )
+        raise self.retry(countdown=10)
+    from django.core.cache import cache
+    from .profile_selection import (
+        BATCH_PROFILE_TASK_NAME,
+        CatalogChangedDuringBuild,
+        PROFILE_REBUILD_ENQUEUE_KEY,
+        PROFILE_REBUILD_LOCK_TIMEOUT,
+        ProfileBuildAlreadyRunning,
+        ProfileBuildNotPending,
+        _set_pending_profiles_progress,
+        build_vod_profile_selection,
+    )
+
+    results = {}
+    retry_exc = None
+
+    def release_owned_rebuild_lock():
+        """Never let an older duplicate task remove a newer task's lock."""
+        try:
+            owner = cache.get(PROFILE_REBUILD_ENQUEUE_KEY)
+            task_id = self.request.id
+            if owner is None:
+                return
+            if owner == "1" or not task_id or str(owner) == str(task_id):
+                cache.delete(PROFILE_REBUILD_ENQUEUE_KEY)
+        except Exception:
+            pass
+
+    for policy_id in VODAccessPolicy.objects.filter(
+        is_active=True,
+        selection_status=VODAccessPolicy.SelectionStatus.PENDING,
+    ).values_list("id", flat=True):
+        try:
+            results[str(policy_id)] = build_vod_profile_selection(
+                policy_id, require_pending=True
+            )
+        except ProfileBuildNotPending as exc:
+            results[str(policy_id)] = {"skipped": str(exc)}
+        except (CatalogChangedDuringBuild, ProfileBuildAlreadyRunning) as exc:
+            retry_exc = exc
+            results[str(policy_id)] = {"error": str(exc)}
+            break
+        except Exception as exc:
+            logger.warning(
+                "VOD profile %s could not be prepared: %s", policy_id, exc
+            )
+            results[str(policy_id)] = {"error": str(exc)}
+    if retry_exc is not None:
+        # Keep the debounce lock across Celery retries. Releasing it here used
+        # to allow a second batch task to race the retry and toggle one profile
+        # repeatedly between Pending and Building.
+        try:
+            cache.set(
+                PROFILE_REBUILD_ENQUEUE_KEY,
+                self.request.id or "retrying",
+                timeout=PROFILE_REBUILD_LOCK_TIMEOUT,
+            )
+        except Exception:
+            pass
+        raise self.retry(exc=retry_exc, countdown=5)
+    release_owned_rebuild_lock()
+    # An invalidation can arrive after this task has already prepared an early
+    # profile. The debounce lock intentionally suppresses another task while we
+    # are running, so schedule one follow-up pass for any profile left pending.
+    if VODAccessPolicy.objects.filter(
+        is_active=True,
+        selection_status=VODAccessPolicy.SelectionStatus.PENDING,
+    ).exists():
+        try:
+            acquired = cache.add(
+                PROFILE_REBUILD_ENQUEUE_KEY,
+                "1",
+                timeout=PROFILE_REBUILD_LOCK_TIMEOUT,
+            )
+        except Exception:
+            acquired = True
+        if acquired:
+            result = self.apply_async(countdown=1)
+            try:
+                cache.set(
+                    PROFILE_REBUILD_ENQUEUE_KEY,
+                    result.id,
+                    timeout=PROFILE_REBUILD_LOCK_TIMEOUT,
+                )
+            except Exception:
+                pass
+            _set_pending_profiles_progress(
+                VODAccessPolicy.objects.filter(is_active=True),
+                "Waiting in Celery queue",
+                0,
+                include_batch_position=True,
+                queue="celery",
+                task_id=result.id,
+                task_name=BATCH_PROFILE_TASK_NAME,
+                queued_at=timezone.now().isoformat(),
+                batch=True,
+            )
+    return results
+
+
+@shared_task
+def reconcile_vod_profile_selection_queue():
+    """Repair profile builds whose delivery was lost or already completed.
+
+    Catalog reads must remain read-only. This periodic watchdog replaces the
+    old API-list side effect and also repairs the inconsistent state where a
+    profile says Pending although its recorded Celery task is already final.
+    """
+    from celery.result import AsyncResult
+    from django.core.cache import cache
+    from django.utils.dateparse import parse_datetime
+
+    from .models import VODAccessPolicy
+    from .profile_selection import (
+        BATCH_PROFILE_TASK_NAME,
+        PROFILE_REBUILD_ENQUEUE_KEY,
+        _progress_payload,
+        enqueue_all_profile_selection_rebuilds,
+    )
+
+    # READY is authoritative. Code/schema changes must not masquerade as a
+    # user save merely because a newly calculated signature differs from the
+    # signature stored by an older version. Profile saves and completed VOD
+    # imports explicitly move affected profiles to Pending; this watchdog only
+    # recovers work which was already Pending/Building and then got stranded.
+    repaired_ready = 0
+
+    try:
+        rebuild_lock_owner = cache.get(PROFILE_REBUILD_ENQUEUE_KEY)
+    except Exception:
+        rebuild_lock_owner = None
+
+    terminal_states = {"SUCCESS", "FAILURE", "REVOKED"}
+    cutoff = timezone.now() - timedelta(minutes=2)
+    stranded = []
+    pending_profiles = VODAccessPolicy.objects.filter(
+        is_active=True,
+        selection_status=VODAccessPolicy.SelectionStatus.PENDING,
+    ).filter(
+        Q(selection_started_at__isnull=True) | Q(selection_started_at__lt=cutoff)
+    )
+    for policy in pending_profiles:
+        task_id = (policy.selection_progress or {}).get("task_id")
+        if not task_id:
+            stranded.append((policy.pk, ""))
+            continue
+        try:
+            task_state = str(AsyncResult(task_id).state or "PENDING")
+        except Exception:
+            task_state = "UNKNOWN"
+        progress = policy.selection_progress or {}
+        is_batch = bool(progress.get("batch"))
+        lock_matches_task = str(rebuild_lock_owner or "") == str(task_id)
+        # In the AIO image both the broker and result backend live in an
+        # in-memory Redis process. After a container restart the database can
+        # still say Pending while Celery has forgotten both the message and
+        # its task result. A batch lock is written alongside publication, so a
+        # missing/mismatched lock plus PENDING is reliable restart evidence.
+        task_was_lost = (
+            task_state == "PENDING" and is_batch and not lock_matches_task
+        )
+        if task_state in terminal_states or task_was_lost:
+            stranded.append((policy.pk, str(task_id)))
+
+    if stranded:
+        recovery_started_at = timezone.now()
+        for policy_id, _task_id in stranded:
+            policy = VODAccessPolicy.objects.filter(pk=policy_id).values(
+                "selection_progress"
+            ).first()
+            progress = (policy or {}).get("selection_progress") or {}
+            original_reason = progress.get(
+                "original_trigger_reason"
+            ) or progress.get("trigger_reason")
+            VODAccessPolicy.objects.filter(
+                pk=policy_id,
+                is_active=True,
+                selection_status=VODAccessPolicy.SelectionStatus.PENDING,
+            ).update(
+                selection_started_at=recovery_started_at,
+                selection_error="",
+                selection_progress=_progress_payload(
+                    "Recovering unpublished catalog task",
+                    0,
+                    queue="celery",
+                    task_name=BATCH_PROFILE_TASK_NAME,
+                    batch=True,
+                    trigger_reason=(
+                        "Automatic recovery: the previous Celery task is no "
+                        "longer available after a service restart"
+                    ),
+                    original_trigger_reason=original_reason,
+                ),
+            )
+
+    # A worker can be restarted after claiming a profile, leaving the database
+    # in Building forever. Progress writes carry a heartbeat; recover only
+    # builds with no heartbeat for a generous interval, and give the old build
+    # generation a token that prevents it from activating after recovery.
+    stalled_cutoff = timezone.now() - timedelta(minutes=15)
+    stalled_building = []
+    for policy in VODAccessPolicy.objects.filter(
+        is_active=True,
+        selection_status=VODAccessPolicy.SelectionStatus.BUILDING,
+    ):
+        progress = policy.selection_progress or {}
+        updated_at = parse_datetime(str(progress.get("updated_at") or ""))
+        if updated_at is not None and timezone.is_naive(updated_at):
+            updated_at = timezone.make_aware(updated_at)
+        heartbeat = updated_at or policy.selection_started_at
+        if heartbeat is None or heartbeat < stalled_cutoff:
+            stalled_building.append(
+                (policy.pk, str(progress.get("task_id") or ""))
+            )
+
+    if stalled_building:
+        for policy_id, _task_id in stalled_building:
+            policy = VODAccessPolicy.objects.filter(pk=policy_id).values(
+                "selection_progress"
+            ).first()
+            progress = (policy or {}).get("selection_progress") or {}
+            original_reason = progress.get(
+                "original_trigger_reason"
+            ) or progress.get("trigger_reason")
+            VODAccessPolicy.objects.filter(
+                pk=policy_id,
+                is_active=True,
+                selection_status=VODAccessPolicy.SelectionStatus.BUILDING,
+            ).update(
+                selection_status=VODAccessPolicy.SelectionStatus.PENDING,
+                selection_started_at=timezone.now(),
+                selection_error="",
+                selection_progress=_progress_payload(
+                    "Recovering interrupted catalog build",
+                    0,
+                    queue="celery",
+                    task_name=BATCH_PROFILE_TASK_NAME,
+                    batch=True,
+                    build_generation=f"recovery-{time.time_ns()}",
+                    trigger_reason=(
+                        "Automatic recovery: the previous VOD profile build "
+                        "stopped reporting progress"
+                    ),
+                    original_trigger_reason=original_reason,
+                ),
+            )
+
+    republished = False
+    if stranded or stalled_building:
+        try:
+            lock_owner = cache.get(PROFILE_REBUILD_ENQUEUE_KEY)
+            recorded_task_ids = {
+                task_id
+                for _, task_id in stranded + stalled_building
+                if task_id
+            }
+            if lock_owner is None or str(lock_owner) in recorded_task_ids | {"1"}:
+                cache.delete(PROFILE_REBUILD_ENQUEUE_KEY)
+        except Exception:
+            pass
+    if stranded or stalled_building:
+        republished = enqueue_all_profile_selection_rebuilds(pending_only=True)
+
+    if republished:
+        # The recovered global batch already consumes the newest catalog
+        # generation, including any provider changes remembered while the old
+        # task was stranded. Publishing a second batch here would duplicate
+        # the same work and overwrite its task identity in the UI.
+        try:
+            cache.delete(VOD_PROFILE_REBUILD_AFTER_REFRESH_KEY)
+        except Exception:
+            pass
+        deferred_refresh_published = False
     else:
-        custom_properties.pop('language', None)
-    return custom_properties
+        deferred_refresh_published = (
+            _enqueue_deferred_profile_rebuild_after_vod_refreshes()
+        )
+
+    return {
+        "stale_ready_requeued": repaired_ready,
+        "stranded_pending": [policy_id for policy_id, _ in stranded],
+        "stalled_building": [
+            policy_id for policy_id, _ in stalled_building
+        ],
+        "republished": republished,
+        "deferred_refresh_published": deferred_refresh_published,
+    }
+
+
+def _send_vod_refresh_progress(
+    account_id,
+    *,
+    started_at,
+    phase,
+    progress,
+    items_processed=None,
+    items_total=None,
+    provider_items_total=None,
+):
+    """Persist and broadcast coarse VOD refresh progress without per-row writes."""
+    from apps.m3u.tasks import send_m3u_update
+
+    elapsed = max(time.monotonic() - started_at, 0)
+    progress = max(0, min(int(progress), 99))
+    remaining = None
+    if progress > 1 and elapsed > 0:
+        remaining = max((elapsed / progress) * (100 - progress), 0)
+
+    item_summary = ""
+    if items_processed is not None and items_total is not None:
+        item_summary = f" ({items_processed:,}/{items_total:,} eligible)"
+        if (
+            provider_items_total is not None
+            and provider_items_total != items_total
+        ):
+            item_summary += f" · {provider_items_total:,} provider items"
+    remaining_summary = (
+        f" · approximately {max(round(remaining), 1)}s remaining"
+        if remaining is not None
+        else ""
+    )
+    message = f"VOD refresh: {phase}{item_summary}{remaining_summary}"
+    M3UAccount.objects.filter(id=account_id).update(
+        status=M3UAccount.Status.PARSING,
+        last_message=message,
+    )
+    send_m3u_update(
+        account_id,
+        "vod_refresh",
+        progress,
+        status="processing",
+        message=message,
+        phase=phase,
+        items_processed=items_processed,
+        items_total=items_total,
+        provider_items_total=provider_items_total,
+        elapsed_time=elapsed,
+        time_remaining=remaining,
+    )
+
+
+def _provider_vod_identity(item, id_field):
+    """Return a usable provider ID/name pair, or ``None`` for a bad row.
+
+    Xtream providers may explicitly return ``null`` or whitespace for required
+    model identifiers. Reject those rows before building any
+    model instances so one malformed item cannot roll back the whole batch.
+    """
+    if not isinstance(item, dict):
+        return None
+    raw_id = item.get(id_field)
+    raw_name = item.get('name')
+    provider_id = str(raw_id).strip() if raw_id is not None else ''
+    name = str(raw_name).strip() if raw_name is not None else ''
+    if not provider_id or not name:
+        return None
+    return provider_id, name
+
+
+def _provider_category_id(item):
+    """Return a normalized Xtream category ID, or ``None`` when absent."""
+    if not isinstance(item, dict):
+        return None
+    raw_category_id = item.get('category_id')
+    if raw_category_id is None:
+        return None
+    category_id = str(raw_category_id).strip()
+    return category_id or None
 
 
 def _empty_categories_should_abort(categories_data, account, category_type):
@@ -42,6 +1379,59 @@ def _empty_categories_should_abort(categories_data, account, category_type):
         m3u_account=account,
         category__category_type=category_type,
     ).exclude(category__name='Uncategorized').exists()
+
+
+def _retain_enabled_vod_rows(rows, categories_by_provider, relations):
+    """Compact a provider catalog in place to rows from enabled categories.
+
+    Xtream's unscoped catalog endpoints return every provider item. Filtering
+    before chunk processing avoids model construction and database lookups for
+    disabled categories while retaining the single-request provider behavior.
+    Non-empty provider category IDs that were ignored by discovery rules are
+    skipped rather than being misclassified as Uncategorized.
+    """
+    provider_total = len(rows)
+    enabled_provider_ids = set()
+
+    for provider_id, category in categories_by_provider.items():
+        if provider_id == '__uncategorized__':
+            continue
+        relation = relations.get(category.id)
+        if relation is not None and relation.enabled:
+            enabled_provider_ids.add(str(provider_id).strip())
+
+    uncategorized = categories_by_provider.get('__uncategorized__')
+    uncategorized_relation = (
+        relations.get(uncategorized.id) if uncategorized is not None else None
+    )
+    uncategorized_enabled = bool(
+        uncategorized_relation is not None and uncategorized_relation.enabled
+    )
+
+    write_index = 0
+    skipped_disabled_or_unknown = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            skipped_disabled_or_unknown += 1
+            continue
+        provider_category_id = _provider_category_id(row)
+        keep = (
+            provider_category_id in enabled_provider_ids
+            if provider_category_id
+            else uncategorized_enabled
+        )
+        if keep:
+            rows[write_index] = row
+            write_index += 1
+        else:
+            skipped_disabled_or_unknown += 1
+
+    del rows[write_index:]
+    return {
+        'provider_total': provider_total,
+        'eligible_total': write_index,
+        'skipped_total': skipped_disabled_or_unknown,
+    }
 
 
 def lookup_by_name_year(model, name_year_pairs):
@@ -65,8 +1455,87 @@ def lookup_by_name_year(model, name_year_pairs):
     return found
 
 
-@shared_task
-def refresh_vod_content(account_id):
+def refresh_canonical_clean_titles(
+    movie_ids=(),
+    series_ids=(),
+    *,
+    lock_processed=False,
+):
+    """Apply the configured prefix cleanup to imported canonical titles.
+
+    A successful TMDB enrichment owns the clean title.  All other rows derive
+    it from the provider-backed canonical title and the explicit prefix list.
+    This keeps output formatting deterministic even when automatic TMDB lookup
+    is disabled.
+    """
+    from core.models import CoreSettings
+    from .tmdb import clean_lookup_title
+
+    rules = CoreSettings.get_tmdb_title_rules()
+    updated_count = 0
+    for model, ids in ((Movie, movie_ids), (Series, series_ids)):
+        ids = set(ids)
+        if not ids:
+            continue
+        updates = []
+        for content in model.objects.filter(
+            pk__in=ids,
+            tmdb_enrichment_signature="",
+        ).only(
+            "id",
+            "name",
+            "display_name",
+            "clean_title",
+            "year",
+            "tmdb_status",
+            "tmdb_enrichment_signature",
+        ).iterator(chunk_size=1000):
+            if content.tmdb_status == "matched" and content.display_name:
+                clean_title = content.display_name.strip()
+            else:
+                clean_title = clean_lookup_title(
+                    content.name,
+                    display_name=content.display_name,
+                    year=content.year,
+                    rules=rules,
+                )
+            clean_title = clean_title[:255]
+            title_changed = clean_title != content.clean_title
+            if title_changed:
+                content.clean_title = clean_title
+                updated_count += 1
+            if lock_processed:
+                content.tmdb_enrichment_signature = TMDB_ENRICHMENT_LOCK_VALUE
+            if title_changed or lock_processed:
+                updates.append(content)
+        if updates:
+            fields = ["clean_title"]
+            if lock_processed:
+                fields.append("tmdb_enrichment_signature")
+            model.objects.bulk_update(updates, fields, batch_size=1000)
+    return updated_count
+
+
+@shared_task(bind=True, max_retries=120, default_retry_delay=30)
+def refresh_vod_content(self, account_id):
+    """Run a VOD import without overlapping another catalog refresh."""
+    if not acquire_task_lock("refresh_single_m3u_account", account_id):
+        logger.info(
+            "Account %s already has a catalog refresh running; retrying VOD refresh",
+            account_id,
+        )
+        raise self.retry(countdown=30)
+
+    lock_renewer = TaskLockRenewer("refresh_single_m3u_account", account_id)
+    lock_renewer.start()
+    try:
+        return _refresh_vod_content_impl(account_id)
+    finally:
+        lock_renewer.stop()
+        release_task_lock("refresh_single_m3u_account", account_id)
+
+
+def _refresh_vod_content_impl(account_id):
     """Refresh VOD content for an M3U account with batch processing for improved performance"""
     # Import here to avoid circular import
     from apps.m3u.tasks import send_m3u_update
@@ -79,10 +1548,36 @@ def refresh_vod_content(account_id):
             return "VOD refresh only available for XtreamCodes accounts"
 
         logger.info(f"Starting batch VOD refresh for account {account.name}")
+        # Include titles whose source may disappear during this scan. They can
+        # remain canonical through another provider and need their field-level
+        # provider projection recalculated after cleanup.
+        affected_movie_ids = set(
+            M3UMovieRelation.objects.filter(m3u_account_id=account_id)
+            .values_list("movie_id", flat=True)
+        )
+        affected_series_ids = set(
+            M3USeriesRelation.objects.filter(m3u_account_id=account_id)
+            .values_list("series_id", flat=True)
+        )
         start_time = timezone.now()
+        progress_started_at = time.monotonic()
+
+        # The Live import has already returned the account to SUCCESS before
+        # this independent VOD task starts.  Keep the account in PARSING for
+        # the complete VOD mutation window so profile workers wait for a stable
+        # catalog instead of repeatedly switching between Pending and Building.
+        M3UAccount.objects.filter(pk=account_id).update(
+            status=M3UAccount.Status.PARSING,
+            last_message="VOD refresh in progress...",
+        )
 
         # Send start notification
-        send_m3u_update(account_id, "vod_refresh", 0, status="processing")
+        _send_vod_refresh_progress(
+            account_id,
+            started_at=progress_started_at,
+            phase="Fetching categories",
+            progress=1,
+        )
 
         with XtreamCodesClient(
             account.server_url,
@@ -98,11 +1593,21 @@ def refresh_vod_content(account_id):
                     "aborting VOD refresh to preserve existing category selections"
                 )
                 logger.warning(message)
+                M3UAccount.objects.filter(id=account_id).update(
+                    status=M3UAccount.Status.ERROR,
+                    last_message=f"VOD refresh failed: {message}",
+                )
                 send_m3u_update(account_id, "vod_refresh", 100, status="error",
                                message=f"VOD refresh failed: {message}")
                 return f"VOD refresh failed: {message}"
 
             movie_categories, series_categories = category_maps
+            _send_vod_refresh_progress(
+                account_id,
+                started_at=progress_started_at,
+                phase="Categories loaded",
+                progress=8,
+            )
 
             logger.debug("Fetching relations for filtering category filtering")
             relations = { rel.category_id: rel for rel in M3UVODCategoryRelation.objects
@@ -111,24 +1616,181 @@ def refresh_vod_content(account_id):
             }
 
             # Refresh movies with batch processing (pass scan start time)
-            refresh_movies(client, account, movie_categories, relations, scan_start_time=start_time)
+            movie_catalog = refresh_movies(
+                client,
+                account,
+                movie_categories,
+                relations,
+                scan_start_time=start_time,
+                progress_started_at=progress_started_at,
+            )
 
             # Refresh series with batch processing (pass scan start time)
-            refresh_series(client, account, series_categories, relations, scan_start_time=start_time)
-
-        end_time = timezone.now()
-        duration = (end_time - start_time).total_seconds()
-
-        logger.info(f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds")
+            series_catalog = refresh_series(
+                client,
+                account,
+                series_categories,
+                relations,
+                scan_start_time=start_time,
+                progress_started_at=progress_started_at,
+            )
 
         # Cleanup orphaned VOD content after refresh (scoped to this account only)
         logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
-        cleanup_result = cleanup_orphaned_vod_content(account_id=account_id, scan_start_time=start_time)
+        _send_vod_refresh_progress(
+            account_id,
+            started_at=progress_started_at,
+            phase="Cleaning up",
+            progress=97,
+        )
+        cleanup_result = cleanup_orphaned_vod_content(
+            account_id=account_id,
+            scan_start_time=start_time,
+            stale_days=account.stale_stream_days,
+        )
         logger.info(f"VOD cleanup completed: {cleanup_result}")
 
+        # Provider rows are already in memory during import. Use their compact,
+        # order-independent signatures to avoid rebuilding every user profile
+        # after a scheduled scan that did not change selectable VOD content.
+        movie_fingerprint = (
+            movie_catalog.get("fingerprint")
+            if isinstance(movie_catalog, dict)
+            else None
+        )
+        series_fingerprint = (
+            series_catalog.get("fingerprint")
+            if isinstance(series_catalog, dict)
+            else None
+        )
+        fingerprints_available = bool(movie_fingerprint and series_fingerprint)
+        current_fingerprint = (
+            hashlib.sha256(
+                (
+                    f"schema:{VOD_PROVIDER_METADATA_SCHEMA}|"
+                    f"movie:{movie_fingerprint}|"
+                    f"series:{series_fingerprint}"
+                ).encode("utf-8")
+            ).hexdigest()
+            if fingerprints_available
+            else ""
+        )
+        latest_properties = (
+            M3UAccount.objects.filter(pk=account.pk)
+            .values_list("custom_properties", flat=True)
+            .first()
+            or {}
+        )
+        previous_fingerprint = latest_properties.get(
+            "vod_profile_catalog_fingerprint", ""
+        )
+        catalog_changed = (
+            not fingerprints_available
+            or not previous_fingerprint
+            or previous_fingerprint != current_fingerprint
+        )
+
+        if catalog_changed:
+            _send_vod_refresh_progress(
+                account_id,
+                started_at=progress_started_at,
+                phase="Merging provider metadata",
+                progress=98,
+            )
+            affected_movie_ids.update(
+                M3UMovieRelation.objects.filter(m3u_account_id=account_id)
+                .values_list("movie_id", flat=True)
+            )
+            affected_series_ids.update(
+                M3USeriesRelation.objects.filter(m3u_account_id=account_id)
+                .values_list("series_id", flat=True)
+            )
+            from .provider_metadata import (
+                reconcile_movie_provider_metadata,
+                reconcile_series_provider_metadata,
+            )
+
+            reconciled_movies = reconcile_movie_provider_metadata(
+                affected_movie_ids
+            )
+            reconciled_series = reconcile_series_provider_metadata(
+                affected_series_ids
+            )
+            from core.models import CoreSettings
+
+            lock_after_cleanup = not (
+                CoreSettings.get_tmdb_auto_enrich()
+                and CoreSettings.get_tmdb_api_token()
+            )
+            refreshed_clean_titles = refresh_canonical_clean_titles(
+                affected_movie_ids,
+                affected_series_ids,
+                lock_processed=lock_after_cleanup,
+            )
+            logger.info(
+                "Reconciled canonical provider metadata for %d movies and %d series; "
+                "updated %d clean titles",
+                reconciled_movies,
+                reconciled_series,
+                refreshed_clean_titles,
+            )
+
+        if current_fingerprint:
+            updated_properties = {
+                **latest_properties,
+                "vod_profile_catalog_fingerprint": current_fingerprint,
+                "vod_catalog_counts": {
+                    "movies": movie_catalog,
+                    "series": series_catalog,
+                },
+            }
+            M3UAccount.objects.filter(pk=account.pk).update(
+                custom_properties=updated_properties
+            )
+
+        if catalog_changed:
+            # Most import writes use bulk_create/bulk_update and intentionally
+            # skip model signals. Invalidate once per changed completed scan.
+            from apps.vod.catalog_cache import bump_catalog_generation
+            bump_catalog_generation()
+            _remember_profile_rebuild_after_vod_refresh()
+        else:
+            logger.info(
+                "VOD output catalog for account %s is unchanged; profile rebuild skipped",
+                account.name,
+            )
+
+        end_time = timezone.now()
+        duration = (end_time - start_time).total_seconds()
+        logger.info(
+            "Batch VOD refresh completed for account %s in %.2f seconds",
+            account.name,
+            duration,
+        )
+
         # Send completion notification
+        success_message = f"VOD refresh completed in {duration:.2f} seconds"
+        latest_properties = (
+            M3UAccount.objects.filter(pk=account_id)
+            .values_list("custom_properties", flat=True)
+            .first()
+            or {}
+        )
+        updated_properties = {
+            **latest_properties,
+            "refresh_timings": {
+                **(latest_properties.get("refresh_timings") or {}),
+                "vod_seconds": round(duration, 2),
+                "vod_completed_at": end_time.isoformat(),
+            },
+        }
+        M3UAccount.objects.filter(id=account_id).update(
+            status=M3UAccount.Status.SUCCESS,
+            last_message=success_message,
+            custom_properties=updated_properties,
+        )
         send_m3u_update(account_id, "vod_refresh", 100, status="success",
-                       message=f"VOD refresh completed in {duration:.2f} seconds")
+                       message=success_message)
 
         return f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
 
@@ -138,8 +1800,13 @@ def refresh_vod_content(account_id):
         logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
         # Send error notification
+        error_message = f"VOD refresh failed: {str(e)}"
+        M3UAccount.objects.filter(id=account_id).update(
+            status=M3UAccount.Status.ERROR,
+            last_message=error_message,
+        )
         send_m3u_update(account_id, "vod_refresh", 100, status="error",
-                       message=f"VOD refresh failed: {str(e)}")
+                       message=error_message)
 
         return f"VOD refresh failed: {str(e)}"
 
@@ -164,16 +1831,24 @@ def refresh_categories(account_id, client=None):
             f"({account.name}); aborting VOD refresh to preserve existing category selections"
         )
         return None
-    category_map = batch_create_categories(categories_data, 'movie', account)
+    movie_item_names = _discovery_item_names(
+        client, account, "movie", categories_data
+    )
+    category_map = batch_create_categories(
+        categories_data,
+        'movie',
+        account,
+        item_names_by_provider_id=movie_item_names,
+    )
 
-    # Create a mapping from provider category IDs to our category objects
+    # Map provider category IDs to persisted category objects.
     movies_category_id_map = {}
     for cat_data in categories_data:
         cat_name = cat_data.get('category_name', 'Unknown')
-        provider_cat_id = cat_data.get('category_id')
+        provider_cat_id = _provider_category_id(cat_data)
         our_category = category_map.get(cat_name)
-        if provider_cat_id and our_category:
-            movies_category_id_map[str(provider_cat_id)] = our_category
+        if provider_cat_id is not None and our_category:
+            movies_category_id_map[provider_cat_id] = our_category
 
     # Get the category list to properly map category IDs and names
     logger.info("Fetching series categories from provider...")
@@ -184,20 +1859,35 @@ def refresh_categories(account_id, client=None):
             f"({account.name}); aborting VOD refresh to preserve existing category selections"
         )
         return None
-    category_map = batch_create_categories(categories_data, 'series', account)
+    series_item_names = _discovery_item_names(
+        client, account, "series", categories_data
+    )
+    category_map = batch_create_categories(
+        categories_data,
+        'series',
+        account,
+        item_names_by_provider_id=series_item_names,
+    )
 
-    # Create a mapping from provider category IDs to our category objects
+    # Map provider category IDs to persisted category objects.
     series_category_id_map = {}
     for cat_data in categories_data:
         cat_name = cat_data.get('category_name', 'Unknown')
-        provider_cat_id = cat_data.get('category_id')
+        provider_cat_id = _provider_category_id(cat_data)
         our_category = category_map.get(cat_name)
-        if provider_cat_id and our_category:
-            series_category_id_map[str(provider_cat_id)] = our_category
+        if provider_cat_id is not None and our_category:
+            series_category_id_map[provider_cat_id] = our_category
 
     return movies_category_id_map, series_category_id_map
 
-def refresh_movies(client, account, categories_by_provider, relations, scan_start_time=None):
+def refresh_movies(
+    client,
+    account,
+    categories_by_provider,
+    relations,
+    scan_start_time=None,
+    progress_started_at=None,
+):
     """Refresh movie content using single API call for all movies"""
     logger.info(f"Refreshing movies for account {account.name}")
 
@@ -210,7 +1900,7 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 
     # Ensure there's a relation for the Uncategorized category
     account_custom_props = account.custom_properties or {}
-    auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+    auto_enable_new = False
 
     uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
         category=uncategorized_category,
@@ -236,10 +1926,35 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
     logger.info("Fetching all movies from provider...")
     all_movies_data = client.get_vod_streams()  # No category_id = get all movies
 
-    # Process movies in chunks using the simple approach
+    catalog_counts = _retain_enabled_vod_rows(
+        all_movies_data,
+        categories_by_provider,
+        relations,
+    )
+
+    # Process only enabled movie categories in chunks. The provider total is
+    # still reported separately so the UI explains the reduction.
     chunk_size = 1000
     total_movies = len(all_movies_data)
+    provider_total_movies = catalog_counts['provider_total']
     total_chunks = (total_movies + chunk_size - 1) // chunk_size if total_movies > 0 else 0
+
+    logger.info(
+        "Movie catalog filtered from %d provider rows to %d enabled rows",
+        provider_total_movies,
+        total_movies,
+    )
+
+    if progress_started_at is not None:
+        _send_vod_refresh_progress(
+            account.id,
+            started_at=progress_started_at,
+            phase="Processing movies",
+            progress=10,
+            items_processed=0,
+            items_total=total_movies,
+            provider_items_total=provider_total_movies,
+        )
 
     for i in range(0, total_movies, chunk_size):
         chunk = all_movies_data[i:i + chunk_size]
@@ -247,12 +1962,53 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 
         logger.info(f"Processing movie chunk {chunk_num}/{total_chunks} ({len(chunk)} movies)")
         process_movie_batch(account, chunk, categories_by_provider, relations, scan_start_time)
+        if progress_started_at is not None:
+            completed = min(i + len(chunk), total_movies)
+            progress = 10 + round((completed / max(total_movies, 1)) * 40)
+            _send_vod_refresh_progress(
+                account.id,
+                started_at=progress_started_at,
+                phase="Processing movies",
+                progress=progress,
+                items_processed=completed,
+                items_total=total_movies,
+                provider_items_total=provider_total_movies,
+            )
 
+    if progress_started_at is not None and total_movies == 0:
+        _send_vod_refresh_progress(
+            account.id,
+            started_at=progress_started_at,
+            phase="Processing movies",
+            progress=50,
+            items_processed=0,
+            items_total=0,
+            provider_items_total=provider_total_movies,
+        )
+
+    fingerprint = _provider_vod_fingerprint(all_movies_data)
     del all_movies_data
-    logger.info(f"Completed processing all {total_movies} movies in {total_chunks} chunks")
+    logger.info(
+        "Completed processing %d eligible movies in %d chunks (%d provider rows)",
+        total_movies,
+        total_chunks,
+        provider_total_movies,
+    )
+    return {
+        "provider_total": provider_total_movies,
+        "selected_total": total_movies,
+        "fingerprint": fingerprint,
+    }
 
 
-def refresh_series(client, account, categories_by_provider, relations, scan_start_time=None):
+def refresh_series(
+    client,
+    account,
+    categories_by_provider,
+    relations,
+    scan_start_time=None,
+    progress_started_at=None,
+):
     """Refresh series content using single API call for all series"""
     logger.info(f"Refreshing series for account {account.name}")
 
@@ -265,7 +2021,7 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
 
     # Ensure there's a relation for the Uncategorized category
     account_custom_props = account.custom_properties or {}
-    auto_enable_new = account_custom_props.get("auto_enable_new_groups_series", True)
+    auto_enable_new = False
 
     uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
         category=uncategorized_category,
@@ -291,10 +2047,34 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
     logger.info("Fetching all series from provider...")
     all_series_data = client.get_series()  # No category_id = get all series
 
-    # Process series in chunks using the simple approach
+    catalog_counts = _retain_enabled_vod_rows(
+        all_series_data,
+        categories_by_provider,
+        relations,
+    )
+
+    # Process only enabled series categories in chunks.
     chunk_size = 1000
     total_series = len(all_series_data)
+    provider_total_series = catalog_counts['provider_total']
     total_chunks = (total_series + chunk_size - 1) // chunk_size if total_series > 0 else 0
+
+    logger.info(
+        "Series catalog filtered from %d provider rows to %d enabled rows",
+        provider_total_series,
+        total_series,
+    )
+
+    if progress_started_at is not None:
+        _send_vod_refresh_progress(
+            account.id,
+            started_at=progress_started_at,
+            phase="Processing series",
+            progress=52,
+            items_processed=0,
+            items_total=total_series,
+            provider_items_total=provider_total_series,
+        )
 
     for i in range(0, total_series, chunk_size):
         chunk = all_series_data[i:i + chunk_size]
@@ -302,14 +2082,77 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
 
         logger.info(f"Processing series chunk {chunk_num}/{total_chunks} ({len(chunk)} series)")
         process_series_batch(account, chunk, categories_by_provider, relations, scan_start_time)
+        if progress_started_at is not None:
+            completed = min(i + len(chunk), total_series)
+            progress = 52 + round((completed / max(total_series, 1)) * 43)
+            _send_vod_refresh_progress(
+                account.id,
+                started_at=progress_started_at,
+                phase="Processing series",
+                progress=progress,
+                items_processed=completed,
+                items_total=total_series,
+                provider_items_total=provider_total_series,
+            )
 
+    if progress_started_at is not None and total_series == 0:
+        _send_vod_refresh_progress(
+            account.id,
+            started_at=progress_started_at,
+            phase="Processing series",
+            progress=95,
+            items_processed=0,
+            items_total=0,
+            provider_items_total=provider_total_series,
+        )
+
+    fingerprint = _provider_vod_fingerprint(all_series_data)
     del all_series_data
-    logger.info(f"Completed processing all {total_series} series in {total_chunks} chunks")
+    logger.info(
+        "Completed processing %d eligible series in %d chunks (%d provider rows)",
+        total_series,
+        total_chunks,
+        provider_total_series,
+    )
+    return {
+        "provider_total": provider_total_series,
+        "selected_total": total_series,
+        "fingerprint": fingerprint,
+    }
 
 
-def batch_create_categories(categories_data, category_type, account):
+def _discovery_item_names(client, account, scope, categories_data):
+    """Fetch contained names only when a content-aware rule needs them."""
+    if not account.group_rules.filter(
+        scope=scope,
+        match_field="item_name",
+        enabled=True,
+    ).exists():
+        return {}
+
+    provider_rows = (
+        client.get_vod_streams() if scope == "movie" else client.get_series()
+    )
+    names = {}
+    for row in provider_rows:
+        provider_category_id = _provider_category_id(row) or ""
+        names.setdefault(provider_category_id, []).append(str(row.get("name") or ""))
+    return names
+
+
+def batch_create_categories(
+    categories_data,
+    category_type,
+    account,
+    *,
+    item_names_by_provider_id=None,
+):
     """Create categories in batch and return a mapping"""
     category_names = [cat.get('category_name', 'Unknown') for cat in categories_data]
+    provider_id_by_name = {
+        cat.get('category_name', 'Unknown'): str(cat.get('category_id') or '')
+        for cat in categories_data
+    }
 
     relations_to_create = []
 
@@ -327,9 +2170,56 @@ def batch_create_categories(categories_data, category_type, account):
     # Check if we should auto-enable new categories based on account settings
     account_custom_props = account.custom_properties or {}
     if category_type == 'movie':
-        auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+        auto_enable_new = False
     else:  # series
-        auto_enable_new = account_custom_props.get("auto_enable_new_groups_series", True)
+        auto_enable_new = False
+
+    from apps.m3u.group_rules import account_group_rules, evaluate_group_rules
+    from apps.m3u.account_templates import template_group_selection_map
+
+    discovery_rules = account_group_rules(account, category_type)
+    template_selections = template_group_selection_map(account, category_type)
+    item_names_by_provider_id = item_names_by_provider_id or {}
+    existing_relation_names = set(
+        M3UVODCategoryRelation.objects.filter(
+            m3u_account=account,
+            category__category_type=category_type,
+            category__name__in=category_names,
+        ).values_list("category__name", flat=True)
+    )
+    decisions = {}
+    kept_names = []
+    for name in category_names:
+        if name in existing_relation_names:
+            kept_names.append(name)
+            continue
+        if str(name).strip().casefold() in template_selections:
+            kept_names.append(name)
+            continue
+        provider_id = provider_id_by_name.get(name, "")
+        decision = evaluate_group_rules(
+            discovery_rules,
+            group_name=name,
+            item_names=item_names_by_provider_id.get(provider_id, []),
+            default_enabled=auto_enable_new,
+        )
+        decisions[name] = decision
+        if not decision.ignored:
+            kept_names.append(name)
+        else:
+            logger.info(
+                "Ignoring new %s category '%s' for account %s by discovery rule %s",
+                category_type,
+                name,
+                account.id,
+                decision.matched_rule_id,
+            )
+    category_names = kept_names
+    existing_categories = {
+        name: category
+        for name, category in existing_categories.items()
+        if name in category_names
+    }
 
     # Create missing categories in batch
     new_categories = []
@@ -338,15 +2228,32 @@ def batch_create_categories(categories_data, category_type, account):
         if name not in existing_categories:
             # Always create new categories
             new_categories.append(VODCategory(name=name, category_type=category_type))
-        else:
+        elif name not in existing_relation_names:
             # Existing category - create relationship with enabled based on auto_enable setting
             # (category exists globally but is new to this account)
-            relations_to_create.append(M3UVODCategoryRelation(
-                category=existing_categories[name],
-                m3u_account=account,
-                custom_properties={},
-                enabled=auto_enable_new,
-            ))
+            decision = decisions.get(name)
+            selection = template_selections.get(str(name).strip().casefold())
+            relations_to_create.append(
+                M3UVODCategoryRelation(
+                    category=existing_categories[name],
+                    m3u_account=account,
+                    custom_properties={
+                        "discovery_rule_id": decision.matched_rule_id
+                    }
+                    if decision and decision.matched_rule_id
+                    else {},
+                    enabled=(
+                        bool(selection.get("enabled", False))
+                        if selection
+                        else decision.enabled if decision else auto_enable_new
+                    ),
+                    metadata_defaults=(
+                        selection.get("metadata_defaults") or {}
+                        if selection
+                        else (decision.metadata_defaults or {}) if decision else {}
+                    ),
+                )
+            )
 
     logger.debug(f"{len(new_categories)} new categories found")
     logger.debug(f"{len(relations_to_create)} existing categories found for account")
@@ -357,15 +2264,31 @@ def batch_create_categories(categories_data, category_type, account):
 
         # Create relations for newly created categories with enabled based on auto_enable setting
         for cat in created_categories:
-            if not auto_enable_new:
+            decision = decisions.get(cat.name)
+            selection = template_selections.get(
+                str(cat.name).strip().casefold()
+            )
+            enabled = (
+                bool(selection.get("enabled", False))
+                if selection
+                else decision.enabled if decision else auto_enable_new
+            )
+            if not enabled:
                 logger.info(f"New {category_type} category '{cat.name}' created but DISABLED - auto_enable_new_groups is disabled for account {account.id}")
 
             relations_to_create.append(
                 M3UVODCategoryRelation(
                     category=cat,
                     m3u_account=account,
-                    custom_properties={},
-                    enabled=auto_enable_new,
+                    custom_properties={
+                        "discovery_rule_id": decision.matched_rule_id
+                    } if decision and decision.matched_rule_id else {},
+                    enabled=enabled,
+                    metadata_defaults=(
+                        selection.get("metadata_defaults") or {}
+                        if selection
+                        else (decision.metadata_defaults or {}) if decision else {}
+                    ),
                 )
             )
 
@@ -444,27 +2367,26 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     movies_to_update = []
     relations_to_create = []
     relations_to_update = []
+
     movie_keys = {}  # For deduplication like M3U stream_hashes
+    skipped_invalid = []
 
     # Process each movie in the batch
     for movie_data in batch:
+        identity = _provider_vod_identity(movie_data, 'stream_id')
+        if identity is None:
+            skipped_invalid.append(
+                movie_data.get('stream_id') if isinstance(movie_data, dict) else None
+            )
+            continue
+
         try:
-            stream_id = str(movie_data.get('stream_id'))
-            # Skip blank names: Movie.name is NOT NULL, and one null in this
-            # atomic batch would roll back every other row.
-            name = str(movie_data.get('name') or '').strip()
-            if not name:
-                logger.warning(
-                    "Skipping movie with blank name (stream_id=%s, account=%s)",
-                    stream_id,
-                    account.id,
-                )
-                continue
+            stream_id, name = identity
 
             # Get category with proper error handling
             category = None
 
-            provider_cat_id = str(movie_data.get('category_id', '')) if movie_data.get('category_id') else None
+            provider_cat_id = _provider_category_id(movie_data)
             movie_data['_provider_category_id'] = provider_cat_id
             movie_data['_category_id'] = None
 
@@ -478,8 +2400,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 if relation and not relation.enabled:
                     logger.debug("Skipping disabled category")
                     continue
-            else:
-                # Assign to Uncategorized category if no category_id provided
+            elif provider_cat_id is None:
+                # Assign only genuinely uncategorized rows. A non-empty
+                # unknown ID belongs to a category intentionally omitted by
+                # discovery rules and must never leak into Uncategorized.
                 logger.debug(f"No category ID provided for movie {name}, assigning to 'Uncategorized'")
                 category = categories.get('__uncategorized__')
                 if category:
@@ -489,6 +2413,13 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     if relation and not relation.enabled:
                         logger.debug("Skipping disabled 'Uncategorized' category")
                         continue
+            else:
+                logger.debug(
+                    "Skipping movie %s from unknown or ignored provider category %s",
+                    name,
+                    provider_cat_id,
+                )
+                continue
 
             # Extract metadata
             year = extract_year_from_data(movie_data, 'name')
@@ -509,8 +2440,9 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             else:
                 movie_key = f"name_{name}_{year or 'None'}"
 
-            # Reuse props for this movie_key, but keep every distinct stream_id
-            # so each still gets its own relation (same stream_id coalesces).
+            # Canonical metadata is deduplicated, but every upstream stream
+            # remains a source relation. This avoids silently dropping another
+            # category carrying the same TMDB/IMDB title in the same batch.
             if movie_key in movie_keys:
                 movie_keys[movie_key]['occurrences'].setdefault(stream_id, {
                     'category': category,
@@ -541,6 +2473,14 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
         except Exception as e:
             logger.error(f"Error preparing movie {movie_data.get('name', 'Unknown')}: {str(e)}")
+
+    if skipped_invalid:
+        logger.warning(
+            "Skipped %d movie rows with a blank provider ID or name "
+            "(sample IDs: %s)",
+            len(skipped_invalid),
+            skipped_invalid[:10],
+        )
 
     # Collect all logo URLs and create logos in batch
     logo_urls = set()
@@ -579,15 +2519,19 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
         except Exception as e:
             logger.warning(f"Failed to create VOD logos: {e}")
 
-    # Get existing movies based on our keys
+    # Get existing movies from the provider identity keys.
     existing_movies = {}
 
     # Query by TMDB IDs
     tmdb_keys = [k for k in movie_keys.keys() if k.startswith('tmdb_')]
     tmdb_ids = [k.replace('tmdb_', '') for k in tmdb_keys]
     if tmdb_ids:
-        for movie in Movie.objects.filter(tmdb_id__in=tmdb_ids):
-            existing_movies[f"tmdb_{movie.tmdb_id}"] = movie
+        for movie in Movie.objects.filter(
+            Q(tmdb_id__in=tmdb_ids) | Q(tmdb_match_id__in=tmdb_ids)
+        ).order_by("id"):
+            for tmdb_id in {movie.tmdb_id, movie.tmdb_match_id}:
+                if tmdb_id in tmdb_ids:
+                    existing_movies.setdefault(f"tmdb_{tmdb_id}", movie)
 
     # Query by IMDB IDs
     imdb_keys = [k for k in movie_keys.keys() if k.startswith('imdb_')]
@@ -618,6 +2562,17 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             stream_id__in=stream_ids
         ).select_related('movie')
     }
+    movie_override_ids = {
+        rel.tmdb_override_id for rel in existing_relations.values()
+        if rel.tmdb_override_id
+    }
+    movie_override_targets = {
+        str(movie.tmdb_match_id or movie.tmdb_id): movie
+        for movie in Movie.objects.filter(
+            Q(tmdb_match_id__in=movie_override_ids)
+            | Q(tmdb_id__in=movie_override_ids)
+        )
+    }
 
     # Process each movie
     for movie_key, data in movie_keys.items():
@@ -628,8 +2583,13 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             # Update existing movie
             movie = existing_movies[movie_key]
             updated = False
+            canonical_uses_tmdb = bool(
+                movie.tmdb_match_id or movie.tmdb_status == "matched"
+            )
 
             for field, value in movie_props.items():
+                if canonical_uses_tmdb:
+                    continue
                 if field == 'custom_properties':
                     # Merge custom_properties: fill director/actors/release_date
                     # only when empty; apply other non-blank list keys.
@@ -651,20 +2611,21 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Handle logo assignment for existing movies
             logo_updated = False
-            if logo_url and len(logo_url) <= 500:
-                if logo_url in existing_logos:
-                    new_logo = existing_logos[logo_url]
-                    if movie.logo_id != new_logo.id:
-                        movie._logo_to_update = new_logo
+            if not canonical_uses_tmdb:
+                if logo_url and len(logo_url) <= 500:
+                    if logo_url in existing_logos:
+                        new_logo = existing_logos[logo_url]
+                        if movie.logo_id != new_logo.id:
+                            movie._logo_to_update = new_logo
+                            logo_updated = True
+                    elif movie.logo_id:
+                        logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                        movie._logo_to_update = None
                         logo_updated = True
-                elif movie.logo_id:
-                    logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
+                    # Clear logo if no logo URL provided or URL is too long
                     movie._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
-                # Clear logo if no logo URL provided or URL is too long
-                movie._logo_to_update = None
-                logo_updated = True
 
             if updated or logo_updated:
                 movies_to_update.append(movie)
@@ -681,19 +2642,30 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
         for stream_id, occ in data['occurrences'].items():
             category = occ['category']
             movie_data = occ['movie_data']
+            category_relation = relations.get(category.id)
+            declared_metadata = _import_source_metadata(
+                category_relation,
+                movie_data.get('container_extension', 'mp4'),
+            )
 
             if stream_id in existing_relations:
                 # Update existing relation
                 relation = existing_relations[stream_id]
-                relation.movie = movie
+                relation.movie = (
+                    movie_override_targets.get(relation.tmdb_override_id)
+                    if relation.tmdb_override_id
+                    else movie
+                ) or movie
                 relation.category = category
                 relation.container_extension = movie_data.get('container_extension', 'mp4')
                 # Merge so list sync updates basic_data without dropping detail
                 # payloads or detailed_fetched / related flags.
                 existing_rel_cp = relation.custom_properties or {}
-                relation.custom_properties = _with_provider_language(
-                    {**existing_rel_cp, 'basic_data': movie_data}, movie_data
-                )
+                relation.custom_properties = {
+                    **existing_rel_cp,
+                    'basic_data': movie_data,
+                }
+                relation.declared_metadata = declared_metadata
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
             else:
@@ -704,9 +2676,11 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     category=category,
                     stream_id=stream_id,
                     container_extension=movie_data.get('container_extension', 'mp4'),
-                    custom_properties=_with_provider_language(
-                        {'basic_data': movie_data, 'detailed_fetched': False}, movie_data
-                    ),
+                    custom_properties={
+                        'basic_data': movie_data,
+                        'detailed_fetched': False
+                    },
+                    declared_metadata=declared_metadata,
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
                 relations_to_create.append(relation)
@@ -724,7 +2698,21 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 imdb_ids = [m.imdb_id for m in movies_to_create if m.imdb_id]
                 name_year_pairs = [(m.name, m.year) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
 
-                existing_by_tmdb = {m.tmdb_id: m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_tmdb = {}
+                if tmdb_ids:
+                    for existing_movie in Movie.objects.filter(
+                        Q(tmdb_id__in=tmdb_ids)
+                        | Q(tmdb_match_id__in=tmdb_ids)
+                    ).order_by("id"):
+                        for tmdb_id in {
+                            existing_movie.tmdb_id,
+                            existing_movie.tmdb_match_id,
+                        }:
+                            if tmdb_id in tmdb_ids:
+                                existing_by_tmdb.setdefault(
+                                    tmdb_id,
+                                    existing_movie,
+                                )
                 existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
                 existing_by_name_year = lookup_by_name_year(Movie, name_year_pairs)
@@ -779,15 +2767,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             if relations_to_update:
                 M3UMovieRelation.objects.bulk_update(relations_to_update, [
-                    'movie', 'category', 'container_extension', 'custom_properties', 'last_seen'
+                    'movie', 'category', 'container_extension', 'custom_properties',
+                    'declared_metadata', 'last_seen'
                 ])
 
         logger.info("Movie batch processing completed successfully!")
         return f"Movie batch processed: {len(movies_to_create)} created, {len(movies_to_update)} updated"
 
-    except Exception as e:
-        logger.error(f"Movie batch processing failed: {str(e)}")
-        return f"Movie batch processing failed: {str(e)}"
+    except Exception:
+        logger.exception("Movie batch processing failed")
+        raise
 
 
 @shared_task
@@ -800,26 +2789,24 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     relations_to_create = []
     relations_to_update = []
     series_keys = {}  # For deduplication like M3U stream_hashes
+    skipped_invalid = []
 
     # Process each series in the batch
     for series_data in batch:
+        identity = _provider_vod_identity(series_data, 'series_id')
+        if identity is None:
+            skipped_invalid.append(
+                series_data.get('series_id') if isinstance(series_data, dict) else None
+            )
+            continue
+
         try:
-            series_id = str(series_data.get('series_id'))
-            # Skip blank names: Series.name is NOT NULL, and one null in this
-            # atomic batch would roll back every other row.
-            name = str(series_data.get('name') or '').strip()
-            if not name:
-                logger.warning(
-                    "Skipping series with blank name (series_id=%s, account=%s)",
-                    series_id,
-                    account.id,
-                )
-                continue
+            series_id, name = identity
 
             # Get category with proper error handling
             category = None
 
-            provider_cat_id = str(series_data.get('category_id', '')) if series_data.get('category_id') else None
+            provider_cat_id = _provider_category_id(series_data)
             series_data['_provider_category_id'] = provider_cat_id
             series_data['_category_id'] = None
 
@@ -832,8 +2819,9 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 if relation and not relation.enabled:
                     logger.debug("Skipping disabled category")
                     continue
-            else:
-                # Assign to Uncategorized category if no category_id provided
+            elif provider_cat_id is None:
+                # Assign only genuinely uncategorized rows. Unknown non-empty
+                # IDs are omitted categories, not Uncategorized content.
                 logger.debug(f"No category ID provided for series {name}, assigning to 'Uncategorized'")
                 category = categories.get('__uncategorized__')
                 if category:
@@ -843,6 +2831,13 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     if relation and not relation.enabled:
                         logger.debug("Skipping disabled 'Uncategorized' category")
                         continue
+            else:
+                logger.debug(
+                    "Skipping series %s from unknown or ignored provider category %s",
+                    name,
+                    provider_cat_id,
+                )
+                continue
 
             # Extract metadata
             year = extract_year(series_data.get('releaseDate', ''))
@@ -866,8 +2861,8 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             else:
                 series_key = f"name_{name}_{year or 'None'}"
 
-            # Reuse props for this series_key, but keep every distinct series_id
-            # so each still gets its own relation (same series_id coalesces).
+            # Keep one canonical Series row while retaining every concrete
+            # upstream series/category relation in the batch.
             if series_key in series_keys:
                 series_keys[series_key]['occurrences'].setdefault(series_id, {
                     'category': category,
@@ -898,6 +2893,14 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
         except Exception as e:
             logger.error(f"Error preparing series {series_data.get('name', 'Unknown')}: {str(e)}")
+
+    if skipped_invalid:
+        logger.warning(
+            "Skipped %d series rows with a blank provider ID or name "
+            "(sample IDs: %s)",
+            len(skipped_invalid),
+            skipped_invalid[:10],
+        )
 
     # Collect all logo URLs and create logos in batch
     logo_urls = set()
@@ -936,15 +2939,19 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         except Exception as e:
             logger.warning(f"Failed to create VOD logos: {e}")
 
-    # Get existing series based on our keys - same pattern as movies
+    # Get existing series from the provider identity keys.
     existing_series = {}
 
     # Query by TMDB IDs
     tmdb_keys = [k for k in series_keys.keys() if k.startswith('tmdb_')]
     tmdb_ids = [k.replace('tmdb_', '') for k in tmdb_keys]
     if tmdb_ids:
-        for series in Series.objects.filter(tmdb_id__in=tmdb_ids):
-            existing_series[f"tmdb_{series.tmdb_id}"] = series
+        for series in Series.objects.filter(
+            Q(tmdb_id__in=tmdb_ids) | Q(tmdb_match_id__in=tmdb_ids)
+        ).order_by("id"):
+            for tmdb_id in {series.tmdb_id, series.tmdb_match_id}:
+                if tmdb_id in tmdb_ids:
+                    existing_series.setdefault(f"tmdb_{tmdb_id}", series)
 
     # Query by IMDB IDs
     imdb_keys = [k for k in series_keys.keys() if k.startswith('imdb_')]
@@ -975,6 +2982,17 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             external_series_id__in=series_ids
         ).select_related('series')
     }
+    series_override_ids = {
+        rel.tmdb_override_id for rel in existing_relations.values()
+        if rel.tmdb_override_id
+    }
+    series_override_targets = {
+        str(series.tmdb_match_id or series.tmdb_id): series
+        for series in Series.objects.filter(
+            Q(tmdb_match_id__in=series_override_ids)
+            | Q(tmdb_id__in=series_override_ids)
+        )
+    }
 
     # Process each series
     for series_key, data in series_keys.items():
@@ -985,8 +3003,13 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             # Update existing series
             series = existing_series[series_key]
             updated = False
+            canonical_uses_tmdb = bool(
+                series.tmdb_match_id or series.tmdb_status == "matched"
+            )
 
             for field, value in series_props.items():
+                if canonical_uses_tmdb:
+                    continue
                 if field == 'custom_properties':
                     existing_cp = series.custom_properties or {}
                     incoming_cp = value or {}
@@ -1003,22 +3026,23 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Handle logo assignment for existing series
             logo_updated = False
-            if logo_url and len(logo_url) <= 500:
-                if logo_url in existing_logos:
-                    new_logo = existing_logos[logo_url]
-                    if series.logo_id != new_logo.id:
-                        series._logo_to_update = new_logo
+            if not canonical_uses_tmdb:
+                if logo_url and len(logo_url) <= 500:
+                    if logo_url in existing_logos:
+                        new_logo = existing_logos[logo_url]
+                        if series.logo_id != new_logo.id:
+                            series._logo_to_update = new_logo
+                            logo_updated = True
+                    elif series.logo_id:
+                        # Logo URL exists but logo creation failed or logo not found
+                        # Clear the orphaned logo reference
+                        logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                        series._logo_to_update = None
                         logo_updated = True
-                elif series.logo_id:
-                    # Logo URL exists but logo creation failed or logo not found
-                    # Clear the orphaned logo reference
-                    logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                elif (not logo_url or len(logo_url) > 500) and series.logo_id:
+                    # Clear logo if no logo URL provided or URL is too long
                     series._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and series.logo_id:
-                # Clear logo if no logo URL provided or URL is too long
-                series._logo_to_update = None
-                logo_updated = True
 
             if updated or logo_updated:
                 series_to_update.append(series)
@@ -1035,18 +3059,26 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         for series_id, occ in data['occurrences'].items():
             category = occ['category']
             series_data = occ['series_data']
+            category_relation = relations.get(category.id)
+            declared_metadata = _import_source_metadata(category_relation)
 
             if series_id in existing_relations:
                 # Update existing relation
                 relation = existing_relations[series_id]
-                relation.series = series
+                relation.series = (
+                    series_override_targets.get(relation.tmdb_override_id)
+                    if relation.tmdb_override_id
+                    else series
+                ) or series
                 relation.category = category
                 # Merge so list sync updates basic_data without dropping detail
                 # payloads or detailed_fetched / episodes_fetched flags.
                 existing_rel_cp = relation.custom_properties or {}
-                relation.custom_properties = _with_provider_language(
-                    {**existing_rel_cp, 'basic_data': series_data}, series_data
-                )
+                relation.custom_properties = {
+                    **existing_rel_cp,
+                    'basic_data': series_data,
+                }
+                relation.declared_metadata = declared_metadata
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
             else:
@@ -1056,14 +3088,12 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     series=series,
                     category=category,
                     external_series_id=series_id,
-                    custom_properties=_with_provider_language(
-                        {
-                            'basic_data': series_data,
-                            'detailed_fetched': False,
-                            'episodes_fetched': False,
-                        },
-                        series_data,
-                    ),
+                    custom_properties={
+                        'basic_data': series_data,
+                        'detailed_fetched': False,
+                        'episodes_fetched': False,
+                    },
+                    declared_metadata=declared_metadata,
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
                 relations_to_create.append(relation)
@@ -1081,7 +3111,21 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 imdb_ids = [s.imdb_id for s in series_to_create if s.imdb_id]
                 name_year_pairs = [(s.name, s.year) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
 
-                existing_by_tmdb = {s.tmdb_id: s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_tmdb = {}
+                if tmdb_ids:
+                    for existing_series_row in Series.objects.filter(
+                        Q(tmdb_id__in=tmdb_ids)
+                        | Q(tmdb_match_id__in=tmdb_ids)
+                    ).order_by("id"):
+                        for tmdb_id in {
+                            existing_series_row.tmdb_id,
+                            existing_series_row.tmdb_match_id,
+                        }:
+                            if tmdb_id in tmdb_ids:
+                                existing_by_tmdb.setdefault(
+                                    tmdb_id,
+                                    existing_series_row,
+                                )
                 existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
                 existing_by_name_year = lookup_by_name_year(Series, name_year_pairs)
@@ -1136,15 +3180,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             if relations_to_update:
                 M3USeriesRelation.objects.bulk_update(relations_to_update, [
-                    'series', 'category', 'custom_properties', 'last_seen'
+                    'series', 'category', 'custom_properties',
+                    'declared_metadata', 'last_seen'
                 ])
 
         logger.info("Series batch processing completed successfully!")
         return f"Series batch processed: {len(series_to_create)} created, {len(series_to_update)} updated"
 
-    except Exception as e:
-        logger.error(f"Series batch processing failed: {str(e)}")
-        return f"Series batch processing failed: {str(e)}"
+    except Exception:
+        logger.exception("Series batch processing failed")
+        raise
 
 
 # Helper functions for year and date extraction
@@ -1311,6 +3356,11 @@ def parse_date(date_string):
 def refresh_series_episodes(account, series, external_series_id, episodes_data=None):
     """Refresh episodes for a series - only called on-demand"""
     try:
+        series_relation = M3USeriesRelation.objects.filter(
+            m3u_account=account,
+            external_series_id=external_series_id,
+        ).first()
+        detailed_series_info = None
         if not episodes_data:
             # Fetch detailed series info including episodes
             with XtreamCodesClient(
@@ -1323,7 +3373,15 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 if series_info:
                     # Update series with detailed info
                     info = series_info.get('info', {})
-                    if info:
+                    if isinstance(info, dict) and info:
+                        detailed_series_info = clean_custom_properties(info)
+                    if (
+                        isinstance(info, dict)
+                        and info
+                        and not (
+                            series_relation and series_relation.tmdb_override_id
+                        )
+                    ):
                         # Only update fields if new value is non-empty and either no existing value or existing value is empty
                         updated = False
                         if should_update_field(series.description, info.get('plot')):
@@ -1349,23 +3407,35 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 else:
                     episodes_data = {}
 
-        # Fetch the series relation once — used both to pass into batch_process_episodes
-        # (so episode relations get the FK set) and to update metadata afterwards.
-        series_relation = M3USeriesRelation.objects.filter(
-            m3u_account=account,
-            external_series_id=external_series_id
-        ).first()
-
         # Process all episodes in batch
         batch_process_episodes(account, series, episodes_data, series_relation=series_relation)
 
         if series_relation:
             custom_props = series_relation.custom_properties or {}
+            if detailed_series_info:
+                custom_props['detailed_info'] = detailed_series_info
             custom_props['episodes_fetched'] = True
             custom_props['detailed_fetched'] = True
             series_relation.custom_properties = custom_props
             series_relation.last_episode_refresh = timezone.now()
-            series_relation.save()
+            # Provider details and episodes are lazy inspector data. They must
+            # not alter a prepared output profile merely because it was opened.
+            series_relation._skip_vod_profile_invalidation = True
+            series_relation.save(
+                update_fields=["custom_properties", "last_episode_refresh"]
+            )
+            from .metadata import sync_relation_declared_metadata
+
+            sync_relation_declared_metadata(
+                series_relation,
+                notify_profile_change=False,
+            )
+            from .provider_metadata import reconcile_series_provider_metadata
+
+            if reconcile_series_provider_metadata([series_relation.series_id]):
+                from .catalog_cache import bump_catalog_generation
+
+                bump_catalog_generation(invalidate_selections=False)
 
     except Exception as e:
         logger.error(f"Error refreshing episodes for series {series.name}: {str(e)}")
@@ -1448,6 +3518,13 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
     relations_to_create = []
     relations_to_update = []
 
+    category_relation = None
+    if series_relation and series_relation.category_id:
+        category_relation = M3UVODCategoryRelation.objects.filter(
+            m3u_account=account,
+            category_id=series_relation.category_id,
+        ).only("metadata_defaults").first()
+
     # Track episodes we're creating in this batch to avoid duplicates
     # Key: (series_id, season_number, episode_number) -> Episode object
     episodes_pending_creation = {}
@@ -1468,6 +3545,11 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 logger.warning(f"Invalid episode_num '{episode_data.get('episode_num')}' for episode '{episode_name}': {e}")
                 episode_number = 0
             info = episode_data.get('info', {})
+            container_extension = episode_data.get('container_extension', 'mp4')
+            declared_metadata = _import_source_metadata(
+                category_relation,
+                container_extension,
+            )
 
             # Extract episode metadata
             description = info.get('plot') or info.get('overview', '') if info else ''
@@ -1556,10 +3638,13 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 relation = existing_relations[episode_id]
                 relation.episode = episode
                 relation.series_relation = series_relation
-                relation.container_extension = episode_data.get('container_extension', 'mp4')
-                relation.custom_properties = _with_provider_language(
-                    {'info': episode_data, 'season_number': season_number},
-                    {**episode_data, **(info or {})},
+                relation.container_extension = container_extension
+                relation.custom_properties = {
+                    'info': episode_data,
+                    'season_number': season_number,
+                }
+                relation.declared_metadata = _episode_import_metadata(
+                    relation, declared_metadata
                 )
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
@@ -1570,12 +3655,16 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                     episode=episode,
                     series_relation=series_relation,
                     stream_id=episode_id,
-                    container_extension=episode_data.get('container_extension', 'mp4'),
-                    custom_properties=_with_provider_language(
-                        {'info': episode_data, 'season_number': season_number},
-                        {**episode_data, **(info or {})},
-                    ),
+                    container_extension=container_extension,
+                    custom_properties={
+                        'info': episode_data,
+                        'season_number': season_number,
+                    },
+                    declared_metadata=declared_metadata,
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
+                )
+                relation.declared_metadata = _episode_import_metadata(
+                    relation, declared_metadata
                 )
                 relations_to_create.append(relation)
 
@@ -1636,7 +3725,8 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
         # Update existing episode relations
         if relations_to_update:
             M3UEpisodeRelation.objects.bulk_update(relations_to_update, [
-                'episode', 'series_relation', 'container_extension', 'custom_properties', 'last_seen'
+                'episode', 'series_relation', 'container_extension',
+                'custom_properties', 'declared_metadata', 'last_seen'
             ])
 
         # Delete relations for streams no longer returned by the provider.
@@ -1758,8 +3848,8 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
         try:
             orphaned_movies.delete()
         except IntegrityError:
-            # A concurrent refresh task created a new relation for one of these movies
-            # between our query and the DELETE. Skip and let the next cleanup run handle it.
+            # A concurrent refresh created a relation between the query and
+            # DELETE. Let the next cleanup run handle it.
             logger.warning(
                 "Skipped some orphaned movie deletions due to concurrent modifications; "
                 "they will be retried on the next cleanup run."
@@ -2299,20 +4389,15 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
     """
     Fetch advanced movie data from provider and update Movie and M3UMovieRelation.
 
-    Skips when detailed_fetched is set and last_advanced_refresh is within 24h,
-    unless force_refresh is True.
+    Provider movie files are stable source records. Fetch their advanced data
+    once and keep it until an administrator explicitly requests a refresh.
     """
     try:
         relation = M3UMovieRelation.objects.select_related('movie', 'm3u_account__user_agent').get(id=m3u_movie_relation_id)
         now = timezone.now()
         detailed_fetched = (relation.custom_properties or {}).get('detailed_fetched', False)
-        if (
-            not force_refresh
-            and detailed_fetched
-            and relation.last_advanced_refresh
-            and (now - relation.last_advanced_refresh).total_seconds() < 86400
-        ):
-            return "Advanced data recently fetched, skipping."
+        if not force_refresh and detailed_fetched:
+            return "Advanced data already fetched, skipping."
 
         account = relation.m3u_account
         movie = relation.movie
@@ -2351,6 +4436,41 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                 else:
                     movie_data = {}
                     logger.warning(f"VOD movie_data for stream {relation.stream_id} returned unexpected type: {type(movie_data_raw)}")
+
+                if relation.tmdb_override_id:
+                    # This concrete provider source was deliberately moved to
+                    # another canonical title. Keep provider detail on the
+                    # relation, but never let the provider's old IDs or text
+                    # overwrite the selected TMDB-backed canonical record.
+                    relation_custom_props = relation.custom_properties or {}
+                    cleaned_info = clean_custom_properties(info) if info else None
+                    cleaned_movie_data = (
+                        clean_custom_properties(movie_data) if movie_data else None
+                    )
+                    if cleaned_info:
+                        relation_custom_props['detailed_info'] = cleaned_info
+                    if cleaned_movie_data:
+                        relation_custom_props['movie_data'] = cleaned_movie_data
+                    relation_custom_props['detailed_fetched'] = True
+                    relation.custom_properties = relation_custom_props
+                    relation.last_advanced_refresh = now
+                    relation._skip_vod_profile_invalidation = True
+                    relation.save(
+                        update_fields=['custom_properties', 'last_advanced_refresh']
+                    )
+                    from .metadata import sync_relation_declared_metadata
+
+                    sync_relation_declared_metadata(
+                        relation,
+                        notify_profile_change=False,
+                    )
+                    from .catalog_cache import bump_catalog_generation
+
+                    # The provider payload belongs to this concrete source.
+                    # A manual TMDB assignment must keep the selected canonical
+                    # record entirely under canonical/TMDB control.
+                    bump_catalog_generation(invalidate_selections=False)
+                    return "Advanced source data refreshed; canonical override preserved."
 
                 # Update Movie fields if changed
                 updated = False
@@ -2393,8 +4513,7 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                         movie, relation, tmdb_id_to_set, imdb_id_to_set
                     )
                     if relation_updated:
-                        # If the relation was updated to point to a different movie,
-                        # we need to update our reference and continue with that movie
+                        # Continue with the canonical movie now used by the relation.
                         movie = updated_movie
                         logger.info(f"Relation updated, now working with movie {movie.id}")
                     else:
@@ -2435,8 +4554,8 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                     try:
                         movie.save()
                     except Exception as save_error:
-                        # If we still get an integrity error after our conflict resolution,
-                        # log it and try to save without the problematic IDs
+                        # Retry without conflicting provider IDs if the canonical
+                        # conflict resolution still races another writer.
                         logger.error(f"Failed to save movie {movie.id} after conflict resolution: {str(save_error)}")
                         if 'tmdb_id' in str(save_error) and movie.tmdb_id:
                             logger.warning(f"Clearing tmdb_id {movie.tmdb_id} from movie {movie.id} due to save error")
@@ -2464,17 +4583,24 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                     relation_custom_props['movie_data'] = cleaned_movie_data
                 relation_custom_props['detailed_fetched'] = True
 
-                # Basic-data list scans already set this when the provider exposes
-                # a language there; the detailed payload can surface one (e.g. in
-                # `audio`) that the list entry didn't.
-                if not relation_custom_props.get('language') and cleaned_info:
-                    detailed_language = extract_provider_language(cleaned_info)
-                    if detailed_language:
-                        relation_custom_props['language'] = detailed_language
-
                 relation.custom_properties = relation_custom_props
                 relation.last_advanced_refresh = now
+                # Lazy provider details update the inspector cache only; they
+                # must not change or invalidate prepared output catalogs.
+                relation._skip_vod_profile_invalidation = True
                 relation.save(update_fields=['custom_properties', 'last_advanced_refresh'])
+                from .metadata import sync_relation_declared_metadata
+
+                sync_relation_declared_metadata(
+                    relation,
+                    notify_profile_change=False,
+                )
+                from .provider_metadata import reconcile_movie_provider_metadata
+
+                if reconcile_movie_provider_metadata([relation.movie_id]):
+                    from .catalog_cache import bump_catalog_generation
+
+                    bump_catalog_generation(invalidate_selections=False)
 
         return "Advanced data refreshed."
     except Exception as e:

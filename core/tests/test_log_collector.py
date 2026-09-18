@@ -205,6 +205,19 @@ class ConfTests(SimpleTestCase):
         self.collector._drain()
         self.assertEqual(self.read_forward(), self.read_log())
 
+    def test_reader_redacts_secrets_from_both_sinks(self):
+        self.feed(
+            b'GET /ws/?token=jwt-secret HTTP/1.1 upstream='
+            b'https://example.com/movie/user/pass/42.mkv\n'
+        )
+        self.collector._drain()
+
+        for output in (self.read_forward(), self.read_log()):
+            self.assertNotIn("jwt-secret", output)
+            self.assertNotIn("/user/pass/", output)
+            self.assertIn("token=<redacted>", output)
+            self.assertIn("/movie/<redacted>/<redacted>/42.mkv", output)
+
     def test_persist_off_writes_no_file_at_all(self):
         # The boot archive shift promotes even an empty log, replacing archives with stubs.
         log_collector.write_conf(self.log_dir, False, 10, 5)
@@ -341,6 +354,26 @@ class NormalizationTests(SimpleTestCase):
 
     def norm(self, raw):
         return self.collector._normalize(raw).decode()
+
+    def test_sensitive_url_values_are_redacted(self):
+        raw = (
+            b'GET /ws/?token=jwt-value&username=viewer&password=secret HTTP/1.1 '
+            b'upstream=https://user:pass@example.com/live/customer/password/123.ts\n'
+        )
+
+        redacted = log_collector._redact_sensitive_data(raw)
+
+        self.assertNotIn(b"jwt-value", redacted)
+        self.assertNotIn(b"viewer", redacted)
+        self.assertNotIn(b"secret", redacted)
+        self.assertNotIn(b"customer", redacted)
+        self.assertNotIn(b"password/123", redacted)
+        self.assertEqual(redacted.count(b"<redacted>"), 7)
+        self.assertIn(b"/live/<redacted>/<redacted>/123.ts", redacted)
+
+    def test_non_sensitive_url_is_unchanged(self):
+        raw = b"GET https://example.com/images/poster.jpg?width=500 HTTP/1.1\n"
+        self.assertEqual(log_collector._redact_sensitive_data(raw), raw)
 
     def test_canonical_line_passes_through(self):
         line = b"2026-08-18 13:00:00,500 +1200 INFO core.utils msg\n"

@@ -226,6 +226,10 @@ const EPGsTable = () => {
     ALL_SOURCE_TYPES,
     { storage: 'session' }
   );
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
+    'epg-table-column-sizing',
+    {}
+  );
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
@@ -379,7 +383,7 @@ const EPGsTable = () => {
         size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [fullDateTimeFormat]
+    [fullDateTimeFormat, tableSize]
   );
 
   const [sorting, setSorting] = useState([]);
@@ -516,6 +520,8 @@ const EPGsTable = () => {
     enablePagination: false,
     enableRowSelection: false,
     renderTopToolbar: false,
+    columnSizing,
+    setColumnSizing,
     manualSorting: true,
     bodyCellRenderFns: {
       actions: renderBodyCell,
@@ -530,15 +536,16 @@ const EPGsTable = () => {
       is_active: renderHeaderCell,
       actions: renderHeaderCell,
     },
-    // Add custom cell styles to match CustomTable's sizing
-    tableCellProps: ({ cell }) => {
+    getRowStyles: () => ({
+      minHeight: tableSize === 'compact' ? 44 : 52,
+    }),
+    tableCellProps: () => {
       return {
-        // Apply taller height for progress cells (except initializing), otherwise use standard height
         fontSize:
           tableSize === 'compact'
             ? 'var(--mantine-font-size-xs)'
             : 'var(--mantine-font-size-sm)',
-        padding: tableSize === 'compact' ? '2px 8px' : '4px 10px',
+        padding: tableSize === 'compact' ? '6px 8px' : '8px 10px',
       };
     },
   });

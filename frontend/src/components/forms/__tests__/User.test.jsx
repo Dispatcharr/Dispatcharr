@@ -12,6 +12,7 @@ vi.mock('../../../store/channels', () => ({ default: vi.fn() }));
 vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
 vi.mock('../../../store/playlists', () => ({ default: vi.fn() }));
 vi.mock('../../../store/auth', () => ({ default: vi.fn() }));
+vi.mock('../../../store/useVODStore', () => ({ default: vi.fn() }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../utils', () => ({ copyToClipboard: vi.fn() }));
@@ -122,7 +123,11 @@ vi.mock('@mantine/core', () => ({
       <input type="checkbox" />
     </div>
   ),
-  Tabs: ({ children }) => <div>{children}</div>,
+  Tabs: ({ children, style }) => (
+    <div data-testid="user-tabs" style={style}>
+      {children}
+    </div>
+  ),
   TabsList: ({ children }) => <div>{children}</div>,
   TabsPanel: ({ children, value }) => (
     <div data-testid={`panel-${value}`}>{children}</div>
@@ -158,6 +163,7 @@ import useChannelsStore from '../../../store/channels';
 import useOutputProfilesStore from '../../../store/outputProfiles';
 import usePlaylistsStore from '../../../store/playlists';
 import useAuthStore from '../../../store/auth';
+import useVODStore from '../../../store/useVODStore';
 import * as UserUtils from '../../../utils/forms/UserUtils.js';
 import { copyToClipboard } from '../../../utils';
 import User from '../User';
@@ -184,6 +190,7 @@ const setupMocks = ({
   profiles = {},
   m3uProfiles = {},
   outputProfiles = [],
+  vodProfiles = [],
 } = {}) => {
   const mockSetUser = vi.fn();
 
@@ -196,6 +203,9 @@ const setupMocks = ({
   );
   vi.mocked(useAuthStore).mockImplementation((sel) =>
     sel({ user: authUser, setUser: mockSetUser })
+  );
+  vi.mocked(useVODStore).mockImplementation((sel) =>
+    sel({ accessPolicies: vodProfiles, fetchAccessPolicies: vi.fn() })
   );
 
   // Reset form state
@@ -252,6 +262,11 @@ describe('User', () => {
   // ── Tabs ─────────────────────────────────────────────────────────────────────
 
   describe('tabs', () => {
+    it('keeps a stable content height while switching tabs', () => {
+      setupMocks();
+      render(<User isOpen={true} onClose={vi.fn()} />);
+      expect(screen.getByTestId('user-tabs')).toHaveStyle({ minHeight: 500 });
+    });
     it('always renders Account, EPG, and API tabs', () => {
       setupMocks();
       render(<User isOpen={true} onClose={vi.fn()} />);
@@ -273,9 +288,7 @@ describe('User', () => {
           ],
         },
       });
-      render(
-        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
-      );
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
       expect(screen.getByText('Allowed Provider Profiles')).toBeInTheDocument();
       expect(screen.getByText('Provider 1: Profile B')).toBeInTheDocument();
     });
@@ -307,9 +320,7 @@ describe('User', () => {
           ],
         },
       });
-      render(
-        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
-      );
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
       const multiSelect = screen.getByTestId(
         'multiselect-Allowed Provider Profiles'
       );
@@ -328,9 +339,7 @@ describe('User', () => {
       vi.mocked(UserUtils.userToFormValues).mockReturnValue({
         allowed_m3u_profile_ids: [],
       });
-      render(
-        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
-      );
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
       expect(
         screen.getByRole('button', { name: 'Allow all profiles' })
       ).toBeInTheDocument();
@@ -341,9 +350,7 @@ describe('User', () => {
       vi.mocked(UserUtils.userToFormValues).mockReturnValue({
         allowed_m3u_profile_ids: null,
       });
-      render(
-        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
-      );
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
       expect(
         screen.queryByRole('button', { name: 'Allow all profiles' })
       ).not.toBeInTheDocument();
@@ -354,9 +361,7 @@ describe('User', () => {
       vi.mocked(UserUtils.userToFormValues).mockReturnValue({
         allowed_m3u_profile_ids: ['5'],
       });
-      render(
-        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
-      );
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
       fireEvent.click(
         screen.getByRole('button', { name: 'Allow all profiles' })
       );
@@ -374,12 +379,8 @@ describe('User', () => {
       vi.mocked(UserUtils.userToFormValues).mockReturnValue({
         allowed_m3u_profile_ids: ['5'],
       });
-      render(
-        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
-      );
-      const input = screen.getByTestId(
-        'multiselect-Allowed Provider Profiles'
-      );
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+      const input = screen.getByTestId('multiselect-Allowed Provider Profiles');
       fireEvent.change(input, { target: { value: '9' } });
       fireEvent.change(input, { target: { value: '' } });
       expect(mockForm.setFieldValue).toHaveBeenLastCalledWith(
@@ -437,6 +438,38 @@ describe('User', () => {
       );
       expect(screen.queryByTestId('tab-permissions')).not.toBeInTheDocument();
     });
+
+    it('shows the reusable VOD output profile selector', () => {
+      setupMocks({ authUser: makeAdminUser() });
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+      expect(screen.getByText('VOD output profile')).toBeInTheDocument();
+    });
+
+    it('shows the prepared output count for the effective VOD profile', () => {
+      setupMocks({
+        authUser: makeAdminUser(),
+        vodProfiles: [
+          {
+            id: 7,
+            name: 'German',
+            is_default: true,
+            selection_counts: {
+              movies: { output_entries: 30000 },
+              series: { output_entries: 17544 },
+            },
+          },
+        ],
+      });
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+
+      expect(
+        screen.getByText(
+          `${Number(30000).toLocaleString()} movies · ${Number(
+            17544
+          ).toLocaleString()} series are currently prepared for this profile.`
+        )
+      ).toBeInTheDocument();
+    });
   });
 
   // ── Admin-only fields ────────────────────────────────────────────────────────
@@ -452,6 +485,53 @@ describe('User', () => {
         />
       );
       expect(screen.getByText('Output Format Override')).toBeInTheDocument();
+    });
+
+    it('shows the XC Live provider refresh permission for admin', () => {
+      setupMocks({ authUser: makeAdminUser() });
+      render(
+        <User
+          isOpen={true}
+          onClose={vi.fn()}
+          user={makeRegularUser({ id: 2 })}
+        />
+      );
+      expect(screen.getByText('Live refresh')).toBeInTheDocument();
+      expect(
+        screen.getByText('Refresh Live TV providers after XC catalog requests')
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('User request interval (minutes)')
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Wait for a fresh XC Live catalog')
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Maximum wait for a fresh catalog (seconds)')
+      ).toBeInTheDocument();
+    });
+
+    it('hides the XC Live provider refresh permission for non-admin', () => {
+      setupMocks({ authUser: makeRegularUser({ id: 5 }) });
+      render(
+        <User
+          isOpen={true}
+          onClose={vi.fn()}
+          user={makeRegularUser({ id: 5 })}
+        />
+      );
+      expect(screen.queryByText('Live refresh')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(
+          'Refresh Live TV providers after XC catalog requests'
+        )
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('User request interval (minutes)')
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Wait for a fresh XC Live catalog')
+      ).not.toBeInTheDocument();
     });
 
     it('hides Output Format Override for non-admin', () => {

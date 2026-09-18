@@ -7,6 +7,11 @@ from .api_views import (
     VODCategoryViewSet,
     UnifiedContentViewSet,
     VODLogoViewSet,
+    VODSourceRelationViewSet,
+    VODAccessPolicyViewSet,
+    VODMetadataViewSet,
+    VODPlaybackSessionViewSet,
+    M3UVODCategoryRelationViewSet,
 )
 
 app_name = 'vod'
@@ -18,6 +23,11 @@ router.register(r'series', SeriesViewSet, basename='series')
 router.register(r'categories', VODCategoryViewSet, basename='vodcategory')
 router.register(r'all', UnifiedContentViewSet, basename='unified-content')
 router.register(r'vodlogos', VODLogoViewSet, basename='vodlogo')
+router.register(r'source-relations', VODSourceRelationViewSet, basename='vod-source-relation')
+router.register(r'access-policies', VODAccessPolicyViewSet, basename='vod-access-policy')
+router.register(r'metadata', VODMetadataViewSet, basename='vod-metadata')
+router.register(r'playback-sessions', VODPlaybackSessionViewSet, basename='vod-playback-session')
+router.register(r'category-relations', M3UVODCategoryRelationViewSet, basename='vod-category-relation')
 
 urlpatterns = [
     # Some clients strip trailing slashes from artwork URLs. Serve the same

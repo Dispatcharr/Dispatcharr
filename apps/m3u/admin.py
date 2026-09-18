@@ -1,6 +1,13 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import M3UAccount, M3UFilter, ServerGroup, UserAgent, M3UAccountProfile
+from .models import (
+    M3UAccount,
+    M3UFilter,
+    M3UGroupRule,
+    ServerGroup,
+    UserAgent,
+    M3UAccountProfile,
+)
 import json
 
 
@@ -77,6 +84,22 @@ class M3UFilterAdmin(admin.ModelAdmin):
     list_filter = ("filter_type", "exclude")
     search_fields = ("regex_pattern",)
     ordering = ("m3u_account",)
+
+
+@admin.register(M3UGroupRule)
+class M3UGroupRuleAdmin(admin.ModelAdmin):
+    list_display = (
+        "m3u_account",
+        "scope",
+        "match_field",
+        "regex_pattern",
+        "action",
+        "enabled",
+        "order",
+    )
+    list_filter = ("scope", "match_field", "action", "enabled")
+    search_fields = ("regex_pattern", "m3u_account__name")
+    ordering = ("m3u_account", "scope", "order", "id")
 
 
 @admin.register(ServerGroup)

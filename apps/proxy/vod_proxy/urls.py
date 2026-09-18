@@ -18,4 +18,5 @@ urlpatterns = [
 
     # Stop VOD client connection
     path('stop_client/', views.stop_vod_client, name='stop_vod_client'),
+    path('switch_source/', views.switch_vod_source, name='switch_vod_source'),
 ]

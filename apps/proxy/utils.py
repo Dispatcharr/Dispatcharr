@@ -1,7 +1,7 @@
 import logging
 import re
 from core.utils import RedisClient
-from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, get_vod_client_stop_key
+from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager
 from apps.timeshift.redis_keys import (
     TimeshiftRedisKeys,
     parse_stats_channel_id,
@@ -210,19 +210,15 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
                 )
             else:
                 connection_manager = MultiWorkerVODConnectionManager.get_instance()
-                redis_client = connection_manager.redis_client
-
-                if not redis_client:
+                if not connection_manager.stop_logical_session(
+                    t['client_id'], reason=_STOP_REASON_LIMIT,
+                ):
+                    logger.warning(
+                        "[stream limits][%s] Failed to stop VOD session %s",
+                        requesting_client_id,
+                        t['client_id'],
+                    )
                     return False
-
-                connection_key = f"vod_persistent_connection:{t['client_id']}"
-                connection_data = redis_client.hgetall(connection_key)
-                if not connection_data:
-                    logger.warning(f"VOD connection not found: {t['client_id']}")
-                    continue
-
-                stop_key = get_vod_client_stop_key(t['client_id'])
-                redis_client.setex(stop_key, 60, "true")  # 60 second TTL
 
         return True
     except Exception as e:
@@ -313,6 +309,21 @@ def check_user_stream_limits(user, client_id, media_id=None):
         user_stream_count = len(unique_channel_count) if ignore_same_channel else len(active_connections)
 
         logger.debug(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections across {len(unique_channel_count)} unique channels (counting method: {'unique channels' if ignore_same_channel else 'total connections'})")
+
+        # A proxied VOD playback is one logical session even when the player
+        # consumes it through many short HTTP Range requests.  The session is
+        # deliberately kept in Redis during client-side buffer gaps, so its
+        # own follow-up request must not terminate or count against itself.
+        if any(
+            conn.get('type') == 'vod'
+            and conn.get('client_id') == client_id
+            for conn in active_connections
+        ):
+            logger.debug(
+                "[stream limits][%s] Same logical VOD session allowed",
+                client_id,
+            )
+            return True
 
         # If ignore_same_channel is enabled and this request is for a live channel the user
         # is already watching, allow it through without counting against the limit.

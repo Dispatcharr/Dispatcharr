@@ -86,12 +86,13 @@ describe('M3uFilterUtils', () => {
       );
     });
 
-    it('resolves without returning a value', async () => {
-      vi.mocked(API.addM3UFilter).mockResolvedValue({ id: 'filter-2' });
+    it('returns the created filter for inline editing', async () => {
+      const created = { id: 'filter-2' };
+      vi.mocked(API.addM3UFilter).mockResolvedValue(created);
 
       const result = await addM3UFilter(makeM3U(), makeValues());
 
-      expect(result).toBeUndefined();
+      expect(result).toEqual(created);
     });
   });
 

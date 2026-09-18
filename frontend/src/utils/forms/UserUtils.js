@@ -33,6 +33,7 @@ export const revokeApiKey = (payload) => {
 export const userToFormValues = (user) => {
   const customProps = user.custom_properties || {};
   const networks = customProps.allowed_networks || {};
+  const vodPolicy = user.vod_policy || {};
 
   return {
     username: user.username,
@@ -64,6 +65,20 @@ export const userToFormValues = (user) => {
     catchup_enabled: customProps.catchup_enabled !== false,
     vod_movies_enabled: customProps.vod_movies_enabled !== false,
     vod_series_enabled: customProps.vod_series_enabled !== false,
+    xc_live_refresh_on_request:
+      customProps.xc_live_refresh_on_request === true,
+    xc_live_refresh_request_interval_minutes:
+      Number.isInteger(customProps.xc_live_refresh_request_interval_minutes) &&
+      customProps.xc_live_refresh_request_interval_minutes >= 0
+        ? customProps.xc_live_refresh_request_interval_minutes
+        : 55,
+    xc_live_refresh_wait_for_completion:
+      customProps.xc_live_refresh_wait_for_completion === true,
+    xc_live_refresh_wait_timeout_seconds:
+      Number.isInteger(customProps.xc_live_refresh_wait_timeout_seconds) &&
+      customProps.xc_live_refresh_wait_timeout_seconds >= 1
+        ? customProps.xc_live_refresh_wait_timeout_seconds
+        : 15,
     dvr_access:
       customProps.dvr_access === DVR_ACCESS.NONE ||
       customProps.dvr_access === DVR_ACCESS.VIEW ||
@@ -79,6 +94,8 @@ export const userToFormValues = (user) => {
         )
       ),
     ],
+    vod_policy_id:
+      vodPolicy.id && !vodPolicy.inherited ? String(vodPolicy.id) : '',
   };
 };
 
@@ -130,6 +147,40 @@ export const formValuesToPayload = (values, existingUser) => {
   customProps.vod_series_enabled = payload.vod_series_enabled !== false;
   delete payload.vod_series_enabled;
 
+  customProps.xc_live_refresh_on_request =
+    payload.xc_live_refresh_on_request === true;
+  delete payload.xc_live_refresh_on_request;
+
+  customProps.xc_live_refresh_request_interval_minutes = Number.isFinite(
+    Number(payload.xc_live_refresh_request_interval_minutes)
+  )
+    ? Math.max(
+        0,
+        Math.min(
+          10080,
+          Math.trunc(Number(payload.xc_live_refresh_request_interval_minutes))
+        )
+      )
+    : 55;
+  delete payload.xc_live_refresh_request_interval_minutes;
+
+  customProps.xc_live_refresh_wait_for_completion =
+    payload.xc_live_refresh_wait_for_completion === true;
+  delete payload.xc_live_refresh_wait_for_completion;
+
+  customProps.xc_live_refresh_wait_timeout_seconds = Number.isFinite(
+    Number(payload.xc_live_refresh_wait_timeout_seconds)
+  )
+    ? Math.max(
+        1,
+        Math.min(
+          60,
+          Math.trunc(Number(payload.xc_live_refresh_wait_timeout_seconds))
+        )
+      )
+    : 15;
+  delete payload.xc_live_refresh_wait_timeout_seconds;
+
   // DVR is a single access level for standard users and admins. Streamers
   // have no DVR surface (unlike catchup/VOD via XC), so force none.
   // Coerce with == so string form values ('0') match numeric USER_LEVELS.
@@ -164,6 +215,10 @@ export const formValuesToPayload = (values, existingUser) => {
   }
   customProps.allowed_networks = allowed_networks;
 
+  payload.vod_policy_id = payload.vod_policy_id
+    ? Number(payload.vod_policy_id)
+    : null;
+
   payload.custom_properties = customProps;
 
   if (payload.channel_profiles?.includes('0')) {
@@ -191,10 +246,15 @@ export const getFormInitialValues = () => {
     catchup_enabled: true,
     vod_movies_enabled: true,
     vod_series_enabled: true,
+    xc_live_refresh_on_request: false,
+    xc_live_refresh_request_interval_minutes: 55,
+    xc_live_refresh_wait_for_completion: false,
+    xc_live_refresh_wait_timeout_seconds: 15,
     dvr_access: DVR_ACCESS.VIEW,
     epg_days: 0,
     epg_prev_days: 0,
     allowed_ips: [],
+    vod_policy_id: '',
   };
 };
 

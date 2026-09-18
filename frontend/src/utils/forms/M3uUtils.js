@@ -67,6 +67,15 @@ export const prepareSubmitValues = (values, expDate) => {
     prepared.cron_expression = '';
   }
 
+  const hasVodCron =
+    prepared.vod_cron_expression &&
+    prepared.vod_cron_expression.trim() !== '';
+  if (hasVodCron) {
+    prepared.vod_refresh_interval = 0;
+  } else {
+    prepared.vod_cron_expression = '';
+  }
+
   if (prepared.account_type == 'XC' && prepared.password == '') {
     delete prepared.password;
   }

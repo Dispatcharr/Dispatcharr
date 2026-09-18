@@ -1,12 +1,12 @@
 import API from '../../api.js';
-import { refreshPlaylist, updatePlaylist } from './M3uUtils.js';
+import { updatePlaylist } from './M3uUtils.js';
 
 const updateM3UGroupSettings = async (
   playlist,
   groupSettings,
   categorySettings
 ) => {
-  await API.updateM3UGroupSettings(
+  return await API.updateM3UGroupSettings(
     playlist.id,
     groupSettings,
     categorySettings
@@ -35,7 +35,7 @@ const parseCustomProperties = (raw) => {
   }
 };
 
-export const saveAndRefreshPlaylist = async (
+export const savePlaylistGroupSettings = async (
   playlist,
   groupStates,
   movieCategoryStates,
@@ -48,9 +48,14 @@ export const saveAndRefreshPlaylist = async (
     seriesCategoryStates
   );
 
-  await updatePlaylist(playlist, autoEnableSettings);
-  await updateM3UGroupSettings(playlist, groupSettings, categorySettings);
-  await refreshPlaylist(playlist);
+  if (autoEnableSettings && Object.keys(autoEnableSettings).length) {
+    await updatePlaylist(playlist, autoEnableSettings);
+  }
+  return await updateM3UGroupSettings(
+    playlist,
+    groupSettings,
+    categorySettings
+  );
 };
 
 const prepareGroupSettings = (groupStates) => {

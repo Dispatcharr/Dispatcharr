@@ -53,12 +53,15 @@ vi.mock('lucide-react', async (importOriginal) => {
     PlugZap: ({ onClick }) => (
       <div data-testid="plug-zap-icon" onClick={onClick} />
     ),
-    LogOut: ({ onClick }) => <div data-testid="logout-icon" onClick={onClick} />,
+    LogOut: ({ onClick }) => (
+      <div data-testid="logout-icon" onClick={onClick} />
+    ),
     User: ({ onClick }) => <div data-testid="user-icon" onClick={onClick} />,
     FileImage: ({ onClick }) => (
       <div data-testid="file-image-icon" onClick={onClick} />
     ),
     Webhook: () => <div data-testid="webhook-icon" />,
+    ChevronLeft: () => <div data-testid="chevron-left-icon" />,
     ChevronRight: () => <div data-testid="chevron-right-icon" />,
     MonitorCog: () => <div data-testid="monitor-cog-icon" />,
     Heart: () => <div data-testid="heart-icon" />,
@@ -204,12 +207,20 @@ describe('Sidebar', () => {
       expect(screen.queryByText('Dispatcharr')).not.toBeInTheDocument();
     });
 
-    it('should toggle drawer when brand is clicked', () => {
+    it('should collapse from the edge control', () => {
       const toggleDrawer = vi.fn();
       renderSidebar({ toggleDrawer });
 
-      const brand = screen.getByText('Dispatcharr').closest('div');
-      fireEvent.click(brand);
+      fireEvent.click(screen.getByLabelText('Collapse sidebar'));
+
+      expect(toggleDrawer).toHaveBeenCalledTimes(1);
+    });
+
+    it('should expand from the edge control while collapsed', () => {
+      const toggleDrawer = vi.fn();
+      renderSidebar({ collapsed: true, toggleDrawer });
+
+      fireEvent.click(screen.getByLabelText('Expand sidebar'));
 
       expect(toggleDrawer).toHaveBeenCalledTimes(1);
     });
@@ -220,8 +231,11 @@ describe('Sidebar', () => {
       renderSidebar();
 
       expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.getByText('VODs')).toBeInTheDocument();
-      expect(screen.getByText('M3U & EPG Manager')).toBeInTheDocument();
+      expect(screen.getByText('Video on Demand')).toBeInTheDocument();
+      expect(screen.getByText('Library')).toBeInTheDocument();
+      expect(screen.getByText('VOD Profiles')).toBeInTheDocument();
+      expect(screen.getByText('Playback History')).toBeInTheDocument();
+      expect(screen.getByText('Sources')).toBeInTheDocument();
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
       expect(screen.getByText('DVR')).toBeInTheDocument();
       expect(screen.getByText('Stats')).toBeInTheDocument();
@@ -268,6 +282,8 @@ describe('Sidebar', () => {
       await waitFor(() => {
         expect(screen.getByText('Backup & Restore')).toBeInTheDocument();
       });
+      expect(screen.getByText('Metadata')).toBeInTheDocument();
+      expect(screen.getByText('Title cleanup')).toBeInTheDocument();
     });
   });
 
@@ -289,13 +305,13 @@ describe('Sidebar', () => {
       renderSidebar();
 
       expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.getByText('VODs')).toBeInTheDocument();
+      expect(screen.getByText('Video on Demand')).toBeInTheDocument();
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
       expect(screen.getByText('Settings')).toBeInTheDocument();
       // DVR view and VOD default on for standard users with no custom_properties.
       expect(screen.getByText('DVR')).toBeInTheDocument();
 
-      expect(screen.queryByText('M3U & EPG Manager')).not.toBeInTheDocument();
+      expect(screen.queryByText('Sources')).not.toBeInTheDocument();
       expect(screen.queryByText('Stats')).not.toBeInTheDocument();
       expect(screen.queryByText('Plugins')).not.toBeInTheDocument();
       expect(screen.queryByText('Users')).not.toBeInTheDocument();
@@ -350,7 +366,7 @@ describe('Sidebar', () => {
 
       expect(screen.getByText('Channels')).toBeInTheDocument();
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
-      expect(screen.getByText('VODs')).toBeInTheDocument();
+      expect(screen.getByText('Video on Demand')).toBeInTheDocument();
       expect(screen.queryByText('DVR')).not.toBeInTheDocument();
     });
   });
@@ -375,12 +391,12 @@ describe('Sidebar', () => {
       });
     });
 
-    it('hides VODs when both VOD flags are disabled', () => {
+    it('hides Video on Demand when both VOD flags are disabled', () => {
       renderSidebar();
 
       expect(screen.getByText('Channels')).toBeInTheDocument();
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
-      expect(screen.queryByText('VODs')).not.toBeInTheDocument();
+      expect(screen.queryByText('Video on Demand')).not.toBeInTheDocument();
     });
   });
 

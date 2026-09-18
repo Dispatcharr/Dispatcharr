@@ -54,6 +54,12 @@ class UserSerializer(serializers.ModelSerializer):
         queryset=ChannelProfile.objects.all(), many=True, required=False
     )
     api_key = serializers.CharField(read_only=True, allow_null=True)
+    vod_policy = serializers.SerializerMethodField()
+    vod_policy_id = serializers.IntegerField(
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = User
@@ -74,7 +80,71 @@ class UserSerializer(serializers.ModelSerializer):
             "date_joined",
             "first_name",
             "last_name",
+            "vod_policy",
+            "vod_policy_id",
         ]
+
+    def validate_vod_policy_id(self, value):
+        if value is None:
+            return None
+        from apps.vod.models import VODAccessPolicy
+
+        if not VODAccessPolicy.objects.filter(pk=value, is_active=True).exists():
+            raise serializers.ValidationError("Unknown or inactive VOD output profile")
+        return value
+
+    def get_vod_policy(self, obj):
+        from apps.vod.models import VODAccessPolicy
+
+        prefetched = getattr(obj, "_prefetched_objects_cache", {}).get(
+            "vod_access_policies"
+        )
+        if prefetched is None:
+            assigned = list(
+                obj.vod_access_policies.filter(is_active=True).order_by(
+                    "is_default", "id"
+                )[:1]
+            )
+        else:
+            assigned = sorted(
+                (policy for policy in prefetched if policy.is_active),
+                key=lambda policy: (policy.is_default, policy.id),
+            )[:1]
+        if assigned:
+            policy = assigned[0]
+            inherited = False
+        else:
+            if not hasattr(self, "_default_vod_policy"):
+                self._default_vod_policy = (
+                    VODAccessPolicy.objects.filter(is_active=True, is_default=True)
+                    .order_by("id")
+                    .first()
+                )
+            policy = self._default_vod_policy
+            inherited = policy is not None
+        if not policy:
+            return None
+        return {
+            "id": policy.id,
+            "name": policy.name,
+            "export_mode": policy.export_mode,
+            "hard_constraints": policy.hard_constraints or {},
+            "ranking": policy.ranking or [],
+            "category_relation_ids": list(
+                policy.vodpolicycategory_set.filter(enabled=True).values_list(
+                    "category_relation_id", flat=True
+                )
+            ),
+            "inherited": inherited,
+        }
+
+    def _assign_vod_policy(self, user, policy_id):
+        from apps.vod.models import VODAccessPolicy
+
+        for policy in VODAccessPolicy.objects.filter(users=user):
+            policy.users.remove(user)
+        if policy_id is not None:
+            VODAccessPolicy.objects.get(pk=policy_id, is_active=True).users.add(user)
 
     def validate_username(self, value):
         if not SAFE_CREDENTIAL_RE.fullmatch(value):
@@ -107,6 +177,50 @@ class UserSerializer(serializers.ModelSerializer):
         if 'hiddenNav' in value:
             validate_nav_array(value['hiddenNav'], 'hiddenNav')
 
+        if (
+            "xc_live_refresh_on_request" in value
+            and not isinstance(value["xc_live_refresh_on_request"], bool)
+        ):
+            raise serializers.ValidationError(
+                "xc_live_refresh_on_request must be a boolean"
+            )
+
+        request_interval = value.get(
+            "xc_live_refresh_request_interval_minutes",
+            55,
+        )
+        if (
+            isinstance(request_interval, bool)
+            or not isinstance(request_interval, int)
+            or request_interval < 0
+            or request_interval > 10080
+        ):
+            raise serializers.ValidationError(
+                "xc_live_refresh_request_interval_minutes must be an integer "
+                "between 0 and 10080"
+            )
+
+        wait_for_completion = value.get(
+            "xc_live_refresh_wait_for_completion",
+            False,
+        )
+        if not isinstance(wait_for_completion, bool):
+            raise serializers.ValidationError(
+                "xc_live_refresh_wait_for_completion must be a boolean"
+            )
+
+        wait_timeout = value.get("xc_live_refresh_wait_timeout_seconds", 15)
+        if (
+            isinstance(wait_timeout, bool)
+            or not isinstance(wait_timeout, int)
+            or wait_timeout < 1
+            or wait_timeout > 60
+        ):
+            raise serializers.ValidationError(
+                "xc_live_refresh_wait_timeout_seconds must be an integer "
+                "between 1 and 60"
+            )
+
         xc_password = value.get("xc_password")
 
         if xc_password and not SAFE_CREDENTIAL_RE.fullmatch(xc_password):
@@ -130,18 +244,22 @@ class UserSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         channel_profiles = validated_data.pop("channel_profiles", [])
+        vod_policy_id = validated_data.pop("vod_policy_id", serializers.empty)
 
         user = User(**validated_data)
         user.set_password(validated_data["password"])
         user.save()
 
         user.channel_profiles.set(channel_profiles)
+        if vod_policy_id is not serializers.empty:
+            self._assign_vod_policy(user, vod_policy_id)
 
         return user
 
     def update(self, instance, validated_data):
         password = validated_data.pop("password", None)
         channel_profiles = validated_data.pop("channel_profiles", None)
+        vod_policy_id = validated_data.pop("vod_policy_id", serializers.empty)
 
         # Merge custom_properties instead of replacing (prevents data loss)
         # null values are explicit deletions; all other values overwrite existing
@@ -173,5 +291,8 @@ class UserSerializer(serializers.ModelSerializer):
 
         if channel_profiles is not None:
             instance.channel_profiles.set(channel_profiles)
+
+        if vod_policy_id is not serializers.empty:
+            self._assign_vod_policy(instance, vod_policy_id)
 
         return instance

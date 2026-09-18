@@ -1,7 +1,8 @@
 from django.contrib import admin
 from .models import (
     Series, VODCategory, Movie, Episode,
-    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation
+    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation,
+    VODAccessPolicy, VODPlaybackSession,
 )
 
 
@@ -14,18 +15,18 @@ class VODCategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Series)
 class SeriesAdmin(admin.ModelAdmin):
-    list_display = ['name', 'year', 'genre', 'created_at']
-    list_filter = ['year', 'created_at']
+    list_display = ['name', 'year', 'genre', 'library_added_at']
+    list_filter = ['year', 'library_added_at']
     search_fields = ['name', 'description', 'tmdb_id', 'imdb_id']
-    readonly_fields = ['uuid', 'created_at', 'updated_at']
+    readonly_fields = ['uuid', 'library_added_at', 'created_at', 'updated_at']
 
 
 @admin.register(Movie)
 class MovieAdmin(admin.ModelAdmin):
-    list_display = ['name', 'year', 'genre', 'duration_secs', 'created_at']
-    list_filter = ['year', 'created_at']
+    list_display = ['name', 'year', 'genre', 'duration_secs', 'library_added_at']
+    list_filter = ['year', 'library_added_at']
     search_fields = ['name', 'description', 'tmdb_id', 'imdb_id']
-    readonly_fields = ['uuid', 'created_at', 'updated_at']
+    readonly_fields = ['uuid', 'library_added_at', 'created_at', 'updated_at']
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('logo')
@@ -33,10 +34,10 @@ class MovieAdmin(admin.ModelAdmin):
 
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
-    list_display = ['name', 'series', 'season_number', 'episode_number', 'duration_secs', 'created_at']
-    list_filter = ['series', 'season_number', 'created_at']
+    list_display = ['name', 'series', 'season_number', 'episode_number', 'duration_secs', 'library_added_at']
+    list_filter = ['series', 'season_number', 'library_added_at']
     search_fields = ['name', 'description', 'series__name']
-    readonly_fields = ['uuid', 'created_at', 'updated_at']
+    readonly_fields = ['uuid', 'library_added_at', 'created_at', 'updated_at']
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('series')
@@ -65,3 +66,16 @@ class M3UEpisodeRelationAdmin(admin.ModelAdmin):
     search_fields = ['episode__name', 'episode__series__name', 'm3u_account__name', 'stream_id']
     readonly_fields = ['created_at', 'updated_at']
 
+
+@admin.register(VODAccessPolicy)
+class VODAccessPolicyAdmin(admin.ModelAdmin):
+    list_display = ['name', 'export_mode', 'is_default', 'is_active', 'updated_at']
+    list_filter = ['export_mode', 'is_default', 'is_active']
+    filter_horizontal = ['users']
+
+
+@admin.register(VODPlaybackSession)
+class VODPlaybackSessionAdmin(admin.ModelAdmin):
+    list_display = ['session_id', 'content_name', 'user', 'mode', 'status', 'started_at']
+    list_filter = ['mode', 'status', 'content_type']
+    search_fields = ['session_id', 'content_name', 'provider_asset_id', 'user__username']

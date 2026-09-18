@@ -214,6 +214,59 @@ class AttemptStreamTerminationTests(TestCase):
         self.assertTrue(ok)
         stop_mock.assert_called_once_with("42", "live_client_1")
 
+    def test_vod_termination_finalizes_logical_session(self):
+        connections = [{
+            "media_id": "movie-uuid",
+            "client_id": "vod-old",
+            "connected_at": 1000.0,
+            "type": "vod",
+        }]
+        manager = MagicMock()
+        manager.stop_logical_session.return_value = True
+        with patch(
+            "apps.proxy.utils.CoreSettings.get_user_limits_settings",
+            return_value=self._limits_settings(),
+        ), patch(
+            "apps.proxy.utils.MultiWorkerVODConnectionManager.get_instance",
+            return_value=manager,
+        ):
+            ok = attempt_stream_termination(
+                self.user_id, self.requesting_client_id, connections,
+            )
+
+        self.assertTrue(ok)
+        manager.stop_logical_session.assert_called_once_with(
+            "vod-old", reason="limit",
+        )
+
+    def test_same_logical_vod_session_does_not_hit_user_limit(self):
+        user = MagicMock(id=5, username="viewer", stream_limit=1)
+        connections = [{
+            "media_id": "movie-uuid",
+            "client_id": "vod-session",
+            "connected_at": 1000.0,
+            "type": "vod",
+        }]
+        settings = {
+            **self._limits_settings(),
+            "terminate_on_limit_exceeded": True,
+        }
+        with patch(
+            "apps.proxy.utils.get_user_active_connections",
+            return_value=connections,
+        ), patch(
+            "apps.proxy.utils.CoreSettings.get_user_limits_settings",
+            return_value=settings,
+        ), patch(
+            "apps.proxy.utils.attempt_stream_termination",
+        ) as terminate_mock:
+            allowed = check_user_stream_limits(
+                user, "vod-session", media_id="movie-uuid",
+            )
+
+        self.assertTrue(allowed)
+        terminate_mock.assert_not_called()
+
 
 class TimeshiftAdminStopTests(TestCase):
     def setUp(self):

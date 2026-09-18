@@ -136,6 +136,20 @@ describe('VODModalUtils', () => {
 
   describe('getMovieStreamUrl', () => {
     const vod = { uuid: 'test-uuid-123' };
+
+    it('returns null instead of generating an undefined content URL', () => {
+      expect(getMovieStreamUrl({}, null, 'production')).toBeNull();
+    });
+
+    it('uses a canonical UUID when a variant row has no top-level UUID', () => {
+      const result = getMovieStreamUrl(
+        { canonical: { uuid: 'canonical-uuid' } },
+        null,
+        'production'
+      );
+
+      expect(result).toContain('/proxy/vod/movie/canonical-uuid');
+    });
     const originalLocation = window.location;
 
     beforeEach(() => {
@@ -166,7 +180,7 @@ describe('VODModalUtils', () => {
       const result = getMovieStreamUrl(vod, provider, 'production');
 
       expect(result).toBe(
-        'https://example.com/proxy/vod/movie/test-uuid-123?stream_id=stream-123'
+        'https://example.com/proxy/vod/movie/test-uuid-123?stream_id=stream-123&m3u_account_id=account-456'
       );
     });
 

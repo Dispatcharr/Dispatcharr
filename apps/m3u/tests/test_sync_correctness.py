@@ -2012,9 +2012,11 @@ class AutoSyncLogoValidationRegressionTests(TestCase):
 
 class OrphanCleanupModeTests(TestCase):
     """
-    Account-level `custom_properties.orphan_channel_cleanup` is a 3-state
-    selector that governs how sync handles auto-created channels whose
-    source streams have disappeared.
+    `ChannelGroupM3UAccount.custom_properties.orphan_channel_cleanup` is a
+    3-state selector that governs how sync handles auto-created channels
+    whose source streams have disappeared. The account-level value remains a
+    compatibility fallback only for legacy channels without source-group
+    attribution.
 
     - "always" (default; absent key behaves the same): delete every orphan
       auto-created channel.
@@ -2176,6 +2178,78 @@ class OrphanCleanupModeTests(TestCase):
                     f"Hidden channel must survive cleanup in mode={mode}",
                 )
 
+    def test_per_group_never_overrides_account_default(self):
+        account = _make_account()
+        group = _make_group(name="Keep group")
+        relation = _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"orphan_channel_cleanup": "never"},
+        )
+        channel = Channel.objects.create(
+            name="Keep me",
+            channel_number=610,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+            auto_created_from=relation,
+        )
+
+        result = _sync(account)
+
+        self.assertEqual(result["channels_deleted"], 0)
+        self.assertTrue(Channel.objects.filter(id=channel.id).exists())
+
+    def test_per_group_always_overrides_legacy_account_never(self):
+        account = _make_account(
+            custom_properties={"orphan_channel_cleanup": "never"}
+        )
+        group = _make_group(name="Cleanup group")
+        relation = _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"orphan_channel_cleanup": "always"},
+        )
+        channel = Channel.objects.create(
+            name="Remove me",
+            channel_number=611,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+            auto_created_from=relation,
+        )
+
+        result = _sync(account)
+
+        self.assertEqual(result["channels_deleted"], 1)
+        self.assertFalse(Channel.objects.filter(id=channel.id).exists())
+
+    def test_per_group_never_keeps_channel_for_stale_stream(self):
+        account = _make_account()
+        group = _make_group(name="Temporarily unavailable")
+        relation = _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"orphan_channel_cleanup": "never"},
+        )
+        stale_stream = _make_stream(account, group, name="Stale")
+        stale_stream.last_seen = timezone.now() - timezone.timedelta(hours=2)
+        stale_stream.save(update_fields=["last_seen"])
+        channel = Channel.objects.create(
+            name="Stale",
+            channel_number=612,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+            auto_created_from=relation,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stale_stream)
+
+        result = _sync(account)
+
+        self.assertEqual(result["channels_deleted"], 0)
+        self.assertTrue(Channel.objects.filter(id=channel.id).exists())
+
 
 class MultiStreamChannelTests(TestCase):
     """
@@ -2245,6 +2319,37 @@ class MultiStreamChannelTests(TestCase):
             Channel.objects.filter(id=ch.id).exists(),
             "Multi-stream channel was deleted even though one of its "
             "streams is still alive",
+        )
+
+    def test_backup_group_does_not_replace_original_cleanup_owner(self):
+        account = _make_account()
+        primary_group = _make_group(name="Primary")
+        backup_group = _make_group(name="Backup")
+        primary_relation = _attach_group_to_account(account, primary_group)
+        _attach_group_to_account(account, backup_group)
+        primary_stream = _make_stream(account, primary_group, name="Primary")
+        backup_stream = _make_stream(account, backup_group, name="Backup")
+        channel = Channel.objects.create(
+            name="Combined",
+            channel_number=620,
+            channel_group=primary_group,
+            auto_created=True,
+            auto_created_by=account,
+            auto_created_from=primary_relation,
+        )
+        ChannelStream.objects.create(
+            channel=channel, stream=primary_stream, order=0
+        )
+        ChannelStream.objects.create(
+            channel=channel, stream=backup_stream, order=1
+        )
+
+        _sync(account)
+
+        channel.refresh_from_db()
+        self.assertEqual(
+            channel.auto_created_from_id,
+            primary_relation.id,
         )
 
     def test_channel_with_two_streams_metadata_consistent_after_sync(self):

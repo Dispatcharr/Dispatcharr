@@ -14,6 +14,10 @@ import {
   Webhook,
   MonitorCog,
   ScrollText,
+  History,
+  Library,
+  SlidersHorizontal,
+  Radio,
 } from 'lucide-react';
 
 // Shared by the top-level `settings` entry and the nested entry under
@@ -21,44 +25,65 @@ import {
 // `panel: 'settings'` marks this item as one that opens the sidebar's
 // settings sub-panel instead of routing directly, so Sidebar.jsx can check
 // `item.panel` instead of comparing against the '/settings' path string.
-const SETTINGS_NAV_BASE = { label: 'Settings', icon: LucideSettings, path: '/settings', panel: 'settings' };
+const SETTINGS_NAV_BASE = {
+  label: 'Settings',
+  icon: LucideSettings,
+  path: '/settings',
+  panel: 'settings',
+};
 
 export const NAV_ITEMS = {
   channels: {
     id: 'channels',
-    label: 'Channels',
-    icon: ListOrdered,
-    path: '/channels',
+    label: 'Live',
+    icon: Radio,
     adminOnly: false,
-    hasBadge: true,
+    paths: [
+      {
+        label: 'Channels',
+        icon: ListOrdered,
+        path: '/channels',
+        hasBadge: true,
+      },
+      { label: 'TV Guide', icon: LayoutGrid, path: '/guide' },
+      {
+        label: 'DVR',
+        icon: Database,
+        path: '/dvr',
+        requiresAccess: 'canViewDvr',
+      },
+    ],
   },
   vods: {
     id: 'vods',
-    label: 'VODs',
+    label: 'Video on Demand',
     icon: Video,
-    path: '/vods',
     adminOnly: true,
+    paths: [
+      { label: 'Library', icon: Library, path: '/vods' },
+      {
+        label: 'VOD Profiles',
+        icon: SlidersHorizontal,
+        path: '/vods/profiles',
+        adminOnly: true,
+      },
+      {
+        label: 'Playback History',
+        icon: History,
+        path: '/vods/playback-history',
+        adminOnly: true,
+      },
+    ],
   },
   sources: {
     id: 'sources',
-    label: 'M3U & EPG Manager',
+    label: 'Sources',
     icon: Play,
-    path: '/sources',
     adminOnly: true,
-  },
-  guide: {
-    id: 'guide',
-    label: 'TV Guide',
-    icon: LayoutGrid,
-    path: '/guide',
-    adminOnly: false,
-  },
-  dvr: {
-    id: 'dvr',
-    label: 'DVR',
-    icon: Database,
-    path: '/dvr',
-    adminOnly: true,
+    paths: [
+      { label: 'M3U Accounts', icon: Play, path: '/sources/m3u' },
+      { label: 'EPG Sources', icon: Database, path: '/sources/epg' },
+    ],
   },
   stats: {
     id: 'stats',
@@ -87,7 +112,12 @@ export const NAV_ITEMS = {
       { label: 'Users', icon: User, path: '/users' },
       { label: 'Logo Manager', icon: FileImage, path: '/logos' },
       { label: 'Connect', icon: Webhook, path: '/connect' },
-      { label: 'Logs', icon: ScrollText, path: '/logs', requires: 'logCollectorRunning' },
+      {
+        label: 'Logs',
+        icon: ScrollText,
+        path: '/logs',
+        requires: 'logCollectorRunning',
+      },
       { ...SETTINGS_NAV_BASE },
     ],
   },
@@ -103,18 +133,12 @@ export const DEFAULT_ADMIN_ORDER = [
   'channels',
   'vods',
   'sources',
-  'guide',
-  'dvr',
   'stats',
   'plugins',
   'system',
 ];
 
-export const DEFAULT_USER_ORDER = [
-  'channels',
-  'guide',
-  'settings',
-];
+export const DEFAULT_USER_ORDER = ['channels', 'settings'];
 
 /** True when a divider should render before navItems[idx] (start or end of a grouped section). */
 export const isGroupBoundary = (navItems, idx) =>
@@ -122,27 +146,18 @@ export const isGroupBoundary = (navItems, idx) =>
 
 /**
  * Default nav order for a user. For standard users, inserts 'vods' after
- * 'channels' when canViewVod, and 'dvr' after 'guide' when canViewDvr.
+ * 'channels' when canViewVod. DVR visibility is handled inside the Live group.
  * Shared by getOrderedNavItems and any caller (e.g. NavOrderForm) that needs
  * the default order on its own, such as to reset to defaults or revert an
  * optimistic update.
  */
-export const getDefaultOrder = (
-  isAdmin,
-  { canViewDvr = false, canViewVod = false } = {}
-) => {
+export const getDefaultOrder = (isAdmin, { canViewVod = false } = {}) => {
   let order = isAdmin ? [...DEFAULT_ADMIN_ORDER] : [...DEFAULT_USER_ORDER];
 
   if (!isAdmin && canViewVod && !order.includes('vods')) {
     const channelsIdx = order.indexOf('channels');
     const insertAt = channelsIdx >= 0 ? channelsIdx + 1 : 0;
     order = [...order.slice(0, insertAt), 'vods', ...order.slice(insertAt)];
-  }
-
-  if (!isAdmin && canViewDvr && !order.includes('dvr')) {
-    const guideIdx = order.indexOf('guide');
-    const insertAt = guideIdx >= 0 ? guideIdx + 1 : order.length - 1;
-    order = [...order.slice(0, insertAt), 'dvr', ...order.slice(insertAt)];
   }
 
   return order;
@@ -171,38 +186,52 @@ export const getOrderedNavItems = (
     order = defaultOrder;
   }
 
-  return order.map((id) => {
-    const item = NAV_ITEMS[id];
-    if (!item) return null;
+  return order
+    .map((id) => {
+      const item = NAV_ITEMS[id];
+      if (!item) return null;
 
-    // Group item (has paths array)
-    if (item.paths) {
-      return {
+      // Group item (has paths array)
+      if (item.paths) {
+        return {
+          id: item.id,
+          label: item.label,
+          icon: item.icon,
+          // A missing flag keeps the entry.
+          paths: item.paths
+            .filter(
+              (entry) =>
+                (!entry.adminOnly || isAdmin) &&
+                (!entry.requires || access[entry.requires] !== false) &&
+                (!entry.requiresAccess ||
+                  access[entry.requiresAccess] !== false)
+            )
+            .map((entry) => ({
+              ...entry,
+              badge:
+                entry.hasBadge && entry.path === '/channels'
+                  ? `(${Array.isArray(channelIds) ? channelIds.length : 0})`
+                  : entry.badge,
+            })),
+          canHide: item.canHide,
+        };
+      }
+
+      const navItem = {
         id: item.id,
         label: item.label,
         icon: item.icon,
-        // A missing flag keeps the entry.
-        paths: item.paths.filter(
-          (entry) => !entry.requires || access[entry.requires] !== false
-        ),
+        path: item.path,
         canHide: item.canHide,
+        panel: item.panel,
       };
-    }
 
-    const navItem = {
-      id: item.id,
-      label: item.label,
-      icon: item.icon,
-      path: item.path,
-      canHide: item.canHide,
-      panel: item.panel,
-    };
+      // Add badge for channels
+      if (id === 'channels') {
+        navItem.badge = `(${Array.isArray(channelIds) ? channelIds.length : 0})`;
+      }
 
-    // Add badge for channels
-    if (id === 'channels') {
-      navItem.badge = `(${Array.isArray(channelIds) ? channelIds.length : 0})`;
-    }
-
-    return navItem;
-  }).filter(Boolean);
+      return navItem;
+    })
+    .filter(Boolean);
 };

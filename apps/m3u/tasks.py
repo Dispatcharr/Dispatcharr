@@ -10,10 +10,12 @@ import lzma
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
 from django.conf import settings
+from django.core.cache import cache
 from django.db import models, transaction
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 import time
 import json
 from core.utils import (
@@ -39,6 +41,91 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 1500  # Optimized batch size for threading
 m3u_dir = os.path.join(settings.MEDIA_ROOT, "cached_m3u")
+
+
+def _mark_xc_client_refresh_complete(key, outcome):
+    if not key or not str(key).startswith("xc_live_refresh_complete:"):
+        return
+    try:
+        cache.set(key, outcome, timeout=5 * 60)
+    except Exception:
+        logger.warning(
+            "Could not publish XC Live refresh completion marker",
+            exc_info=True,
+        )
+
+
+def _live_filter_catalog_path(account_id):
+    """Return the persistent, compressed pre-filter Live TV catalog path."""
+    return os.path.join(
+        settings.MEDIA_ROOT,
+        "cached_m3u",
+        f"{account_id}.live-filter-preview.jsonl.gz",
+    )
+
+
+def write_live_filter_catalog(account_id, streams):
+    """Atomically cache enabled-group Live TV candidates before stream filters.
+
+    Only the four fields needed by the preview are retained. JSON Lines keeps
+    reads streaming and gzip keeps the persistent footprint small even for
+    large provider catalogs.
+    """
+    path = _live_filter_catalog_path(account_id)
+    temp_path = f"{path}.tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    count = 0
+    try:
+        with gzip.open(temp_path, "wt", encoding="utf-8") as catalog:
+            for index, stream in enumerate(streams):
+                attributes = stream.get("attributes") or {}
+                catalog.write(
+                    json.dumps(
+                        {
+                            "id": f"catalog-{index}",
+                            "name": str(stream.get("name") or ""),
+                            "group": str(attributes.get("group-title") or ""),
+                            "url": str(stream.get("url") or ""),
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+                catalog.write("\n")
+                count += 1
+        os.replace(temp_path, path)
+        logger.debug(
+            "Cached %s pre-filter Live TV candidates for account %s",
+            count,
+            account_id,
+        )
+    except Exception:
+        # A preview cache must never make the actual M3U refresh fail. Atomic
+        # replacement also leaves the previous complete catalog available.
+        logger.warning(
+            "Could not update Live TV stream-filter preview catalog for account %s",
+            account_id,
+            exc_info=True,
+        )
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+    return count
+
+
+def iter_live_filter_catalog(account_id):
+    """Yield cached pre-filter Live TV candidates without loading them all."""
+    path = _live_filter_catalog_path(account_id)
+    with gzip.open(path, "rt", encoding="utf-8") as catalog:
+        for line in catalog:
+            if line.strip():
+                yield json.loads(line)
+
+
+def has_live_filter_catalog(account_id):
+    path = _live_filter_catalog_path(account_id)
+    return os.path.isfile(path) and os.path.getsize(path) > 0
 
 _NON_TERMINAL_REFRESH_STATUSES = frozenset({
     M3UAccount.Status.FETCHING,
@@ -155,10 +242,26 @@ def _ensure_m3u_refresh_terminal_status(account_id):
     try:
         account_data = (
             M3UAccount.objects.filter(id=account_id)
-            .values("status", "name")
+            .values("status", "last_message", "name")
             .first()
         )
-        if account_data and account_data.get("status") in _NON_TERMINAL_REFRESH_STATUSES:
+        if not account_data:
+            return
+
+        current_status = account_data["status"]
+        last_message = account_data.get("last_message") or ""
+
+        # The VOD task is queued at the end of a successful live refresh and
+        # uses the same account status while it works. On fast workers it can
+        # set PARSING before this task reaches its finally block. That is a
+        # valid hand-off, not an incomplete live refresh.
+        if (
+            current_status == M3UAccount.Status.PARSING
+            and last_message.startswith("VOD refresh:")
+        ):
+            return
+
+        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
             message = "Refresh did not complete successfully"
             _set_m3u_account_status(
                 account_id,
@@ -755,15 +858,61 @@ def process_groups(account, groups, scan_start_time=None):
     if scan_start_time is None:
         scan_start_time = timezone.now()
 
+    account_custom_props = ensure_custom_properties_dict(account.custom_properties)
+    # New groups are opt-in: the first matching active import rule decides,
+    # otherwise the group is imported disabled for manual review.
+    auto_enable_new_groups_live = False
+    from apps.m3u.group_rules import account_group_rules, evaluate_group_rules
+    from apps.m3u.account_templates import (
+        merge_live_group_template_values,
+        template_group_selection_map,
+        template_live_group_values_map,
+    )
+
+    discovery_rules = account_group_rules(account, "live")
+    template_selections = template_group_selection_map(account, "live")
+    existing_relationships = _db_query_with_retry(
+        lambda: {
+            rel.channel_group.name: rel
+            for rel in ChannelGroupM3UAccount.objects.filter(
+                m3u_account=account,
+                channel_group__name__in=groups.keys(),
+            ).select_related("channel_group")
+        },
+        label=f"process_groups relationships for account {account.id}",
+    )
+    discovery_decisions = {}
+    kept_groups = {}
+    for group_name, custom_props in groups.items():
+        if group_name in existing_relationships:
+            kept_groups[group_name] = custom_props
+            continue
+        if str(group_name).strip().casefold() in template_selections:
+            kept_groups[group_name] = custom_props
+            continue
+        decision = evaluate_group_rules(
+            discovery_rules,
+            group_name=group_name,
+            item_names=custom_props.get("_item_names", []),
+            default_enabled=auto_enable_new_groups_live,
+        )
+        discovery_decisions[group_name] = decision
+        if decision.ignored:
+            logger.info(
+                "Ignoring new live group '%s' for account %s by discovery rule %s",
+                group_name,
+                account.id,
+                decision.matched_rule_id,
+            )
+            continue
+        kept_groups[group_name] = custom_props
+    groups = kept_groups
+
     existing_groups = {
         group.name: group
         for group in ChannelGroup.objects.filter(name__in=groups.keys())
     }
     logger.info(f"Currently {len(existing_groups)} existing groups")
-
-    # Check if we should auto-enable new groups based on account settings
-    account_custom_props = ensure_custom_properties_dict(account.custom_properties)
-    auto_enable_new_groups_live = account_custom_props.get("auto_enable_new_groups_live", True)
 
     # Separate existing groups from groups that need to be created
     existing_group_objs = []
@@ -784,18 +933,7 @@ def process_groups(account, groups, scan_start_time=None):
 
     # Combine all groups
     all_group_objs = existing_group_objs + newly_created_group_objs
-
-    # Get existing relationships for this account
-    existing_relationships = _db_query_with_retry(
-        lambda: {
-            rel.channel_group.name: rel
-            for rel in ChannelGroupM3UAccount.objects.filter(
-                m3u_account=account,
-                channel_group__name__in=groups.keys(),
-            ).select_related("channel_group")
-        },
-        label=f"process_groups relationships for account {account.id}",
-    )
+    template_values = template_live_group_values_map(account)
 
     relations_to_create = []
     relations_to_update = []
@@ -841,18 +979,44 @@ def process_groups(account, groups, scan_start_time=None):
                 logger.debug(f"xc_id unchanged for group '{group.name}' - account {account.id}")
         else:
             # Create new relationship - this group is new to this M3U account
-            # Use the auto_enable setting to determine if it should start enabled
-            if not auto_enable_new_groups_live:
+            selected_values = template_values.get(
+                str(group.name).strip().casefold()
+            )
+            decision = discovery_decisions.get(group.name)
+            enabled = (
+                bool(selected_values.get("enabled", False))
+                if selected_values
+                else decision.enabled
+            )
+            if not enabled:
                 logger.info(f"Group '{group.name}' is new to account {account.id} - creating relationship but DISABLED (auto_enable_new_groups_live=False)")
 
+            stored_props = {
+                key: value
+                for key, value in custom_props.items()
+                if key != "_item_names"
+            }
+            if decision and decision.matched_rule_id:
+                stored_props["discovery_rule_id"] = decision.matched_rule_id
+
+            values = (
+                merge_live_group_template_values(selected_values, stored_props)
+                if selected_values
+                else {
+                    "enabled": enabled,
+                    "auto_channel_sync": False,
+                    "auto_sync_channel_start": None,
+                    "auto_sync_channel_end": None,
+                    "custom_properties": stored_props,
+                }
+            )
             relations_to_create.append(
                 ChannelGroupM3UAccount(
                     channel_group=group,
                     m3u_account=account,
-                    custom_properties=custom_props,
-                    enabled=auto_enable_new_groups_live,
                     last_seen=scan_start_time,
                     is_stale=False,
+                    **values,
                 )
             )
 
@@ -925,7 +1089,7 @@ def cleanup_stale_group_relationships(account, scan_start_time):
     return deleted_count
 
 
-def collect_xc_streams(account_id, enabled_groups):
+def collect_xc_streams(account_id, enabled_groups, *, include_provider_total=False):
     """Collect all XC streams in a single API call and filter by enabled groups."""
     account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
     all_streams = []
@@ -959,9 +1123,10 @@ def collect_xc_streams(account_id, enabled_groups):
 
             if not all_xc_streams:
                 logger.warning("No live streams returned from XC provider")
-                return []
+                return ([], 0) if include_provider_total else []
 
-            logger.info(f"Retrieved {len(all_xc_streams)} total live streams from provider")
+            provider_total = len(all_xc_streams)
+            logger.info(f"Retrieved {provider_total} total live streams from provider")
 
             # Filter streams based on enabled categories
             for stream in all_xc_streams:
@@ -1015,12 +1180,12 @@ def collect_xc_streams(account_id, enabled_groups):
 
     except Exception as e:
         logger.error(f"Failed to fetch XC streams: {str(e)}")
-        return []
+        return ([], 0) if include_provider_total else []
 
     logger.info(
         f"Filtered {filtered_count} streams from {len(enabled_category_ids)} enabled categories"
     )
-    return all_streams
+    return (all_streams, provider_total) if include_provider_total else all_streams
 
 
 def _compile_m3u_stream_filters(filter_queryset):
@@ -1575,14 +1740,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
     extinf_data = []
     groups = {"Default Group": {}}
 
+    uses_live_item_names = account.group_rules.filter(
+        scope="live",
+        match_field="item_name",
+        enabled=True,
+    ).exists()
+
     if account.account_type == M3UAccount.Types.XC:
-        # Log detailed information about the account
-        logger.info(
-            f"Processing XC account {account_id} with URL: {account.server_url}"
-        )
-        logger.debug(
-            f"Username: {account.username}, Has password: {'Yes' if account.password else 'No'}"
-        )
+        logger.info("Processing XC account %s (%s)", account.name, account_id)
 
         # Validate required fields
         if not account.server_url:
@@ -1639,9 +1804,8 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     f"Exception in user agent handling, using fallback: {str(e)}"
                 )
 
-            logger.info(
-                f"Creating XCClient with URL: {account.server_url}, Username: {account.username}, User-Agent: {user_agent_string}"
-            )
+            logger.info("Creating XC client for account %s", account.name)
+            logger.debug("XC client user agent for account %s: %s", account.name, user_agent_string)
 
             # Create XCClient with explicit error handling
             try:
@@ -1663,9 +1827,8 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     try:
                         logger.info(f"Getting live categories from XC server")
                         xc_categories = xc_client.get_live_categories()
-                        logger.info(
-                            f"Found {len(xc_categories)} categories: {xc_categories}"
-                        )
+                        logger.info("Found %s live categories", len(xc_categories))
+                        logger.debug("XC live categories: %s", xc_categories)
 
                         # Validate response
                         if not isinstance(xc_categories, list):
@@ -1692,10 +1855,26 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                         for category in xc_categories:
                             cat_name = category.get("category_name", "Unknown Category")
                             cat_id = category.get("category_id", "0")
-                            logger.info(f"Adding category: {cat_name} (ID: {cat_id})")
+                            logger.debug("Adding category: %s (ID: %s)", cat_name, cat_id)
                             groups[cat_name] = {
                                 "xc_id": cat_id,
+                                "_item_names": [],
                             }
+
+                        # Content-aware discovery rules are opt-in. Only when
+                        # configured do we pay for the full provider stream
+                        # catalog during group discovery.
+                        if uses_live_item_names:
+                            item_names_by_category = {}
+                            for stream in xc_client.get_all_live_streams():
+                                category_id = str(stream.get("category_id") or "")
+                                item_names_by_category.setdefault(category_id, []).append(
+                                    str(stream.get("name") or "")
+                                )
+                            for props in groups.values():
+                                props["_item_names"] = item_names_by_category.get(
+                                    str(props.get("xc_id") or ""), []
+                                )
                     except Exception as e:
                         # Determine if this is an authentication error or category retrieval error
                         error_str = str(e).lower()
@@ -1773,7 +1952,13 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     group_title_attr = get_case_insensitive_attr(entry["attributes"], "group-title", "")
                     if group_title_attr and group_title_attr not in groups:
                         logger.debug(f"Found new group for M3U account {account_id}: '{group_title_attr}'")
-                        groups[group_title_attr] = {}
+                        groups[group_title_attr] = (
+                            {"_item_names": []} if uses_live_item_names else {}
+                        )
+                    if group_title_attr and uses_live_item_names:
+                        groups[group_title_attr].setdefault("_item_names", []).append(
+                            entry.get("name") or ""
+                        )
                     extinf_data.append(entry)
 
                     if valid_stream_count % 1000 == 0:
@@ -1788,7 +1973,13 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     group_title_attr = get_case_insensitive_attr(entry["attributes"], "group-title", "")
                     if group_title_attr and group_title_attr not in groups:
                         logger.debug(f"Found new group for M3U account {account_id}: '{group_title_attr}'")
-                        groups[group_title_attr] = {}
+                        groups[group_title_attr] = (
+                            {"_item_names": []} if uses_live_item_names else {}
+                        )
+                    if group_title_attr and uses_live_item_names:
+                        groups[group_title_attr].setdefault("_item_names", []).append(
+                            entry.get("name") or ""
+                        )
                     extinf_data.append(entry)
 
                     if valid_stream_count % 1000 == 0:
@@ -2486,19 +2677,31 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     return None
                 return epg_cache_by_tvg_id.get(tvg_id)
 
+            cleanup_mode = group_custom_props.get(
+                "orphan_channel_cleanup", "always"
+            )
             if not has_streams:
                 logger.debug(f"No streams found in group {channel_group.name}")
-                # No streams left in the group: drop the visible auto
-                # channels. Hidden channels are preserved so the hide
-                # flag survives temporary provider drops (event/PPV).
-                channels_to_delete = [
-                    ch
+                # Cleanup is configured per provider group. Hidden channels
+                # are always preserved so event/PPV visibility survives a
+                # temporary provider drop.
+                channel_ids = {
+                    ch.id
                     for ch in existing_channel_map.values()
                     if not ch.hidden_from_output
-                ]
-                if channels_to_delete:
-                    deleted_count = _delete_channels_stopping_streams(channels_to_delete)
-                    channels_deleted += deleted_count
+                }
+                channels_to_delete = Channel.objects.filter(id__in=channel_ids)
+                if cleanup_mode == "never":
+                    channels_to_delete = channels_to_delete.none()
+                elif cleanup_mode == "preserve_customized":
+                    channels_to_delete = channels_to_delete.filter(
+                        override__isnull=True
+                    )
+                deleted_count = _delete_channels_stopping_streams(
+                    channels_to_delete
+                )
+                channels_deleted += deleted_count
+                if deleted_count:
                     logger.debug(
                         f"Deleted {deleted_count} auto channels (no streams remaining)"
                     )
@@ -2726,6 +2929,14 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             existing_channel.channel_group = target_group
                             dirty_fields.append("channel_group")
 
+                        # Preserve the original creating group. A channel can
+                        # later gain manual backup streams from other groups;
+                        # processing those groups must not silently transfer
+                        # ownership and therefore its cleanup policy.
+                        if existing_channel.auto_created_from_id is None:
+                            existing_channel.auto_created_from = group_relation
+                            dirty_fields.append("auto_created_from")
+
                         # Logo: custom group setting wins; otherwise stream logo
                         current_logo = (
                             custom_logo
@@ -2827,6 +3038,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                                     user_level=0,
                                     auto_created=True,
                                     auto_created_by=account,
+                                    auto_created_from=group_relation,
                                     logo=new_logo,
                                     epg_data=new_epg_data,
                                     stream_profile=stream_profile_to_assign,
@@ -2999,18 +3211,29 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 channel_streams_in_group.setdefault(channel.id, []).append(
                     (stream_id, channel)
                 )
-            channels_to_delete = []
+            removed_channel_ids = []
             for ch_id, pairs in channel_streams_in_group.items():
                 channel = pairs[0][1]
                 if channel.hidden_from_output:
                     continue
                 stream_ids = {sid for sid, _ in pairs}
                 if not (stream_ids & processed_stream_ids):
-                    channels_to_delete.append(channel)
+                    removed_channel_ids.append(ch_id)
 
-            if channels_to_delete:
-                deleted_count = _delete_channels_stopping_streams(channels_to_delete)
-                channels_deleted += deleted_count
+            channels_to_delete = Channel.objects.filter(
+                id__in=removed_channel_ids
+            )
+            if cleanup_mode == "never":
+                channels_to_delete = channels_to_delete.none()
+            elif cleanup_mode == "preserve_customized":
+                channels_to_delete = channels_to_delete.filter(
+                    override__isnull=True
+                )
+            deleted_count = _delete_channels_stopping_streams(
+                channels_to_delete
+            )
+            channels_deleted += deleted_count
+            if deleted_count:
                 logger.debug(
                     f"Deleted {deleted_count} auto channels for removed streams"
                 )
@@ -3063,35 +3286,67 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 processed_stream_ids,
             )
 
-        # Cleanup mode read from account.custom_properties.orphan_channel_cleanup:
-        # "always" (default; key absent) removes every orphan auto channel;
-        # "preserve_customized" keeps those with a ChannelOverride row;
-        # "never" disables cleanup. Hidden channels are preserved across all
-        # modes so event/PPV channels that come and go are not silently lost.
-        cleanup_mode = ensure_custom_properties_dict(account.custom_properties).get(
-            "orphan_channel_cleanup", "always"
-        )
-        if cleanup_mode != "never":
-            orphaned_channels = Channel.objects.filter(
-                auto_created=True,
-                auto_created_by=account,
-                hidden_from_output=False,
-            ).exclude(
-                id__in=ChannelStream.objects.filter(
-                    stream__m3u_account=account,
-                    stream__isnull=False,
-                ).values_list("channel_id", flat=True)
-            )
-            if cleanup_mode == "preserve_customized":
-                orphaned_channels = orphaned_channels.filter(override__isnull=True)
+        # Reclaim source-less channels according to the setting on the provider
+        # group that created them. The account setting remains only as a
+        # compatibility fallback for legacy rows that could not be backfilled.
+        group_modes = {}
+        for membership_id, custom_properties in (
+            ChannelGroupM3UAccount.objects.filter(m3u_account=account)
+            .values_list("id", "custom_properties")
+        ):
+            group_modes[membership_id] = ensure_custom_properties_dict(
+                custom_properties
+            ).get("orphan_channel_cleanup", "always")
 
-            orphan_list = list(orphaned_channels)
-            deleted_channels = _delete_channels_stopping_streams(orphan_list)
-            if deleted_channels:
-                channels_deleted += deleted_channels
-                logger.info(
-                    f"Deleted {deleted_channels} orphaned auto channels with no valid streams (mode={cleanup_mode})"
-                )
+        base_orphans = Channel.objects.filter(
+            auto_created=True,
+            auto_created_by=account,
+            hidden_from_output=False,
+        ).exclude(
+            id__in=ChannelStream.objects.filter(
+                stream__m3u_account=account,
+                stream__isnull=False,
+            ).values_list("channel_id", flat=True)
+        )
+        always_ids = [
+            membership_id
+            for membership_id, mode in group_modes.items()
+            if mode == "always"
+        ]
+        preserve_ids = [
+            membership_id
+            for membership_id, mode in group_modes.items()
+            if mode == "preserve_customized"
+        ]
+        removable = base_orphans.filter(
+            models.Q(auto_created_from_id__in=always_ids)
+            | models.Q(
+                auto_created_from_id__in=preserve_ids,
+                override__isnull=True,
+            )
+        )
+
+        legacy_mode = ensure_custom_properties_dict(
+            account.custom_properties
+        ).get("orphan_channel_cleanup", "always")
+        if legacy_mode == "always":
+            removable = removable | base_orphans.filter(
+                auto_created_from_id__isnull=True
+            )
+        elif legacy_mode == "preserve_customized":
+            removable = removable | base_orphans.filter(
+                auto_created_from_id__isnull=True,
+                override__isnull=True,
+            )
+
+        orphan_list = list(removable.distinct())
+        deleted_channels = _delete_channels_stopping_streams(orphan_list)
+        if deleted_channels:
+            channels_deleted += deleted_channels
+            logger.info(
+                "Deleted %s orphaned auto channels using per-group cleanup rules",
+                deleted_channels,
+            )
 
         logger.info(
             f"Auto channel sync complete for account {account.name}: "
@@ -3349,11 +3604,99 @@ def refresh_account_info(profile_id):
 
         release_task_lock("refresh_account_info", profile_id)
         return error_msg
-@shared_task(time_limit=3600, soft_time_limit=3500)
-def refresh_single_m3u_account(account_id):
+@shared_task(
+    bind=True,
+    time_limit=3600,
+    soft_time_limit=3500,
+    max_retries=120,
+    default_retry_delay=30,
+)
+def refresh_single_m3u_account(
+    self,
+    account_id,
+    include_vod=None,
+    minimum_age_seconds=None,
+    skip_if_refreshed_after=None,
+    client_triggered=False,
+    client_completion_key=None,
+):
     """Splits M3U processing into chunks and dispatches them as parallel tasks."""
     if not acquire_task_lock("refresh_single_m3u_account", account_id):
-        return f"Task already running for account_id={account_id}."
+        logger.info(
+            "Account %s already has a catalog refresh running; retrying Live TV refresh",
+            account_id,
+        )
+        raise self.retry(countdown=30)
+
+    if client_triggered:
+        try:
+            cache.delete(f"xc_live_refresh_request:{account_id}")
+        except Exception:
+            logger.warning(
+                "Could not release XC Live queue reservation for account %s",
+                account_id,
+                exc_info=True,
+            )
+
+    if minimum_age_seconds is not None or skip_if_refreshed_after is not None:
+        try:
+            minimum_age_seconds = max(0, int(minimum_age_seconds or 0))
+            refresh_boundary = None
+            if skip_if_refreshed_after is not None:
+                refresh_boundary = parse_datetime(str(skip_if_refreshed_after))
+                if refresh_boundary is None:
+                    raise ValueError("invalid refresh boundary")
+            last_success = (
+                M3UAccount.objects.filter(id=account_id, is_active=True)
+                .values_list("updated_at", flat=True)
+                .first()
+            )
+            refreshed_after_queue = (
+                last_success is not None
+                and refresh_boundary is not None
+                and last_success >= refresh_boundary
+            )
+            within_minimum_age = (
+                last_success is not None
+                and minimum_age_seconds > 0
+                and (timezone.now() - last_success).total_seconds()
+                < minimum_age_seconds
+            )
+            if refreshed_after_queue or within_minimum_age:
+                if refreshed_after_queue:
+                    reason = "the provider was refreshed after the request was queued"
+                else:
+                    reason = (
+                        "the provider was refreshed successfully in the last "
+                        f"{minimum_age_seconds}s"
+                    )
+                logger.info(
+                    "Skipping conditional Live TV refresh for account %s; %s",
+                    account_id,
+                    reason,
+                )
+                release_task_lock("refresh_single_m3u_account", account_id)
+                _mark_xc_client_refresh_complete(
+                    client_completion_key,
+                    "skipped_fresh",
+                )
+                return "Skipped conditional refresh because the account is fresh"
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid conditional refresh values age=%r boundary=%r "
+                "for account %s",
+                minimum_age_seconds,
+                skip_if_refreshed_after,
+                account_id,
+            )
+        except Exception:
+            # A best-effort freshness check must not strand the task lock. The
+            # regular refresh path below owns the terminal cleanup behavior.
+            logger.warning(
+                "Could not evaluate conditional refresh freshness for account %s",
+                account_id,
+                exc_info=True,
+            )
 
     # Keep the lock alive while this long-running task is working.
     # Without renewal, the 300s lock TTL can expire during large
@@ -3364,7 +3707,10 @@ def refresh_single_m3u_account(account_id):
     _release_task_db_connection()
 
     try:
-        return _refresh_single_m3u_account_impl(account_id)
+        return _refresh_single_m3u_account_impl(
+            account_id,
+            include_vod=include_vod,
+        )
     except Exception as e:
         logger.error(
             f"refresh_single_m3u_account failed for account {account_id}: {e}",
@@ -3392,9 +3738,10 @@ def refresh_single_m3u_account(account_id):
         _release_task_db_connection()
         lock_renewer.stop()
         release_task_lock("refresh_single_m3u_account", account_id)
+        _mark_xc_client_refresh_complete(client_completion_key, "finished")
 
 
-def _refresh_single_m3u_account_impl(account_id):
+def _refresh_single_m3u_account_impl(account_id, include_vod=None):
     """Implementation of M3U account refresh with guaranteed memory cleanup."""
     # Record start time
     refresh_start_timestamp = timezone.now()  # For the cleanup function
@@ -3611,10 +3958,34 @@ def _refresh_single_m3u_account_impl(account_id):
         streams_created = 0
         streams_updated = 0
         streams_unchanged = 0
+        live_provider_total = len(extinf_data) if extinf_data else 0
 
         if account.account_type == M3UAccount.Types.STADNARD:
             logger.debug(
                 f"Processing Standard account ({account_id}) with groups: {existing_groups}"
+            )
+
+            def enabled_standard_catalog():
+                for stream in extinf_data:
+                    attributes = stream.get("attributes") or {}
+                    group_title = get_case_insensitive_attr(
+                        attributes, "group-title", "Default Group"
+                    )
+                    if group_title not in existing_groups:
+                        continue
+                    # Match the normalization used by process_m3u_batch_direct
+                    # without mutating the parsed provider row.
+                    yield {
+                        **stream,
+                        "attributes": {
+                            **attributes,
+                            "group-title": group_title,
+                        },
+                    }
+
+            write_live_filter_catalog(
+                account_id,
+                enabled_standard_catalog(),
             )
             # Break into batches and process with threading - use global batch size
             batches = [
@@ -3728,7 +4099,15 @@ def _refresh_single_m3u_account_impl(account_id):
 
             # Collect all XC streams in a single API call and filter by enabled categories
             logger.info("Fetching all XC streams from provider and filtering by enabled categories...")
-            all_xc_streams = collect_xc_streams(account_id, filtered_groups)
+            collected_streams = collect_xc_streams(
+                account_id, filtered_groups, include_provider_total=True
+            )
+            if isinstance(collected_streams, tuple):
+                all_xc_streams, live_provider_total = collected_streams
+            else:
+                # Compatibility for mocks and third-party task wrappers.
+                all_xc_streams = collected_streams
+                live_provider_total = len(all_xc_streams or [])
 
             del channel_group_relationships, filtered_groups
 
@@ -3752,6 +4131,12 @@ def _refresh_single_m3u_account_impl(account_id):
                 )
                 return "Failed to update m3u account, no streams returned from provider"
             else:
+                # Preserve the post-group-selection, pre-stream-filter
+                # inventory. Excluded streams are intentionally absent from
+                # the Stream table, so that table cannot provide a truthful
+                # preview on later visits.
+                write_live_filter_catalog(account_id, all_xc_streams)
+
                 # Now batch by stream count (like standard M3U processing)
                 batches = [
                     all_xc_streams[i : i + BATCH_SIZE]
@@ -3917,7 +4302,29 @@ def _refresh_single_m3u_account_impl(account_id):
             f"Total processed: {streams_processed}.{auto_sync_message}"
         )
         account.updated_at = timezone.now()
-        account.save(update_fields=["status", "last_message", "updated_at"])
+        custom = dict(
+            M3UAccount.objects.filter(pk=account.pk)
+            .values_list("custom_properties", flat=True)
+            .first()
+            or {}
+        )
+        custom["live_catalog_counts"] = {
+            "provider_total": live_provider_total,
+            # Count only rows accepted during this scan. Querying all non-stale
+            # database rows also includes retained streams from categories that
+            # have since been disabled, so it does not describe the current
+            # filtered provider catalog.
+            "selected_total": streams_processed,
+        }
+        custom["refresh_timings"] = {
+            **(custom.get("refresh_timings") or {}),
+            "live_seconds": round(elapsed_time, 2),
+            "live_completed_at": account.updated_at.isoformat(),
+        }
+        account.custom_properties = custom
+        account.save(
+            update_fields=["status", "last_message", "updated_at", "custom_properties"]
+        )
 
         # Streams / auto-synced channels may have changed names, numbers,
         # logos, or membership. Clear M3U playlist cache and XMLTV channel
@@ -3966,12 +4373,25 @@ def _refresh_single_m3u_account_impl(account_id):
         del auto_sync_result
         gc.collect()
 
-        # Trigger VOD refresh if enabled and account is XtreamCodes type
-        if vod_enabled and account.account_type == M3UAccount.Types.XC:
+        # Existing installations default to refreshing VOD after Live TV.
+        # Accounts using a separate VOD schedule skip this hand-off. Manual
+        # Live-only requests explicitly pass include_vod=False.
+        should_refresh_vod = should_refresh_vod_after_live(
+            account,
+            include_vod=include_vod,
+        )
+        if (
+            vod_enabled
+            and account.account_type == M3UAccount.Types.XC
+            and should_refresh_vod
+        ):
             logger.info(f"VOD is enabled for account {account_id}, triggering VOD refresh")
             try:
                 from apps.vod.tasks import refresh_vod_content
-                refresh_vod_content.delay(account_id)
+                # The outer Live TV task releases the shared account lock as
+                # soon as this implementation returns. A short countdown
+                # avoids an unnecessary first VOD retry in normal operation.
+                refresh_vod_content.apply_async(args=[account_id], countdown=5)
                 logger.info(f"VOD refresh task queued for account {account_id}")
             except Exception as e:
                 logger.error(f"Failed to queue VOD refresh for account {account_id}: {str(e)}")
@@ -4001,7 +4421,6 @@ def _refresh_single_m3u_account_impl(account_id):
             del compiled_stream_filters
 
         gc.collect()
-
         # Remove cache file after processing (success or failure)
         cache_path = os.path.join(m3u_dir, f"{account_id}.json")
         try:
@@ -4010,6 +4429,13 @@ def _refresh_single_m3u_account_impl(account_id):
             pass
 
     return f"Dispatched jobs complete."
+
+
+def should_refresh_vod_after_live(account, include_vod=None):
+    """Resolve a task override against the account's persisted VOD mode."""
+    if include_vod is not None:
+        return bool(include_vod)
+    return bool(account.vod_refresh_after_live)
 
 
 def send_m3u_update(account_id, action, progress, **kwargs):
