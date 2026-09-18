@@ -1,7 +1,7 @@
+import hmac
 import json
 import time
 import random
-import re
 import pathlib
 from django.db import close_old_connections
 from django.http import (
@@ -42,6 +42,7 @@ from .utils import get_logger
 from uuid import UUID
 import gevent
 from apps.proxy.utils import check_user_stream_limits
+from .output.hls.session import mint_hls_session
 
 logger = get_logger()
 
@@ -105,8 +106,16 @@ def _drop_pre_registered_client(proxy_server, channel_id, client_id):
         return
     if not proxy_server.redis_client:
         return
-    proxy_server.redis_client.srem(RedisKeys.clients(channel_id), client_id)
-    proxy_server.redis_client.delete(RedisKeys.client_metadata(channel_id, client_id))
+    client_key = RedisKeys.client_metadata(channel_id, client_id)
+    token = proxy_server.redis_client.hget(client_key, "hls_token")
+    pipe = proxy_server.redis_client.pipeline(transaction=False)
+    pipe.srem(RedisKeys.clients(channel_id), client_id)
+    pipe.delete(client_key)
+    if token:
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
+        pipe.delete(RedisKeys.hls_session(token))
+    pipe.execute()
 
 
 def _resolve_output_format(user, force=None, request=None):
@@ -752,10 +761,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
         if resolved_output_format == 'hls':
             # HLS is pull-based: no long-lived response. Start the segmenter
-            # and redirect to the client-scoped playlist so reloads and
-            # relative segment URIs resolve against a URL that carries the
-            # client_id (each request touches the client record; the ghost
-            # reaper handles disconnect, same as every other client type).
+            # and redirect to an opaque playlist URL so relative segment URIs
+            # stay on that capability path (each request touches the client
+            # record; the ghost reaper handles disconnect, same as every
+            # other client type).
             if not proxy_server.ensure_output_format(
                 channel_id, resolved_format,
                 source_buffer=source_buffer if resolved_output_profile else None,
@@ -765,11 +774,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 return JsonResponse(
                     {"error": "Failed to start output format segmenter"}, status=500
                 )
-            # Hardcoded mount path, matching how generate_m3u builds
-            # /proxy/ts/stream/ URLs (apps/output/views.py).
-            return HttpResponseRedirect(
-                f"/proxy/hls/{channel_id}/{client_id}/index.m3u8"
+            token = mint_hls_session(
+                proxy_server.redis_client, channel_id, client_id
             )
+            if not token:
+                if _client_pre_registered:
+                    _drop_pre_registered_client(proxy_server, channel_id, client_id)
+                return JsonResponse(
+                    {"error": "Failed to create HLS session"}, status=500
+                )
+            return HttpResponseRedirect(f"/proxy/hls/{token}/index.m3u8")
         elif resolved_output_format == 'fmp4':
             if not proxy_server.ensure_output_format(
                 channel_id, resolved_format,
@@ -832,51 +846,77 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         close_old_connections()
 
 
+def _authenticate_xc_live_user(request, username, password):
+    """Return (user, error_response). Missing users raise Http404."""
+    user = get_object_or_404(User, username=username)
+    if not network_access_allowed(request, "STREAMS", user):
+        return None, Response({"error": "Forbidden"}, status=403)
+    custom_properties = user.custom_properties or {}
+    if "xc_password" not in custom_properties:
+        return None, Response({"error": "Invalid credentials"}, status=401)
+    if not hmac.compare_digest(str(custom_properties["xc_password"]), str(password)):
+        return None, Response({"error": "Invalid credentials"}, status=401)
+    return user, None
+
+
+def _resolve_xc_live_channel(user, channel_id):
+    """Return (channel, error_response). Admin missing channels raise Http404."""
+    try:
+        channel_pk = int(channel_id)
+    except (TypeError, ValueError):
+        return None, JsonResponse({"error": "Not found"}, status=404)
+
+    if user.user_level < 10:
+        user_profile_count = user.channel_profiles.count()
+
+        # If user has ALL profiles or NO profiles, give unrestricted access
+        if user_profile_count == 0:
+            # No profile filtering - user sees all channels based on user_level
+            filters = {
+                "id": channel_pk,
+                "user_level__lte": user.user_level
+            }
+            channel = Channel.objects.filter(**filters).first()
+        else:
+            # User has specific limited profiles assigned
+            filters = {
+                "id": channel_pk,
+                "channelprofilemembership__enabled": True,
+                "user_level__lte": user.user_level,
+                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+            }
+            channel = Channel.objects.filter(**filters).distinct().first()
+
+        if not channel:
+            return None, JsonResponse({"error": "Not found"}, status=404)
+        return channel, None
+
+    return get_object_or_404(Channel, id=channel_pk), None
+
+
+def _xc_live_channel_or_error(request, username, password, channel_id):
+    """Auth + channel lookup for XC live stream entry URLs."""
+    user, error = _authenticate_xc_live_user(request, username, password)
+    if error is not None:
+        return None, None, error
+    channel, error = _resolve_xc_live_channel(user, channel_id)
+    if error is not None:
+        return None, None, error
+    return user, channel, None
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc(request, username, password, channel_id):
     try:
-        user = get_object_or_404(User, username=username)
-
         extension = pathlib.Path(channel_id).suffix
         channel_id = pathlib.Path(channel_id).stem
 
-        if not network_access_allowed(request, 'STREAMS', user):
-            return Response({"error": "Forbidden"}, status=403)
-
-        custom_properties = user.custom_properties or {}
-
-        if "xc_password" not in custom_properties:
-            return Response({"error": "Invalid credentials"}, status=401)
-
-        if custom_properties["xc_password"] != password:
-            return Response({"error": "Invalid credentials"}, status=401)
-
-        if user.user_level < 10:
-            user_profile_count = user.channel_profiles.count()
-
-            # If user has ALL profiles or NO profiles, give unrestricted access
-            if user_profile_count == 0:
-                # No profile filtering - user sees all channels based on user_level
-                filters = {
-                    "id": int(channel_id),
-                    "user_level__lte": user.user_level
-                }
-                channel = Channel.objects.filter(**filters).first()
-            else:
-                # User has specific limited profiles assigned
-                filters = {
-                    "id": int(channel_id),
-                    "channelprofilemembership__enabled": True,
-                    "user_level__lte": user.user_level,
-                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                }
-                channel = Channel.objects.filter(**filters).distinct().first()
-
-            if not channel:
-                return JsonResponse({"error": "Not found"}, status=404)
-        else:
-            channel = get_object_or_404(Channel, id=channel_id)
+        user, channel, error = _xc_live_channel_or_error(
+            request, username, password, channel_id
+        )
+        if error is not None:
+            return error
 
         if extension.lower() == '.mp4':
             force_format = 'fmp4'
@@ -886,7 +926,12 @@ def stream_xc(request, username, password, channel_id):
             force_format = 'hls'
         else:
             force_format = None
-        return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
+        return stream_ts(
+            request._request,
+            str(channel.uuid),
+            user,
+            force_output_format=force_format,
+        )
     except Http404:
         raise
     finally:

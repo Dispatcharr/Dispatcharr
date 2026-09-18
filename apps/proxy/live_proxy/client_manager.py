@@ -336,14 +336,25 @@ class ClientManager:
             self.last_active_time = time.time()
 
             if self.redis_client:
-                client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
-                client_username = self.redis_client.hget(client_key, "username") or "unknown"
+                client_key = RedisKeys.client_metadata(self.channel_id, client_id)
+                username, hls_token = self.redis_client.hmget(
+                    client_key, "username", "hls_token"
+                )
+                client_username = username or "unknown"
                 if isinstance(client_username, bytes):
                     client_username = client_username.decode("utf-8")
+                if isinstance(hls_token, bytes):
+                    hls_token = hls_token.decode("utf-8")
 
-                self.redis_client.srem(self.client_set_key, client_id)
-                self.redis_client.delete(client_key)
-                remaining = self.redis_client.scard(self.client_set_key) or 0
+                pipe = self.redis_client.pipeline(transaction=False)
+                pipe.srem(self.client_set_key, client_id)
+                pipe.delete(client_key)
+                if hls_token:
+                    pipe.delete(RedisKeys.hls_session(hls_token))
+                pipe.scard(self.client_set_key)
+                results = pipe.execute() or []
+                remaining = results[-1] if results else 0
+                remaining = remaining or 0
 
             local_count = len(self.clients)
 
@@ -493,9 +504,22 @@ class ClientManager:
             return 0
 
         pipe = redis_client.pipeline(transaction=False)
+        id_list = []
         for cid in client_ids:
             cid_str = cid.decode() if isinstance(cid, bytes) else cid
+            id_list.append(cid_str)
+            pipe.hget(RedisKeys.client_metadata(channel_id, cid_str), "hls_token")
+        tokens = pipe.execute()
+
+        pipe = redis_client.pipeline(transaction=False)
+        for cid_str in id_list:
             pipe.delete(RedisKeys.client_metadata(channel_id, cid_str))
+        for token in tokens:
+            if not token:
+                continue
+            if isinstance(token, bytes):
+                token = token.decode("utf-8")
+            pipe.delete(RedisKeys.hls_session(token))
         pipe.delete(client_set_key)
         pipe.execute()
-        return len(client_ids)
+        return len(id_list)
