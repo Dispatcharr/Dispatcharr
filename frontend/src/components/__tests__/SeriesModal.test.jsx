@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import SeriesModal from '../SeriesModal';
 import useVODStore from '../../store/useVODStore';
 import useVideoStore from '../../store/useVideoStore';
@@ -237,6 +243,8 @@ describe('SeriesModal', () => {
     duration_secs: 3600,
     rating: '8.0',
     container_extension: 'mkv',
+    resolution: '1080p',
+    video_codec: 'h264',
     added: '2024-01-01T00:00:00Z',
   };
 
@@ -653,6 +661,16 @@ describe('SeriesModal', () => {
       await waitFor(() => {
         expect(screen.getByText(/Pilot/)).toBeInTheDocument();
       });
+    });
+
+    it('shows the exact resolution and codec for each episode', async () => {
+      render(
+        <SeriesModal series={mockSeries} opened={true} onClose={vi.fn()} />
+      );
+
+      const episodeRow = (await screen.findByText('Pilot')).closest('tr');
+      expect(within(episodeRow).getByText('1080p')).toBeInTheDocument();
+      expect(within(episodeRow).getByText('H264')).toBeInTheDocument();
     });
 
     it('should format episode duration correctly', async () => {

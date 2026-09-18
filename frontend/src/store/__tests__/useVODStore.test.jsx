@@ -1125,6 +1125,8 @@ describe('useVODStore', () => {
             title: 'Episode 1',
             episode_number: 1,
             plot: 'First episode',
+            resolution: '1080p',
+            video_codec: 'h264',
           },
           {
             id: 102,
@@ -1159,6 +1161,8 @@ describe('useVODStore', () => {
     expect(result.current.episodes[101].name).toBe('Episode 1');
     expect(result.current.episodes[101].stream_id).toBe('provider-episode-101');
     expect(result.current.episodes[101].relation_id).toBe(9001);
+    expect(result.current.episodes[101].resolution).toBe('1080p');
+    expect(result.current.episodes[101].video_codec).toBe('h264');
     expect(result.current.episodes[102].stream_id).toBe('');
     expect(result.current.loading).toBe(false);
   });
