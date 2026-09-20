@@ -942,12 +942,14 @@ const M3U = ({
 
               <Button
                 type="submit"
-                aria-label="Save M3U account"
+                aria-label={
+                  playlist?.id ? 'Save M3U account' : 'Create M3U account'
+                }
                 variant="filled"
                 disabled={form.submitting}
                 size="sm"
               >
-                Save
+                {playlist?.id ? 'Save' : 'Create'}
               </Button>
             </Flex>
           </Flex>

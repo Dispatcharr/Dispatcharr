@@ -49,6 +49,25 @@ const normalizeRules = (rules) =>
     )
     .filter((rule) => rule.value);
 
+const normalizeYearRules = (rules) =>
+  (Array.isArray(rules) ? rules : [])
+    .map((rule) => {
+      const value = String(
+        typeof rule === 'string' ? rule : (rule?.value ?? rule?.format ?? '')
+      )
+        .replaceAll('{year}', 'YYYY')
+        .trim();
+      return {
+        value,
+        position:
+          typeof rule === 'object' && rule?.position === 'anywhere'
+            ? 'anywhere'
+            : 'end',
+        enabled: typeof rule !== 'object' || rule?.enabled !== false,
+      };
+    })
+    .filter((rule) => rule.value);
+
 const PREVIEW_PAGE_SIZE = 50;
 
 const tmdbResult = (row) => {
@@ -97,6 +116,8 @@ const VODMetadataModal = ({
   const [metadataStatus, setMetadataStatus] = useState(null);
   const [titleRules, setTitleRules] = useState([]);
   const [savedTitleRules, setSavedTitleRules] = useState([]);
+  const [yearRules, setYearRules] = useState([]);
+  const [savedYearRules, setSavedYearRules] = useState([]);
   const [previewSearch, setPreviewSearch] = useState('');
   const [titlePreview, setTitlePreview] = useState([]);
   const [previewMode, setPreviewMode] = useState('');
@@ -105,19 +126,24 @@ const VODMetadataModal = ({
   const [loadingRules, setLoadingRules] = useState(false);
   const [previewingTitles, setPreviewingTitles] = useState(false);
   const [savingTitleRules, setSavingTitleRules] = useState(false);
+  const [savingYearRules, setSavingYearRules] = useState(false);
   const [titleRuleError, setTitleRuleError] = useState('');
   const [applyingSelection, setApplyingSelection] = useState(false);
   const [selectionRunState, setSelectionRunState] = useState(null);
   const [confirmationAction, setConfirmationAction] = useState('');
   const [detailContent, setDetailContent] = useState(null);
   const ruleSaveSequence = useRef(0);
+  const yearRuleSaveSequence = useRef(0);
   const selectionRunSequence = useRef(0);
 
   const hydrateStatus = useCallback((status) => {
     setMetadataStatus(status);
     const rules = normalizeRules(status?.settings?.title_rules);
+    const years = normalizeYearRules(status?.settings?.year_rules);
     setTitleRules(rules);
     setSavedTitleRules(rules);
+    setYearRules(years);
+    setSavedYearRules(years);
     setTitlePreview([]);
     setPreviewMode('');
     setPreviewPage(1);
@@ -160,6 +186,10 @@ const VODMetadataModal = ({
     () => titleRules.map((rule) => rule.value),
     [titleRules]
   );
+  const yearFormats = useMemo(
+    () => yearRules.map((rule) => rule.value),
+    [yearRules]
+  );
 
   const saveTitleRules = async (nextRules) => {
     const sequence = ++ruleSaveSequence.current;
@@ -200,6 +230,60 @@ const VODMetadataModal = ({
     saveTitleRules(nextRules);
   };
 
+  const saveYearRules = async (nextRules) => {
+    const sequence = ++yearRuleSaveSequence.current;
+    setSavingYearRules(true);
+    setTitleRuleError('');
+    try {
+      const next = await API.updateVODMetadataSettings({
+        year_rules: nextRules,
+      });
+      if (sequence !== yearRuleSaveSequence.current) return;
+      const saved = normalizeYearRules(next?.settings?.year_rules);
+      setYearRules(saved);
+      setSavedYearRules(saved);
+      setMetadataStatus(next);
+      onStatusChange?.(next);
+    } catch (error) {
+      if (sequence !== yearRuleSaveSequence.current) return;
+      setYearRules(savedYearRules);
+      setTitleRuleError(
+        error?.body?.year_rules ||
+          error?.body?.detail ||
+          error?.message ||
+          'The year-cleanup formats were not saved.'
+      );
+    } finally {
+      if (sequence === yearRuleSaveSequence.current) setSavingYearRules(false);
+    }
+  };
+
+  const updateYearFormats = (values) => {
+    const currentByValue = new Map(yearRules.map((rule) => [rule.value, rule]));
+    const nextRules = values
+      .map((value) =>
+        String(value || '')
+          .replaceAll('{year}', 'YYYY')
+          .trim()
+      )
+      .filter(Boolean)
+      .map(
+        (value) =>
+          currentByValue.get(value) || {
+            value,
+            position: 'end',
+            enabled: true,
+          }
+      );
+    setYearRules(nextRules);
+    setTitlePreview([]);
+    setPreviewMode('');
+    setPreviewPage(1);
+    setPreviewTotal(0);
+    setTitleRuleError('');
+    saveYearRules(nextRules);
+  };
+
   const previewTitleRules = async (
     rules = titleRules,
     search = previewSearch.trim(),
@@ -212,6 +296,7 @@ const VODMetadataModal = ({
     try {
       const response = await API.previewVODMetadataTitles(
         rules,
+        yearRules,
         selectionContext && !selectionContext.select_all
           ? selectionContext.selections.slice(0, 500)
           : null,
@@ -239,6 +324,7 @@ const VODMetadataModal = ({
       setPreviewTotal(0);
       setTitleRuleError(
         error?.body?.title_rules ||
+          error?.body?.year_rules ||
           error?.body?.detail ||
           error?.message ||
           'The title-cleanup preview could not be created.'
@@ -353,7 +439,7 @@ const VODMetadataModal = ({
           color: 'green',
         });
       } else {
-        result = await API.applyVODTitleCleanup(titleRules, {
+        result = await API.applyVODTitleCleanup(titleRules, yearRules, {
           ...selectionContext,
         });
         showNotification({
@@ -471,19 +557,33 @@ const VODMetadataModal = ({
           placeholder="Enter a prefix and press Enter"
           value={prefixes}
           onChange={updatePrefixes}
-          disabled={savingTitleRules}
+          disabled={savingTitleRules || savingYearRules}
           clearable
           splitChars={[',']}
           style={{ flex: '1 1 420px' }}
         />
-        {savingTitleRules && (
+        {(savingTitleRules || savingYearRules) && (
           <Group gap="xs" pb={7}>
             <Loader size="xs" />
             <Text size="xs" c="dimmed">
-              Saving prefixes
+              Saving title cleanup
             </Text>
           </Group>
         )}
+      </Group>
+
+      <Group align="end" wrap="wrap">
+        <TagsInput
+          label="Release-year formats to remove"
+          description="Use YYYY as the year placeholder. New formats match at the end of the title."
+          placeholder="For example (YYYY) or - YYYY"
+          value={yearFormats}
+          onChange={updateYearFormats}
+          disabled={savingTitleRules || savingYearRules}
+          clearable
+          splitChars={[',']}
+          style={{ flex: '1 1 420px' }}
+        />
       </Group>
 
       <Group align="end" wrap="wrap">

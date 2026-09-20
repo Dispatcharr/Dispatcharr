@@ -20,6 +20,27 @@ class SeparateVODScheduleTests(TestCase):
             custom_properties={"enable_vod": True},
         )
 
+    def test_serializer_creates_new_account(self):
+        serializer = M3UAccountSerializer(
+            data={
+                "name": "new-scheduled-xc",
+                "account_type": M3UAccount.Types.XC,
+                "server_url": "https://new-provider.example",
+                "username": "user",
+                "password": "password",
+                "enable_vod": True,
+                "cron_expression": "0 5 * * *",
+                "vod_cron_expression": "0 6 * * *",
+            }
+        )
+
+        serializer.is_valid(raise_exception=True)
+        account = serializer.save()
+
+        self.assertTrue(M3UAccount.objects.filter(pk=account.pk).exists())
+        self.assertTrue(account.custom_properties["enable_vod"])
+        self.assertIsNotNone(account.profiles.filter(is_default=True).first())
+
     def test_existing_after_live_mode_keeps_separate_task_disabled(self):
         self.account.refresh_from_db()
         task = PeriodicTask.objects.get(

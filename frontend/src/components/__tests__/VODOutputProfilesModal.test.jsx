@@ -11,6 +11,7 @@ vi.mock('../../api', () => ({
     deleteVODAccessPolicy: vi.fn(),
     getVODAccessPolicySelections: vi.fn(),
     getVODAccessPolicyCandidates: vi.fn(),
+    getVODFilterOptions: vi.fn(),
   },
 }));
 vi.mock('../../utils/notificationUtils', () => ({
@@ -272,6 +273,13 @@ describe('VODOutputProfilesModal', () => {
       },
     });
     API.deleteVODAccessPolicy.mockResolvedValue({});
+    API.getVODFilterOptions.mockResolvedValue({
+      audio_languages: ['ger'],
+      subtitle_languages: ['eng'],
+      resolutions: ['1080p'],
+      container_extensions: ['mkv'],
+      video_features: ['hdr'],
+    });
     useVODStore.mockImplementation((selector) =>
       selector({
         categories: {},

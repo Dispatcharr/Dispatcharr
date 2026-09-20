@@ -15,6 +15,7 @@ from apps.channels.serializers import (
     ChannelGroupM3UAccountSerializer,
 )
 from datetime import timezone as dt_tz, timedelta
+from django.db import transaction
 from django.utils import timezone
 import logging
 import json
@@ -215,7 +216,9 @@ class M3UAccountTemplateSerializer(serializers.ModelSerializer):
             "custom_properties",
             "references",
         }
-        vod_fields = {"name", "enabled", "metadata_defaults"}
+        vod_fields = {
+            "name", "enabled", "metadata_defaults", "title_cleanup",
+        }
         for scope in ("live", "movie", "series"):
             rows = value.get(scope, [])
             if not isinstance(rows, list):
@@ -250,6 +253,14 @@ class M3UAccountTemplateSerializer(serializers.ModelSerializer):
                             validate_configurable_source_metadata(
                                 row.get("metadata_defaults", {})
                             )
+                        )
+                    except ValueError as exc:
+                        raise serializers.ValidationError(str(exc))
+                    from apps.vod.tmdb import normalize_group_title_cleanup
+
+                    try:
+                        row["title_cleanup"] = normalize_group_title_cleanup(
+                            row.get("title_cleanup")
                         )
                     except ValueError as exc:
                         raise serializers.ValidationError(str(exc))

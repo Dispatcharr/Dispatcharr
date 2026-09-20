@@ -851,6 +851,12 @@ class CoreSettings(models.Model):
             "tmdb_match_missing": False,
             "tmdb_prefer_artwork": True,
             "tmdb_title_rules": [],
+            "tmdb_year_rules": [
+                {"value": "(YYYY)", "position": "anywhere", "enabled": True},
+                {"value": "[YYYY]", "position": "end", "enabled": True},
+                {"value": "- YYYY", "position": "anywhere", "enabled": True},
+                {"value": "YYYY", "position": "end", "enabled": True},
+            ],
         })
 
     @classmethod
@@ -927,6 +933,19 @@ class CoreSettings(models.Model):
         return rules
 
     @classmethod
+    def get_tmdb_year_rules(cls):
+        """Return configurable formats replacing the former hard-coded parser."""
+        from apps.vod.tmdb import DEFAULT_TITLE_YEAR_RULES, normalize_year_rules
+
+        raw = cls.get_vod_settings().get("tmdb_year_rules")
+        if raw is None:
+            raw = DEFAULT_TITLE_YEAR_RULES
+        try:
+            return normalize_year_rules(raw)
+        except ValueError:
+            return normalize_year_rules(DEFAULT_TITLE_YEAR_RULES)
+
+    @classmethod
     def set_vod_metadata_settings(
         cls,
         *,
@@ -936,6 +955,7 @@ class CoreSettings(models.Model):
         prefer_artwork=True,
         api_token=None,
         title_rules=None,
+        year_rules=None,
     ):
         updates = {
             "tmdb_languages": list(languages)[:2],
@@ -947,6 +967,8 @@ class CoreSettings(models.Model):
             updates["tmdb_api_token"] = str(api_token).strip()
         if title_rules is not None:
             updates["tmdb_title_rules"] = list(title_rules)[:20]
+        if year_rules is not None:
+            updates["tmdb_year_rules"] = list(year_rules)[:20]
         return cls._update_group(VOD_SETTINGS_KEY, "VOD Settings", updates)
 
     @classmethod

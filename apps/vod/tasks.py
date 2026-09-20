@@ -1,7 +1,7 @@
 from celery import shared_task, current_app, group
 from django.utils import timezone
 from django.db import transaction, IntegrityError
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from apps.m3u.models import M3UAccount
 from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
@@ -23,6 +23,7 @@ import logging
 import json
 import re
 import time
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +469,7 @@ def enrich_vod_metadata(
             match_missing if search_missing is None else bool(search_missing)
         )
         title_rules = CoreSettings.get_tmdb_title_rules()
+        year_rules = CoreSettings.get_tmdb_year_rules()
         # Keep only the lightweight identity columns in memory. In particular,
         # do not load every existing tmdb_metadata JSON document just to find
         # the relatively small incremental work set.
@@ -556,6 +558,7 @@ def enrich_vod_metadata(
                 display_name=content["display_name"],
                 year=content["year"],
                 rules=title_rules,
+                year_rules=year_rules,
             )
             tmdb_id = str(
                 content["tmdb_match_id"] or content["tmdb_id"] or ""
@@ -1434,25 +1437,248 @@ def _retain_enabled_vod_rows(rows, categories_by_provider, relations):
     }
 
 
-def lookup_by_name_year(model, name_year_pairs):
-    """Return {(name, year): row} for rows without TMDB/IMDB IDs.
+def _title_match_key(value):
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip().casefold()
 
-    Scoped to the names in this batch instead of scanning the full table.
+
+def _canonical_title_tiers(content):
+    """Return primary, secondary, cleaned and provider title candidates."""
+    primary = (
+        [_title_match_key(content.display_name)]
+        if content.display_name
+        else []
+    )
+    metadata = content.tmdb_metadata if isinstance(content.tmdb_metadata, dict) else {}
+    localized = metadata.get("localized") or {}
+    secondary = []
+    if isinstance(localized, dict):
+        secondary = [
+            _title_match_key(row.get("title"))
+            for row in localized.values()
+            if isinstance(row, dict) and row.get("title")
+        ]
+    primary_keys = set(primary)
+    return (
+        list(dict.fromkeys(value for value in primary if value)),
+        list(
+            dict.fromkeys(
+                value
+                for value in secondary
+                if value and value not in primary_keys
+            )
+        ),
+        [_title_match_key(content.clean_title)] if content.clean_title else [],
+        [_title_match_key(content.name)] if content.name else [],
+    )
+
+
+def lookup_by_clean_title_year(model, title_year_pairs):
+    """Return only unambiguous exact canonical title/year matches.
+
+    Titles without a validated year are deliberately excluded. Primary,
+    secondary, cleaned and provider titles are checked in that order. A key
+    shared by two canonical rows in the same tier is ambiguous and absent.
     """
-    if not name_year_pairs:
+    wanted = {
+        (_title_match_key(title), year)
+        for title, year in title_year_pairs
+        if _title_match_key(title) and year is not None
+    }
+    if not wanted:
         return {}
-    wanted = set(name_year_pairs)
-    names = {name for name, _ in wanted}
-    found = {}
-    for row in model.objects.filter(
-        tmdb_id__isnull=True,
-        imdb_id__isnull=True,
-        name__in=names,
+    years = {year for _, year in wanted}
+    wanted_titles = {title for title, _ in wanted}
+    from django.db.models.fields.json import KeyTextTransform
+    from django.db.models.functions import Lower
+    from core.models import CoreSettings
+
+    annotations = {
+        "_match_primary_title": Lower("display_name"),
+        "_match_clean_title": Lower("clean_title"),
+        "_match_provider_title": Lower("name"),
+    }
+    candidate_filter = (
+        Q(_match_primary_title__in=wanted_titles)
+        | Q(_match_clean_title__in=wanted_titles)
+        | Q(_match_provider_title__in=wanted_titles)
+    )
+    localized = KeyTextTransform("localized", F("tmdb_metadata"))
+    for index, language in enumerate(CoreSettings.get_tmdb_languages()):
+        annotation = f"_match_localized_title_{index}"
+        annotations[annotation] = Lower(
+            KeyTextTransform(
+                "title",
+                KeyTextTransform(language, localized),
+            )
+        )
+        candidate_filter |= Q(**{f"{annotation}__in": wanted_titles})
+
+    tier_matches = [{} for _ in range(4)]
+    candidates = (
+        model.objects.filter(year__in=years)
+        .annotate(**annotations)
+        .filter(candidate_filter)
+    )
+    for content in candidates.only(
+        "id",
+        "name",
+        "display_name",
+        "clean_title",
+        "year",
+        "tmdb_id",
+        "tmdb_match_id",
+        "imdb_id",
+        "tmdb_metadata",
     ):
-        key = (row.name, row.year)
-        if key in wanted:
-            found[key] = row
-    return found
+        for tier, values in enumerate(_canonical_title_tiers(content)):
+            for title_key in values:
+                key = (title_key, content.year)
+                if key not in wanted:
+                    continue
+                tier_matches[tier].setdefault(key, {})[content.pk] = content
+    matches = {}
+    for key in wanted:
+        for candidates_by_key in tier_matches:
+            candidates = list(candidates_by_key.get(key, {}).values())
+            if len(candidates) == 1:
+                matches[key] = candidates[0]
+                break
+            if len(candidates) > 1:
+                break
+    return matches
+
+
+def _compatible_title_year_match(content, *, tmdb_id=None, imdb_id=None):
+    """Reject a fallback candidate carrying a conflicting external identity."""
+    candidate_tmdb_ids = {
+        str(value)
+        for value in (content.tmdb_id, content.tmdb_match_id)
+        if value not in (None, "", 0, "0")
+    }
+    candidate_imdb_id = str(content.imdb_id or "").strip()
+    if tmdb_id and candidate_tmdb_ids and str(tmdb_id) not in candidate_tmdb_ids:
+        return False
+    if imdb_id and candidate_imdb_id and str(imdb_id) != candidate_imdb_id:
+        return False
+    return True
+
+
+def _coalesce_batch_title_year_entries(entries):
+    """Merge compatible list rows that only differ by available identifiers.
+
+    A fresh provider import can contain the same cleaned title/year once with
+    an external ID and once without one. Database fallback matching cannot see
+    either not-yet-created canonical, so resolve that safe case inside the
+    batch before models and source relations are built. Conflicting TMDB or
+    IMDb identities are deliberately kept separate.
+    """
+    grouped = {}
+    for key, data in entries.items():
+        props = data.get("props") or {}
+        year = props.get("year")
+        title_key = _title_match_key(props.get("clean_title"))
+        if title_key and year is not None:
+            grouped.setdefault((title_key, year), []).append(key)
+
+    for keys in grouped.values():
+        if len(keys) < 2:
+            continue
+        tmdb_ids = {
+            str((entries[key].get("props") or {}).get("tmdb_id"))
+            for key in keys
+            if (entries[key].get("props") or {}).get("tmdb_id")
+        }
+        imdb_ids = {
+            str((entries[key].get("props") or {}).get("imdb_id"))
+            for key in keys
+            if (entries[key].get("props") or {}).get("imdb_id")
+        }
+        if len(tmdb_ids) > 1 or len(imdb_ids) > 1:
+            continue
+        target_key = next(
+            (key for key in keys if str(key).startswith("tmdb_")),
+            next(
+                (key for key in keys if str(key).startswith("imdb_")),
+                keys[0],
+            ),
+        )
+        target = entries[target_key]
+        for source_key in keys:
+            if source_key == target_key or source_key not in entries:
+                continue
+            source = entries.pop(source_key)
+            merge_blank_vod_list_props(target["props"], source["props"])
+            for source_id, occurrence in source.get("occurrences", {}).items():
+                target["occurrences"].setdefault(source_id, occurrence)
+            if not target.get("logo_url") and source.get("logo_url"):
+                target["logo_url"] = source["logo_url"]
+
+
+def _category_title_cleanup(category_relation):
+    properties = getattr(category_relation, "custom_properties", None) or {}
+    return properties.get("title_cleanup") if isinstance(properties, dict) else None
+
+
+def category_cleanup_rules_for_content(model, content_rows):
+    """Resolve the category rule belonging to each canonical provider title."""
+    rows = list(content_rows)
+    names = {
+        int(row["id"] if isinstance(row, dict) else row.id): str(
+            (row.get("name") if isinstance(row, dict) else row.name) or ""
+        ).strip()
+        for row in rows
+    }
+    if not names:
+        return {}
+    if model is Movie:
+        relation_model = M3UMovieRelation
+        content_field = "movie_id"
+    elif model is Series:
+        relation_model = M3USeriesRelation
+        content_field = "series_id"
+    else:
+        return {}
+    relations = list(
+        relation_model.objects.filter(**{f"{content_field}__in": names})
+        .only(
+            "id", content_field, "m3u_account_id", "category_id",
+            "custom_properties",
+        )
+        .order_by("id")
+    )
+    category_keys = {
+        (relation.m3u_account_id, relation.category_id)
+        for relation in relations
+        if relation.category_id
+    }
+    category_rules = {
+        (row.m3u_account_id, row.category_id): _category_title_cleanup(row)
+        for row in M3UVODCategoryRelation.objects.filter(
+            m3u_account_id__in={key[0] for key in category_keys},
+            category_id__in={key[1] for key in category_keys},
+        ).only("m3u_account_id", "category_id", "custom_properties")
+    } if category_keys else {}
+    resolved = {}
+    decided = set()
+    for relation in relations:
+        content_id = getattr(relation, content_field)
+        if content_id in decided:
+            continue
+        properties = relation.custom_properties or {}
+        basic = properties.get("basic_data") or {}
+        provider_title = str(
+            basic.get("name") or basic.get("title") or ""
+        ).strip()
+        if provider_title != names.get(content_id):
+            continue
+        decided.add(content_id)
+        rule = category_rules.get(
+            (relation.m3u_account_id, relation.category_id)
+        )
+        if rule:
+            resolved[content_id] = rule
+    return resolved
 
 
 def refresh_canonical_clean_titles(
@@ -1472,47 +1698,53 @@ def refresh_canonical_clean_titles(
     from .tmdb import clean_lookup_title
 
     rules = CoreSettings.get_tmdb_title_rules()
+    year_rules = CoreSettings.get_tmdb_year_rules()
     updated_count = 0
     for model, ids in ((Movie, movie_ids), (Series, series_ids)):
-        ids = set(ids)
+        ids = list(dict.fromkeys(ids))
         if not ids:
             continue
-        updates = []
-        for content in model.objects.filter(
-            pk__in=ids,
-            tmdb_enrichment_signature="",
-        ).only(
-            "id",
-            "name",
-            "display_name",
-            "clean_title",
-            "year",
-            "tmdb_status",
-            "tmdb_enrichment_signature",
-        ).iterator(chunk_size=1000):
-            if content.tmdb_status == "matched" and content.display_name:
-                clean_title = content.display_name.strip()
-            else:
-                clean_title = clean_lookup_title(
-                    content.name,
-                    display_name=content.display_name,
-                    year=content.year,
-                    rules=rules,
-                )
-            clean_title = clean_title[:255]
-            title_changed = clean_title != content.clean_title
-            if title_changed:
-                content.clean_title = clean_title
-                updated_count += 1
-            if lock_processed:
-                content.tmdb_enrichment_signature = TMDB_ENRICHMENT_LOCK_VALUE
-            if title_changed or lock_processed:
-                updates.append(content)
-        if updates:
-            fields = ["clean_title"]
-            if lock_processed:
-                fields.append("tmdb_enrichment_signature")
-            model.objects.bulk_update(updates, fields, batch_size=1000)
+        for offset in range(0, len(ids), 500):
+            contents = list(model.objects.filter(
+                pk__in=ids[offset : offset + 500],
+                tmdb_enrichment_signature="",
+            ).only(
+                "id",
+                "name",
+                "display_name",
+                "clean_title",
+                "year",
+                "tmdb_status",
+                "tmdb_enrichment_signature",
+            ))
+            group_rules = category_cleanup_rules_for_content(model, contents)
+            updates = []
+            for content in contents:
+                if content.tmdb_status == "matched" and content.display_name:
+                    clean_title = content.display_name.strip()
+                else:
+                    clean_title = clean_lookup_title(
+                        content.name,
+                        display_name=content.display_name,
+                        year=content.year,
+                        rules=rules,
+                        year_rules=year_rules,
+                        group_rule=group_rules.get(content.id),
+                    )
+                clean_title = clean_title[:255]
+                title_changed = clean_title != content.clean_title
+                if title_changed:
+                    content.clean_title = clean_title
+                    updated_count += 1
+                if lock_processed:
+                    content.tmdb_enrichment_signature = TMDB_ENRICHMENT_LOCK_VALUE
+                if title_changed or lock_processed:
+                    updates.append(content)
+            if updates:
+                fields = ["clean_title"]
+                if lock_processed:
+                    fields.append("tmdb_enrichment_signature")
+                model.objects.bulk_update(updates, fields, batch_size=500)
     return updated_count
 
 
@@ -2214,6 +2446,16 @@ def batch_create_categories(
                 account.id,
                 decision.matched_rule_id,
             )
+
+    def new_relation_properties(decision, selection):
+        properties = {}
+        if decision and decision.matched_rule_id:
+            properties["discovery_rule_id"] = decision.matched_rule_id
+        cleanup = (selection or {}).get("title_cleanup") or {}
+        if cleanup:
+            properties["title_cleanup"] = dict(cleanup)
+        return properties
+
     category_names = kept_names
     existing_categories = {
         name: category
@@ -2237,11 +2479,9 @@ def batch_create_categories(
                 M3UVODCategoryRelation(
                     category=existing_categories[name],
                     m3u_account=account,
-                    custom_properties={
-                        "discovery_rule_id": decision.matched_rule_id
-                    }
-                    if decision and decision.matched_rule_id
-                    else {},
+                    custom_properties=new_relation_properties(
+                        decision, selection
+                    ),
                     enabled=(
                         bool(selection.get("enabled", False))
                         if selection
@@ -2280,9 +2520,9 @@ def batch_create_categories(
                 M3UVODCategoryRelation(
                     category=cat,
                     m3u_account=account,
-                    custom_properties={
-                        "discovery_rule_id": decision.matched_rule_id
-                    } if decision and decision.matched_rule_id else {},
+                    custom_properties=new_relation_properties(
+                        decision, selection
+                    ),
                     enabled=enabled,
                     metadata_defaults=(
                         selection.get("metadata_defaults") or {}
@@ -2370,6 +2610,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
     movie_keys = {}  # For deduplication like M3U stream_hashes
     skipped_invalid = []
+    from core.models import CoreSettings
+
+    title_rules = CoreSettings.get_tmdb_title_rules()
+    year_rules = CoreSettings.get_tmdb_year_rules()
 
     # Process each movie in the batch
     for movie_data in batch:
@@ -2422,7 +2666,9 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 continue
 
             # Extract metadata
-            year = extract_year_from_data(movie_data, 'name')
+            year = extract_year_from_data(
+                movie_data, 'name', year_rules=year_rules
+            )
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
@@ -2432,13 +2678,26 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
+            category_relation = relations.get(category.id) if category else None
+            from .tmdb import clean_lookup_title
+
+            clean_title = clean_lookup_title(
+                name,
+                year=year,
+                rules=title_rules,
+                year_rules=year_rules,
+                group_rule=_category_title_cleanup(category_relation),
+            ) or name
+
+            # Prefer external IDs, then an exact cleaned-title/year identity.
             if tmdb_id:
                 movie_key = f"tmdb_{tmdb_id}"
             elif imdb_id:
                 movie_key = f"imdb_{imdb_id}"
+            elif year is not None:
+                movie_key = f"title_{_title_match_key(clean_title)}_{year}"
             else:
-                movie_key = f"name_{name}_{year or 'None'}"
+                movie_key = f"source_{stream_id}"
 
             # Canonical metadata is deduplicated, but every upstream stream
             # remains a source relation. This avoids silently dropping another
@@ -2449,7 +2708,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     'movie_data': movie_data,
                 })
                 incoming_props, incoming_logo = build_movie_list_props(
-                    movie_data, name, year, tmdb_id, imdb_id,
+                    movie_data, name, clean_title, year, tmdb_id, imdb_id,
                 )
                 merge_blank_vod_list_props(movie_keys[movie_key]['props'], incoming_props)
                 if not movie_keys[movie_key].get('logo_url') and incoming_logo:
@@ -2457,7 +2716,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 continue
 
             movie_props, logo_url = build_movie_list_props(
-                movie_data, name, year, tmdb_id, imdb_id,
+                movie_data, name, clean_title, year, tmdb_id, imdb_id,
             )
 
             movie_keys[movie_key] = {
@@ -2481,6 +2740,8 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             len(skipped_invalid),
             skipped_invalid[:10],
         )
+
+    _coalesce_batch_title_year_entries(movie_keys)
 
     # Collect all logo URLs and create logos in batch
     logo_urls = set()
@@ -2540,15 +2801,28 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
         for movie in Movie.objects.filter(imdb_id__in=imdb_ids):
             existing_movies[f"imdb_{movie.imdb_id}"] = movie
 
-    # Query by name+year for movies without external IDs
-    name_year_keys = [k for k in movie_keys.keys() if k.startswith('name_')]
-    if name_year_keys:
-        name_year_pairs = [
-            (movie_keys[k]['props']['name'], movie_keys[k]['props'].get('year'))
-            for k in name_year_keys
-        ]
-        for key_tuple, movie in lookup_by_name_year(Movie, name_year_pairs).items():
-            existing_movies[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = movie
+    # If an external ID did not resolve, or the provider supplied no ID, use
+    # one unambiguous exact cleaned-title/year match. Never match by name alone.
+    title_matches = lookup_by_clean_title_year(
+        Movie,
+        [
+            (data['props'].get('clean_title'), data['props'].get('year'))
+            for data in movie_keys.values()
+        ],
+    )
+    for movie_key, data in movie_keys.items():
+        if movie_key in existing_movies:
+            continue
+        props = data['props']
+        candidate = title_matches.get(
+            (_title_match_key(props.get('clean_title')), props.get('year'))
+        )
+        if candidate and _compatible_title_year_match(
+            candidate,
+            tmdb_id=props.get('tmdb_id'),
+            imdb_id=props.get('imdb_id'),
+        ):
+            existing_movies[movie_key] = candidate
 
     # Get existing relations
     stream_ids = [
@@ -2562,6 +2836,20 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             stream_id__in=stream_ids
         ).select_related('movie')
     }
+    for movie_key, data in movie_keys.items():
+        if movie_key in existing_movies:
+            continue
+        relation_targets = {
+            existing_relations[stream_id].movie_id
+            for stream_id in data['occurrences']
+            if stream_id in existing_relations
+        }
+        if len(relation_targets) == 1:
+            existing_movies[movie_key] = next(
+                existing_relations[stream_id].movie
+                for stream_id in data['occurrences']
+                if stream_id in existing_relations
+            )
     movie_override_ids = {
         rel.tmdb_override_id for rel in existing_relations.values()
         if rel.tmdb_override_id
@@ -2696,7 +2984,11 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 # Bulk query to check which movies already exist
                 tmdb_ids = [m.tmdb_id for m in movies_to_create if m.tmdb_id]
                 imdb_ids = [m.imdb_id for m in movies_to_create if m.imdb_id]
-                name_year_pairs = [(m.name, m.year) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
+                title_year_pairs = [
+                    (m.clean_title, m.year)
+                    for m in movies_to_create
+                    if m.year is not None
+                ]
 
                 existing_by_tmdb = {}
                 if tmdb_ids:
@@ -2715,7 +3007,9 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                                 )
                 existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
-                existing_by_name_year = lookup_by_name_year(Movie, name_year_pairs)
+                existing_by_title_year = lookup_by_clean_title_year(
+                    Movie, title_year_pairs
+                )
 
                 # Check each movie against the bulk query results
                 movies_actually_created = []
@@ -2725,8 +3019,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         existing = existing_by_tmdb[movie.tmdb_id]
                     elif movie.imdb_id and movie.imdb_id in existing_by_imdb:
                         existing = existing_by_imdb[movie.imdb_id]
-                    elif not movie.tmdb_id and not movie.imdb_id:
-                        existing = existing_by_name_year.get((movie.name, movie.year))
+                    if existing is None and movie.year is not None:
+                        candidate = existing_by_title_year.get(
+                            (_title_match_key(movie.clean_title), movie.year)
+                        )
+                        if candidate and _compatible_title_year_match(
+                            candidate,
+                            tmdb_id=movie.tmdb_id,
+                            imdb_id=movie.imdb_id,
+                        ):
+                            existing = candidate
 
                     if existing:
                         created_movies[id(movie)] = existing
@@ -2742,7 +3044,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if movies_to_update:
                 # First, update all fields except logo to avoid unsaved related object issues
                 Movie.objects.bulk_update(movies_to_update, [
-                    'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
+                    'clean_title', 'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
                     'duration_secs', 'is_adult', 'custom_properties'
                 ])
 
@@ -2790,6 +3092,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     relations_to_update = []
     series_keys = {}  # For deduplication like M3U stream_hashes
     skipped_invalid = []
+    from core.models import CoreSettings
+
+    title_rules = CoreSettings.get_tmdb_title_rules()
+    year_rules = CoreSettings.get_tmdb_year_rules()
 
     # Process each series in the batch
     for series_data in batch:
@@ -2840,9 +3146,9 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 continue
 
             # Extract metadata
-            year = extract_year(series_data.get('releaseDate', ''))
-            if not year and series_data.get('release_date'):
-                year = extract_year(series_data.get('release_date'))
+            year = extract_year_from_data(
+                series_data, 'name', year_rules=year_rules
+            )
 
             tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
@@ -2853,13 +3159,26 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # Create a unique key for this series (priority: TMDB > IMDB > name+year)
+            category_relation = relations.get(category.id) if category else None
+            from .tmdb import clean_lookup_title
+
+            clean_title = clean_lookup_title(
+                name,
+                year=year,
+                rules=title_rules,
+                year_rules=year_rules,
+                group_rule=_category_title_cleanup(category_relation),
+            ) or name
+
+            # Prefer external IDs, then an exact cleaned-title/year identity.
             if tmdb_id:
                 series_key = f"tmdb_{tmdb_id}"
             elif imdb_id:
                 series_key = f"imdb_{imdb_id}"
+            elif year is not None:
+                series_key = f"title_{_title_match_key(clean_title)}_{year}"
             else:
-                series_key = f"name_{name}_{year or 'None'}"
+                series_key = f"source_{series_id}"
 
             # Keep one canonical Series row while retaining every concrete
             # upstream series/category relation in the batch.
@@ -2869,7 +3188,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     'series_data': series_data,
                 })
                 incoming_props, incoming_logo = build_series_list_props(
-                    series_data, name, year, tmdb_id, imdb_id,
+                    series_data, name, clean_title, year, tmdb_id, imdb_id,
                 )
                 merge_blank_vod_list_props(series_keys[series_key]['props'], incoming_props)
                 if not series_keys[series_key].get('logo_url') and incoming_logo:
@@ -2877,7 +3196,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 continue
 
             series_props, logo_url = build_series_list_props(
-                series_data, name, year, tmdb_id, imdb_id,
+                series_data, name, clean_title, year, tmdb_id, imdb_id,
             )
 
             series_keys[series_key] = {
@@ -2901,6 +3220,8 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             len(skipped_invalid),
             skipped_invalid[:10],
         )
+
+    _coalesce_batch_title_year_entries(series_keys)
 
     # Collect all logo URLs and create logos in batch
     logo_urls = set()
@@ -2960,15 +3281,26 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         for series in Series.objects.filter(imdb_id__in=imdb_ids):
             existing_series[f"imdb_{series.imdb_id}"] = series
 
-    # Query by name+year for series without external IDs
-    name_year_keys = [k for k in series_keys.keys() if k.startswith('name_')]
-    if name_year_keys:
-        name_year_pairs = [
-            (series_keys[k]['props']['name'], series_keys[k]['props'].get('year'))
-            for k in name_year_keys
-        ]
-        for key_tuple, series in lookup_by_name_year(Series, name_year_pairs).items():
-            existing_series[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = series
+    title_matches = lookup_by_clean_title_year(
+        Series,
+        [
+            (data['props'].get('clean_title'), data['props'].get('year'))
+            for data in series_keys.values()
+        ],
+    )
+    for series_key, data in series_keys.items():
+        if series_key in existing_series:
+            continue
+        props = data['props']
+        candidate = title_matches.get(
+            (_title_match_key(props.get('clean_title')), props.get('year'))
+        )
+        if candidate and _compatible_title_year_match(
+            candidate,
+            tmdb_id=props.get('tmdb_id'),
+            imdb_id=props.get('imdb_id'),
+        ):
+            existing_series[series_key] = candidate
 
     # Get existing relations
     series_ids = [
@@ -2982,6 +3314,20 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             external_series_id__in=series_ids
         ).select_related('series')
     }
+    for series_key, data in series_keys.items():
+        if series_key in existing_series:
+            continue
+        relation_targets = {
+            existing_relations[series_id].series_id
+            for series_id in data['occurrences']
+            if series_id in existing_relations
+        }
+        if len(relation_targets) == 1:
+            existing_series[series_key] = next(
+                existing_relations[series_id].series
+                for series_id in data['occurrences']
+                if series_id in existing_relations
+            )
     series_override_ids = {
         rel.tmdb_override_id for rel in existing_relations.values()
         if rel.tmdb_override_id
@@ -3109,7 +3455,11 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 # Bulk query to check which series already exist
                 tmdb_ids = [s.tmdb_id for s in series_to_create if s.tmdb_id]
                 imdb_ids = [s.imdb_id for s in series_to_create if s.imdb_id]
-                name_year_pairs = [(s.name, s.year) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
+                title_year_pairs = [
+                    (s.clean_title, s.year)
+                    for s in series_to_create
+                    if s.year is not None
+                ]
 
                 existing_by_tmdb = {}
                 if tmdb_ids:
@@ -3128,7 +3478,9 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                                 )
                 existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
-                existing_by_name_year = lookup_by_name_year(Series, name_year_pairs)
+                existing_by_title_year = lookup_by_clean_title_year(
+                    Series, title_year_pairs
+                )
 
                 # Check each series against the bulk query results
                 series_actually_created = []
@@ -3138,8 +3490,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                         existing = existing_by_tmdb[series.tmdb_id]
                     elif series.imdb_id and series.imdb_id in existing_by_imdb:
                         existing = existing_by_imdb[series.imdb_id]
-                    elif not series.tmdb_id and not series.imdb_id:
-                        existing = existing_by_name_year.get((series.name, series.year))
+                    if existing is None and series.year is not None:
+                        candidate = existing_by_title_year.get(
+                            (_title_match_key(series.clean_title), series.year)
+                        )
+                        if candidate and _compatible_title_year_match(
+                            candidate,
+                            tmdb_id=series.tmdb_id,
+                            imdb_id=series.imdb_id,
+                        ):
+                            existing = candidate
 
                     if existing:
                         created_series[id(series)] = existing
@@ -3155,7 +3515,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if series_to_update:
                 # First, update all fields except logo to avoid unsaved related object issues
                 Series.objects.bulk_update(series_to_update, [
-                    'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
+                    'clean_title', 'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
                     'custom_properties'
                 ])
 
@@ -3259,30 +3619,14 @@ def extract_year(date_string):
         return None
 
 
-def extract_year_from_title(title):
-    """Extract year from movie title if present"""
-    if not title:
-        return None
+def extract_year_from_title(title, year_rules=None):
+    """Extract a year with the shared configurable title parser."""
+    from .tmdb import extract_year_from_title as extract_configured_year
 
-    # Pattern for (YYYY) format
-    pattern1 = r'\((\d{4})\)'
-    # Pattern for - YYYY format
-    pattern2 = r'\s-\s(\d{4})'
-    # Pattern for YYYY at the end
-    pattern3 = r'\s(\d{4})$'
-
-    for pattern in [pattern1, pattern2, pattern3]:
-        match = re.search(pattern, title)
-        if match:
-            year = int(match.group(1))
-            # Validate year is reasonable (between 1900 and current year + 5)
-            if 1900 <= year <= 2030:
-                return year
-
-    return None
+    return extract_configured_year(title, rules=year_rules)
 
 
-def extract_year_from_data(data, title_key='name'):
+def extract_year_from_data(data, title_key='name', *, year_rules=None):
     """Extract year from various data sources with fallback options"""
     try:
         # First try the year field
@@ -3290,7 +3634,7 @@ def extract_year_from_data(data, title_key='name'):
         if year and str(year).strip() and str(year).strip() != '':
             try:
                 year_int = int(year)
-                if 1900 <= year_int <= 2030:
+                if 1900 <= year_int <= datetime.now().year + 5:
                     return year_int
             except (ValueError, TypeError):
                 pass
@@ -3304,7 +3648,7 @@ def extract_year_from_data(data, title_key='name'):
                     year_str = date_value.split('-')[0].strip()
                     if year_str:
                         year = int(year_str)
-                        if 1900 <= year <= 2030:
+                        if 1900 <= year <= datetime.now().year + 5:
                             return year
                 except (ValueError, IndexError):
                     continue
@@ -3312,7 +3656,7 @@ def extract_year_from_data(data, title_key='name'):
         # Finally try extracting from title
         title = data.get(title_key, '')
         if title and title.strip():
-            return extract_year_from_title(title)
+            return extract_year_from_title(title, year_rules=year_rules)
 
     except Exception:
         # Don't fail processing if year extraction fails
@@ -4288,7 +4632,9 @@ def merge_blank_vod_list_props(existing_props, incoming_props):
             existing_props[field] = value
 
 
-def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
+def build_movie_list_props(
+    movie_data, name, clean_title, year, tmdb_id, imdb_id
+):
     """Build Movie list-sync props and logo URL from a provider row."""
     description = movie_data.get('description') or movie_data.get('plot') or ''
     rating = normalize_rating(movie_data.get('rating') or movie_data.get('vote_average'))
@@ -4320,6 +4666,7 @@ def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
 
     movie_props = {
         'name': name,
+        'clean_title': clean_title,
         'year': year,
         'tmdb_id': tmdb_id,
         'imdb_id': imdb_id,
@@ -4330,7 +4677,7 @@ def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
         'custom_properties': custom_props or None,
     }
     # Only set is_adult when the provider actually reports it. Movies are
-    # shared across providers (matched by TMDB/IMDB/name+year), and many
+    # shared across providers (matched by TMDB/IMDB/cleaned title and year), and many
     # providers omit this key entirely; defaulting it to False here would
     # let a sparse provider row silently clear a flag another provider set.
     if 'is_adult' in movie_data:
@@ -4339,7 +4686,9 @@ def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
     return movie_props, logo_url
 
 
-def build_series_list_props(series_data, name, year, tmdb_id, imdb_id):
+def build_series_list_props(
+    series_data, name, clean_title, year, tmdb_id, imdb_id
+):
     """Build Series list-sync props and logo URL from a provider row."""
     description = series_data.get('plot', '')
     rating = normalize_rating(series_data.get('rating'))
@@ -4373,6 +4722,7 @@ def build_series_list_props(series_data, name, year, tmdb_id, imdb_id):
 
     series_props = {
         'name': name,
+        'clean_title': clean_title,
         'year': year,
         'tmdb_id': tmdb_id,
         'imdb_id': imdb_id,

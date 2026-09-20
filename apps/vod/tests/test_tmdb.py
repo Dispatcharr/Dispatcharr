@@ -8,32 +8,43 @@ from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.m3u.models import M3UAccount
-from apps.vod.api_views import VODMetadataViewSet, VODSourceRelationViewSet
+from apps.vod.api_views import (
+    M3UVODCategoryRelationViewSet,
+    VODMetadataViewSet,
+    VODSourceRelationViewSet,
+)
 from apps.vod.models import (
     Episode,
     M3UEpisodeRelation,
     M3UMovieRelation,
     M3USeriesRelation,
+    M3UVODCategoryRelation,
     Movie,
     Series,
     VODAccessPolicy,
     VODMovieProfileSelection,
     VODMetadataState,
     VODPlaybackSession,
+    VODCategory,
 )
 from apps.vod.profile_selection import profile_ids_using_canonical_content
 from apps.vod.tasks import (
     _merge_duplicate_tmdb_canonicals,
     enqueue_tmdb_enrichment,
+    lookup_by_clean_title_year,
     refresh_canonical_clean_titles,
     reconcile_vod_metadata_queue,
 )
 from apps.vod.tmdb import (
+    DEFAULT_TITLE_YEAR_RULES,
     Client,
     canonical_fields_from_metadata,
     clean_lookup_title,
+    extract_year_from_title,
     normalize_details,
+    normalize_group_title_cleanup,
     normalize_title_rules,
+    normalize_year_rules,
     preferred_title,
 )
 from core.models import CoreSettings
@@ -131,6 +142,68 @@ class TMDBMetadataTests(SimpleTestCase):
                     "enabled": True,
                 }
             ],
+        )
+
+    def test_legacy_year_patterns_are_configurable_defaults(self):
+        rules = normalize_year_rules(DEFAULT_TITLE_YEAR_RULES)
+
+        self.assertEqual(extract_year_from_title("Movie (2024)", rules), 2024)
+        self.assertEqual(extract_year_from_title("Movie [2024]", rules), 2024)
+        self.assertEqual(extract_year_from_title("Movie - 2023", rules), 2023)
+        self.assertEqual(extract_year_from_title("Movie 2022", rules), 2022)
+
+    def test_custom_year_format_extracts_and_cleans_the_release_year(self):
+        rules = [{"value": "[YYYY]", "position": "end"}]
+
+        self.assertEqual(extract_year_from_title("Movie [2024]", rules), 2024)
+        self.assertEqual(
+            clean_lookup_title("Movie [2024]", year=2024, year_rules=rules),
+            "Movie",
+        )
+
+    def test_category_regex_runs_after_global_cleanup(self):
+        self.assertEqual(
+            clean_lookup_title(
+                "(DE-) -10- Prisons 4K - 2024",
+                year=2024,
+                rules=["(DE-)"],
+                year_rules=DEFAULT_TITLE_YEAR_RULES,
+                group_rule={
+                    "pattern": r"-\d+-\s*|\b4K\b",
+                },
+            ),
+            "Prisons",
+        )
+
+    def test_category_regex_follows_global_year_cleanup(self):
+        self.assertEqual(
+            clean_lookup_title(
+                "Provider Movie - 2024",
+                year=2024,
+                year_rules=DEFAULT_TITLE_YEAR_RULES,
+                group_rule={"pattern": r"^Provider\s+"},
+            ),
+            "Movie",
+        )
+
+    def test_category_regex_cannot_damage_a_global_prefix_format(self):
+        self.assertEqual(
+            clean_lookup_title(
+                "(DE-) -1- Movie - 2024",
+                year=2024,
+                rules=["(DE-)"],
+                year_rules=DEFAULT_TITLE_YEAR_RULES,
+                group_rule={"pattern": "-"},
+            ),
+            "1 Movie",
+        )
+
+    def test_category_regex_normalizes_to_removal_only(self):
+        self.assertEqual(
+            normalize_group_title_cleanup(
+                {"pattern": r"\b4K\b", "case_sensitive": True}
+            ),
+            {"pattern": r"\b4K\b", "case_sensitive": True},
         )
 
     def test_search_outcome_distinguishes_no_match_and_ambiguous_match(self):
@@ -358,6 +431,145 @@ class TMDBMetadataTests(SimpleTestCase):
         self.assertEqual(client.search("The Office", 2005, "tv", "en-US"), "")
 
 
+class VODTitleYearMatchingTests(TestCase):
+    def test_matches_primary_secondary_clean_and_provider_titles(self):
+        movie = Movie.objects.create(
+            name="Provider title",
+            display_name="Primärtitel",
+            clean_title="Clean title",
+            year=2024,
+            tmdb_metadata={
+                "localized": {"en-US": {"title": "Secondary title"}}
+            },
+        )
+
+        for title in (
+            "Primärtitel", "Secondary title", "Clean title", "Provider title"
+        ):
+            self.assertEqual(
+                lookup_by_clean_title_year(Movie, [(title, 2024)]).get(
+                    (title.casefold(), 2024)
+                ),
+                movie,
+            )
+
+    def test_does_not_match_without_a_year(self):
+        Movie.objects.create(name="Same title", clean_title="Same title")
+
+        self.assertEqual(
+            lookup_by_clean_title_year(Movie, [("Same title", None)]),
+            {},
+        )
+
+    def test_ambiguous_title_and_year_does_not_match(self):
+        Movie.objects.create(
+            name="Provider one", display_name="Shared title", year=2024
+        )
+        Movie.objects.create(
+            name="Provider two",
+            display_name="Shared title",
+            year=2024,
+            tmdb_id="900001",
+        )
+
+        self.assertEqual(
+            lookup_by_clean_title_year(Movie, [("Shared title", 2024)]),
+            {},
+        )
+
+    def test_primary_title_wins_before_a_different_canonical_clean_title(self):
+        primary = Movie.objects.create(
+            name="Provider primary",
+            display_name="Preferred title",
+            year=2024,
+            tmdb_id="900010",
+        )
+        Movie.objects.create(
+            name="Different provider title",
+            clean_title="Preferred title",
+            year=2024,
+        )
+
+        self.assertEqual(
+            lookup_by_clean_title_year(
+                Movie, [("Preferred title", 2024)]
+            ).get(("preferred title", 2024)),
+            primary,
+        )
+
+    def test_secondary_title_wins_before_a_different_canonical_clean_title(self):
+        secondary = Movie.objects.create(
+            name="Provider secondary",
+            display_name="Primärtitel",
+            tmdb_metadata={
+                "localized": {"en-US": {"title": "Secondary title"}}
+            },
+            year=2024,
+            tmdb_id="900011",
+        )
+        Movie.objects.create(
+            name="Another provider title",
+            clean_title="Secondary title",
+            year=2024,
+        )
+
+        self.assertEqual(
+            lookup_by_clean_title_year(
+                Movie, [("Secondary title", 2024)]
+            ).get(("secondary title", 2024)),
+            secondary,
+        )
+
+    def test_category_regex_follows_global_cleanup_for_the_canonical(self):
+        account = M3UAccount.objects.create(
+            name="Category cleanup provider",
+            server_url="http://provider.example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+        )
+        category = VODCategory.objects.create(
+            name="Ranked 4K",
+            category_type="movie",
+        )
+        M3UVODCategoryRelation.objects.create(
+            m3u_account=account,
+            category=category,
+            enabled=True,
+            custom_properties={
+                "title_cleanup": {
+                    "pattern": r"-\d+-\s*|\b4K\b",
+                }
+            },
+        )
+        movie = Movie.objects.create(
+            name="(DE-) -10- Prisons 4K - 2024",
+            year=2024,
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            category=category,
+            stream_id="ranked-movie",
+            custom_properties={
+                "basic_data": {"name": "(DE-) -10- Prisons 4K - 2024"}
+            },
+        )
+        CoreSettings.set_vod_metadata_settings(
+            languages=["en-US"],
+            auto_enrich=False,
+            match_missing=False,
+            title_rules=["(DE-)"],
+            year_rules=DEFAULT_TITLE_YEAR_RULES,
+        )
+
+        refresh_canonical_clean_titles(movie_ids=[movie.id])
+
+        movie.refresh_from_db()
+        self.assertEqual(movie.clean_title, "Prisons")
+
+
 class VODMetadataAPITests(TestCase):
     def setUp(self):
         self.admin = get_user_model().objects.create_user(
@@ -366,6 +578,218 @@ class VODMetadataAPITests(TestCase):
             user_level=10,
         )
         self.factory = APIRequestFactory()
+
+    def test_category_title_cleanup_endpoint_validates_and_persists_regex(self):
+        account = M3UAccount.objects.create(
+            name="Category cleanup API provider",
+            server_url="http://provider.example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+        )
+        category = VODCategory.objects.create(
+            name="Ranked movies",
+            category_type="movie",
+        )
+        relation = M3UVODCategoryRelation.objects.create(
+            m3u_account=account,
+            category=category,
+            enabled=True,
+        )
+        request = self.factory.patch(
+            f"/api/vod/category-relations/{relation.id}/title-cleanup/",
+            {
+                "title_cleanup": {
+                    "pattern": r"^-\d+-\s*",
+                    "case_sensitive": True,
+                }
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.admin)
+
+        response = M3UVODCategoryRelationViewSet.as_view(
+            {"patch": "title_cleanup"}
+        )(request, pk=relation.id)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        relation.refresh_from_db()
+        self.assertEqual(
+            relation.custom_properties["title_cleanup"],
+            {
+                "pattern": r"^-\d+-\s*",
+                "case_sensitive": True,
+            },
+        )
+
+        invalid_request = self.factory.patch(
+            f"/api/vod/category-relations/{relation.id}/title-cleanup/",
+            {"title_cleanup": {"pattern": "("}},
+            format="json",
+        )
+        force_authenticate(invalid_request, user=self.admin)
+        invalid_response = M3UVODCategoryRelationViewSet.as_view(
+            {"patch": "title_cleanup"}
+        )(invalid_request, pk=relation.id)
+        self.assertEqual(invalid_response.status_code, 400)
+        relation.refresh_from_db()
+        self.assertEqual(
+            relation.custom_properties["title_cleanup"],
+            {
+                "pattern": r"^-\d+-\s*",
+                "case_sensitive": True,
+            },
+        )
+
+    def test_category_title_cleanup_preview_uses_provider_titles_in_relation(self):
+        account = M3UAccount.objects.create(
+            name="Category preview provider",
+            server_url="http://provider.example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+        )
+        other_account = M3UAccount.objects.create(
+            name="Other preview provider",
+            server_url="http://other.example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+        )
+        category = VODCategory.objects.create(
+            name="Ranked preview movies",
+            category_type="movie",
+        )
+        category_relation = M3UVODCategoryRelation.objects.create(
+            m3u_account=account,
+            category=category,
+            enabled=True,
+        )
+        M3UVODCategoryRelation.objects.create(
+            m3u_account=other_account,
+            category=category,
+            enabled=True,
+        )
+        matching_movie = Movie.objects.create(name="Ranked provider movie")
+        plain_movie = Movie.objects.create(name="Plain provider movie")
+        other_movie = Movie.objects.create(name="Other account movie")
+        matching_relation = M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=matching_movie,
+            category=category,
+            stream_id="ranked-1",
+            custom_properties={
+                "basic_data": {"name": "(DE-) -1- Prisons 4K - 2024"}
+            },
+        )
+        plain_relation = M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=plain_movie,
+            category=category,
+            stream_id="plain-1",
+            custom_properties={"basic_data": {"name": "Ordinary Movie"}},
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=other_account,
+            movie=other_movie,
+            category=category,
+            stream_id="other-1",
+            custom_properties={
+                "basic_data": {"name": "(DE-) -2- Another 4K - 2024"}
+            },
+        )
+        CoreSettings.set_vod_metadata_settings(
+            languages=["en-US"],
+            auto_enrich=False,
+            match_missing=False,
+            title_rules=["(DE-)"],
+            year_rules=DEFAULT_TITLE_YEAR_RULES,
+        )
+
+        request = self.factory.post(
+            f"/api/vod/category-relations/{category_relation.id}/title-cleanup-preview/",
+            {
+                "title_cleanup": {
+                    "pattern": r"-\d+-\s*|\b4K\b",
+                    "case_sensitive": False,
+                },
+                "page": 1,
+                "page_size": 25,
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.admin)
+        response = M3UVODCategoryRelationViewSet.as_view(
+            {"post": "title_cleanup_preview"}
+        )(request, pk=category_relation.id)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["total_in_category"], 2)
+        self.assertEqual(response.data["page_match_count"], 1)
+        self.assertEqual(
+            response.data["results"],
+            [
+                {
+                    "relation_id": matching_relation.id,
+                    "content_type": "movie",
+                    "before": "(DE-) -1- Prisons 4K - 2024",
+                    "after": "Prisons",
+                    "year": 2024,
+                    "matched": True,
+                    "changed": True,
+                },
+                {
+                    "relation_id": plain_relation.id,
+                    "content_type": "movie",
+                    "before": "Ordinary Movie",
+                    "after": "Ordinary Movie",
+                    "year": None,
+                    "matched": False,
+                    "changed": False,
+                },
+            ],
+        )
+
+        initial_request = self.factory.post(
+            f"/api/vod/category-relations/{category_relation.id}/title-cleanup-preview/",
+            {"title_cleanup": {}, "page": 1, "page_size": 25},
+            format="json",
+        )
+        force_authenticate(initial_request, user=self.admin)
+        initial_response = M3UVODCategoryRelationViewSet.as_view(
+            {"post": "title_cleanup_preview"}
+        )(initial_request, pk=category_relation.id)
+
+        self.assertEqual(initial_response.status_code, 200, initial_response.data)
+        self.assertEqual(initial_response.data["total_in_category"], 2)
+        self.assertEqual(initial_response.data["page_match_count"], 0)
+        self.assertEqual(
+            initial_response.data["results"][0],
+            {
+                "relation_id": matching_relation.id,
+                "content_type": "movie",
+                "before": "(DE-) -1- Prisons 4K - 2024",
+                "after": "-1- Prisons 4K",
+                "year": 2024,
+                "matched": False,
+                "changed": True,
+            },
+        )
+
+        invalid_request = self.factory.post(
+            f"/api/vod/category-relations/{category_relation.id}/title-cleanup-preview/",
+            {"title_cleanup": {"pattern": "("}},
+            format="json",
+        )
+        force_authenticate(invalid_request, user=self.admin)
+        invalid_response = M3UVODCategoryRelationViewSet.as_view(
+            {"post": "title_cleanup_preview"}
+        )(invalid_request, pk=category_relation.id)
+        self.assertEqual(invalid_response.status_code, 200)
+        self.assertTrue(invalid_response.data["error"])
 
     def test_canonical_changes_only_mark_profiles_that_embed_the_title(self):
         account = M3UAccount.objects.create(

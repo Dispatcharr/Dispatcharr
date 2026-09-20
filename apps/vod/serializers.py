@@ -130,13 +130,25 @@ class M3UVODCategoryRelationSerializer(serializers.ModelSerializer):
         source="category.category_type", read_only=True
     )
     account_name = serializers.CharField(source="m3u_account.name", read_only=True)
+    title_cleanup = serializers.SerializerMethodField()
 
     class Meta:
         model = M3UVODCategoryRelation
         fields = [
             "id", "category", "category_name", "category_type",
             "m3u_account", "account_name", "enabled", "metadata_defaults",
+            "title_cleanup",
         ]
+
+    def get_title_cleanup(self, obj):
+        from .tmdb import normalize_group_title_cleanup
+
+        try:
+            return normalize_group_title_cleanup(
+                (obj.custom_properties or {}).get("title_cleanup")
+            )
+        except ValueError:
+            return {}
 
     def validate_metadata_defaults(self, value):
         from .metadata import validate_configurable_source_metadata

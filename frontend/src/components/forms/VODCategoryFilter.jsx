@@ -9,6 +9,7 @@ import {
   ScrollArea,
   SegmentedControl,
   Stack,
+  Switch,
   Table,
   TableTbody,
   TableTd,
@@ -19,7 +20,7 @@ import {
   TextInput,
   Tooltip,
 } from '@mantine/core';
-import { Eye, Info } from 'lucide-react';
+import { Eye, Info, Settings2 } from 'lucide-react';
 import useVODStore from '../../store/useVODStore';
 import API from '../../api';
 import { showNotification } from '../../utils/notificationUtils';
@@ -50,6 +51,19 @@ const VODCategoryFilter = ({
   const [saving, setSaving] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [previewCategory, setPreviewCategory] = useState(null);
+  const [cleanupCategory, setCleanupCategory] = useState(null);
+  const [cleanupPattern, setCleanupPattern] = useState('');
+  const [cleanupCaseSensitive, setCleanupCaseSensitive] = useState(false);
+  const [savingCleanup, setSavingCleanup] = useState(false);
+  const [cleanupPreviewPage, setCleanupPreviewPage] = useState(1);
+  const [cleanupPreviewPageSize, setCleanupPreviewPageSize] = useState(25);
+  const [cleanupPreview, setCleanupPreview] = useState({
+    results: [],
+    page_match_count: 0,
+    total_in_category: 0,
+    loading: false,
+    error: '',
+  });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [metadataModes, setMetadataModes] = useState({
@@ -85,6 +99,7 @@ const VODCategoryFilter = ({
             ...category,
             relation_id: relation.id,
             metadata_defaults: relation.metadata_defaults || {},
+            title_cleanup: relation.title_cleanup || {},
             enabled: relation.enabled || false,
             original_enabled: relation.enabled,
           };
@@ -218,6 +233,127 @@ const VODCategoryFilter = ({
     visible.length > 0 &&
     visible.every((category) => selected.has(rowId(category)));
 
+  const openCleanupEditor = (category) => {
+    const cleanup = category.title_cleanup || {};
+    setCleanupCategory(category);
+    setCleanupPattern(cleanup.pattern || '');
+    setCleanupCaseSensitive(cleanup.case_sensitive === true);
+    setCleanupPreviewPage(1);
+  };
+
+  useEffect(() => {
+    const pattern = cleanupPattern.trim();
+    if (!cleanupCategory) {
+      setCleanupPreview({
+        results: [],
+        page_match_count: 0,
+        total_in_category: 0,
+        loading: false,
+        error: '',
+      });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setCleanupPreview((current) => ({
+        ...current,
+        loading: true,
+        error: '',
+      }));
+      try {
+        const response = await API.previewVODCategoryTitleCleanup(
+          cleanupCategory.relation_id,
+          pattern
+            ? {
+                pattern: cleanupPattern,
+                case_sensitive: cleanupCaseSensitive,
+              }
+            : {},
+          {
+            page: cleanupPreviewPage,
+            pageSize: cleanupPreviewPageSize,
+            signal: controller.signal,
+          }
+        );
+        setCleanupPreview({
+          results: response.results || [],
+          page_match_count: response.page_match_count || 0,
+          total_in_category: response.total_in_category || 0,
+          loading: false,
+          error: response.error || '',
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+        setCleanupPreview({
+          results: [],
+          page_match_count: 0,
+          total_in_category: 0,
+          loading: false,
+          error:
+            error?.body?.title_cleanup ||
+            error?.body?.detail ||
+            error?.message ||
+            'The preview could not be created.',
+        });
+      }
+    }, 400);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    cleanupCaseSensitive,
+    cleanupCategory,
+    cleanupPattern,
+    cleanupPreviewPage,
+    cleanupPreviewPageSize,
+  ]);
+
+  const saveTitleCleanup = async () => {
+    if (!cleanupCategory) return;
+    setSavingCleanup(true);
+    try {
+      const response = await API.updateVODCategoryTitleCleanup(
+        cleanupCategory.relation_id,
+        cleanupPattern.trim()
+          ? {
+              pattern: cleanupPattern,
+              case_sensitive: cleanupCaseSensitive,
+            }
+          : {}
+      );
+      setCategoryStates((current) =>
+        current.map((category) =>
+          rowId(category) === rowId(cleanupCategory)
+            ? { ...category, title_cleanup: response.title_cleanup || {} }
+            : category
+        )
+      );
+      showNotification({
+        title: 'Category title removal saved',
+        message: cleanupPattern.trim()
+          ? 'Matching text is removed after global prefix and release-year cleanup for new or unlocked titles. Locked titles stay unchanged until cleanup is applied again.'
+          : 'The category-specific removal rule was cleared. Global prefix and release-year cleanup still applies.',
+        color: 'green',
+      });
+      setCleanupCategory(null);
+    } catch (error) {
+      showNotification({
+        title: 'Category title removal was not saved',
+        message:
+          error?.body?.title_cleanup ||
+          error?.body?.detail ||
+          error?.message ||
+          'Check the removal expression and try again.',
+        color: 'red',
+      });
+    } finally {
+      setSavingCleanup(false);
+    }
+  };
+
   return (
     <>
       <Stack pt="sm" h="100%" mih={0}>
@@ -332,7 +468,7 @@ const VODCategoryFilter = ({
                   </Group>
                 </TableTh>
                 <TableTh w={180}>Features</TableTh>
-                <TableTh w={70} ta="center">
+                <TableTh w={88} ta="center">
                   Actions
                 </TableTh>
               </TableTr>
@@ -402,15 +538,38 @@ const VODCategoryFilter = ({
                       .join(', ') || '—'}
                   </TableTd>
                   <TableTd ta="center">
-                    <Tooltip label="Preview imported content" withArrow>
-                      <ActionIcon
-                        variant="subtle"
-                        aria-label={`Preview ${category.name}`}
-                        onClick={() => setPreviewCategory(category)}
-                      >
-                        <Eye size={16} />
-                      </ActionIcon>
-                    </Tooltip>
+                    <Group gap={2} justify="center" wrap="nowrap">
+                      {!profileMode && (
+                        <Tooltip
+                          label="Remove category-specific title text"
+                          withArrow
+                        >
+                          <ActionIcon
+                            variant={
+                              category.title_cleanup?.pattern
+                                ? 'light'
+                                : 'subtle'
+                            }
+                            color={
+                              category.title_cleanup?.pattern ? 'blue' : 'gray'
+                            }
+                            aria-label={`Edit title removal for ${category.name}`}
+                            onClick={() => openCleanupEditor(category)}
+                          >
+                            <Settings2 size={16} />
+                          </ActionIcon>
+                        </Tooltip>
+                      )}
+                      <Tooltip label="Preview imported content" withArrow>
+                        <ActionIcon
+                          variant="subtle"
+                          aria-label={`Preview ${category.name}`}
+                          onClick={() => setPreviewCategory(category)}
+                        >
+                          <Eye size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
                   </TableTd>
                 </TableTr>
               ))}
@@ -460,6 +619,130 @@ const VODCategoryFilter = ({
             </Button>
             <Button loading={saving} onClick={saveBulkMetadata}>
               Apply to selected
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={!!cleanupCategory}
+        onClose={() => setCleanupCategory(null)}
+        title={`Remove text from titles · ${cleanupCategory?.name || ''}`}
+        size="lg"
+      >
+        <Stack>
+          <Button
+            component="a"
+            href="/settings#vod-title-cleanup"
+            target="_blank"
+            rel="noopener noreferrer"
+            variant="subtle"
+            size="compact-sm"
+            style={{ alignSelf: 'flex-start' }}
+          >
+            Open global title cleanup settings
+          </Button>
+          <TextInput
+            label="Text to remove (regular expression)"
+            description="Use | to remove more than one pattern. Every match is removed."
+            placeholder={'-\\d+-\\s*|\\b4K\\b'}
+            value={cleanupPattern}
+            onChange={(event) => {
+              setCleanupPattern(event.currentTarget.value);
+              setCleanupPreviewPage(1);
+            }}
+          />
+          <Switch
+            label="Case-sensitive matching"
+            checked={cleanupCaseSensitive}
+            onChange={(event) => {
+              setCleanupCaseSensitive(event.currentTarget.checked);
+              setCleanupPreviewPage(1);
+            }}
+          />
+          <Stack gap={6}>
+            <Text size="sm" fw={600}>
+              Final title preview
+            </Text>
+            {cleanupPreview.loading && (
+              <Text size="xs" c="dimmed">
+                Preparing title preview...
+              </Text>
+            )}
+            {cleanupPreview.error && (
+              <Text size="xs" c="red.5">
+                Removal expression error: {cleanupPreview.error}
+              </Text>
+            )}
+            {!cleanupPreview.loading && !cleanupPreview.error && (
+              <>
+                <Text size="xs" c="dimmed">
+                  {cleanupPreview.total_in_category}{' '}
+                  {cleanupPreview.total_in_category === 1 ? 'title' : 'titles'}{' '}
+                  in this category.
+                  {cleanupPattern.trim() && (
+                    <>
+                      {' '}
+                      {cleanupPreview.page_match_count}{' '}
+                      {cleanupPreview.page_match_count === 1
+                        ? 'title on this page contains'
+                        : 'titles on this page contain'}{' '}
+                      text that will be removed.
+                    </>
+                  )}
+                </Text>
+                {cleanupPreview.results.length === 0 ? (
+                  <Text size="xs" c="dimmed">
+                    No titles are available on this page.
+                  </Text>
+                ) : (
+                  <ScrollArea h="min(32vh, 300px)" offsetScrollbars>
+                    <Table striped withTableBorder>
+                      <TableThead>
+                        <TableTr>
+                          <TableTh>Provider title</TableTh>
+                          <TableTh>Clean title</TableTh>
+                          <TableTh w={90}>Year</TableTh>
+                        </TableTr>
+                      </TableThead>
+                      <TableTbody>
+                        {cleanupPreview.results.map((row) => (
+                          <TableTr
+                            key={`${row.content_type}:${row.relation_id}`}
+                          >
+                            <TableTd>{row.before || '—'}</TableTd>
+                            <TableTd>
+                              <Text c={row.changed ? 'teal.4' : 'dimmed'}>
+                                {row.after || '—'}
+                              </Text>
+                            </TableTd>
+                            <TableTd>{row.year || '—'}</TableTd>
+                          </TableTr>
+                        ))}
+                      </TableTbody>
+                    </Table>
+                  </ScrollArea>
+                )}
+                <ListPagination
+                  page={cleanupPreviewPage}
+                  pageSize={cleanupPreviewPageSize}
+                  total={cleanupPreview.total_in_category}
+                  onPageChange={setCleanupPreviewPage}
+                  onPageSizeChange={(value) => {
+                    setCleanupPreviewPageSize(value);
+                    setCleanupPreviewPage(1);
+                  }}
+                  pageSizes={[10, 25, 50, 100, 250]}
+                />
+              </>
+            )}
+          </Stack>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setCleanupCategory(null)}>
+              Cancel
+            </Button>
+            <Button loading={savingCleanup} onClick={saveTitleCleanup}>
+              Save
             </Button>
           </Group>
         </Stack>

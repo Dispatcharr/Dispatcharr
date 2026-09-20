@@ -599,12 +599,13 @@ describe('M3U', () => {
       ).toBeInTheDocument();
     });
 
-    it('renders submit button with "Add" label for new account', () => {
+    it('renders submit button with "Create" label for new account', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       expect(
-        screen.getByRole('button', { name: 'Save M3U account' })
+        screen.getByRole('button', { name: 'Create M3U account' })
       ).toBeInTheDocument();
+      expect(screen.getByText('Create')).toBeInTheDocument();
     });
 
     it('renders submit button with "Update" or "Save" label for existing account', () => {
@@ -706,7 +707,9 @@ describe('M3U', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       fillRequiredFields();
-      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Create M3U account' })
+      );
       await waitFor(() => {
         expect(M3uUtils.addPlaylist).toHaveBeenCalled();
       });
@@ -716,7 +719,9 @@ describe('M3U', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       fillRequiredFields();
-      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Create M3U account' })
+      );
       await waitFor(() => {
         expect(M3uUtils.prepareSubmitValues).toHaveBeenCalled();
       });
@@ -785,7 +790,9 @@ describe('M3U', () => {
       // Clear name if pre-filled, then submit
       const nameInput = screen.getByTestId('text-input-name');
       fireEvent.change(nameInput, { target: { value: '' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Create M3U account' })
+      );
       await new Promise((r) => setTimeout(r, 50));
       expect(M3uUtils.addPlaylist).not.toHaveBeenCalled();
     });
@@ -876,7 +883,9 @@ describe('M3U', () => {
         });
       }
 
-      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Create M3U account' })
+      );
       await waitFor(() => {
         expect(M3uUtils.addPlaylist).toHaveBeenCalled();
       });

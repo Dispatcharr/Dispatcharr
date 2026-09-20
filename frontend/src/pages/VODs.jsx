@@ -54,18 +54,13 @@ import {
   getCategoryOptions,
 } from '../utils/pages/VODsUtils.js';
 import { normalizeLanguageCodes } from '../utils/languageCodes.js';
-import { LanguageSelect } from '../components/LanguagePicker.jsx';
 import VODMetadataFields from '../components/VODMetadataFields.jsx';
 import VODProfileRebuildNotice from '../components/VODProfileRebuildNotice.jsx';
 import { useWebSocket } from '../WebSocket.jsx';
 import VODMetadataModal from '../components/VODMetadataModal.jsx';
 import { showVODProfileRebuildNotice } from '../utils/vodProfileUpdates.js';
-import VideoFeaturePicker from '../components/VideoFeaturePicker.jsx';
-import {
-  CONTAINER_EXTENSION_OPTIONS,
-  RESOLUTION_VALUES,
-  videoFeatureLabel,
-} from '../utils/vodMetadataOptions.js';
+import VODTechnicalFilterFields from '../components/VODTechnicalFilterFields.jsx';
+import { videoFeatureLabel } from '../utils/vodMetadataOptions.js';
 import {
   canViewVod,
   isVodMoviesEnabled,
@@ -87,6 +82,13 @@ const sourceMetadataValue = (item, field) => {
 };
 const sourceCount = (item) =>
   item.source_count ?? item.source_metadata?.source_count ?? 0;
+const EMPTY_TECHNICAL_FILTERS = {
+  audio_language: '',
+  subtitle_language: '',
+  resolution: '',
+  container_extension: '',
+  video_feature: '',
+};
 const ClampedCellText = ({ value }) => {
   const text =
     value === null || value === undefined || value === '' ? '—' : String(value);
@@ -556,7 +558,11 @@ const VODsPage = () => {
             <SegmentedControl
               value={filters.type}
               onChange={(value) => {
-                setFilters({ type: value, category: '' });
+                setFilters({
+                  type: value,
+                  category: '',
+                  ...EMPTY_TECHNICAL_FILTERS,
+                });
                 setPage(1);
               }}
               data={typeOptions}
@@ -574,7 +580,11 @@ const VODsPage = () => {
             data={m3uOptions}
             value={filters.m3u_account || null}
             onChange={(value) => {
-              setFilters({ m3u_account: value || '', category: '' });
+              setFilters({
+                m3u_account: value || '',
+                category: '',
+                ...EMPTY_TECHNICAL_FILTERS,
+              });
               setPage(1);
             }}
             searchable
@@ -586,7 +596,10 @@ const VODsPage = () => {
             data={categoryOptions}
             value={filters.category}
             onChange={(value) => {
-              setFilters({ category: value || '' });
+              setFilters({
+                category: value || '',
+                ...EMPTY_TECHNICAL_FILTERS,
+              });
               setPage(1);
             }}
             clearable
@@ -611,60 +624,16 @@ const VODsPage = () => {
             <PopoverDropdown>
               <Stack gap="sm">
                 <SimpleGrid cols={2}>
-                  <LanguageSelect
-                    label="DUB"
-                    value={filters.audio_language}
-                    onChange={(value) => {
-                      setFilters({ audio_language: value });
+                  <VODTechnicalFilterFields
+                    filters={filters}
+                    type={filters.type}
+                    m3uAccount={filters.m3u_account}
+                    category={filters.category}
+                    onChange={(field, value) => {
+                      setFilters({ [field]: value });
                       setPage(1);
                     }}
                   />
-                  <LanguageSelect
-                    label="SUB"
-                    value={filters.subtitle_language}
-                    onChange={(value) => {
-                      setFilters({ subtitle_language: value });
-                      setPage(1);
-                    }}
-                  />
-                  <Select
-                    label="Resolution"
-                    placeholder="Any"
-                    clearable
-                    data={RESOLUTION_VALUES}
-                    value={filters.resolution || null}
-                    onChange={(value) => {
-                      setFilters({ resolution: value || '' });
-                      setPage(1);
-                    }}
-                  />
-                  <Select
-                    label="Format"
-                    placeholder="Any"
-                    clearable
-                    searchable
-                    data={CONTAINER_EXTENSION_OPTIONS}
-                    value={filters.container_extension || null}
-                    onChange={(value) => {
-                      setFilters({ container_extension: value || '' });
-                      setPage(1);
-                    }}
-                  />
-                  <Box>
-                    <VideoFeaturePicker
-                      label="Feature"
-                      emptyLabel="Any"
-                      value={
-                        filters.video_feature ? [filters.video_feature] : []
-                      }
-                      onChange={(value) => {
-                        setFilters({
-                          video_feature: value[value.length - 1] || '',
-                        });
-                        setPage(1);
-                      }}
-                    />
-                  </Box>
                   <Select
                     label="Metadata"
                     placeholder="Any"

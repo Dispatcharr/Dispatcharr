@@ -6,6 +6,8 @@ vi.mock('../../../store/useVODStore', () => ({ default: vi.fn() }));
 vi.mock('../../../api', () => ({
   default: {
     bulkUpdateVODCategoryMetadata: vi.fn().mockResolvedValue({}),
+    updateVODCategoryTitleCleanup: vi.fn(),
+    previewVODCategoryTitleCleanup: vi.fn(),
   },
 }));
 vi.mock('../../../utils/notificationUtils', () => ({
@@ -39,8 +41,8 @@ vi.mock('@mantine/core', () => ({
       {children}
     </button>
   ),
-  Button: ({ children, onClick, disabled, ...props }) => (
-    <button onClick={onClick} disabled={disabled} {...props}>
+  Button: ({ children, onClick, disabled, loading, ...props }) => (
+    <button onClick={onClick} disabled={disabled || loading} {...props}>
       {children}
     </button>
   ),
@@ -227,6 +229,39 @@ const Wrapper = ({ initialAutoEnable = true }) => {
 describe('VODCategoryFilter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    API.updateVODCategoryTitleCleanup.mockResolvedValue({
+      title_cleanup: {
+        pattern: '-\\d+-\\s*|\\b4K\\b',
+        case_sensitive: true,
+      },
+    });
+    API.previewVODCategoryTitleCleanup.mockResolvedValue({
+      results: [
+        {
+          relation_id: 501,
+          content_type: 'movie',
+          before: '(DE-) -1- Prisons 4K - 2024',
+          after: 'Prisons',
+          year: 2024,
+          matched: true,
+          changed: true,
+        },
+        {
+          relation_id: 502,
+          content_type: 'movie',
+          before: 'Ordinary Movie',
+          after: 'Ordinary Movie',
+          year: null,
+          matched: false,
+          changed: false,
+        },
+      ],
+      page_match_count: 1,
+      page: 1,
+      page_size: 25,
+      total_in_category: 2,
+      error: null,
+    });
     vi.mocked(useVODStore).mockImplementation((selector) =>
       selector({ categories })
     );
@@ -350,6 +385,95 @@ describe('VODCategoryFilter', () => {
     expect(
       screen.queryByLabelText(/enable unmatched new movie categories/i)
     ).not.toBeInTheDocument();
+  });
+
+  it('saves a category-specific title regex', async () => {
+    render(<Wrapper />);
+
+    fireEvent.click(screen.getByLabelText('Edit title removal for Action'));
+    fireEvent.change(
+      screen.getByLabelText('Text to remove (regular expression)'),
+      {
+        target: {
+          value: '-\\d+-\\s*|\\b4K\\b',
+        },
+      }
+    );
+    expect(screen.queryByLabelText('Replacement')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Case-sensitive matching'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(API.updateVODCategoryTitleCleanup).toHaveBeenCalledWith(101, {
+        pattern: '-\\d+-\\s*|\\b4K\\b',
+        case_sensitive: true,
+      })
+    );
+  });
+
+  it('previews category title cleanup while editing the regex', async () => {
+    render(<Wrapper />);
+
+    fireEvent.click(screen.getByLabelText('Edit title removal for Action'));
+    expect(
+      screen.queryByText(/Use a category-specific regular expression/)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Open global title cleanup settings')
+    ).toHaveAttribute('href', '/settings#vod-title-cleanup');
+    expect(
+      screen.getByLabelText('Text to remove (regular expression)')
+    ).toHaveAttribute('placeholder', '-\\d+-\\s*|\\b4K\\b');
+    expect(screen.getByText('Final title preview')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(API.previewVODCategoryTitleCleanup).toHaveBeenCalledWith(
+        101,
+        {},
+        expect.objectContaining({
+          page: 1,
+          pageSize: 25,
+          signal: expect.any(AbortSignal),
+        })
+      )
+    );
+    expect(
+      await screen.findByText('(DE-) -1- Prisons 4K - 2024')
+    ).toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByLabelText('Text to remove (regular expression)'),
+      {
+        target: {
+          value: '-\\d+-\\s*|\\b4K\\b',
+        },
+      }
+    );
+
+    await waitFor(() =>
+      expect(API.previewVODCategoryTitleCleanup).toHaveBeenCalledWith(
+        101,
+        {
+          pattern: '-\\d+-\\s*|\\b4K\\b',
+          case_sensitive: false,
+        },
+        expect.objectContaining({
+          page: 1,
+          pageSize: 25,
+          signal: expect.any(AbortSignal),
+        })
+      )
+    );
+    expect(screen.getByText('Prisons')).toBeInTheDocument();
+    expect(
+      screen.getByRole('columnheader', { name: 'Year' })
+    ).toBeInTheDocument();
+    expect(screen.getByText('2024')).toBeInTheDocument();
+    expect(screen.getAllByText('Ordinary Movie')).toHaveLength(2);
+    expect(
+      screen.getByText(
+        '2 titles in this category. 1 title on this page contains text that will be removed.'
+      )
+    ).toBeInTheDocument();
   });
 
   it('keeps direct profile decisions without a Follow rules action', () => {

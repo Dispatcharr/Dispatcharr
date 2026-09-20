@@ -129,8 +129,14 @@ const savedRule = {
   replacement: ' ',
   enabled: true,
 };
+const savedYearRules = [
+  { value: '(YYYY)', position: 'anywhere', enabled: true },
+  { value: '[YYYY]', position: 'end', enabled: true },
+  { value: '- YYYY', position: 'anywhere', enabled: true },
+  { value: 'YYYY', position: 'end', enabled: true },
+];
 const statusResponse = {
-  settings: { title_rules: [savedRule] },
+  settings: { title_rules: [savedRule], year_rules: savedYearRules },
 };
 
 describe('VODMetadataModal', () => {
@@ -239,6 +245,7 @@ describe('VODMetadataModal', () => {
             enabled: true,
           },
         ],
+        savedYearRules,
         null,
         'Bliss',
         { missing_tmdb_only: false, page: 1, page_size: 50 }
@@ -300,6 +307,7 @@ describe('VODMetadataModal', () => {
     await waitFor(() =>
       expect(API.previewVODMetadataTitles).toHaveBeenCalledWith(
         expect.any(Array),
+        savedYearRules,
         null,
         '',
         { missing_tmdb_only: true, page: 1, page_size: 50 }
@@ -331,6 +339,25 @@ describe('VODMetadataModal', () => {
             replacement: '',
             enabled: true,
           },
+        ],
+      })
+    );
+  });
+
+  it('automatically saves configurable release-year formats', async () => {
+    render(<VODMetadataModal opened onClose={vi.fn()} />);
+    await screen.findByDisplayValue('(YYYY),[YYYY],- YYYY,YYYY');
+    fireEvent.change(screen.getByLabelText('Release-year formats to remove'), {
+      target: { value: '(YYYY),[YYYY],YYYY,[YYYY] release' },
+    });
+
+    await waitFor(() =>
+      expect(API.updateVODMetadataSettings).toHaveBeenCalledWith({
+        year_rules: [
+          { value: '(YYYY)', position: 'anywhere', enabled: true },
+          { value: '[YYYY]', position: 'end', enabled: true },
+          { value: 'YYYY', position: 'end', enabled: true },
+          { value: '[YYYY] release', position: 'end', enabled: true },
         ],
       })
     );
@@ -368,6 +395,7 @@ describe('VODMetadataModal', () => {
             enabled: true,
           },
         ],
+        savedYearRules,
         selectionContext.selections,
         '',
         {}

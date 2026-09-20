@@ -23,6 +23,8 @@ from apps.vod.tasks import (
     refresh_series_episodes,
     should_apply_provider_list_field,
 )
+from apps.vod.tmdb import DEFAULT_TITLE_YEAR_RULES
+from core.models import CoreSettings
 
 
 class VODListFieldHelperTests(SimpleTestCase):
@@ -905,6 +907,143 @@ class VODDuplicateAcrossCategoriesBatchTests(TestCase):
         by_stream_id = {rel.stream_id: rel for rel in relations}
         self.assertEqual(by_stream_id["5001"].category_id, self.movie_category_a.id)
         self.assertEqual(by_stream_id["5002"].category_id, self.movie_category_b.id)
+
+    def test_clean_title_and_year_merge_id_and_no_id_rows_in_initial_batch(self):
+        CoreSettings.set_vod_metadata_settings(
+            languages=["en-US"],
+            auto_enrich=False,
+            match_missing=False,
+            title_rules=["DE -"],
+        )
+
+        process_movie_batch(
+            self.account,
+            [
+                {
+                    "stream_id": 5011,
+                    "name": "DE - Shared Movie (2024)",
+                    "category_id": "10",
+                },
+                {
+                    "stream_id": 5012,
+                    "name": "Shared Movie (2024)",
+                    "category_id": "11",
+                    "tmdb_id": "800011",
+                },
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        movie = Movie.objects.get(tmdb_id="800011")
+        self.assertEqual(movie.clean_title, "Shared Movie")
+        self.assertEqual(movie.year, 2024)
+        self.assertEqual(
+            set(
+                M3UMovieRelation.objects.filter(movie=movie).values_list(
+                    "stream_id", flat=True
+                )
+            ),
+            {"5011", "5012"},
+        )
+        self.assertEqual(Movie.objects.count(), 1)
+
+    def test_movie_group_regex_can_remove_year_after_it_is_extracted(self):
+        relation = self.movie_relations[self.movie_category_a.id]
+        relation.custom_properties = {
+            "title_cleanup": {
+                "pattern": r"^-\d+-\s*",
+            }
+        }
+        relation.save(update_fields=["custom_properties"])
+        CoreSettings.set_vod_metadata_settings(
+            languages=["en-US"],
+            auto_enrich=False,
+            match_missing=False,
+            year_rules=DEFAULT_TITLE_YEAR_RULES,
+        )
+
+        process_movie_batch(
+            self.account,
+            [
+                {
+                    "stream_id": 5015,
+                    "name": "-1- Provider Movie - 2024",
+                    "category_id": "10",
+                }
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        movie = Movie.objects.get(
+            m3u_relations__m3u_account=self.account,
+            m3u_relations__stream_id="5015",
+        )
+        self.assertEqual(movie.clean_title, "Provider Movie")
+        self.assertEqual(movie.year, 2024)
+
+    def test_series_group_regex_can_remove_year_after_it_is_extracted(self):
+        relation = self.series_relations[self.series_category_a.id]
+        relation.custom_properties = {
+            "title_cleanup": {
+                "pattern": r"^-\d+-\s*",
+            }
+        }
+        relation.save(update_fields=["custom_properties"])
+        CoreSettings.set_vod_metadata_settings(
+            languages=["en-US"],
+            auto_enrich=False,
+            match_missing=False,
+            year_rules=DEFAULT_TITLE_YEAR_RULES,
+        )
+
+        process_series_batch(
+            self.account,
+            [
+                {
+                    "series_id": 6015,
+                    "name": "-1- Provider Series - 2024",
+                    "category_id": "20",
+                }
+            ],
+            self.series_categories,
+            self.series_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        series = Series.objects.get(
+            m3u_relations__m3u_account=self.account,
+            m3u_relations__external_series_id="6015",
+        )
+        self.assertEqual(series.clean_title, "Provider Series")
+        self.assertEqual(series.year, 2024)
+
+    def test_conflicting_external_ids_do_not_merge_by_title_and_year(self):
+        process_movie_batch(
+            self.account,
+            [
+                {
+                    "stream_id": 5013,
+                    "name": "Collision (2024)",
+                    "category_id": "10",
+                    "tmdb_id": "800013",
+                },
+                {
+                    "stream_id": 5014,
+                    "name": "Collision (2024)",
+                    "category_id": "11",
+                    "tmdb_id": "800014",
+                },
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(Movie.objects.filter(year=2024).count(), 2)
 
     def test_duplicate_stream_id_for_same_movie_does_not_create_two_relations(self):
         process_movie_batch(

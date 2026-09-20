@@ -1597,6 +1597,35 @@ export default class API {
     );
   }
 
+  static async updateVODCategoryTitleCleanup(relationId, titleCleanup) {
+    return await request(
+      `${host}/api/vod/category-relations/${relationId}/title-cleanup/`,
+      {
+        method: 'PATCH',
+        body: { title_cleanup: titleCleanup },
+      }
+    );
+  }
+
+  static async previewVODCategoryTitleCleanup(
+    relationId,
+    titleCleanup,
+    { page = 1, pageSize = 25, signal } = {}
+  ) {
+    return await request(
+      `${host}/api/vod/category-relations/${relationId}/title-cleanup-preview/`,
+      {
+        method: 'POST',
+        body: {
+          title_cleanup: titleCleanup,
+          page,
+          page_size: pageSize,
+        },
+        signal,
+      }
+    );
+  }
+
   static async getVODCategoryRelations() {
     return await request(`${host}/api/vod/category-relations/`);
   }
@@ -1667,20 +1696,35 @@ export default class API {
 
   static async previewVODMetadataTitles(
     titleRules,
+    yearRules,
     items = null,
     search = '',
     selectionOptions = {}
   ) {
     return await request(`${host}/api/vod/metadata/title-preview/`, {
       method: 'POST',
-      body: { title_rules: titleRules, items, search, ...selectionOptions },
+      body: {
+        title_rules: titleRules,
+        year_rules: yearRules,
+        items,
+        search,
+        ...selectionOptions,
+      },
     });
   }
 
-  static async applyVODTitleCleanup(titleRules, selectionOptions = {}) {
+  static async applyVODTitleCleanup(
+    titleRules,
+    yearRules,
+    selectionOptions = {}
+  ) {
     return await request(`${host}/api/vod/metadata/apply-title-cleanup/`, {
       method: 'POST',
-      body: { title_rules: titleRules, ...selectionOptions },
+      body: {
+        title_rules: titleRules,
+        year_rules: yearRules,
+        ...selectionOptions,
+      },
     });
   }
 
@@ -1689,16 +1733,19 @@ export default class API {
     selections,
     selectionOptions = {}
   ) {
-    return await request(`${host}/api/vod/source-relations/relation-tmdb-match/`, {
-      method: 'PATCH',
-      body: {
-        ...(typeof target === 'string' || typeof target === 'number'
-          ? { tmdb_id: String(target || '') }
-          : target || {}),
-        selections,
-        ...selectionOptions,
-      },
-    });
+    return await request(
+      `${host}/api/vod/source-relations/relation-tmdb-match/`,
+      {
+        method: 'PATCH',
+        body: {
+          ...(typeof target === 'string' || typeof target === 'number'
+            ? { tmdb_id: String(target || '') }
+            : target || {}),
+          selections,
+          ...selectionOptions,
+        },
+      }
+    );
   }
 
   static async searchVODCanonicalTargets(contentType, search, year = '') {
@@ -1808,18 +1855,15 @@ export default class API {
     metadata,
     lockedFields
   ) {
-    return await request(
-      `${host}/api/vod/source-relations/manual-metadata/`,
-      {
-        method: 'PATCH',
-        body: {
-          content_type: contentType,
-          relation_id: relationId,
-          metadata,
-          locked_fields: lockedFields,
-        },
-      }
-    );
+    return await request(`${host}/api/vod/source-relations/manual-metadata/`, {
+      method: 'PATCH',
+      body: {
+        content_type: contentType,
+        relation_id: relationId,
+        metadata,
+        locked_fields: lockedFields,
+      },
+    });
   }
 
   static async bulkUpdateVODSourceMetadata(
@@ -2282,9 +2326,7 @@ export default class API {
   static async getGrid(params = new URLSearchParams()) {
     try {
       const qs = params.toString();
-      const url = qs
-        ? `${host}/api/epg/grid/?${qs}`
-        : `${host}/api/epg/grid/`;
+      const url = qs ? `${host}/api/epg/grid/?${qs}` : `${host}/api/epg/grid/`;
       const response = await request(url);
 
       return response.data;
@@ -4133,6 +4175,17 @@ export default class API {
       }
       throw e;
     }
+  }
+
+  static async getVODFilterOptions(params = {}) {
+    const query = new URLSearchParams(
+      Object.entries(params).filter(
+        ([, value]) => value !== '' && value != null
+      )
+    );
+    return await request(
+      `${host}/api/vod/all/filter-options/?${query.toString()}`
+    );
   }
 
   static async getMovieDetails(movieId) {

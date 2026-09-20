@@ -39,12 +39,7 @@ import API from '../api';
 import useVODStore from '../store/useVODStore';
 import { showNotification } from '../utils/notificationUtils';
 import { normalizeLanguageCodes } from '../utils/languageCodes.js';
-import {
-  CONTAINER_EXTENSION_OPTIONS,
-  RESOLUTION_VALUES,
-} from '../utils/vodMetadataOptions.js';
-import { LanguageSelect } from './LanguagePicker.jsx';
-import VideoFeaturePicker from './VideoFeaturePicker.jsx';
+import VODTechnicalFilterFields from './VODTechnicalFilterFields.jsx';
 import VODCategoryFilter from './forms/VODCategoryFilter.jsx';
 import { resolveProfileCategoryRows } from './forms/VODProfileCategoryRules.utils.js';
 import VODFailoverRanking from './VODFailoverRanking.jsx';
@@ -176,6 +171,13 @@ const EDITIONS_TAB_HELP =
   "First match wins. Compact creates one client entry per canonical title and suffix. Every split stays in the title's output category, and failover stays inside the matching suffix. Unmatched sources use the canonical title without a suffix.";
 const PREVIEW_PAGE_SIZES = [25, 50, 100, 200];
 const PREVIEW_PAGE_SIZE_STORAGE_KEY = 'vodOutputProfilePreviewPageSize';
+const EMPTY_TECHNICAL_FILTERS = {
+  audio_language: '',
+  subtitle_language: '',
+  resolution: '',
+  container_extension: '',
+  video_feature: '',
+};
 
 const initialPreviewPageSize = () => {
   const stored = Number(
@@ -648,6 +650,10 @@ const VODOutputProfilesModal = ({ opened, onClose, embedded = false }) => {
         .sort((left, right) => left.label.localeCompare(right.label)),
     [categories, filters.m3u_account, filters.type]
   );
+  const previewCategory = categories?.[filters.category];
+  const previewFacetCategory = previewCategory
+    ? `${previewCategory.name}|${previewCategory.category_type}`
+    : '';
 
   const loadPreview = async () => {
     if (!selectionAvailable) {
@@ -1577,7 +1583,12 @@ const VODOutputProfilesModal = ({ opened, onClose, embedded = false }) => {
                   <SegmentedControl
                     value={filters.type}
                     onChange={(value) => {
-                      setFilters({ ...filters, type: value, category: '' });
+                      setFilters({
+                        ...filters,
+                        type: value,
+                        category: '',
+                        ...EMPTY_TECHNICAL_FILTERS,
+                      });
                       setPage(1);
                     }}
                     data={[
@@ -1609,6 +1620,7 @@ const VODOutputProfilesModal = ({ opened, onClose, embedded = false }) => {
                           ...filters,
                           m3u_account: value || '',
                           category: '',
+                          ...EMPTY_TECHNICAL_FILTERS,
                         });
                         setPage(1);
                       }}
@@ -1622,7 +1634,11 @@ const VODOutputProfilesModal = ({ opened, onClose, embedded = false }) => {
                     data={categoryOptions}
                     value={filters.category || null}
                     onChange={(value) => {
-                      setFilters({ ...filters, category: value || '' });
+                      setFilters({
+                        ...filters,
+                        category: value || '',
+                        ...EMPTY_TECHNICAL_FILTERS,
+                      });
                       setPage(1);
                     }}
                     miw={180}
@@ -1652,77 +1668,20 @@ const VODOutputProfilesModal = ({ opened, onClose, embedded = false }) => {
                       <Stack gap="sm">
                         <SimpleGrid cols={2}>
                           {activeMode !== 'compact' && (
-                            <>
-                              <LanguageSelect
-                                label="DUB"
-                                value={filters.audio_language}
-                                onChange={(value) => {
-                                  setFilters({
-                                    ...filters,
-                                    audio_language: value,
-                                  });
-                                  setPage(1);
-                                }}
-                              />
-                              <LanguageSelect
-                                label="SUB"
-                                value={filters.subtitle_language}
-                                onChange={(value) => {
-                                  setFilters({
-                                    ...filters,
-                                    subtitle_language: value,
-                                  });
-                                  setPage(1);
-                                }}
-                              />
-                              <Select
-                                label="Resolution"
-                                placeholder="Any"
-                                clearable
-                                data={RESOLUTION_VALUES}
-                                value={filters.resolution || null}
-                                onChange={(value) => {
-                                  setFilters({
-                                    ...filters,
-                                    resolution: value || '',
-                                  });
-                                  setPage(1);
-                                }}
-                              />
-                              <Select
-                                label="Format"
-                                placeholder="Any"
-                                clearable
-                                data={CONTAINER_EXTENSION_OPTIONS}
-                                value={filters.container_extension || null}
-                                onChange={(value) => {
-                                  setFilters({
-                                    ...filters,
-                                    container_extension: value || '',
-                                  });
-                                  setPage(1);
-                                }}
-                              />
-                              <Box>
-                                <VideoFeaturePicker
-                                  label="Features"
-                                  emptyLabel="Any"
-                                  value={
-                                    filters.video_feature
-                                      ? [filters.video_feature]
-                                      : []
-                                  }
-                                  onChange={(value) => {
-                                    setFilters({
-                                      ...filters,
-                                      video_feature:
-                                        value[value.length - 1] || '',
-                                    });
-                                    setPage(1);
-                                  }}
-                                />
-                              </Box>
-                            </>
+                            <VODTechnicalFilterFields
+                              filters={filters}
+                              type={filters.type}
+                              m3uAccount={filters.m3u_account}
+                              category={previewFacetCategory}
+                              featureLabel="Features"
+                              onChange={(field, value) => {
+                                setFilters((current) => ({
+                                  ...current,
+                                  [field]: value,
+                                }));
+                                setPage(1);
+                              }}
+                            />
                           )}
                           <Select
                             label="Metadata"

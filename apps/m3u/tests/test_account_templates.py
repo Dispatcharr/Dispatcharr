@@ -105,6 +105,13 @@ class M3UAccountTemplateTests(TestCase):
             category=self.movie_category,
             enabled=True,
             metadata_defaults={"audio_languages": ["eng"]},
+            custom_properties={
+                "title_cleanup": {
+                    "pattern": r"^-\d+-\s*(.*?)\s+-\s+\d{4}$",
+                    "replacement": "$1",
+                    "case_sensitive": False,
+                }
+            },
         )
         M3UVODCategoryRelation.objects.create(
             m3u_account=self.source,
@@ -221,6 +228,14 @@ class M3UAccountTemplateTests(TestCase):
             target_movie_relation.metadata_defaults,
             {"audio_languages": ["eng"]},
         )
+        self.assertEqual(
+            target_movie_relation.custom_properties["title_cleanup"],
+            {
+                "pattern": r"^-\d+-\s*(.*?)\s+-\s+\d{4}$",
+                "replacement": "$1",
+                "case_sensitive": False,
+            },
+        )
         target_series_relation.refresh_from_db()
         self.assertFalse(target_series_relation.enabled)
         self.assertEqual(
@@ -260,6 +275,10 @@ class M3UAccountTemplateTests(TestCase):
         self.assertEqual(
             movie_relation.metadata_defaults,
             {"audio_languages": ["eng"]},
+        )
+        self.assertEqual(
+            movie_relation.custom_properties["title_cleanup"]["replacement"],
+            "$1",
         )
 
     def test_catalog_counts_are_split_by_content_type(self):

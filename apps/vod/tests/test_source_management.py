@@ -3992,6 +3992,111 @@ class VODSourceManagementTests(TestCase):
             "2160p",
         )
 
+    def test_library_filter_options_only_return_values_in_selected_scope(self):
+        self.german_category.metadata_defaults.update(
+            {
+                "subtitle_languages": ["deu"],
+                "video_features": ["hdr"],
+            }
+        )
+        self.german_category.save(update_fields=["metadata_defaults"])
+        self.german_relation.container_extension = "mkv"
+        self.german_relation.save(update_fields=["container_extension"])
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account_a,
+            movie=Movie.objects.create(name="Provider image artifact"),
+            category=self.german,
+            stream_id="image-artifact",
+            container_extension="png",
+        )
+        self.english_relation.container_extension = "mp4"
+        self.english_relation.save(update_fields=["container_extension"])
+        admin = get_user_model().objects.create_user(
+            username="vod-filter-options-admin",
+            password="test-password",
+            user_level=10,
+        )
+        request = APIRequestFactory().get(
+            "/api/vod/all/filter-options/",
+            {
+                "type": "movies",
+                "m3u_account": str(self.account_a.id),
+            },
+        )
+        force_authenticate(request, user=admin)
+
+        response = UnifiedContentViewSet.as_view(
+            {"get": "filter_options"}
+        )(request)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["audio_languages"], ["ger"])
+        self.assertEqual(response.data["subtitle_languages"], ["ger"])
+        self.assertEqual(response.data["resolutions"], ["1080p"])
+        self.assertEqual(response.data["container_extensions"], ["mkv"])
+        self.assertEqual(response.data["video_features"], ["hdr"])
+
+    def test_library_filter_options_include_episode_metadata_for_series(self):
+        series = Series.objects.create(name="Faceted Series")
+        category = VODCategory.objects.create(
+            name="FACET SERIES", category_type="series"
+        )
+        M3UVODCategoryRelation.objects.create(
+            m3u_account=self.account_a,
+            category=category,
+            enabled=True,
+            metadata_defaults={"audio_languages": ["deu"]},
+        )
+        series_relation = M3USeriesRelation.objects.create(
+            m3u_account=self.account_a,
+            series=series,
+            category=category,
+            external_series_id="faceted-series",
+        )
+        episode = Episode.objects.create(
+            series=series,
+            name="Faceted Episode",
+            season_number=1,
+            episode_number=1,
+        )
+        M3UEpisodeRelation.objects.create(
+            m3u_account=self.account_a,
+            episode=episode,
+            series_relation=series_relation,
+            stream_id="faceted-episode",
+            container_extension="mp4",
+            observed_metadata={
+                "subtitle_languages": ["eng"],
+                "resolution": "720p",
+                "video_features": ["dv"],
+            },
+        )
+        admin = get_user_model().objects.create_user(
+            username="vod-series-filter-options-admin",
+            password="test-password",
+            user_level=10,
+        )
+        request = APIRequestFactory().get(
+            "/api/vod/all/filter-options/",
+            {
+                "type": "series",
+                "m3u_account": str(self.account_a.id),
+                "category": f"{category.name}|series",
+            },
+        )
+        force_authenticate(request, user=admin)
+
+        response = UnifiedContentViewSet.as_view(
+            {"get": "filter_options"}
+        )(request)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["audio_languages"], ["ger"])
+        self.assertEqual(response.data["subtitle_languages"], ["eng"])
+        self.assertEqual(response.data["resolutions"], ["720p"])
+        self.assertEqual(response.data["container_extensions"], ["mp4"])
+        self.assertEqual(response.data["video_features"], ["dv"])
+
     def test_manual_metadata_only_updates_the_selected_source(self):
         admin = get_user_model().objects.create_user(
             username="vod-exact-source-admin",

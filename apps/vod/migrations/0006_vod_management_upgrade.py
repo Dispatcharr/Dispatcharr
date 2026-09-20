@@ -54,8 +54,29 @@ def create_default_policy(apps, schema_editor):
     policy.users.add(*user_model.objects.exclude(pk__in=assigned_user_ids))
 
 
+def migrate_title_year_rules(apps, schema_editor):
+    """Move the legacy hard-coded year parser into editable VOD settings."""
+    settings_model = apps.get_model("core", "CoreSettings")
+    setting, _ = settings_model.objects.get_or_create(
+        key="vod_settings",
+        defaults={"name": "VOD Settings", "value": {}},
+    )
+    value = setting.value if isinstance(setting.value, dict) else {}
+    if "tmdb_year_rules" in value:
+        return
+    value["tmdb_year_rules"] = [
+        {"value": "(YYYY)", "position": "anywhere", "enabled": True},
+        {"value": "[YYYY]", "position": "end", "enabled": True},
+        {"value": "- YYYY", "position": "anywhere", "enabled": True},
+        {"value": "YYYY", "position": "end", "enabled": True},
+    ]
+    setting.value = value
+    setting.save(update_fields=["value"])
+
+
 class Migration(migrations.Migration):
     dependencies = [
+        ("core", "0020_change_coresettings_value_to_jsonfield"),
         ("m3u", "0020_vod_management_upgrade"),
         ("vod", "0005_movie_is_adult"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
@@ -467,6 +488,10 @@ class Migration(migrations.Migration):
         ),
         migrations.RunPython(
             code=create_default_policy,
+            reverse_code=migrations.RunPython.noop,
+        ),
+        migrations.RunPython(
+            code=migrate_title_year_rules,
             reverse_code=migrations.RunPython.noop,
         ),
     ]

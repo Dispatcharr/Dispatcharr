@@ -195,6 +195,9 @@ def _capture_group_selections(account):
                 "name": relation.category.name,
                 "enabled": relation.enabled,
                 "metadata_defaults": deepcopy(relation.metadata_defaults or {}),
+                "title_cleanup": deepcopy(
+                    (relation.custom_properties or {}).get("title_cleanup") or {}
+                ),
             }
         )
     return {"live": live, **vod}
@@ -380,10 +383,17 @@ def _apply_group_selections(account, selections):
             relation.metadata_defaults = deepcopy(
                 selection.get("metadata_defaults") or {}
             )
+            properties = dict(relation.custom_properties or {})
+            cleanup = deepcopy(selection.get("title_cleanup") or {})
+            if cleanup:
+                properties["title_cleanup"] = cleanup
+            else:
+                properties.pop("title_cleanup", None)
+            relation.custom_properties = properties
             updates.append(relation)
         if updates:
             M3UVODCategoryRelation.objects.bulk_update(
-                updates, ["enabled", "metadata_defaults"]
+                updates, ["enabled", "metadata_defaults", "custom_properties"]
             )
             from apps.vod.metadata import sync_category_relations_metadata
 

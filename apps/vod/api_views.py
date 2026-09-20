@@ -71,6 +71,7 @@ from .utils import (
     parse_category_filter_value,
 )
 from .metadata import (
+    IMAGE_VIDEO_CODECS,
     compatible_video_features,
     effective_relation_metadata,
     merge_episode_provider_video_metadata,
@@ -79,6 +80,7 @@ from .metadata import (
     relation_declared_metadata,
     summarize_series_relation_metadata,
 )
+from .catalog_cache import catalog_generation, safe_cache_get, safe_cache_set
 from django.utils import timezone
 from rest_framework.utils.urls import replace_query_param, remove_query_param
 
@@ -231,6 +233,31 @@ def _relation_provider_year(relation):
         else relation.series
     )
     return canonical.year
+
+
+def _relation_import_year(relation, year_rules):
+    """Return the year list import would recognize before title cleanup."""
+    raw_year = _relation_property(relation, "year")
+    try:
+        year = int(str(raw_year).strip())
+        if 1900 <= year <= timezone.now().year + 5:
+            return year
+    except (TypeError, ValueError):
+        pass
+    for field in ("releaseDate", "release_date"):
+        raw_date = str(_relation_property(relation, field) or "").strip()
+        try:
+            year = int(raw_date.split("-", 1)[0])
+        except (TypeError, ValueError):
+            continue
+        if 1900 <= year <= timezone.now().year + 5:
+            return year
+    from .tmdb import extract_year_from_title
+
+    return extract_year_from_title(
+        _relation_provider_title(relation),
+        rules=year_rules,
+    )
 
 
 def _relation_provider_external_ids(relation):
@@ -439,6 +466,44 @@ def _effective_json_scalar_match(
         field, field,
         value,
     ]
+
+
+def _effective_json_value_expression(
+    field, *, relation_alias="relation", category_alias="category_relation"
+):
+    """Return the effective JSON value for a trusted metadata field name."""
+    manual = f"{relation_alias}.manual_metadata"
+    observed = f"{relation_alias}.observed_metadata"
+    declared = f"{relation_alias}.declared_metadata"
+    category = f"{category_alias}.metadata_defaults"
+    return f"""CASE
+        WHEN COALESCE({manual} ? '{field}', false) THEN {manual} -> '{field}'
+        WHEN COALESCE({observed} ? '{field}', false) THEN {observed} -> '{field}'
+        WHEN COALESCE({declared} ? '{field}', false) THEN {declared} -> '{field}'
+        WHEN COALESCE({category} ? '{field}', false) THEN {category} -> '{field}'
+        ELSE '[]'::jsonb
+    END"""
+
+
+def _effective_json_scalar_expression(
+    field,
+    *,
+    relation_alias="relation",
+    category_alias="category_relation",
+    relation_fallback="NULL",
+):
+    """Return the effective text value for a trusted metadata field name."""
+    manual = f"{relation_alias}.manual_metadata"
+    observed = f"{relation_alias}.observed_metadata"
+    declared = f"{relation_alias}.declared_metadata"
+    category = f"{category_alias}.metadata_defaults"
+    return f"""CASE
+        WHEN COALESCE({manual} ? '{field}', false) THEN {manual} ->> '{field}'
+        WHEN COALESCE({observed} ? '{field}', false) THEN {observed} ->> '{field}'
+        WHEN COALESCE({declared} ? '{field}', false) THEN {declared} ->> '{field}'
+        WHEN COALESCE({category} ? '{field}', false) THEN {category} ->> '{field}'
+        ELSE {relation_fallback}
+    END"""
 
 
 def _vod_relation_sql(filters, relation_type):
@@ -1488,6 +1553,127 @@ class M3UVODCategoryRelationViewSet(viewsets.ReadOnlyModelViewSet):
             return self.queryset.none()
         return self.queryset if _is_admin(self.request.user) else self.queryset.none()
 
+    @action(detail=True, methods=["patch"], url_path="title-cleanup")
+    def title_cleanup(self, request, pk=None):
+        if not _is_admin(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        from .tmdb import normalize_group_title_cleanup
+
+        relation = self.get_object()
+        try:
+            cleanup = normalize_group_title_cleanup(
+                request.data.get("title_cleanup")
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"title_cleanup": str(exc)}) from exc
+        properties = dict(relation.custom_properties or {})
+        if cleanup:
+            properties["title_cleanup"] = cleanup
+        else:
+            properties.pop("title_cleanup", None)
+        relation.custom_properties = properties
+        relation.save(update_fields=["custom_properties", "updated_at"])
+        return Response(self.get_serializer(relation).data)
+
+    @action(detail=True, methods=["post"], url_path="title-cleanup-preview")
+    def title_cleanup_preview(self, request, pk=None):
+        """Preview a category removal rule against stored provider titles."""
+        if not _is_admin(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        from .tmdb import clean_lookup_title, normalize_group_title_cleanup
+
+        category_relation = self.get_object()
+        try:
+            page = max(1, int(request.data.get("page") or 1))
+        except (TypeError, ValueError) as exc:
+            raise DRFValidationError(
+                {"page": "Enter a valid preview page."}
+            ) from exc
+        try:
+            page_size = min(
+                250, max(1, int(request.data.get("page_size") or 25))
+            )
+        except (TypeError, ValueError) as exc:
+            raise DRFValidationError(
+                {"page_size": "Enter a valid preview page size."}
+            ) from exc
+
+        if category_relation.category.category_type == "movie":
+            relations = M3UMovieRelation.objects.filter(
+                m3u_account_id=category_relation.m3u_account_id,
+                category_id=category_relation.category_id,
+            ).select_related("movie")
+            content_type = "movie"
+        elif category_relation.category.category_type == "series":
+            relations = M3USeriesRelation.objects.filter(
+                m3u_account_id=category_relation.m3u_account_id,
+                category_id=category_relation.category_id,
+            ).select_related("series")
+            content_type = "series"
+        else:
+            relations = M3UMovieRelation.objects.none()
+            content_type = category_relation.category.category_type
+
+        total_in_category = relations.count()
+        empty_result = {
+            "results": [],
+            "page_match_count": 0,
+            "page": page,
+            "page_size": page_size,
+            "total_in_category": total_in_category,
+            "error": None,
+        }
+        try:
+            cleanup = normalize_group_title_cleanup(
+                request.data.get("title_cleanup")
+            )
+        except ValueError as exc:
+            return Response({**empty_result, "error": str(exc)})
+
+        pattern = None
+        if cleanup:
+            flags = 0 if cleanup["case_sensitive"] else re.IGNORECASE
+            pattern = re.compile(cleanup["pattern"], flags)
+        title_rules = CoreSettings.get_tmdb_title_rules()
+        year_rules = CoreSettings.get_tmdb_year_rules()
+        offset = (page - 1) * page_size
+        results = []
+        page_match_count = 0
+        for relation in relations.order_by("id")[offset : offset + page_size]:
+            before = _relation_provider_title(relation)
+            matched = bool(before and pattern and pattern.search(before))
+            if matched:
+                page_match_count += 1
+            year = _relation_import_year(relation, year_rules)
+            after = clean_lookup_title(
+                before,
+                year=year,
+                rules=title_rules,
+                year_rules=year_rules,
+                group_rule=cleanup,
+            )
+            results.append(
+                {
+                    "relation_id": relation.id,
+                    "content_type": content_type,
+                    "before": before,
+                    "after": after,
+                    "year": year,
+                    "matched": matched,
+                    "changed": before != after,
+                }
+            )
+        return Response(
+            {
+                "results": results,
+                "page_match_count": page_match_count,
+                "page": page,
+                "page_size": page_size,
+                "total_in_category": total_in_category,
+                "error": None,
+            }
+        )
+
     @action(detail=True, methods=["patch"], url_path="metadata-defaults")
     def metadata_defaults(self, request, pk=None):
         if not _is_admin(request.user):
@@ -1618,6 +1804,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
             "match_missing": CoreSettings.get_tmdb_match_missing(),
             "prefer_artwork": CoreSettings.get_tmdb_prefer_artwork(),
             "title_rules": CoreSettings.get_tmdb_title_rules(),
+            "year_rules": CoreSettings.get_tmdb_year_rules(),
         }
 
     def list(self, request):
@@ -1686,6 +1873,14 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 title_rules = normalize_title_rules(request.data.get("title_rules"))
             except ValueError as exc:
                 raise DRFValidationError({"title_rules": str(exc)}) from exc
+        year_rules = CoreSettings.get_tmdb_year_rules()
+        if "year_rules" in request.data:
+            from .tmdb import normalize_year_rules
+
+            try:
+                year_rules = normalize_year_rules(request.data.get("year_rules"))
+            except ValueError as exc:
+                raise DRFValidationError({"year_rules": str(exc)}) from exc
         CoreSettings.set_vod_metadata_settings(
             api_token=token,
             languages=languages,
@@ -1703,6 +1898,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 "prefer_artwork", previous_prefer_artwork
             ) is not False,
             title_rules=title_rules,
+            year_rules=year_rules,
         )
         if previous_prefer_artwork != CoreSettings.get_tmdb_prefer_artwork():
             from .catalog_cache import bump_catalog_generation
@@ -2508,7 +2704,11 @@ class VODMetadataViewSet(viewsets.ViewSet):
     def title_preview(self, request):
         """Preview lookup-only title cleanup against real canonical rows."""
         self._admin_only(request)
-        from .tmdb import clean_lookup_title, normalize_title_rules
+        from .tmdb import (
+            clean_lookup_title,
+            normalize_title_rules,
+            normalize_year_rules,
+        )
 
         try:
             rules = normalize_title_rules(
@@ -2516,6 +2716,12 @@ class VODMetadataViewSet(viewsets.ViewSet):
             )
         except ValueError as exc:
             raise DRFValidationError({"title_rules": str(exc)}) from exc
+        try:
+            year_rules = normalize_year_rules(
+                request.data.get("year_rules", CoreSettings.get_tmdb_year_rules())
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"year_rules": str(exc)}) from exc
         search = str(request.data.get("search") or "").strip()
         missing_tmdb_only = request.data.get("missing_tmdb_only") is True
         requested_items = request.data.get("items")
@@ -2606,16 +2812,23 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 ids_by_type[content_type].add(content_id)
 
             content_by_key = {}
+            from .tasks import category_cleanup_rules_for_content
+
             for model, content_type in ((Movie, "movie"), (Series, "series")):
                 queryset = with_tmdb_preview_fields(
                     model.objects.filter(id__in=ids_by_type[content_type])
                 )
-                for content in queryset.values(
+                content_rows = list(queryset.values(
                     "id", "name", "display_name", "clean_title", "year",
                     "tmdb_status", "tmdb_match_id", "tmdb_id",
                     "preview_tmdb_status", "preview_tmdb_id",
                     "preview_candidate_count", "preview_match_method",
-                ):
+                ))
+                group_rules = category_cleanup_rules_for_content(
+                    model, content_rows
+                )
+                for content in content_rows:
+                    content["_group_rule"] = group_rules.get(content["id"])
                     content_by_key[(content_type, content["id"])] = content
 
             for content_type, content_id in requested_keys:
@@ -2635,6 +2848,8 @@ class VODMetadataViewSet(viewsets.ViewSet):
                         display_name=content["display_name"],
                         year=content["year"],
                         rules=rules,
+                        year_rules=year_rules,
+                        group_rule=content.get("_group_rule"),
                     )
                 rows.append(preview_row(content, content_type, before, after))
             return Response(
@@ -2702,12 +2917,18 @@ class VODMetadataViewSet(viewsets.ViewSet):
             if offset >= queryset_count:
                 offset -= queryset_count
                 continue
-            page_rows = with_tmdb_preview_fields(queryset).values(
+            page_rows = list(with_tmdb_preview_fields(queryset).values(
                 "id", "name", "display_name", "clean_title", "year",
                 "tmdb_status", "tmdb_match_id", "tmdb_id",
                 "preview_tmdb_status", "preview_tmdb_id",
                 "preview_candidate_count", "preview_match_method",
-            )[offset : offset + remaining]
+            )[offset : offset + remaining])
+            from .tasks import category_cleanup_rules_for_content
+
+            group_rules = category_cleanup_rules_for_content(
+                Movie if content_type == "movie" else Series,
+                page_rows,
+            )
             for content in page_rows:
                 before = str(content["display_name"] or content["name"] or "")
                 if (
@@ -2722,6 +2943,8 @@ class VODMetadataViewSet(viewsets.ViewSet):
                         display_name=content["display_name"],
                         year=content["year"],
                         rules=rules,
+                        year_rules=year_rules,
+                        group_rule=group_rules.get(content["id"]),
                     )
                 rows.append(preview_row(content, content_type, before, after))
             remaining = page_size - len(rows)
@@ -2746,8 +2969,15 @@ class VODMetadataViewSet(viewsets.ViewSet):
             mark_profile_selections_outdated,
             profile_ids_using_canonical_content,
         )
-        from .tasks import TMDB_ENRICHMENT_LOCK_VALUE
-        from .tmdb import clean_lookup_title, normalize_title_rules
+        from .tasks import (
+            TMDB_ENRICHMENT_LOCK_VALUE,
+            category_cleanup_rules_for_content,
+        )
+        from .tmdb import (
+            clean_lookup_title,
+            normalize_title_rules,
+            normalize_year_rules,
+        )
 
         try:
             rules = normalize_title_rules(
@@ -2755,6 +2985,12 @@ class VODMetadataViewSet(viewsets.ViewSet):
             )
         except ValueError as exc:
             raise DRFValidationError({"title_rules": str(exc)}) from exc
+        try:
+            year_rules = normalize_year_rules(
+                request.data.get("year_rules", CoreSettings.get_tmdb_year_rules())
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"year_rules": str(exc)}) from exc
         selections = request.data.get("selections") or []
         select_all = request.data.get("select_all") is True
         exclusions = request.data.get("exclude_selections") or []
@@ -2809,38 +3045,45 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 tmdb_enrichment_signature=""
             ).count()
             queryset = queryset.filter(tmdb_enrichment_signature="")
-            updates = []
-            for content in queryset.only(
-                "id", "name", "display_name", "clean_title", "year",
-                "tmdb_status", "tmdb_match_id", "tmdb_id",
-                "tmdb_enrichment_signature",
-            ).iterator(chunk_size=500):
-                processed_count += 1
-                if (
-                    content.tmdb_status == "matched"
-                    and (content.tmdb_match_id or content.tmdb_id)
-                    and content.display_name
-                ):
-                    clean_title = content.display_name.strip()[:255]
-                else:
-                    clean_title = clean_lookup_title(
-                        content.name,
-                        display_name=content.display_name,
-                        year=content.year,
-                        rules=rules,
-                    )[:255]
-                if clean_title != content.clean_title:
-                    output_changed[content_type].append(content.id)
-                    changed[content_type].append(content.id)
-                    content.clean_title = clean_title
-                content.tmdb_enrichment_signature = TMDB_ENRICHMENT_LOCK_VALUE
-                updates.append(content)
-            if updates:
+            content_ids = list(queryset.values_list("id", flat=True))
+            for offset in range(0, len(content_ids), 500):
+                contents = list(model.objects.filter(
+                    id__in=content_ids[offset : offset + 500]
+                ).only(
+                    "id", "name", "display_name", "clean_title", "year",
+                    "tmdb_status", "tmdb_match_id", "tmdb_id",
+                    "tmdb_enrichment_signature",
+                ))
+                group_rules = category_cleanup_rules_for_content(model, contents)
+                updates = []
+                for content in contents:
+                    processed_count += 1
+                    if (
+                        content.tmdb_status == "matched"
+                        and (content.tmdb_match_id or content.tmdb_id)
+                        and content.display_name
+                    ):
+                        clean_title = content.display_name.strip()[:255]
+                    else:
+                        clean_title = clean_lookup_title(
+                            content.name,
+                            display_name=content.display_name,
+                            year=content.year,
+                            rules=rules,
+                            year_rules=year_rules,
+                            group_rule=group_rules.get(content.id),
+                        )[:255]
+                    if clean_title != content.clean_title:
+                        output_changed[content_type].append(content.id)
+                        changed[content_type].append(content.id)
+                        content.clean_title = clean_title
+                    content.tmdb_enrichment_signature = (
+                        TMDB_ENRICHMENT_LOCK_VALUE
+                    )
+                    updates.append(content)
                 model.objects.bulk_update(
                     updates,
-                    [
-                        "clean_title", "tmdb_enrichment_signature",
-                    ],
+                    ["clean_title", "tmdb_enrichment_signature"],
                     batch_size=500,
                 )
 
@@ -4936,6 +5179,197 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
         except KeyError:
             return [Authenticated()]
 
+    @action(detail=False, methods=["get"], url_path="filter-options")
+    def filter_options(self, request):
+        """Return technical filters that occur in the selected VOD scope."""
+        user = _authenticated_user(request)
+        movies_allowed = is_vod_movies_enabled(user=user)
+        series_allowed = is_vod_series_enabled(user=user)
+        content_type = str(request.query_params.get("type") or "all").lower()
+        if content_type not in {"all", "movie", "movies", "series"}:
+            raise DRFValidationError(
+                {"type": "Choose all, movies, or series."}
+            )
+        include_movies = movies_allowed and content_type in {
+            "all", "movie", "movies",
+        }
+        include_series = series_allowed and content_type in {"all", "series"}
+        if not include_movies and not include_series:
+            return Response(
+                {
+                    "audio_languages": [],
+                    "subtitle_languages": [],
+                    "resolutions": [],
+                    "container_extensions": [],
+                    "video_features": [],
+                }
+            )
+
+        base_filters = {
+            "m3u_account": request.query_params.get("m3u_account", ""),
+            "category": request.query_params.get("category", ""),
+        }
+        cache_key = (
+            f"vod_filter_options:{catalog_generation()}:"
+            f"{int(include_movies)}:{int(include_series)}:"
+            f"{base_filters['m3u_account']}:{base_filters['category']}"
+        )
+        cached = safe_cache_get(cache_key)
+        if isinstance(cached, dict):
+            return Response(cached)
+
+        def source_select(joins, conditions, *, container_fallback):
+            return f"""
+                SELECT
+                    {_effective_json_value_expression('audio_languages')}
+                        AS audio_languages,
+                    {_effective_json_value_expression('subtitle_languages')}
+                        AS subtitle_languages,
+                    {_effective_json_value_expression('video_features')}
+                        AS video_features,
+                    {_effective_json_scalar_expression('resolution')}
+                        AS resolution,
+                    {_effective_json_scalar_expression(
+                        'container_extension',
+                        relation_fallback=container_fallback,
+                    )} AS container_extension
+                FROM {joins}
+                WHERE {' AND '.join(conditions)}
+            """
+
+        selects = []
+        params = []
+        if include_movies:
+            joins, conditions, query_params, _ = _vod_relation_sql(
+                base_filters, "movie"
+            )
+            selects.append(
+                source_select(
+                    joins,
+                    conditions,
+                    container_fallback="relation.container_extension",
+                )
+            )
+            params.extend(query_params)
+        if include_series:
+            joins, conditions, query_params, _ = _vod_relation_sql(
+                base_filters, "series"
+            )
+            selects.append(
+                source_select(joins, conditions, container_fallback="NULL")
+            )
+            params.extend(query_params)
+
+            episode_conditions = ["account.is_active = true"]
+            episode_params = []
+            account_id = str(base_filters["m3u_account"] or "").strip()
+            if account_id.isdigit():
+                episode_conditions.append("relation.m3u_account_id = %s")
+                episode_params.append(int(account_id))
+            category_value = str(base_filters["category"] or "").strip()
+            if category_value:
+                category_name = category_value
+                category_type = None
+                if "|" in category_value:
+                    category_name, category_type = category_value.rsplit("|", 1)
+                if category_type and category_type != "series":
+                    episode_conditions.append("1 = 0")
+                else:
+                    episode_conditions.append("category.name = %s")
+                    episode_params.append(category_name)
+            episode_joins = """
+                vod_m3uepisoderelation relation
+                JOIN m3u_m3uaccount account
+                  ON relation.m3u_account_id = account.id
+                JOIN vod_m3useriesrelation parent_relation
+                  ON relation.series_relation_id = parent_relation.id
+                LEFT JOIN vod_vodcategory category
+                  ON parent_relation.category_id = category.id
+                LEFT JOIN vod_m3uvodcategoryrelation category_relation
+                  ON category_relation.m3u_account_id = relation.m3u_account_id
+                 AND category_relation.category_id = parent_relation.category_id
+            """
+            selects.append(
+                source_select(
+                    episode_joins,
+                    episode_conditions,
+                    container_fallback="relation.container_extension",
+                )
+            )
+            params.extend(episode_params)
+
+        sql = f"""
+            WITH source_metadata AS (
+                {' UNION ALL '.join(selects)}
+            ), facet_values AS (
+                SELECT 'audio_languages' AS facet, expanded.value
+                FROM source_metadata source
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    CASE
+                        WHEN jsonb_typeof(source.audio_languages) = 'array'
+                        THEN source.audio_languages
+                        ELSE '[]'::jsonb
+                    END
+                ) AS expanded(value)
+                UNION ALL
+                SELECT 'subtitle_languages' AS facet, expanded.value
+                FROM source_metadata source
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    CASE
+                        WHEN jsonb_typeof(source.subtitle_languages) = 'array'
+                        THEN source.subtitle_languages
+                        ELSE '[]'::jsonb
+                    END
+                ) AS expanded(value)
+                UNION ALL
+                SELECT 'video_features' AS facet, expanded.value
+                FROM source_metadata source
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    CASE
+                        WHEN jsonb_typeof(source.video_features) = 'array'
+                        THEN source.video_features
+                        ELSE '[]'::jsonb
+                    END
+                ) AS expanded(value)
+                UNION ALL
+                SELECT 'resolutions' AS facet, source.resolution AS value
+                FROM source_metadata source
+                UNION ALL
+                SELECT 'container_extensions' AS facet,
+                       source.container_extension AS value
+                FROM source_metadata source
+            )
+            SELECT facet, LOWER(BTRIM(value)) AS value
+            FROM facet_values
+            WHERE NULLIF(BTRIM(value), '') IS NOT NULL
+            GROUP BY facet, LOWER(BTRIM(value))
+            ORDER BY facet, LOWER(BTRIM(value))
+        """
+        available = {
+            "audio_languages": set(),
+            "subtitle_languages": set(),
+            "resolutions": set(),
+            "container_extensions": set(),
+            "video_features": set(),
+        }
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            for facet, value in cursor.fetchall():
+                if facet in available and value:
+                    if facet in {"audio_languages", "subtitle_languages"}:
+                        value = normalize_language_code(value)
+                    elif (
+                        facet == "container_extensions"
+                        and value in IMAGE_VIDEO_CODECS
+                    ):
+                        continue
+                    available[facet].add(value)
+        result = {
+            facet: sorted(values) for facet, values in available.items()
+        }
+        safe_cache_set(cache_key, result, timeout=3600)
+        return Response(result)
+
     def _list_variants(self, request):
         """Return one paginated row per concrete provider movie/series source."""
         user = _authenticated_user(request)
@@ -5447,6 +5881,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             from .tmdb import clean_lookup_title
 
             title_rules = CoreSettings.get_tmdb_title_rules()
+            year_rules = CoreSettings.get_tmdb_year_rules()
             with connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 columns = [col[0] for col in cursor.description]
@@ -5538,6 +5973,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     row["name"],
                     year=content.year,
                     rules=title_rules,
+                    year_rules=year_rules,
                 )
                 results.append(formatted_item)
 
