@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status
+from rest_framework import serializers as drf_serializers, viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -1058,6 +1058,8 @@ def _filtered_vod_relation_query(filters, relation_type):
 class VODSourceRelationViewSet(viewsets.ViewSet):
     """Manage metadata and canonical placement for provider relations."""
 
+    serializer_class = drf_serializers.Serializer
+
     def get_permissions(self):
         return [Authenticated()]
 
@@ -1780,6 +1782,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
     """Configure and monitor canonical TMDB enrichment."""
 
     permission_classes = [Authenticated]
+    serializer_class = drf_serializers.Serializer
 
     def _admin_only(self, request):
         if not _is_admin(request.user):

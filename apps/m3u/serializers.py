@@ -1,5 +1,6 @@
 from core.utils import validate_flexible_url, ensure_custom_properties_dict
 from rest_framework import serializers, status
+from drf_spectacular.utils import extend_schema_field
 from rest_framework.response import Response
 from .models import (
     M3UAccount,
@@ -596,12 +597,15 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "next_run_at": next_run,
         }
 
+    @extend_schema_field(serializers.DictField())
     def get_live_refresh_schedule(self, obj):
         return self._periodic_task_schedule(obj.refresh_task)
 
+    @extend_schema_field(serializers.DictField())
     def get_vod_refresh_schedule(self, obj):
         return self._periodic_task_schedule(obj.vod_refresh_task)
 
+    @extend_schema_field(serializers.DictField())
     def get_catalog_counts(self, obj):
         custom = obj.custom_properties or {}
         live = custom.get("live_catalog_counts") or {}

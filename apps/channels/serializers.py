@@ -3,6 +3,8 @@ import os
 from datetime import datetime
 
 from rest_framework import serializers
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from .models import (
     Stream,
     Channel,
@@ -764,6 +766,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             return None
         return value  # PrimaryKeyRelatedField will handle the conversion to object
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_auto_created_by_name(self, obj):
         """Get the name of the M3U account that auto-created this channel."""
         if obj.auto_created_by:

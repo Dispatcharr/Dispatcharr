@@ -626,7 +626,7 @@ class CoreSettingsSerializerVodTest(TestCase):
         from core.models import VOD_SETTINGS_KEY
         from core.serializers import CoreSettingsSerializer
 
-        obj, _ = CoreSettings.objects.get_or_create(
+        obj, _ = CoreSettings.objects.update_or_create(
             key=VOD_SETTINGS_KEY,
             defaults={
                 "name": "VOD Settings",
@@ -643,7 +643,7 @@ class CoreSettingsSerializerVodTest(TestCase):
         from core.models import VOD_SETTINGS_KEY
         from core.serializers import CoreSettingsSerializer
 
-        obj, _ = CoreSettings.objects.get_or_create(
+        obj, _ = CoreSettings.objects.update_or_create(
             key=VOD_SETTINGS_KEY,
             defaults={
                 "name": "VOD Settings",

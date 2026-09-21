@@ -140,6 +140,7 @@ class M3UVODCategoryRelationSerializer(serializers.ModelSerializer):
             "title_cleanup",
         ]
 
+    @extend_schema_field(serializers.DictField())
     def get_title_cleanup(self, obj):
         from .tmdb import normalize_group_title_cleanup
 
@@ -190,6 +191,7 @@ class SeriesSerializer(serializers.ModelSerializer):
     def get_episode_count(self, obj):
         return obj.episodes.count()
 
+    @extend_schema_field(serializers.DictField())
     def get_source_metadata(self, obj):
         return summarize_relation_metadata(obj.m3u_relations.all())
 
@@ -203,6 +205,7 @@ class MovieSerializer(serializers.ModelSerializer):
         model = Movie
         exclude = ["tmdb_metadata", "tmdb_enrichment_signature"]
 
+    @extend_schema_field(serializers.DictField())
     def get_source_metadata(self, obj):
         return summarize_relation_metadata(obj.m3u_relations.all())
 
@@ -465,6 +468,7 @@ class VODAccessPolicySerializer(serializers.ModelSerializer):
             "created_at", "updated_at",
         ]
 
+    @extend_schema_field(OpenApiTypes.BOOL)
     def get_selection_current(self, obj):
         active_mode = self.get_selection_active_mode(obj)
 
@@ -475,6 +479,7 @@ class VODAccessPolicySerializer(serializers.ModelSerializer):
             and (not active_mode or active_mode == obj.export_mode)
         )
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_selection_active_mode(self, obj):
         """Identify the mode used for the generation currently being served."""
         counts = obj.selection_counts or {}
@@ -500,10 +505,12 @@ class VODAccessPolicySerializer(serializers.ModelSerializer):
                 return VODAccessPolicy.ExportMode.VARIANTS
         return ""
 
+    @extend_schema_field(OpenApiTypes.BOOL)
     def get_selection_available(self, obj):
         """Whether a completed generation can still be served or previewed."""
         return bool(obj.active_selection_generation)
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_selection_task_state(self, obj):
         if obj.selection_status not in {
             VODAccessPolicy.SelectionStatus.PENDING,
@@ -1434,12 +1441,15 @@ class VODPlaybackSessionSerializer(serializers.ModelSerializer):
         obj._vod_detail_target = target
         return target
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_detail_content_type(self, obj):
         return self._detail_target(obj)[0]
 
+    @extend_schema_field(OpenApiTypes.INT)
     def get_detail_canonical_id(self, obj):
         return self._detail_target(obj)[1]
 
+    @extend_schema_field(OpenApiTypes.INT)
     def get_detail_relation_id(self, obj):
         return self._detail_target(obj)[2]
 

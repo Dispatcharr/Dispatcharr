@@ -2,6 +2,7 @@ import json
 import re
 
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 from django.contrib.auth.models import Group, Permission
 from .models import User
 from apps.channels.models import ChannelProfile
@@ -93,6 +94,7 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Unknown or inactive VOD output profile")
         return value
 
+    @extend_schema_field(serializers.DictField(allow_null=True))
     def get_vod_policy(self, obj):
         from apps.vod.models import VODAccessPolicy
 
