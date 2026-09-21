@@ -193,8 +193,16 @@ def remember_m3u_selection_changes(sender, instance, **kwargs):
     instance._vod_selection_changed = scalar_changed or vod_properties_changed
 
 
-@receiver(post_save)
-@receiver(post_delete)
+@receiver([post_save, post_delete], sender=Movie)
+@receiver([post_save, post_delete], sender=Series)
+@receiver([post_save, post_delete], sender=Episode)
+@receiver([post_save, post_delete], sender=M3UMovieRelation)
+@receiver([post_save, post_delete], sender=M3USeriesRelation)
+@receiver([post_save, post_delete], sender=M3UEpisodeRelation)
+@receiver([post_save, post_delete], sender=M3UVODCategoryRelation)
+@receiver([post_save, post_delete], sender=M3UAccount)
+@receiver([post_save, post_delete], sender=VODAccessPolicy)
+@receiver([post_save, post_delete], sender=VODPolicyCategory)
 def invalidate_vod_catalog(
     sender,
     instance=None,
@@ -203,6 +211,21 @@ def invalidate_vod_catalog(
     signal=None,
     **kwargs,
 ):
+    delete_origin = kwargs.get("origin")
+    account_delete = isinstance(delete_origin, M3UAccount) or (
+        getattr(delete_origin, "model", None) is M3UAccount
+    )
+    if signal is post_delete and account_delete and sender in (
+        M3UMovieRelation,
+        M3USeriesRelation,
+        M3UEpisodeRelation,
+        M3UVODCategoryRelation,
+    ):
+        # The account-level post_delete below invalidates the catalog once.
+        # Repeating that work for every cascaded source relation can turn a
+        # large provider delete into thousands of profile rebuild requests.
+        return
+
     if sender in (M3UMovieRelation, M3USeriesRelation, M3UEpisodeRelation):
         changed_fields = set(update_fields or [])
         if (
@@ -221,8 +244,10 @@ def invalidate_vod_catalog(
         return
     if sender is M3UAccount:
         if signal is post_delete:
-            invalidate_and_schedule_vod_profiles(
-                "An M3U account containing VOD sources was deleted"
+            transaction.on_commit(
+                lambda: invalidate_and_schedule_vod_profiles(
+                    "An M3U account containing VOD sources was deleted"
+                )
             )
             return
         changed_fields = set(update_fields or [])

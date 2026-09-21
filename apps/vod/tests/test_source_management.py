@@ -1688,6 +1688,21 @@ class VODSourceManagementTests(TestCase):
             trigger_reason="M3U account VOD selection settings changed"
         )
 
+    def test_account_delete_invalidates_profiles_once_after_relation_cascade(self):
+        with (
+            patch("apps.vod.signals.bump_catalog_generation") as bump,
+            patch(
+                "apps.vod.profile_selection.enqueue_all_profile_selection_rebuilds"
+            ) as enqueue,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            self.account_a.delete()
+
+        bump.assert_called_once_with()
+        enqueue.assert_called_once_with(
+            trigger_reason="An M3U account containing VOD sources was deleted"
+        )
+
     def test_source_observation_marks_profiles_outdated(self):
         source = initialize_relation_metadata(self.german_relation)
         source.observed_metadata = {"resolution": "2160p"}
