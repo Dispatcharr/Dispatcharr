@@ -61,7 +61,32 @@ class MintHlsSessionTests(SimpleTestCase):
                 RedisKeys.client_metadata(CHANNEL_ID, CLIENT_ID),
                 RedisKeys.hls_session(TOKEN),
             ],
-            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60],
+            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "0"],
+        )
+
+    def test_mint_stores_user_id_when_provided(self):
+        redis = MagicMock()
+        script = MagicMock(return_value=1)
+        redis.register_script.return_value = script
+
+        with patch(
+            "apps.proxy.live_proxy.output.hls.session.ConfigHelper.get",
+            return_value=60,
+        ), patch(
+            "apps.proxy.live_proxy.output.hls.session.secrets.token_urlsafe",
+            return_value=TOKEN,
+        ):
+            token = hls_session.mint_hls_session(
+                redis, CHANNEL_ID, CLIENT_ID, user_id=42
+            )
+
+        self.assertEqual(token, TOKEN)
+        script.assert_called_once_with(
+            keys=[
+                RedisKeys.client_metadata(CHANNEL_ID, CLIENT_ID),
+                RedisKeys.hls_session(TOKEN),
+            ],
+            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "42"],
         )
 
     def test_mint_returns_none_without_redis(self):

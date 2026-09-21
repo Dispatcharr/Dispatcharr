@@ -42,7 +42,7 @@ from .utils import get_logger
 from uuid import UUID
 import gevent
 from apps.proxy.utils import check_user_stream_limits
-from .output.hls.session import mint_hls_session
+from .output.hls.session import SESSION_TOKEN_HEADER, mint_hls_session
 
 logger = get_logger()
 
@@ -775,7 +775,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     {"error": "Failed to start output format segmenter"}, status=500
                 )
             token = mint_hls_session(
-                proxy_server.redis_client, channel_id, client_id
+                proxy_server.redis_client,
+                channel_id,
+                client_id,
+                user_id=user.id if user is not None else None,
             )
             if not token:
                 if _client_pre_registered:
@@ -783,7 +786,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 return JsonResponse(
                     {"error": "Failed to create HLS session"}, status=500
                 )
-            return HttpResponseRedirect(f"/proxy/hls/{token}/index.m3u8")
+            response = HttpResponseRedirect(f"/proxy/hls/{token}/index.m3u8")
+            response[SESSION_TOKEN_HEADER] = token
+            response["Access-Control-Expose-Headers"] = SESSION_TOKEN_HEADER
+            return response
         elif resolved_output_format == 'fmp4':
             if not proxy_server.ensure_output_format(
                 channel_id, resolved_format,

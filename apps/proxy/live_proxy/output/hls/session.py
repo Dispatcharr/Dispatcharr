@@ -14,6 +14,10 @@ from ...redis_keys import RedisKeys
 # 24 bytes -> 32 url-safe chars; enough to be unguessable as a capability URL.
 _HLS_SESSION_TOKEN_BYTES = 24
 
+# Response header on the HLS mint redirect. Intentionally not HLS-prefixed so
+# a later non-HLS mint can reuse the same header name.
+SESSION_TOKEN_HEADER = "X-Dispatcharr-Session-Token"
+
 # Key shapes inlined into Lua below. Keep in sync with RedisKeys.
 assert RedisKeys.client_metadata("C", "X") == "live:channel:C:clients:X"
 assert RedisKeys.clients("C") == "live:channel:C:clients"
@@ -34,7 +38,12 @@ local old = redis.call('HGET', client_key, 'hls_token')
 if old and old ~= false and old ~= ARGV[3] then
   redis.call('DEL', 'live:hls:session:' .. old)
 end
-redis.call('HSET', session_key, 'channel_id', ARGV[1], 'client_id', ARGV[2])
+redis.call(
+  'HSET', session_key,
+  'channel_id', ARGV[1],
+  'client_id', ARGV[2],
+  'user_id', ARGV[5]
+)
 redis.call('EXPIRE', session_key, tonumber(ARGV[4]))
 redis.call('HSET', client_key, 'hls_token', ARGV[3])
 redis.call('EXPIRE', client_key, tonumber(ARGV[4]))
@@ -111,12 +120,13 @@ def _lua_hash(fields):
     return dict(zip(iterator, iterator))
 
 
-def mint_hls_session(redis_client, channel_id, client_id):
+def mint_hls_session(redis_client, channel_id, client_id, user_id=None):
     """Create an opaque playlist/segment token bound to this live client.
 
     Returns the token, or None when Redis is unavailable or the client
     record is already gone. Also stores the token on the client hash so
-    teardown can delete the session key.
+    teardown can delete the session key. ``user_id`` is stored on the
+    session hash for authenticated stop (anonymous uses ``"0"``).
     """
     if not redis_client:
         return None
@@ -124,13 +134,39 @@ def mint_hls_session(redis_client, channel_id, client_id):
     token = secrets.token_urlsafe(_HLS_SESSION_TOKEN_BYTES)
     ttl = ConfigHelper.get("CLIENT_RECORD_TTL", 60)
     session_key = RedisKeys.hls_session(token)
+    user_id_str = str(user_id) if user_id is not None else "0"
     created = _script(redis_client, "mint", _LUA_MINT_IF_CLIENT_EXISTS)(
         keys=[client_key, session_key],
-        args=[str(channel_id), str(client_id), token, int(ttl)],
+        args=[str(channel_id), str(client_id), token, int(ttl), user_id_str],
     )
     if not created:
         return None
     return token
+
+
+def get_hls_session(redis_client, token):
+    """Return the session hash for ``token``, or None if missing/incomplete."""
+    if not redis_client or not token:
+        return None
+    data = redis_client.hgetall(RedisKeys.hls_session(token))
+    if not data:
+        return None
+    if not data.get("channel_id") or not data.get("client_id"):
+        return None
+    return data
+
+
+def hls_session_owned_by(session, user_id):
+    """True when a loaded session hash belongs to ``user_id``.
+
+    Missing, anonymous (``0``), or unparsable ``user_id`` is not owned.
+    """
+    if not session:
+        return False
+    try:
+        return int(session.get("user_id") or "") == int(user_id)
+    except (TypeError, ValueError):
+        return False
 
 
 def touch_hls_session(redis_client, token):

@@ -7,6 +7,7 @@ from django.http import HttpResponse, HttpResponseRedirect
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
+from apps.proxy.live_proxy.output.hls.session import SESSION_TOKEN_HEADER
 from apps.proxy.live_proxy.views import (
     _authenticate_xc_live_user,
     _resolve_xc_live_channel,
@@ -120,13 +121,13 @@ class StreamTsHlsRedirectTests(SimpleTestCase):
             )
             proxy = self._active_proxy_server()
             mock_proxy_cls.get_instance.return_value = proxy
-            stack.enter_context(
+            mint = stack.enter_context(
                 patch(
                     "apps.proxy.live_proxy.views.mint_hls_session",
                     return_value=mint_token,
                 )
             )
-            yield proxy
+            yield proxy, mint
 
     def test_hls_redirects_to_opaque_token_path(self):
         with self._hls_setup():
@@ -134,11 +135,39 @@ class StreamTsHlsRedirectTests(SimpleTestCase):
 
         self.assertIsInstance(response, HttpResponseRedirect)
         self.assertEqual(response.url, f"/proxy/hls/{TOKEN}/index.m3u8")
+        self.assertEqual(response[SESSION_TOKEN_HEADER], TOKEN)
+        self.assertEqual(
+            response["Access-Control-Expose-Headers"],
+            SESSION_TOKEN_HEADER,
+        )
         self.assertNotIn(self.channel_id, response.url)
         self.assertNotIn("/live/", response.url)
 
+    def test_hls_mint_passes_authenticated_user_id(self):
+        user = MagicMock()
+        user.id = 99
+        user.is_authenticated = True
+        user.stream_limit = 0
+
+        with self._hls_setup() as (_proxy, mint):
+            # stream_ts accepts user= for XC/native callers; DRF would
+            # otherwise replace RequestFactory.user with AnonymousUser.
+            response = stream_ts(self._request(), self.channel_id, user=user)
+
+        self.assertIsInstance(response, HttpResponseRedirect)
+        mint.assert_called_once()
+        self.assertEqual(mint.call_args.kwargs.get("user_id"), 99)
+
+    def test_hls_mint_passes_none_user_id_when_anonymous(self):
+        with self._hls_setup() as (_proxy, mint):
+            response = stream_ts(self._request(), self.channel_id)
+
+        self.assertIsInstance(response, HttpResponseRedirect)
+        mint.assert_called_once()
+        self.assertIsNone(mint.call_args.kwargs.get("user_id"))
+
     def test_mint_failure_returns_500_and_drops_client(self):
-        with self._hls_setup(mint_token=None) as proxy:
+        with self._hls_setup(mint_token=None) as (proxy, _mint):
             response = stream_ts(self._request(), self.channel_id)
 
         self.assertEqual(response.status_code, 500)
