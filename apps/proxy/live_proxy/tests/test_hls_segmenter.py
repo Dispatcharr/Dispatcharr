@@ -249,6 +249,38 @@ class SegmenterTests(unittest.TestCase):
         self.assertEqual(durs[:3], [2.0, 2.0, 2.0])
         self.assertTrue(all(abs(d - 4.0) < 0.01 for d in durs[3:]), durs)
 
+    def test_late_keyframe_under_rounding_limit_is_not_force_cut(self):
+        # TARGETDURATION 6: EXTINF under 6.5 still rounds to 6. A keyframe
+        # in that window must close the segment; a P-frame before the
+        # ceiling must not.
+        seg = TSSegmenter(
+            target_duration=4.0,
+            max_segment_duration=6.4,
+            startup_keyframe_cuts=0,
+        )
+        seg.feed(make_pat())
+        seg.feed(make_pmt())
+        seg.feed(make_video_pes(0.0, keyframe=True))
+        self.assertEqual(seg.feed(make_video_pes(6.07, keyframe=False)), [])
+        out = seg.feed(make_video_pes(6.2, keyframe=True))
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out[0].duration, 6.2, places=2)
+        self.assertEqual(round(out[0].duration), 6)
+
+    def test_force_cut_stays_under_half_second_past_target(self):
+        seg = TSSegmenter(
+            target_duration=4.0,
+            max_segment_duration=6.4,
+            startup_keyframe_cuts=0,
+        )
+        seg.feed(make_pat())
+        seg.feed(make_pmt())
+        seg.feed(make_video_pes(0.0, keyframe=True))
+        out = seg.feed(make_video_pes(6.4, keyframe=False))
+        self.assertEqual(len(out), 1)
+        self.assertLess(out[0].duration, 6.5)
+        self.assertEqual(round(out[0].duration), 6)
+
     def test_cuts_on_keyframes_at_target_duration(self):
         seg = self.make_started(target=4.0)
         # 2-second GOPs: cuts must land every 2 GOPs (4.0s)

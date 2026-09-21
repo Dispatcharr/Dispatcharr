@@ -44,6 +44,12 @@ DEFAULT_SEGMENT_DURATION = 4
 # TTL). The advertised playlist window tracks whatever is still in Redis
 # (minus a segment about to expire), not this fixed count.
 DEFAULT_WINDOW_SIZE = 10
+# RFC 8216 4.3.3.1: EXTINF rounded to the nearest integer must be
+# <= TARGETDURATION. A keyframe up to just under target+0.5s still
+# rounds to the frozen tag, so the force-cut waits through that window.
+# The tenth of a second keeps the frame that crosses the ceiling from
+# rounding up.
+_FORCE_CUT_SLACK = 0.4
 
 # Demand self-check. HLS clients are pull-based: there is no long-lived
 # response whose teardown reports the disconnect, so the manager itself
@@ -200,7 +206,7 @@ class HLSOutputManager:
         """Read TS chunks from Redis and feed them through the segmenter."""
         segmenter = TSSegmenter(
             target_duration=self.segment_duration,
-            max_segment_duration=self.adv_target,
+            max_segment_duration=float(self.adv_target) + _FORCE_CUT_SLACK,
         )
         if self._window:
             # Seeded from a previous owner's descriptor: our first segment

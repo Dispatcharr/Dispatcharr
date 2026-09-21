@@ -682,9 +682,9 @@ class TSSegmenter:
                     else:
                         self._note_pts(pts)
             elif pts is not None and self._collecting and self._segment_start_pts is not None:
-                # Keyframe drought: force a cut so EXTINF cannot exceed the
-                # frozen TARGETDURATION. Mid-GOP cuts are a last resort; a
-                # healthy GOP never reaches this ceiling.
+                # Keyframe drought: force a cut only once EXTINF would round
+                # above the frozen TARGETDURATION. Mid-GOP cuts are a last
+                # resort; a healthy GOP never reaches this ceiling.
                 elapsed = self._elapsed(pts, self._segment_start_pts)
                 if elapsed >= self.max_segment_duration:
                     finished = self._finish_segment(self._extinf_duration(elapsed))
