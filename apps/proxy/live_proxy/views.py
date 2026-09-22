@@ -162,7 +162,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         user = request.user
 
     client_user_agent = None
-    proxy_server = ProxyServer.get_instance()
     connection_allocated = False  # Track if connection slot was allocated via get_stream()
     # Initialized before the try so the exception handler can always safely
     # check/clean it up, regardless of where in the setup a failure occurs.
@@ -191,6 +190,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             response["Cache-Control"] = "no-cache"
             return response
 
+        proxy_server = ProxyServer.get_instance()
         allowed_m3u_profiles = None
         if user and channel.get_stream_profile().is_redirect():
             from apps.m3u.utils import get_allowed_m3u_profiles
