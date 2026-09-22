@@ -39,7 +39,7 @@ import {
 } from '../utils/cards/RecordingCardUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import useAuthStore from '../store/auth';
-import { canManageDvr } from '../utils/dvrAccess';
+import { canManageDvr, canRequestDvr } from '../utils/dvrAccess';
 
 const STATUS_OPTIONS = [
   { value: 'recording', label: 'Recording' },
@@ -54,17 +54,24 @@ const RecordingList = ({
   onOpenRecurring,
   channelsById,
   canManage,
+  canRequest,
+  authUserId,
 }) => {
-  return list.map((rec) => (
-    <RecordingCard
-      key={`rec-${rec.id}`}
-      recording={rec}
-      onOpenDetails={onOpenDetails}
-      onOpenRecurring={onOpenRecurring}
-      channel={channelsById?.[rec.channel]}
-      canManage={canManage}
-    />
-  ));
+  return list.map((rec) => {
+    // Request-tier (non-manager) users may only act on recordings they own;
+    // manager/admin can act on all of them.
+    const isOwner = canRequest && rec.owner?.id === authUserId;
+    return (
+      <RecordingCard
+        key={`rec-${rec.id}`}
+        recording={rec}
+        onOpenDetails={onOpenDetails}
+        onOpenRecurring={onOpenRecurring}
+        channel={channelsById?.[rec.channel]}
+        canManage={canManage || isOwner}
+      />
+    );
+  });
 };
 
 const DVRPage = () => {
@@ -74,6 +81,7 @@ const DVRPage = () => {
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
   const authUser = useAuthStore((s) => s.user);
   const canManage = canManageDvr(authUser);
+  const canRequest = canRequestDvr(authUser);
   const [channelsById, setChannelsById] = useState({});
   const { toUserTime, userNow } = useTimeHelpers();
 
@@ -250,7 +258,7 @@ const DVRPage = () => {
   return (
     <Box p={10}>
       <Flex gap="md" align="center" wrap="wrap" mb={12}>
-        {canManage && (
+        {(canManage || canRequest) && (
           <Button
             leftSection={<SquarePlus size={18} />}
             variant="light"
@@ -338,6 +346,8 @@ const DVRPage = () => {
                 onOpenRecurring={openRuleModal}
                 channelsById={channelsById}
                 canManage={canManage}
+                canRequest={canRequest}
+                authUserId={authUser?.id}
               />
             }
             {filteredInProgress.length === 0 && (
@@ -374,6 +384,8 @@ const DVRPage = () => {
                 onOpenRecurring={openRuleModal}
                 channelsById={channelsById}
                 canManage={canManage}
+                canRequest={canRequest}
+                authUserId={authUser?.id}
               />
             }
             {filteredUpcoming.length === 0 && (
@@ -410,6 +422,8 @@ const DVRPage = () => {
                 onOpenRecurring={openRuleModal}
                 channelsById={channelsById}
                 canManage={canManage}
+                canRequest={canRequest}
+                authUserId={authUser?.id}
               />
             }
             {filteredCompleted.length === 0 && (
@@ -423,7 +437,7 @@ const DVRPage = () => {
         </div>
       </Stack>
 
-      {canManage && (
+      {(canManage || canRequest) && (
         <RecordingForm
           isOpen={recordingModalOpen}
           onClose={closeRecordingModal}

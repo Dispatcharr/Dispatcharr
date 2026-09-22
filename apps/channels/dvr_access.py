@@ -4,10 +4,11 @@ _DVR_ACCESS = "dvr_access"
 
 DVR_ACCESS_NONE = "none"
 DVR_ACCESS_VIEW = "view"
+DVR_ACCESS_REQUEST = "request"
 DVR_ACCESS_MANAGE = "manage"
 
 _VALID_LEVELS = frozenset(
-    {DVR_ACCESS_NONE, DVR_ACCESS_VIEW, DVR_ACCESS_MANAGE}
+    {DVR_ACCESS_NONE, DVR_ACCESS_VIEW, DVR_ACCESS_REQUEST, DVR_ACCESS_MANAGE}
 )
 
 
@@ -49,9 +50,24 @@ def is_dvr_manage_enabled(*, user=None):
     return get_dvr_access(user=user) == DVR_ACCESS_MANAGE
 
 
+def is_dvr_request_enabled(*, user=None):
+    """Return whether *user* may request/own their own recordings.
+
+    True for ``request`` and ``manage`` (manage implies request); admins are
+    always ``manage``. Distinct from full DVR management: a request-only
+    user may schedule and delete recordings they own, but not touch other
+    users' recordings, DVR settings, or recurring rules.
+    """
+    return get_dvr_access(user=user) in (DVR_ACCESS_REQUEST, DVR_ACCESS_MANAGE)
+
+
 def is_dvr_view_enabled(*, user=None):
     """Return whether *user* may list and play DVR recordings."""
-    return get_dvr_access(user=user) in (DVR_ACCESS_VIEW, DVR_ACCESS_MANAGE)
+    return get_dvr_access(user=user) in (
+        DVR_ACCESS_VIEW,
+        DVR_ACCESS_REQUEST,
+        DVR_ACCESS_MANAGE,
+    )
 
 
 def recordings_queryset_for_user(queryset, user):

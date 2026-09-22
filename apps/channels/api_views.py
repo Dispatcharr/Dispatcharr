@@ -20,6 +20,7 @@ from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
     IsAdminOrDVRManager,
+    IsAdminOrDVRRequester,
     IsDVRViewer,
     IsStandardUser,
     permission_classes_by_action,
@@ -27,6 +28,7 @@ from apps.accounts.permissions import (
 )
 from apps.channels.dvr_access import (
     is_dvr_manage_enabled,
+    is_dvr_request_enabled,
     is_dvr_view_enabled,
     recordings_queryset_for_user,
 )
@@ -54,6 +56,7 @@ from .models import (
     ChannelProfile,
     ChannelProfileMembership,
     Recording,
+    RecordingRequest,
     RecurringRecordingRule,
 )
 from .serializers import (
@@ -3397,11 +3400,13 @@ class RecordingViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         if self.action in ('list', 'retrieve'):
             return [IsDVRViewer()]
+        if self.action in ('create', 'destroy'):
+            # Object-level ownership (request-tier users may only act on
+            # recordings they own) is enforced inside create()/destroy().
+            return [IsAdminOrDVRRequester()]
         if self.action in (
-            'create',
             'update',
             'partial_update',
-            'destroy',
             'stop',
             'extend',
             'comskip',
@@ -3413,6 +3418,100 @@ class RecordingViewSet(viewsets.ModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [IsAdminOrDVRManager()]
+
+    def _channel_visible_to_user(self, channel_id, user):
+        """Mirrors recordings_queryset_for_user's channel scoping, applied
+        directly to Channel so create() can check it before a Recording
+        (and thus a queryset row) exists."""
+        filters = {"pk": channel_id, "user_level__lte": getattr(user, "user_level", 0)}
+        try:
+            has_profiles = user.channel_profiles.exists()
+        except Exception:
+            has_profiles = False
+
+        qs = Channel.objects.filter(**filters)
+        if has_profiles:
+            qs = qs.filter(
+                channelprofilemembership__enabled=True,
+                channelprofilemembership__channel_profile__in=user.channel_profiles.all(),
+            )
+        return qs.exists()
+
+    def _find_duplicate_recording(self, channel_id, start_time, end_time):
+        """An existing Recording for the exact same channel + timeslot, if any.
+
+        Deliberately an exact match (not fuzzy overlap) -- this only catches
+        the "two users scheduled the same program" case, not merely nearby
+        recordings that happen to overlap, which should stay separate.
+        """
+        from django.utils.dateparse import parse_datetime
+
+        if not channel_id or not start_time or not end_time:
+            return None
+        start_dt = parse_datetime(str(start_time)) if isinstance(start_time, str) else start_time
+        end_dt = parse_datetime(str(end_time)) if isinstance(end_time, str) else end_time
+        if start_dt is None or end_dt is None:
+            return None
+        if timezone.is_naive(start_dt):
+            start_dt = timezone.make_aware(start_dt, timezone.get_current_timezone())
+        if timezone.is_naive(end_dt):
+            end_dt = timezone.make_aware(end_dt, timezone.get_current_timezone())
+        return (
+            Recording.objects.filter(
+                channel_id=channel_id, start_time=start_dt, end_time=end_dt
+            )
+            .order_by("id")
+            .first()
+        )
+
+    def create(self, request, *args, **kwargs):
+        """Schedule a recording and attribute it to the requesting user.
+
+        Request-tier (non-manager) users may only schedule recordings for
+        channels their view access already covers; manager/admin creation is
+        unrestricted, matching their existing full-catalog visibility.
+
+        If another user already scheduled the exact same channel+timeslot,
+        join their existing Recording as a requester instead of creating a
+        duplicate -- this is what makes ownership reassignment on delete
+        meaningful (see destroy()).
+        """
+        user = request.user
+        channel_id = request.data.get("channel")
+        if is_dvr_request_enabled(user=user) and not is_dvr_manage_enabled(user=user):
+            if not channel_id or not self._channel_visible_to_user(channel_id, user):
+                return Response(
+                    {"detail": "You do not have access to this channel."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        duplicate = self._find_duplicate_recording(
+            channel_id, request.data.get("start_time"), request.data.get("end_time")
+        )
+        if duplicate is not None:
+            RecordingRequest.objects.get_or_create(
+                recording=duplicate,
+                user=user,
+                defaults={"is_owner": duplicate.owner is None},
+            )
+            serializer = self.get_serializer(duplicate)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        response = super().create(request, *args, **kwargs)
+        if response.status_code == status.HTTP_201_CREATED:
+            recording_id = response.data.get("id")
+            if recording_id is not None:
+                RecordingRequest.objects.get_or_create(
+                    recording_id=recording_id,
+                    user=user,
+                    defaults={"is_owner": True},
+                )
+        return response
+
+    def _user_owns_recording(self, user, recording):
+        return RecordingRequest.objects.filter(
+            recording=recording, user=user, is_owner=True
+        ).exists()
 
     def _user_can_play_recording(self, request, recording):
         """Authorization gate for recording playback (file/hls actions).
@@ -3885,6 +3984,38 @@ class RecordingViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         recording_id = instance.pk
         channel_name = instance.channel.name
+
+        user = request.user
+        request_tier_only = is_dvr_request_enabled(user=user) and not is_dvr_manage_enabled(
+            user=user
+        )
+        is_owner = self._user_owns_recording(user, instance)
+        if request_tier_only and not is_owner:
+            return Response(
+                {"detail": "You do not own this recording."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # If the deleting user owns this recording and someone else still
+        # wants it, reassign ownership to the next-oldest requester and keep
+        # the recording/file instead of deleting them. Admins/managers
+        # deleting a recording they don't own always hard-delete (an
+        # explicit administrative removal, not a "requester" giving it up).
+        if is_owner and instance.requests.exclude(user=user).exists():
+            RecordingRequest.objects.filter(recording=instance, user=user).delete()
+            new_owner_request = instance.promote_next_owner()
+            try:
+                from core.utils import send_websocket_update
+                send_websocket_update('updates', 'update', {
+                    "success": True,
+                    "type": "recording_reassigned",
+                    "recording_id": recording_id,
+                    "channel": channel_name,
+                    "new_owner_id": new_owner_request.user_id if new_owner_request else None,
+                })
+            except Exception:
+                pass
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
         # Attempt to close the DVR client connection for this channel if active
         try:
