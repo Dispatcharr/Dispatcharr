@@ -1,13 +1,21 @@
 from core.utils import validate_flexible_url, ensure_custom_properties_dict
 from rest_framework import serializers, status
 from rest_framework.response import Response
-from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
+from .models import (
+    M3UAccount,
+    M3UFilter,
+    M3UGroupRule,
+    ServerGroup,
+    M3UAccountProfile,
+    M3UAccountTemplate,
+)
 from core.models import UserAgent
 from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
 from apps.channels.serializers import (
     ChannelGroupM3UAccountSerializer,
 )
-from datetime import timezone as dt_tz
+from datetime import timezone as dt_tz, timedelta
+from django.utils import timezone
 import logging
 import json
 
@@ -27,6 +35,265 @@ class M3UFilterSerializer(serializers.ModelSerializer):
             "order",
             "custom_properties",
         ]
+
+    def validate_regex_pattern(self, value):
+        import re
+
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise serializers.ValidationError(f"Invalid regex: {exc}")
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        view = self.context.get("view")
+        account_id = getattr(view, "kwargs", {}).get("account_id")
+        filter_type = attrs.get(
+            "filter_type", getattr(self.instance, "filter_type", "group")
+        )
+        regex_pattern = attrs.get(
+            "regex_pattern", getattr(self.instance, "regex_pattern", "")
+        )
+        properties = attrs.get(
+            "custom_properties",
+            getattr(self.instance, "custom_properties", {}) or {},
+        ) or {}
+        case_sensitive = bool(properties.get("case_sensitive", True))
+        duplicates = M3UFilter.objects.filter(
+            m3u_account_id=account_id,
+            filter_type=filter_type,
+            regex_pattern=regex_pattern,
+        )
+        if self.instance:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        for duplicate in duplicates.only("id", "custom_properties"):
+            duplicate_case = bool(
+                (duplicate.custom_properties or {}).get("case_sensitive", True)
+            )
+            if duplicate_case == case_sensitive:
+                raise serializers.ValidationError(
+                    "An identical stream filter already exists for this field."
+                )
+        return attrs
+
+
+class M3UGroupRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = M3UGroupRule
+        fields = [
+            "id",
+            "scope",
+            "match_field",
+            "match_mode",
+            "regex_pattern",
+            "exclude_regex_pattern",
+            "action",
+            "case_sensitive",
+            "enabled",
+            "metadata_defaults",
+            "order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_regex_pattern(self, value):
+        import re
+
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise serializers.ValidationError(f"Invalid regex: {exc}")
+        return value
+
+    def validate_exclude_regex_pattern(self, value):
+        import re
+
+        try:
+            if value:
+                re.compile(value)
+        except re.error as exc:
+            raise serializers.ValidationError(f"Invalid regex: {exc}")
+        return value
+
+    def validate_metadata_defaults(self, value):
+        from apps.vod.metadata import validate_configurable_source_metadata
+
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Must be an object")
+        try:
+            return validate_configurable_source_metadata(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        view = self.context.get("view")
+        account_id = getattr(view, "kwargs", {}).get("account_id")
+        values = {
+            field: attrs.get(field, getattr(self.instance, field, default))
+            for field, default in (
+                ("scope", "live"),
+                ("match_field", "group_name"),
+                ("match_mode", "any"),
+                ("regex_pattern", ""),
+                ("case_sensitive", False),
+            )
+        }
+        duplicates = M3UGroupRule.objects.filter(
+            m3u_account_id=account_id,
+            **values,
+        )
+        if self.instance:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError(
+                "An identical import rule already exists in this scope."
+            )
+        return attrs
+
+
+class M3UAccountTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = M3UAccountTemplate
+        fields = [
+            "id",
+            "name",
+            "description",
+            "account_type",
+            "account_settings",
+            "filters",
+            "group_rules",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_account_settings(self, value):
+        allowed = {
+            "max_streams",
+            "refresh_interval",
+            "xc_live_refresh_min_age_minutes",
+            "cron_expression",
+            "vod_refresh_interval",
+            "vod_cron_expression",
+            "vod_refresh_after_live",
+            "stale_stream_days",
+            "priority",
+            "enable_vod",
+            "use_group_rules_live",
+            "use_group_rules_movie",
+            "use_group_rules_series",
+            "group_selections",
+        }
+        if not isinstance(value, dict) or set(value) - allowed:
+            raise serializers.ValidationError(
+                "Contains unsupported or non-portable account settings"
+            )
+        selections = value.get("group_selections")
+        if selections is not None:
+            self._validate_group_selections(selections)
+        return value
+
+    @staticmethod
+    def _validate_group_selections(value):
+        if not isinstance(value, dict) or set(value) - {
+            "live",
+            "movie",
+            "series",
+        }:
+            raise serializers.ValidationError(
+                "group_selections must contain only live, movie, and series"
+            )
+        live_fields = {
+            "name",
+            "enabled",
+            "auto_channel_sync",
+            "auto_sync_channel_start",
+            "auto_sync_channel_end",
+            "custom_properties",
+            "references",
+        }
+        vod_fields = {"name", "enabled", "metadata_defaults"}
+        for scope in ("live", "movie", "series"):
+            rows = value.get(scope, [])
+            if not isinstance(rows, list):
+                raise serializers.ValidationError(
+                    f"group_selections.{scope} must be a list"
+                )
+            allowed_fields = live_fields if scope == "live" else vod_fields
+            for row in rows:
+                if (
+                    not isinstance(row, dict)
+                    or not str(row.get("name") or "").strip()
+                    or set(row) - allowed_fields
+                ):
+                    raise serializers.ValidationError(
+                        f"group_selections.{scope} contains an invalid entry"
+                    )
+                if "enabled" in row and not isinstance(row["enabled"], bool):
+                    raise serializers.ValidationError(
+                        f"group_selections.{scope}.enabled must be a boolean"
+                    )
+                if scope != "live":
+                    if not isinstance(row.get("metadata_defaults", {}), dict):
+                        raise serializers.ValidationError(
+                            f"group_selections.{scope}.metadata_defaults must be an object"
+                        )
+                    from apps.vod.metadata import (
+                        validate_configurable_source_metadata,
+                    )
+
+                    try:
+                        row["metadata_defaults"] = (
+                            validate_configurable_source_metadata(
+                                row.get("metadata_defaults", {})
+                            )
+                        )
+                    except ValueError as exc:
+                        raise serializers.ValidationError(str(exc))
+                    continue
+                if "auto_channel_sync" in row and not isinstance(
+                    row["auto_channel_sync"], bool
+                ):
+                    raise serializers.ValidationError(
+                        "group_selections.live.auto_channel_sync must be a boolean"
+                    )
+                for field in (
+                    "auto_sync_channel_start",
+                    "auto_sync_channel_end",
+                ):
+                    if row.get(field) is not None and not isinstance(
+                        row[field], (int, float)
+                    ):
+                        raise serializers.ValidationError(
+                            f"group_selections.live.{field} must be a number or null"
+                        )
+                if not isinstance(row.get("custom_properties", {}), dict):
+                    raise serializers.ValidationError(
+                        "group_selections.live.custom_properties must be an object"
+                    )
+                if not isinstance(row.get("references", {}), dict):
+                    raise serializers.ValidationError(
+                        "group_selections.live.references must be an object"
+                    )
+
+    def validate_filters(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list")
+        for item in value:
+            serializer = M3UFilterSerializer(data=item)
+            serializer.is_valid(raise_exception=True)
+        return value
+
+    def validate_group_rules(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list")
+        for item in value:
+            serializer = M3UGroupRuleSerializer(data=item)
+            serializer.is_valid(raise_exception=True)
+        return value
 
 
 class M3UAccountProfileSerializer(serializers.ModelSerializer):
@@ -122,6 +389,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     filters = serializers.SerializerMethodField()
     earliest_expiration = serializers.SerializerMethodField()
     all_expirations = serializers.SerializerMethodField()
+    catalog_counts = serializers.SerializerMethodField()
     exp_date = serializers.DateTimeField(
         required=False, allow_null=True, write_only=True,
         help_text="Expiration date for the default profile (write-through)",
@@ -148,7 +416,19 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
+    use_group_rules_live = serializers.BooleanField(required=False, write_only=True)
+    use_group_rules_movie = serializers.BooleanField(required=False, write_only=True)
+    use_group_rules_series = serializers.BooleanField(required=False, write_only=True)
     cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
+    vod_cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
+    live_refresh_schedule = serializers.SerializerMethodField()
+    vod_refresh_schedule = serializers.SerializerMethodField()
+    account_template = serializers.PrimaryKeyRelatedField(
+        queryset=M3UAccountTemplate.objects.all(),
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
 
     class Meta:
         model = M3UAccount
@@ -168,7 +448,13 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "locked",
             "channel_groups",
             "refresh_interval",
+            "xc_live_refresh_min_age_minutes",
             "cron_expression",
+            "vod_refresh_interval",
+            "vod_cron_expression",
+            "vod_refresh_after_live",
+            "live_refresh_schedule",
+            "vod_refresh_schedule",
             "custom_properties",
             "account_type",
             "username",
@@ -181,9 +467,14 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "auto_enable_new_groups_live",
             "auto_enable_new_groups_vod",
             "auto_enable_new_groups_series",
+            "use_group_rules_live",
+            "use_group_rules_movie",
+            "use_group_rules_series",
             "earliest_expiration",
             "all_expirations",
             "exp_date",
+            "account_template",
+            "catalog_counts",
         ]
         extra_kwargs = {
             "password": {
@@ -228,6 +519,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         data["auto_enable_new_groups_live"] = custom_props.get("auto_enable_new_groups_live", True)
         data["auto_enable_new_groups_vod"] = custom_props.get("auto_enable_new_groups_vod", True)
         data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
+        data["use_group_rules_live"] = custom_props.get("use_group_rules_live", True)
+        data["use_group_rules_movie"] = custom_props.get("use_group_rules_movie", True)
+        data["use_group_rules_series"] = custom_props.get("use_group_rules_series", True)
 
         # Derive cron_expression from the linked PeriodicTask's crontab (single source of truth)
         # But first check if we have a transient _cron_expression (from create/update before signal runs)
@@ -238,6 +532,21 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             ct = instance.refresh_task.crontab
             cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
         data["cron_expression"] = cron_expr
+
+        vod_cron_expr = ""
+        if hasattr(instance, '_vod_cron_expression'):
+            vod_cron_expr = instance._vod_cron_expression
+        elif (
+            instance.vod_refresh_task_id
+            and instance.vod_refresh_task
+            and instance.vod_refresh_task.crontab
+        ):
+            ct = instance.vod_refresh_task.crontab
+            vod_cron_expr = (
+                f"{ct.minute} {ct.hour} {ct.day_of_month} "
+                f"{ct.month_of_year} {ct.day_of_week}"
+            )
+        data["vod_cron_expression"] = vod_cron_expr
 
         # Surface default profile's exp_date for the form.
         # Use prefetch cache (obj.profiles.all()) to avoid an extra query per account.
@@ -251,6 +560,53 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             data["exp_date"] = None
 
         return data
+
+    @staticmethod
+    def _periodic_task_schedule(task):
+        if not task:
+            return {"enabled": False, "last_run_at": None, "next_run_at": None}
+
+        last_run = task.last_run_at
+        next_run = None
+        if task.enabled:
+            try:
+                reference = last_run or task.date_changed or timezone.now()
+                seconds = max(0, float(task.schedule.is_due(reference).next))
+                next_run = timezone.now() + timedelta(seconds=seconds)
+            except Exception:
+                logger.warning(
+                    "Could not calculate next run for periodic task %s",
+                    task.name,
+                    exc_info=True,
+                )
+        return {
+            "enabled": bool(task.enabled),
+            "last_run_at": last_run,
+            "next_run_at": next_run,
+        }
+
+    def get_live_refresh_schedule(self, obj):
+        return self._periodic_task_schedule(obj.refresh_task)
+
+    def get_vod_refresh_schedule(self, obj):
+        return self._periodic_task_schedule(obj.vod_refresh_task)
+
+    def get_catalog_counts(self, obj):
+        custom = obj.custom_properties or {}
+        live = custom.get("live_catalog_counts") or {}
+        vod = custom.get("vod_catalog_counts") or {}
+
+        def counts(values):
+            return {
+                "original": int(values.get("provider_total") or 0),
+                "selected": int(values.get("selected_total") or 0),
+            }
+
+        return {
+            "live": counts(live),
+            "movies": counts(vod.get("movies") or {}),
+            "series": counts(vod.get("series") or {}),
+        }
 
     def update(self, instance, validated_data):
         # Pop exp_date — it's written to the default profile, not the account
@@ -267,11 +623,30 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
         instance._cron_expression = cron_expr
 
+        if "vod_cron_expression" in validated_data:
+            vod_cron_expr = validated_data.pop("vod_cron_expression")
+        else:
+            vod_cron_expr = ""
+            if (
+                instance.vod_refresh_task_id
+                and instance.vod_refresh_task
+                and instance.vod_refresh_task.crontab
+            ):
+                ct = instance.vod_refresh_task.crontab
+                vod_cron_expr = (
+                    f"{ct.minute} {ct.hour} {ct.day_of_month} "
+                    f"{ct.month_of_year} {ct.day_of_week}"
+                )
+        instance._vod_cron_expression = vod_cron_expr
+
         # Handle enable_vod preference and auto_enable_new_groups settings
         enable_vod = validated_data.pop("enable_vod", None)
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", None)
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", None)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
+        use_group_rules_live = validated_data.pop("use_group_rules_live", None)
+        use_group_rules_movie = validated_data.pop("use_group_rules_movie", None)
+        use_group_rules_series = validated_data.pop("use_group_rules_series", None)
 
         # Merge client-supplied custom_properties over the existing blob
         # so unrelated keys persist. The dedicated preference fields below
@@ -296,6 +671,12 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
         if auto_enable_new_groups_series is not None:
             custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+        if use_group_rules_live is not None:
+            custom_props["use_group_rules_live"] = use_group_rules_live
+        if use_group_rules_movie is not None:
+            custom_props["use_group_rules_movie"] = use_group_rules_movie
+        if use_group_rules_series is not None:
+            custom_props["use_group_rules_series"] = use_group_rules_series
 
         validated_data["custom_properties"] = custom_props
 
@@ -345,17 +726,22 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         return instance
 
     def create(self, validated_data):
+        account_template = validated_data.pop("account_template", None)
         # Pop exp_date — it's written to the default profile after creation
         exp_date = validated_data.pop("exp_date", None)
 
         # Pop cron_expression — it's not a model field
         cron_expr = validated_data.pop("cron_expression", "")
+        vod_cron_expr = validated_data.pop("vod_cron_expression", "")
 
         # Handle enable_vod preference and auto_enable_new_groups settings during creation
         enable_vod = validated_data.pop("enable_vod", False)
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", True)
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", True)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", True)
+        use_group_rules_live = validated_data.pop("use_group_rules_live", True)
+        use_group_rules_movie = validated_data.pop("use_group_rules_movie", True)
+        use_group_rules_series = validated_data.pop("use_group_rules_series", True)
 
         # Parse existing custom_properties or create new
         custom_props = validated_data.get("custom_properties") or {}
@@ -367,12 +753,21 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         custom_props["auto_enable_new_groups_live"] = auto_enable_new_groups_live
         custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
         custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+        custom_props["use_group_rules_live"] = use_group_rules_live
+        custom_props["use_group_rules_movie"] = use_group_rules_movie
+        custom_props["use_group_rules_series"] = use_group_rules_series
         validated_data["custom_properties"] = custom_props
 
         # Build instance manually so we can attach transient attr before save triggers signal
         instance = M3UAccount(**validated_data)
         instance._cron_expression = cron_expr
-        instance.save()
+        instance._vod_cron_expression = vod_cron_expr
+        with transaction.atomic():
+            instance.save()
+            if account_template:
+                from .account_templates import apply_account_template
+
+                apply_account_template(instance, account_template)
 
         # Write exp_date through to the default profile created by post_save signal
         if exp_date is not None:

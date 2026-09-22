@@ -1451,6 +1451,40 @@ export default class API {
     }
   }
 
+  static async getM3UAccountTemplates() {
+    return await request(`${host}/api/m3u/account-templates/`);
+  }
+
+  static async createM3UAccountTemplate(values) {
+    return await request(`${host}/api/m3u/account-templates/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static async deleteM3UAccountTemplate(id) {
+    return await request(`${host}/api/m3u/account-templates/${id}/`, {
+      method: 'DELETE',
+    });
+  }
+
+  static async saveM3UAccountAsTemplate(accountId, values) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/save-template/`,
+      {
+        method: 'POST',
+        body: values,
+      }
+    );
+  }
+
+  static async applyM3UAccountTemplate(templateId, accountId) {
+    return await request(
+      `${host}/api/m3u/account-templates/${templateId}/apply/`,
+      { method: 'POST', body: { account_id: accountId } }
+    );
+  }
+
   static async updateM3UGroupSettings(
     playlistId,
     groupSettings = [],
@@ -1473,7 +1507,333 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update M3U group settings', e);
+      throw e;
     }
+  }
+
+  static async getM3UGroupRules(accountId, scope = null) {
+    const params = new URLSearchParams();
+    if (scope) params.set('scope', scope);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/${suffix}`
+    );
+  }
+
+  static async createM3UGroupRule(accountId, values) {
+    return await request(`${host}/api/m3u/accounts/${accountId}/group-rules/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static async updateM3UGroupRule(accountId, id, values) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/${id}/`,
+      { method: 'PATCH', body: values }
+    );
+  }
+
+  static async deleteM3UGroupRule(accountId, id) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/${id}/`,
+      { method: 'DELETE' }
+    );
+  }
+
+  static async previewM3UGroupRule(accountId, id, values) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/${id}/preview/`,
+      { method: 'POST', body: values }
+    );
+  }
+
+  static async applyM3UGroupRule(accountId, id) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/${id}/apply/`,
+      { method: 'POST', body: {} }
+    );
+  }
+
+  static async getM3UDeveloperCatalog(
+    accountId,
+    scope,
+    search = '',
+    page = 1,
+    category = ''
+  ) {
+    const params = new URLSearchParams({
+      scope,
+      search,
+      page: String(page),
+      page_size: '100',
+    });
+    if (category) params.set('category', category);
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/developer-catalog/?${params}`
+    );
+  }
+
+  static async updateVODCategoryMetadata(relationId, metadataDefaults) {
+    return await request(
+      `${host}/api/vod/category-relations/${relationId}/metadata-defaults/`,
+      {
+        method: 'PATCH',
+        body: { metadata_defaults: metadataDefaults },
+      }
+    );
+  }
+
+  static async bulkUpdateVODCategoryMetadata(relationIds, metadataDefaults) {
+    return await request(
+      `${host}/api/vod/category-relations/bulk-metadata-defaults/`,
+      {
+        method: 'PATCH',
+        body: {
+          relation_ids: relationIds,
+          metadata_defaults: metadataDefaults,
+        },
+      }
+    );
+  }
+
+  static async getVODCategoryRelations() {
+    return await request(`${host}/api/vod/category-relations/`);
+  }
+
+  static async getVODAccessPolicies() {
+    return await request(`${host}/api/vod/access-policies/`, {
+      cache: 'no-store',
+    });
+  }
+
+  static async getVODMetadataStatus(settingsOnly = false) {
+    return await request(
+      `${host}/api/vod/metadata/${settingsOnly ? '?settings_only=1' : ''}`,
+      {
+        cache: 'no-store',
+      }
+    );
+  }
+
+  static async updateVODMetadataSettings(values) {
+    return await request(`${host}/api/vod/metadata/settings/`, {
+      method: 'PUT',
+      body: values,
+    });
+  }
+
+  static async refreshVODMetadata(selections = [], options = {}) {
+    return await request(`${host}/api/vod/metadata/refresh/`, {
+      method: 'POST',
+      body: { selections, ...options },
+    });
+  }
+
+  static async unlockVODMetadata(selections = [], options = {}) {
+    return await request(`${host}/api/vod/metadata/unlock/`, {
+      method: 'POST',
+      body: { selections, ...options },
+    });
+  }
+
+  static async lockVODMetadata(selections = [], options = {}) {
+    return await request(`${host}/api/vod/metadata/lock/`, {
+      method: 'POST',
+      body: { selections, ...options },
+    });
+  }
+
+  static async resetVODMetadata(mode, selections = [], options = {}) {
+    return await request(`${host}/api/vod/metadata/reset/`, {
+      method: 'POST',
+      body: { mode, selections, ...options },
+    });
+  }
+
+  static async lookupVODTMDB(values) {
+    return await request(`${host}/api/vod/metadata/tmdb-lookup/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static async updateCanonicalVODMetadata(contentType, id, values) {
+    return await request(`${host}/api/vod/metadata/content/`, {
+      method: 'PATCH',
+      body: { content_type: contentType, id, values },
+    });
+  }
+
+  static async previewVODMetadataTitles(
+    titleRules,
+    items = null,
+    search = '',
+    selectionOptions = {}
+  ) {
+    return await request(`${host}/api/vod/metadata/title-preview/`, {
+      method: 'POST',
+      body: { title_rules: titleRules, items, search, ...selectionOptions },
+    });
+  }
+
+  static async applyVODTitleCleanup(titleRules, selectionOptions = {}) {
+    return await request(`${host}/api/vod/metadata/apply-title-cleanup/`, {
+      method: 'POST',
+      body: { title_rules: titleRules, ...selectionOptions },
+    });
+  }
+
+  static async updateVODRelationTmdbMatch(
+    target,
+    selections,
+    selectionOptions = {}
+  ) {
+    return await request(`${host}/api/vod/source-relations/relation-tmdb-match/`, {
+      method: 'PATCH',
+      body: {
+        ...(typeof target === 'string' || typeof target === 'number'
+          ? { tmdb_id: String(target || '') }
+          : target || {}),
+        selections,
+        ...selectionOptions,
+      },
+    });
+  }
+
+  static async searchVODCanonicalTargets(contentType, search, year = '') {
+    const query = new URLSearchParams({
+      content_type: contentType,
+      search,
+    });
+    if (year) query.set('year', year);
+    return await request(
+      `${host}/api/vod/source-relations/canonical-targets/?${query.toString()}`,
+      { cache: 'no-store' }
+    );
+  }
+
+  static async createVODAccessPolicy(values) {
+    return await request(`${host}/api/vod/access-policies/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static async updateVODAccessPolicy(id, values) {
+    return await request(`${host}/api/vod/access-policies/${id}/`, {
+      method: 'PATCH',
+      body: values,
+    });
+  }
+
+  static async rebuildVODAccessPolicy(id) {
+    return await request(`${host}/api/vod/access-policies/${id}/rebuild/`, {
+      method: 'POST',
+    });
+  }
+
+  static async deleteVODAccessPolicy(id) {
+    return await request(`${host}/api/vod/access-policies/${id}/`, {
+      method: 'DELETE',
+    });
+  }
+
+  static async previewVODAccessPolicyStreamFilter(values) {
+    return await request(
+      `${host}/api/vod/access-policies/preview-stream-filter/`,
+      {
+        method: 'POST',
+        body: values,
+      }
+    );
+  }
+
+  static async getVODAccessPolicySelections(id, params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return await request(
+      `${host}/api/vod/access-policies/${id}/selections/${query ? `?${query}` : ''}`
+    );
+  }
+
+  static async getVODAccessPolicyCandidates(id, params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return await request(
+      `${host}/api/vod/access-policies/${id}/candidates/${query ? `?${query}` : ''}`
+    );
+  }
+
+  static async getVODPlaybackSessions(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return await request(
+      `${host}/api/vod/playback-sessions/${query ? `?${query}` : ''}`
+    );
+  }
+
+  static async getVODPlaybackFacets() {
+    return await request(`${host}/api/vod/playback-sessions/facets/`);
+  }
+
+  static async getVODPlaybackStats(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return await request(
+      `${host}/api/vod/playback-sessions/stats/${query ? `?${query}` : ''}`
+    );
+  }
+
+  static async updateVODPlaybackRetention(retentionDays) {
+    return await request(`${host}/api/vod/playback-sessions/retention/`, {
+      method: 'PUT',
+      body: { retention_days: retentionDays },
+    });
+  }
+
+  static async deleteVODPlaybackSessions(selection) {
+    return await request(`${host}/api/vod/playback-sessions/bulk-delete/`, {
+      method: 'POST',
+      body: selection,
+    });
+  }
+
+  static async bulkUpdateVODPlaybackMetadata(selection, updates) {
+    return await request(`${host}/api/vod/playback-sessions/bulk-metadata/`, {
+      method: 'PATCH',
+      body: { ...selection, updates },
+    });
+  }
+
+  static async updateVODRelationManualMetadata(
+    contentType,
+    relationId,
+    metadata,
+    lockedFields
+  ) {
+    return await request(
+      `${host}/api/vod/source-relations/manual-metadata/`,
+      {
+        method: 'PATCH',
+        body: {
+          content_type: contentType,
+          relation_id: relationId,
+          metadata,
+          locked_fields: lockedFields,
+        },
+      }
+    );
+  }
+
+  static async bulkUpdateVODSourceMetadata(
+    selections,
+    metadata,
+    selectionOptions = {}
+  ) {
+    return await request(
+      `${host}/api/vod/source-relations/bulk-manual-metadata/`,
+      {
+        method: 'PATCH',
+        body: { selections, metadata, ...selectionOptions },
+      }
+    );
   }
 
   static async addPlaylist(values) {
@@ -1513,6 +1873,16 @@ export default class API {
       errorNotification('Failed to refresh M3U account', e);
     }
   }
+  static async refreshLivePlaylist(id) {
+    try {
+      return await request(`${host}/api/m3u/refresh/${id}/?include_vod=false`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to refresh Live TV', e);
+      throw e;
+    }
+  }
   static async refreshAllPlaylist() {
     try {
       const response = await request(`${host}/api/m3u/refresh/`, {
@@ -1535,6 +1905,7 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to refresh VOD content', e);
+      throw e;
     }
   }
 
@@ -2018,7 +2389,25 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification(`Failed to add profile to account ${accountId}`, e);
+      throw e;
     }
+  }
+
+  static async getM3UFilters(accountId) {
+    return await request(`${host}/api/m3u/accounts/${accountId}/filters/`);
+  }
+
+  static async previewM3UFilter(accountId, filterId, values) {
+    if (!filterId) {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/filters/preview-draft/`,
+        { method: 'POST', body: values }
+      );
+    }
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/filters/${filterId}/preview/`,
+      { method: 'POST', body: values }
+    );
   }
 
   static async deleteM3UFilter(accountId, id) {
@@ -2028,6 +2417,7 @@ export default class API {
       });
     } catch (e) {
       errorNotification(`Failed to delete profile for account ${accountId}`, e);
+      throw e;
     }
   }
 
@@ -2035,7 +2425,7 @@ export default class API {
     const { id, ...payload } = values;
 
     try {
-      await request(
+      return await request(
         `${host}/api/m3u/accounts/${accountId}/filters/${filterId}/`,
         {
           method: 'PUT',
@@ -2044,6 +2434,7 @@ export default class API {
       );
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
+      throw e;
     }
   }
 
@@ -2055,6 +2446,12 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to retrieve settings', e);
     }
+  }
+
+  static async getSystemResources() {
+    return await request(`${host}/api/core/settings/resources/`, {
+      cache: 'no-store',
+    });
   }
 
   static async getEnvironmentSettings() {
@@ -2620,6 +3017,17 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to stop VOD client', e);
     }
+  }
+
+  static async switchVODSource(clientId, relationId, mode = 'next_request') {
+    return await request(`${host}/proxy/vod/switch_source/`, {
+      method: 'POST',
+      body: {
+        client_id: clientId,
+        relation_id: relationId,
+        mode,
+      },
+    });
   }
 
   static async stopChannel(id) {
@@ -3740,7 +4148,8 @@ export default class API {
     try {
       const params = relationId ? `?relation_id=${relationId}` : '';
       const response = await request(
-        `${host}/api/vod/movies/${movieId}/provider-info/${params}`
+        `${host}/api/vod/movies/${movieId}/provider-info/${params}`,
+        { cache: 'no-store' }
       );
       return response;
     } catch (e) {
@@ -3751,7 +4160,8 @@ export default class API {
   static async getMovieProviders(movieId) {
     try {
       const response = await request(
-        `${host}/api/vod/movies/${movieId}/providers/`
+        `${host}/api/vod/movies/${movieId}/providers/`,
+        { cache: 'no-store' }
       );
       return response;
     } catch (e) {
@@ -3762,7 +4172,8 @@ export default class API {
   static async getSeriesProviders(seriesId) {
     try {
       const response = await request(
-        `${host}/api/vod/series/${seriesId}/providers/`
+        `${host}/api/vod/series/${seriesId}/providers/`,
+        { cache: 'no-store' }
       );
       return response;
     } catch (e) {
@@ -3784,7 +4195,8 @@ export default class API {
       const params = new URLSearchParams({ include_episodes: 'true' });
       if (relationId) params.set('relation_id', relationId);
       const response = await request(
-        `${host}/api/vod/series/${seriesId}/provider-info/?${params}`
+        `${host}/api/vod/series/${seriesId}/provider-info/?${params}`,
+        { cache: 'no-store' }
       );
       return response;
     } catch (e) {

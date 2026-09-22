@@ -112,11 +112,9 @@ describe('NavOrderForm', () => {
     it('renders all nav items for admin user', () => {
       render(<NavOrderForm active={true} />);
 
-      expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.getByText('VODs')).toBeInTheDocument();
-      expect(screen.getByText('M3U & EPG Manager')).toBeInTheDocument();
-      expect(screen.getByText('TV Guide')).toBeInTheDocument();
-      expect(screen.getByText('DVR')).toBeInTheDocument();
+      expect(screen.getByText('Live')).toBeInTheDocument();
+      expect(screen.getByText('Video on Demand')).toBeInTheDocument();
+      expect(screen.getByText('Sources')).toBeInTheDocument();
       expect(screen.getByText('Stats')).toBeInTheDocument();
       expect(screen.getByText('Plugins')).toBeInTheDocument();
       expect(screen.getByText('System')).toBeInTheDocument();
@@ -136,7 +134,7 @@ describe('NavOrderForm', () => {
     it('does not render when not active', () => {
       render(<NavOrderForm active={false} />);
 
-      expect(screen.queryByText('Channels')).not.toBeInTheDocument();
+      expect(screen.queryByText('Live')).not.toBeInTheDocument();
     });
 
     it('calls updateUserPreferences when reset button is clicked', async () => {
@@ -179,16 +177,14 @@ describe('NavOrderForm', () => {
       render(<NavOrderForm active={true} />);
 
       // The component should still render the hidden item
-      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('Live')).toBeInTheDocument();
     });
 
     it('uses saved order when available', () => {
       const customOrder = [
-        'guide',
         'channels',
         'vods',
         'sources',
-        'dvr',
         'stats',
         'plugins',
         'system',
@@ -198,7 +194,7 @@ describe('NavOrderForm', () => {
       render(<NavOrderForm active={true} />);
 
       // The component should render with custom order
-      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('Live')).toBeInTheDocument();
       expect(screen.getByText('System')).toBeInTheDocument();
     });
   });
@@ -225,12 +221,11 @@ describe('NavOrderForm', () => {
       render(<NavOrderForm active={true} />);
 
       // Non-admin items should be visible
-      expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.getByText('VODs')).toBeInTheDocument();
-      expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(screen.getByText('Live')).toBeInTheDocument();
+      expect(screen.getByText('Video on Demand')).toBeInTheDocument();
       expect(screen.getByText('Settings')).toBeInTheDocument();
-      // DVR view and VOD default on for standard users
-      expect(screen.getByText('DVR')).toBeInTheDocument();
+      // Channels, TV Guide and DVR are children of the Live group and are not
+      // separate reorderable top-level items.
 
       // Admin-only items should not be visible
       expect(screen.queryByText('M3U & EPG Manager')).not.toBeInTheDocument();
@@ -249,7 +244,7 @@ describe('NavOrderForm', () => {
 
       await waitFor(() => {
         expect(mockUpdateUserPreferences).toHaveBeenCalledWith({
-          navOrder: ['channels', 'vods', 'guide', 'dvr', 'settings'],
+          navOrder: ['channels', 'vods', 'settings'],
           hiddenNav: [],
         });
       });
@@ -277,9 +272,8 @@ describe('NavOrderForm', () => {
     it('hides DVR when the user has been explicitly denied view access', () => {
       render(<NavOrderForm active={true} />);
 
-      expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.getByText('VODs')).toBeInTheDocument();
-      expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(screen.getByText('Live')).toBeInTheDocument();
+      expect(screen.getByText('Video on Demand')).toBeInTheDocument();
       expect(screen.queryByText('DVR')).not.toBeInTheDocument();
     });
 
@@ -292,7 +286,7 @@ describe('NavOrderForm', () => {
 
       await waitFor(() => {
         expect(mockUpdateUserPreferences).toHaveBeenCalledWith({
-          navOrder: ['channels', 'vods', 'guide', 'settings'],
+          navOrder: ['channels', 'vods', 'settings'],
           hiddenNav: [],
         });
       });
@@ -321,11 +315,11 @@ describe('NavOrderForm', () => {
       });
     });
 
-    it('hides VODs when both VOD flags are disabled', () => {
+    it('hides Video on Demand when both VOD flags are disabled', () => {
       render(<NavOrderForm active={true} />);
 
-      expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.queryByText('VODs')).not.toBeInTheDocument();
+      expect(screen.getByText('Live')).toBeInTheDocument();
+      expect(screen.queryByText('Video on Demand')).not.toBeInTheDocument();
       expect(screen.queryByText('DVR')).not.toBeInTheDocument();
     });
 

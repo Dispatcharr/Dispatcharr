@@ -6,13 +6,13 @@ used to treat every existing relation as orphaned and delete them. On the next
 successful refresh, groups were recreated disabled when auto_enable_new_groups_vod
 is false.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from django.test import TransactionTestCase
 
 from apps.m3u.models import M3UAccount
 from apps.vod.models import M3UVODCategoryRelation, VODCategory
-from apps.vod.tasks import refresh_categories, refresh_vod_content
+from apps.vod.tasks import refresh_categories, _refresh_vod_content_impl
 
 USER_AGENT_PATCH = patch(
     "apps.m3u.models.M3UAccount.get_user_agent_string",
@@ -89,7 +89,7 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
 
         with patch("apps.vod.tasks.XtreamCodesClient") as mock_client_cls:
             mock_client_cls.return_value.__enter__.return_value = mock_client
-            result = refresh_vod_content(account.id)
+            result = _refresh_vod_content_impl(account.id)
 
         self.assertIn("aborting VOD refresh to preserve existing category selections", result)
         mock_refresh_movies.assert_not_called()
@@ -115,6 +115,8 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
         mock_batch_create,
     ):
         account, category, relation = self._setup_xc_account_with_movie_category()
+        account.stale_stream_days = 11
+        account.save(update_fields=["stale_stream_days"])
         mock_client = MagicMock()
         mock_client.get_vod_categories.return_value = [
             {"category_id": "1", "category_name": "NETFLIX MOVIES"},
@@ -127,12 +129,16 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
 
         with patch("apps.vod.tasks.XtreamCodesClient") as mock_client_cls:
             mock_client_cls.return_value.__enter__.return_value = mock_client
-            result = refresh_vod_content(account.id)
+            result = _refresh_vod_content_impl(account.id)
 
         self.assertIn("completed", result)
         mock_refresh_movies.assert_called_once()
         mock_refresh_series.assert_called_once()
-        mock_cleanup.assert_called_once()
+        mock_cleanup.assert_called_once_with(
+            account_id=account.id,
+            scan_start_time=ANY,
+            stale_days=11,
+        )
         self.assertTrue(
             M3UVODCategoryRelation.objects.filter(pk=relation.pk, enabled=True).exists()
         )

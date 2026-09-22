@@ -85,16 +85,42 @@ def get_relation_artwork(custom_properties) -> dict:
     return {"movie_image": movie_image, "backdrop_path": backdrop_path}
 
 
-def prefer_relation_artwork(relation_custom_properties, object_custom_properties) -> dict:
-    """Prefer relation artwork, falling back to shared object custom_properties."""
+def get_tmdb_artwork(*, poster_url="", backdrop_url="") -> dict:
+    """Return normalized artwork from the small projected TMDB columns."""
+    return {
+        "movie_image": str(poster_url or "").strip(),
+        "backdrop_path": _as_backdrop_list(backdrop_url),
+    }
+
+
+def prefer_relation_artwork(
+    relation_custom_properties,
+    object_custom_properties,
+    *,
+    tmdb_poster_url="",
+    tmdb_backdrop_url="",
+    prefer_tmdb=False,
+) -> dict:
+    """Resolve provider/canonical and TMDB artwork without mutating either."""
     from_rel = get_relation_artwork(relation_custom_properties)
     obj_props = object_custom_properties if isinstance(object_custom_properties, dict) else {}
-    movie_image = from_rel["movie_image"] or (obj_props.get("movie_image") or "")
+    provider = {
+        "movie_image": from_rel["movie_image"] or (obj_props.get("movie_image") or ""),
+        "backdrop_path": from_rel["backdrop_path"] or _as_backdrop_list(
+            obj_props.get("backdrop_path")
+        ),
+    }
+    tmdb = get_tmdb_artwork(
+        poster_url=tmdb_poster_url,
+        backdrop_url=tmdb_backdrop_url,
+    )
+    first, fallback = (tmdb, provider) if prefer_tmdb else (provider, tmdb)
+    movie_image = first["movie_image"] or fallback["movie_image"]
     if isinstance(movie_image, str):
         movie_image = movie_image.strip()
     else:
         movie_image = ""
-    backdrop_path = from_rel["backdrop_path"] or _as_backdrop_list(obj_props.get("backdrop_path"))
+    backdrop_path = first["backdrop_path"] or fallback["backdrop_path"]
     return {"movie_image": movie_image, "backdrop_path": backdrop_path}
 
 
@@ -166,7 +192,15 @@ def resolve_vod_image_url(obj, kind: str, index: int = 0, m3u_account_id=None) -
     if getattr(obj, "pk", None):
         relation = _best_image_relation(obj, m3u_account_id=m3u_account_id)
         if relation is not None:
-            art = prefer_relation_artwork(relation.custom_properties, obj.custom_properties)
+            from core.models import CoreSettings
+
+            art = prefer_relation_artwork(
+                relation.custom_properties,
+                obj.custom_properties,
+                tmdb_poster_url=getattr(obj, "tmdb_poster_url", ""),
+                tmdb_backdrop_url=getattr(obj, "tmdb_backdrop_url", ""),
+                prefer_tmdb=CoreSettings.get_tmdb_prefer_artwork(),
+            )
             # poster_path is only on shared object props today.
             props = {
                 "movie_image": art["movie_image"],
@@ -177,7 +211,24 @@ def resolve_vod_image_url(obj, kind: str, index: int = 0, m3u_account_id=None) -
             if url:
                 return url
 
-    return _url_from_props(obj.custom_properties or {}, kind, index)
+    from core.models import CoreSettings
+
+    art = prefer_relation_artwork(
+        {},
+        obj.custom_properties or {},
+        tmdb_poster_url=getattr(obj, "tmdb_poster_url", ""),
+        tmdb_backdrop_url=getattr(obj, "tmdb_backdrop_url", ""),
+        prefer_tmdb=CoreSettings.get_tmdb_prefer_artwork(),
+    )
+    return _url_from_props(
+        {
+            **(obj.custom_properties or {}),
+            "movie_image": art["movie_image"],
+            "backdrop_path": art["backdrop_path"],
+        },
+        kind,
+        index,
+    )
 
 
 def vod_image_url_parts(request, resource: str) -> tuple[str, str]:

@@ -116,6 +116,39 @@ _NGX_ACC = re.compile(
 _CONTINUATION = re.compile(rb"^[ \t]")
 _TB_START = re.compile(rb"^Traceback")
 
+# Logs can contain upstream URLs emitted by nginx, requests, or streaming
+# workers. Redact credentials before either stdout or the persisted log sees
+# the record. Application loggers should still avoid logging secrets; this is
+# the final boundary that also covers third-party processes.
+_SECRET_QUERY_PARAM = re.compile(
+    rb"(?i)([?&](?:access_?token|refresh_?token|token|api_?key|password|pass|username|user)=)"
+    rb"([^&#\s\"']*)"
+)
+_URL_USERINFO = re.compile(
+    rb"(?i)(https?://)([^/@\s\"']+):([^/@\s\"']+)@"
+)
+_XC_CREDENTIAL_PATH = re.compile(
+    rb"(?i)(https?://[^\s\"']*?/(?:live|movie|series|timeshift)/)"
+    rb"([^/\s?\"']+)/([^/\s?\"']+)(?=/)"
+)
+_REDACTED = b"<redacted>"
+
+
+def _redact_sensitive_data(line):
+    """Remove common URL credentials without changing the record shape."""
+    line = _SECRET_QUERY_PARAM.sub(
+        lambda match: match.group(1) + _REDACTED,
+        line,
+    )
+    line = _URL_USERINFO.sub(
+        lambda match: match.group(1) + _REDACTED + b":" + _REDACTED + b"@",
+        line,
+    )
+    return _XC_CREDENTIAL_PATH.sub(
+        lambda match: match.group(1) + _REDACTED + b"/" + _REDACTED,
+        line,
+    )
+
 
 def _boot_display_zone():
     """The display zone to stamp in until the app's setting arrives.
@@ -332,6 +365,7 @@ class Collector:
                 # One runaway record can evict a rotation of history, so only the
                 # file copy is capped; docker logs takes the record whole.
                 overrun = len(line) > _MAX_RECORD_BYTES
+            line = _redact_sensitive_data(line)
             mid_line = more
             self._forward(line)
             if overrun:

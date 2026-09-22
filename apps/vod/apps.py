@@ -7,6 +7,4 @@ class VODConfig(AppConfig):
     verbose_name = 'Video on Demand'
 
     def ready(self):
-        """Initialize VOD app when Django is ready"""
-        # Import models to ensure they're registered
-        from . import models
+        from . import signals  # noqa: F401

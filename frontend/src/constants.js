@@ -69,6 +69,12 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
+  vod_reconnect_grace_seconds: {
+    label: 'VOD Reconnect Reservation (seconds)',
+    advanced: true,
+    description:
+      'Keep the selected VOD source and one Dispatcharr provider slot reserved after the client request ends. The provider HTTP connection is already closed during this window.',
+  },
   validate_redirect_urls: {
     label: 'Validate Redirect URLs',
     type: 'boolean',

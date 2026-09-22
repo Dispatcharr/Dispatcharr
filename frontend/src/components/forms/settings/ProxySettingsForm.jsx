@@ -28,6 +28,7 @@ const isNumericField = (key) => {
     'channel_init_grace_period',
     'channel_client_wait_period',
     'new_client_behind_seconds',
+    'vod_reconnect_grace_seconds',
   ].includes(key);
 };
 
@@ -41,6 +42,7 @@ const getNumericFieldMax = (key) => {
   if (key === 'channel_shutdown_delay') return 300;
   if (key === 'channel_client_wait_period') return 300;
   if (key === 'new_client_behind_seconds') return 120;
+  if (key === 'vod_reconnect_grace_seconds') return 1800;
   return 300;
 };
 

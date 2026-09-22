@@ -302,7 +302,8 @@ const StreamsTable = ({ onReady }) => {
     if (!scrollContainer) return;
 
     const updateOverflow = () => {
-      const overflow = scrollContainer.scrollWidth - scrollContainer.clientWidth;
+      const overflow =
+        scrollContainer.scrollWidth - scrollContainer.clientWidth;
       scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
     };
 
@@ -440,13 +441,10 @@ const StreamsTable = ({ onReady }) => {
   const setPagination = useStreamsTableStore((s) => s.setPagination);
   const sorting = useStreamsTableStore((s) => s.sorting);
   const setSorting = useStreamsTableStore((s) => s.setSorting);
-  const resetColumnSizing = useCallback(
-    () => {
-      setColumnSizing({ ...defaultStreamColumnSizing });
-      setSorting([{ id: 'name', desc: false }]);
-    },
-    [setColumnSizing, setSorting]
-  );
+  const resetColumnSizing = useCallback(() => {
+    setColumnSizing({ ...defaultStreamColumnSizing });
+    setSorting([{ id: 'name', desc: false }]);
+  }, [setColumnSizing, setSorting]);
   const selectedStreamIds = useStreamsTableStore((s) => s.selectedStreamIds);
   const setSelectedStreamIds = useStreamsTableStore(
     (s) => s.setSelectedStreamIds
@@ -1514,7 +1512,10 @@ const StreamsTable = ({ onReady }) => {
 
       <Paper
         style={{
-          height: 'calc(100vh - 60px)',
+          display: 'flex',
+          flexDirection: 'column',
+          height: 'calc(100% - 36px)',
+          minHeight: 0,
           backgroundColor: '#27272A',
         }}
       >
@@ -1764,7 +1765,7 @@ const StreamsTable = ({ onReady }) => {
                   variant="default"
                   radius="md"
                   size="md"
-                  onClick={() => navigate('/sources')}
+                  onClick={() => navigate('/sources/m3u')}
                   style={{
                     backgroundColor: '#444',
                     color: '#d4d4d8',
@@ -1796,7 +1797,8 @@ const StreamsTable = ({ onReady }) => {
             style={{
               display: 'flex',
               flexDirection: 'column',
-              height: 'calc(100vh - 100px)',
+              flex: 1,
+              minHeight: 0,
             }}
           >
             <Box

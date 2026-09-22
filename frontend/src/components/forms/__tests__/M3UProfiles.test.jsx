@@ -243,7 +243,9 @@ describe('M3UProfiles', () => {
     it('renders an "Add Profile" button', () => {
       setupStores();
       render(<M3UProfiles {...defaultProps()} />);
-      expect(screen.getByRole('button', { name: /new/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /add connection profile/i })
+      ).toBeInTheDocument();
     });
 
     it('renders a profile card for each profile', () => {
@@ -329,21 +331,27 @@ describe('M3UProfiles', () => {
     it('opens M3UProfile modal when Add Profile is clicked', () => {
       setupStores();
       render(<M3UProfiles {...defaultProps()} />);
-      fireEvent.click(screen.getByRole('button', { name: /new/i }));
+      fireEvent.click(
+        screen.getByRole('button', { name: /add connection profile/i })
+      );
       expect(screen.getByTestId('m3u-profile-modal')).toBeInTheDocument();
     });
 
     it('opens M3UProfile modal with null profile for a new profile', () => {
       setupStores();
       render(<M3UProfiles {...defaultProps()} />);
-      fireEvent.click(screen.getByRole('button', { name: /new/i }));
+      fireEvent.click(
+        screen.getByRole('button', { name: /add connection profile/i })
+      );
       expect(screen.getByTestId('m3u-profile-editing').textContent).toBe('new');
     });
 
     it('closes M3UProfile modal when its onClose is called', () => {
       setupStores();
       render(<M3UProfiles {...defaultProps()} />);
-      fireEvent.click(screen.getByRole('button', { name: /new/i }));
+      fireEvent.click(
+        screen.getByRole('button', { name: /add connection profile/i })
+      );
       fireEvent.click(screen.getByTestId('m3u-profile-close'));
       expect(screen.queryByTestId('m3u-profile-modal')).not.toBeInTheDocument();
     });

@@ -6,6 +6,10 @@ services:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     restart: unless-stopped
     container_name: dispatcharr
+    # PostgreSQL runs inside this all-in-one container. Docker's 64 MiB
+    # default can be exhausted by an otherwise modest parallel query; tmpfs
+    # pages consume host RAM only while they are actually used.
+    shm_size: 256mb
     ports:
       - 9191:9191
     volumes:

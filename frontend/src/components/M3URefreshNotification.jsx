@@ -32,7 +32,7 @@ const M3uSetupSuccess = ({ data }) => {
 
     // Then navigate to the content sources page
     // Using the exact path that matches your app's routing structure
-    navigate('/sources');
+    navigate('/sources/m3u');
   };
 
   return (

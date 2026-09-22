@@ -14,6 +14,7 @@ from apps.vod.models import (
     M3USeriesRelation,
     Series,
 )
+from core.models import CoreSettings
 
 User = get_user_model()
 
@@ -124,6 +125,53 @@ class SeriesProviderInfoQueryTests(TestCase):
         self.assertEqual(len(relation_queries), 1)
         self.assertLessEqual(len(ctx.captured_queries), 12)
 
+    def test_provider_info_keeps_canonical_language_and_metadata_payloads(self):
+        CoreSettings.set_vod_metadata_settings(
+            languages=['de-DE', 'en-US'],
+            auto_enrich=True,
+            match_missing=False,
+        )
+        url = (
+            f'/api/vod/series/{self.series.id}/provider-info/'
+            f'?include_episodes=false&relation_id={self.series_relation.id}'
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['tmdb']['primary_language'], 'de-DE')
+        self.assertEqual(response.data['tmdb']['secondary_language'], 'en-US')
+        self.assertEqual(response.data['canonical']['id'], self.series.id)
+        self.assertIn('source_metadata', response.data)
+
+    def test_provider_info_returns_episode_resolution_and_codec_summary(self):
+        episode_relation = M3UEpisodeRelation.objects.filter(
+            series_relation=self.series_relation
+        ).first()
+        episode_relation.custom_properties = {
+            'info': {
+                'info': {
+                    'video': {
+                        'codec_name': 'h264',
+                        'width': 640,
+                        'height': 480,
+                    }
+                }
+            }
+        }
+        episode_relation.save(update_fields=['custom_properties'])
+        url = (
+            f'/api/vod/series/{self.series.id}/provider-info/'
+            f'?include_episodes=false&relation_id={self.series_relation.id}'
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        values = response.data['source_metadata']['values']
+        self.assertEqual(values['episode_resolutions'], ['480p'])
+        self.assertEqual(values['episode_video_codecs'], ['h264'])
+
     def test_provider_info_backdrop_prefers_selected_relation_basic_data(self):
         """Shared Series.custom_properties can be stale; the selected account's
         own list-sync backdrop should be preferred when it has one."""
@@ -171,3 +219,43 @@ class SeriesProviderInfoQueryTests(TestCase):
         other_seasons = other_response.data.get('episodes') or {}
         self.assertEqual(len(other_seasons.get('0') or []), 1)
         self.assertEqual(other_seasons['0'][0]['name'], 'Special')
+
+    def test_provider_info_separates_categories_on_same_account(self):
+        same_account_relation = M3USeriesRelation.objects.create(
+            m3u_account=self.account,
+            series=self.series,
+            external_series_id='8702',
+            last_episode_refresh=timezone.now(),
+            custom_properties={
+                'episodes_fetched': True,
+                'detailed_fetched': True,
+            },
+        )
+        category_episode = Episode.objects.create(
+            series=self.series,
+            name='Category-only episode',
+            season_number=3,
+            episode_number=1,
+        )
+        category_relation = M3UEpisodeRelation.objects.create(
+            m3u_account=self.account,
+            episode=category_episode,
+            series_relation=same_account_relation,
+            stream_id='same-account-other-category',
+            container_extension='mp4',
+        )
+
+        url = (
+            f'/api/vod/series/{self.series.id}/provider-info/'
+            f'?include_episodes=true&relation_id={same_account_relation.id}'
+        )
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        seasons = response.data.get('episodes') or {}
+        self.assertEqual(set(seasons), {'3'})
+        self.assertEqual(seasons['3'][0]['relation_id'], category_relation.id)
+        self.assertEqual(
+            seasons['3'][0]['stream_id'],
+            'same-account-other-category',
+        )

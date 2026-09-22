@@ -63,6 +63,7 @@ const getEventIcon = (eventType) => {
     case 'm3u_refresh':
       return <RefreshCw size={16} />;
     case 'm3u_download':
+    case 'xc_live_catalog_request':
       return <Download size={16} />;
     case 'm3u_error':
       return <XCircle size={16} />;
@@ -114,6 +115,7 @@ const getEventColor = (eventType) => {
     case 'epg_refresh':
       return 'cyan';
     case 'm3u_download':
+    case 'xc_live_catalog_request':
     case 'epg_download':
       return 'teal';
     case 'login_failed':

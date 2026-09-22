@@ -159,6 +159,10 @@ const UsersTable = () => {
   // Empty query uses delay 0 so the clear button restores the list immediately.
   const debouncedSearch = useDebounce(search, search.trim() === '' ? 0 : 300);
   const [sorting, setSorting] = useState([]);
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
+    'users-table-column-sizing',
+    {}
+  );
 
   const executeDeleteUser = useCallback(async (id) => {
     setIsLoading(true);
@@ -209,8 +213,8 @@ const UsersTable = () => {
       {
         header: 'User Level',
         accessorKey: 'user_level',
-        size: 120,
-        minSize: 80,
+        size: 110,
+        minSize: 100,
         sortable: true,
         cell: ({ getValue }) => (
           <Text size="sm">{USER_LEVEL_LABELS[getValue()]}</Text>
@@ -219,8 +223,8 @@ const UsersTable = () => {
       {
         header: 'Username',
         accessorKey: 'username',
-        size: 120,
-        minSize: 75,
+        size: 140,
+        minSize: 110,
         sortable: true,
         cell: ({ getValue }) => (
           <Box
@@ -237,8 +241,8 @@ const UsersTable = () => {
       {
         id: 'name',
         header: 'Name',
-        size: 125,
-        minSize: 50,
+        size: 160,
+        minSize: 120,
         sortable: true,
         accessorFn: getUserFullName,
         cell: ({ getValue }) => (
@@ -256,8 +260,9 @@ const UsersTable = () => {
       {
         header: 'Email',
         accessorKey: 'email',
-        size: 125,
-        minSize: 50,
+        size: 200,
+        minSize: 160,
+        grow: true,
         sortable: true,
         cell: ({ getValue }) => (
           <Box
@@ -274,7 +279,7 @@ const UsersTable = () => {
       {
         header: 'Date Joined',
         accessorKey: 'date_joined',
-        size: 120,
+        size: 130,
         minSize: 110,
         sortable: true,
         cell: ({ getValue }) => {
@@ -288,7 +293,7 @@ const UsersTable = () => {
         header: 'Last Login',
         accessorKey: 'last_login',
         size: 175,
-        minSize: 85,
+        minSize: 150,
         sortable: true,
         cell: ({ getValue }) => {
           const date = getValue();
@@ -302,17 +307,16 @@ const UsersTable = () => {
       {
         header: 'XC Password',
         accessorKey: 'custom_properties',
-        size: 125,
-        minSize: 95,
+        size: 120,
+        minSize: 110,
         enableSorting: false,
         cell: XCPasswordCell,
       },
       {
         header: 'Channel Profiles',
         accessorKey: 'channel_profiles',
-        size: 120,
-        minSize: 116,
-        grow: true,
+        size: 190,
+        minSize: 150,
         cell: ({ getValue }) => {
           const userProfiles = getValue() || [];
           const profileNames = userProfiles
@@ -338,8 +342,36 @@ const UsersTable = () => {
         },
       },
       {
+        header: 'VOD Profile',
+        accessorKey: 'vod_policy',
+        size: 170,
+        minSize: 140,
+        enableSorting: false,
+        cell: ({ getValue }) => {
+          const profile = getValue();
+          if (!profile?.name) {
+            return <Text size="sm">-</Text>;
+          }
+
+          return (
+            <Stack gap={2} py={4}>
+              <Tooltip label={profile.name} withArrow>
+                <Badge size="sm" variant="light" color="blue">
+                  {profile.name}
+                </Badge>
+              </Tooltip>
+              {profile.inherited && (
+                <Text size="xs" c="dimmed">
+                  Default
+                </Text>
+              )}
+            </Stack>
+          );
+        },
+      },
+      {
         id: 'actions',
-        size: 65,
+        size: 72,
         header: 'Actions',
         enableSorting: false,
         enableResizing: false,
@@ -353,7 +385,14 @@ const UsersTable = () => {
         ),
       },
     ],
-    [theme, editUser, handleDeleteUser, fullDateFormat, fullDateTimeFormat]
+    [
+      theme,
+      editUser,
+      handleDeleteUser,
+      fullDateFormat,
+      fullDateTimeFormat,
+      profileIdToName,
+    ]
   );
 
   const closeUserForm = () => {
@@ -383,9 +422,13 @@ const UsersTable = () => {
     enableRowVirtualization: false,
     renderTopToolbar: false,
     sorting,
+    columnSizing,
+    setColumnSizing,
     manualSorting: true,
     manualFiltering: true,
     manualPagination: false,
+    getRowStyles: () => ({ minHeight: 52 }),
+    tableCellProps: () => ({ padding: '8px 10px' }),
     headerCellRenderFns: {
       actions: renderHeaderCell,
       username: renderHeaderCell,
@@ -407,9 +450,10 @@ const UsersTable = () => {
           justifyContent: 'center',
           padding: '0px',
           minHeight: '100vh',
+          width: '100%',
         }}
       >
-        <Stack gap="md" style={{ maxWidth: '1200px', width: '100%' }}>
+        <Stack gap="md" style={{ width: '100%', minWidth: 0 }}>
           <Flex style={{ alignItems: 'center', paddingBottom: 10 }} gap={15}>
             <Text
               style={{
@@ -493,7 +537,7 @@ const UsersTable = () => {
                   '0 0 var(--mantine-radius-md) var(--mantine-radius-md)',
               }}
             >
-              <div style={{ minWidth: '900px' }}>
+              <div style={{ minWidth: '1320px' }}>
                 <LoadingOverlay visible={isLoading} />
                 {data.length === 0 && users.length > 0 ? (
                   <Text size="xl" c="dimmed" ta="center" py="xl">

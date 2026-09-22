@@ -39,6 +39,7 @@ class TestStreamXcEpisodeMissingRelation(SimpleTestCase):
         with patch('apps.proxy.vod_proxy.views.network_access_allowed', return_value=True), \
              patch('apps.proxy.vod_proxy.views.get_object_or_404', return_value=self._mock_user()), \
              patch('apps.vod.models.M3UEpisodeRelation') as RelMock, \
+             patch('apps.vod.policies.policy_for_user', return_value=None), \
              patch('apps.proxy.vod_proxy.views.stream_vod', return_value=HttpResponse('STREAMED')) as stream_vod_mock:
             RelMock.objects.select_related.return_value.filter.return_value \
                 .order_by.return_value.first.return_value = relation

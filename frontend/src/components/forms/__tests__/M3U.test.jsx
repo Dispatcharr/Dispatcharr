@@ -4,6 +4,7 @@ import M3U from '../M3U';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/userAgents', () => ({ default: vi.fn() }));
+vi.mock('../../../store/serverGroups', () => ({ default: vi.fn() }));
 vi.mock('../../../store/channels', () => ({ default: vi.fn() }));
 vi.mock('../../../store/epgs', () => ({ default: vi.fn() }));
 vi.mock('../../../store/useVODStore', () => ({ default: vi.fn() }));
@@ -39,6 +40,16 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
 }));
 
+vi.mock('../../../api', () => ({
+  default: {
+    getM3UAccountTemplates: vi.fn().mockResolvedValue([]),
+    applyM3UAccountTemplate: vi.fn(),
+    saveM3UAccountAsTemplate: vi.fn(),
+    createM3UAccountTemplate: vi.fn(),
+    deleteM3UAccountTemplate: vi.fn(),
+  },
+}));
+
 // ── Sub-component mocks ────────────────────────────────────────────────────────
 vi.mock('../M3UProfiles', () => ({
   default: ({ onChange }) => (
@@ -49,19 +60,14 @@ vi.mock('../M3UProfiles', () => ({
 }));
 
 vi.mock('../M3UGroupFilter', () => ({
-  default: ({ onChange }) => (
-    <div data-testid="m3u-group-filter">
-      <button onClick={() => onChange?.([])}>M3UGroupFilter</button>
-    </div>
-  ),
-}));
-
-vi.mock('../M3UFilters', () => ({
-  default: ({ onChange }) => (
-    <div data-testid="m3u-filters">
-      <button onClick={() => onChange?.([])}>M3UFilters</button>
-    </div>
-  ),
+  default: ({ isOpen, onClose }) =>
+    isOpen ? (
+      <div data-testid="m3u-group-filter">
+        <button data-testid="m3u-group-filter-close" onClick={onClose}>
+          Close groups
+        </button>
+      </div>
+    ) : null,
 }));
 
 vi.mock('../ScheduleInput', () => ({
@@ -142,9 +148,19 @@ vi.mock('@mantine/form', () => {
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
   Box: ({ children }) => <div>{children}</div>,
-  Button: ({ children, onClick, type, loading, disabled, variant, color }) => (
+  Button: ({
+    children,
+    onClick,
+    type,
+    loading,
+    disabled,
+    variant,
+    color,
+    'aria-label': ariaLabel,
+  }) => (
     <button
       type={type || 'button'}
+      aria-label={ariaLabel}
       onClick={onClick}
       disabled={disabled || loading}
       data-variant={variant}
@@ -181,10 +197,14 @@ vi.mock('@mantine/core', () => ({
       </label>
     </div>
   ),
+  FileButton: ({ children, onChange }) =>
+    children({ onChange: (event) => onChange?.(event?.target?.files?.[0]) }),
   Flex: ({ children }) => <div>{children}</div>,
   Group: ({ children }) => <div>{children}</div>,
   LoadingOverlay: ({ visible }) =>
     visible ? <div data-testid="loading-overlay" /> : null,
+  Paper: ({ children }) => <div>{children}</div>,
+  SimpleGrid: ({ children }) => <div>{children}</div>,
   Modal: ({ children, opened, onClose, title, size }) =>
     opened ? (
       <div data-testid="modal" data-size={size}>
@@ -204,13 +224,14 @@ vi.mock('@mantine/core', () => ({
     max,
     disabled,
     error,
+    'aria-label': ariaLabel,
   }) => (
     <div>
       <label>
         {label}
         <input
           type="number"
-          aria-label={label || placeholder}
+          aria-label={ariaLabel || label || placeholder}
           placeholder={placeholder}
           value={value ?? ''}
           min={min}
@@ -247,12 +268,21 @@ vi.mock('@mantine/core', () => ({
       {error && <span data-testid={`error-${label}`}>{error}</span>}
     </div>
   ),
-  Select: ({ label, placeholder, value, onChange, data, disabled, error }) => (
+  Select: ({
+    label,
+    placeholder,
+    value,
+    onChange,
+    data,
+    disabled,
+    error,
+    'aria-label': ariaLabel,
+  }) => (
     <div>
       <label>
         {label}
         <select
-          aria-label={label || placeholder}
+          aria-label={ariaLabel || label || placeholder}
           value={value || ''}
           disabled={disabled}
           onChange={(e) => onChange?.(e.target.value || null)}
@@ -273,6 +303,10 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Stack: ({ children }) => <div>{children}</div>,
+  Tabs: ({ children }) => <div>{children}</div>,
+  TabsList: ({ children }) => <div>{children}</div>,
+  TabsPanel: ({ children }) => <div>{children}</div>,
+  TabsTab: ({ children }) => <button type="button">{children}</button>,
   Switch: ({ label, checked, onChange, disabled }) => (
     <label>
       <input
@@ -284,6 +318,14 @@ vi.mock('@mantine/core', () => ({
         onChange={(e) => onChange?.(e)}
       />
       {label}
+    </label>
+  ),
+  Text: ({ children }) => <span>{children}</span>,
+  Tooltip: ({ children, label }) => <span title={label}>{children}</span>,
+  Textarea: ({ label, value, onChange }) => (
+    <label>
+      {label}
+      <textarea aria-label={label} value={value || ''} onChange={onChange} />
     </label>
   ),
   TextInput: ({
@@ -320,6 +362,7 @@ vi.mock('@mantine/core', () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import useUserAgentsStore from '../../../store/userAgents';
+import useServerGroupsStore from '../../../store/serverGroups';
 import useChannelsStore from '../../../store/channels';
 import useEPGsStore from '../../../store/epgs';
 import useVODStore from '../../../store/useVODStore';
@@ -327,6 +370,7 @@ import usePlaylistsStore from '../../../store/playlists';
 import * as M3uUtils from '../../../utils/forms/M3uUtils.js';
 import * as DummyEpgUtils from '../../../utils/forms/DummyEpgUtils.js';
 import * as mantineForm from '@mantine/form';
+import API from '../../../api';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const makeM3uAccount = (overrides = {}) => ({
@@ -338,6 +382,7 @@ const makeM3uAccount = (overrides = {}) => ({
   account_type: 'XC',
   max_streams: 0,
   refresh_interval: 24,
+  xc_live_refresh_min_age_minutes: 55,
   auto_refresh: false,
   is_active: true,
   custom_properties: {},
@@ -371,6 +416,10 @@ const setupStores = (overrides = {}) => {
     };
     return selector(state);
   });
+
+  useServerGroupsStore.mockImplementation((selector) =>
+    selector({ serverGroups: overrides.serverGroups || [] })
+  );
 
   useChannelsStore.mockImplementation((selector) => {
     const state = {
@@ -433,6 +482,14 @@ describe('M3U', () => {
       expect(screen.getByTestId('modal')).toBeInTheDocument();
     });
 
+    it('shows the XC client refresh freshness setting for XC accounts', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      expect(
+        screen.getByText('Provider refresh age (minutes)')
+      ).toBeInTheDocument();
+    });
+
     it('does not render the modal when isOpen is false', () => {
       setupStores();
       render(<M3U {...defaultProps({ isOpen: false })} />);
@@ -451,11 +508,102 @@ describe('M3U', () => {
       expect(screen.getByTestId('text-input-server_url')).toBeInTheDocument();
     });
 
+    it('places the account template above the tabs', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      const templateLabel = screen.getByText('Account template');
+      const accountTab = screen.getByRole('button', { name: 'Account' });
+      expect(
+        templateLabel.compareDocumentPosition(accountTab) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+    });
+
+    it('deletes a selected account template after confirmation', async () => {
+      API.getM3UAccountTemplates.mockResolvedValueOnce([
+        {
+          id: 9,
+          name: 'Reusable template',
+          account_type: 'XC',
+          account_settings: {},
+        },
+      ]);
+      API.deleteM3UAccountTemplate.mockResolvedValueOnce(undefined);
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+
+      const templateSelect = await screen.findByLabelText('No template');
+      fireEvent.change(templateSelect, { target: { value: '9' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+      expect(
+        screen.getByText('Delete M3U account template')
+      ).toBeInTheDocument();
+      const deleteButtons = screen.getAllByRole('button', { name: 'Delete' });
+      fireEvent.click(deleteButtons[deleteButtons.length - 1]);
+
+      await waitFor(() =>
+        expect(API.deleteM3UAccountTemplate).toHaveBeenCalledWith(9)
+      );
+      expect(templateSelect).toHaveValue('');
+      expect(screen.queryByText('Reusable template')).not.toBeInTheDocument();
+    });
+
+    it('places URL below Account Type', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      const accountType = screen.getByRole('combobox', {
+        name: 'Account Type',
+      });
+      const url = screen.getByTestId('text-input-server_url');
+      expect(
+        accountType.compareDocumentPosition(url) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+    });
+
+    it('groups content settings above the side-by-side refresh schedules', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      expect(
+        screen.getByRole('button', { name: 'Content' })
+      ).toBeInTheDocument();
+      expect(screen.getByText('Live TV')).toBeInTheDocument();
+      expect(screen.getByText('VOD')).toBeInTheDocument();
+      expect(screen.getByText('Live TV refresh schedule')).toBeInTheDocument();
+      expect(screen.getByText('VOD refresh schedule')).toBeInTheDocument();
+    });
+
+    it('labels the separate VOD schedule switch and explains its fallback', async () => {
+      setupStores();
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({
+              enable_vod: true,
+              vod_refresh_after_live: false,
+            }),
+          })}
+        />
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole('switch', { name: 'Enabled' }).at(-1)
+        ).toBeChecked()
+      );
+      expect(
+        screen.getByTitle(
+          'When disabled, VOD refresh runs after a successful Live TV refresh.'
+        )
+      ).toBeInTheDocument();
+    });
+
     it('renders submit button with "Add" label for new account', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       expect(
-        screen.getByRole('button', { name: /add|create|save/i })
+        screen.getByRole('button', { name: 'Save M3U account' })
       ).toBeInTheDocument();
     });
 
@@ -463,7 +611,7 @@ describe('M3U', () => {
       setupStores();
       render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount() })} />);
       expect(
-        screen.getByRole('button', { name: /update|save/i })
+        screen.getByRole('button', { name: 'Save M3U account' })
       ).toBeInTheDocument();
     });
 
@@ -490,13 +638,22 @@ describe('M3U', () => {
     it('renders M3UGroupFilter sub-component', () => {
       setupStores();
       render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount() })} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Groups' }));
       expect(screen.getByTestId('m3u-group-filter')).toBeInTheDocument();
     });
 
-    it('renders M3UFilters sub-component', () => {
+    it('returns to the account editor when the group editor closes', () => {
+      const onClose = vi.fn();
       setupStores();
-      render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount() })} />);
-      expect(screen.getByTestId('m3u-filters')).toBeInTheDocument();
+      render(
+        <M3U {...defaultProps({ m3uAccount: makeM3uAccount(), onClose })} />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Groups' }));
+      fireEvent.click(screen.getByTestId('m3u-group-filter-close'));
+
+      expect(screen.queryByTestId('m3u-group-filter')).not.toBeInTheDocument();
+      expect(onClose).not.toHaveBeenCalled();
     });
 
     it('renders ScheduleInput sub-component', () => {
@@ -549,7 +706,7 @@ describe('M3U', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       fillRequiredFields();
-      fireEvent.click(screen.getByRole('button', { name: /add|create|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await waitFor(() => {
         expect(M3uUtils.addPlaylist).toHaveBeenCalled();
       });
@@ -559,7 +716,7 @@ describe('M3U', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       fillRequiredFields();
-      fireEvent.click(screen.getByRole('button', { name: /add|create|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await waitFor(() => {
         expect(M3uUtils.prepareSubmitValues).toHaveBeenCalled();
       });
@@ -577,7 +734,7 @@ describe('M3U', () => {
         />
       );
       fillRequiredFields();
-      fireEvent.click(screen.getByRole('button', { name: /add|create|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await waitFor(() => {
         expect(onClose).toHaveBeenCalled();
       });
@@ -590,7 +747,7 @@ describe('M3U', () => {
     it('calls updatePlaylist on submit', async () => {
       setupStores();
       render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount() })} />);
-      fireEvent.click(screen.getByRole('button', { name: /update|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await waitFor(() => {
         expect(M3uUtils.updatePlaylist).toHaveBeenCalled();
       });
@@ -599,7 +756,7 @@ describe('M3U', () => {
     it('does not call addPlaylist when updating', async () => {
       setupStores();
       render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount() })} />);
-      fireEvent.click(screen.getByRole('button', { name: /update|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await waitFor(() => {
         expect(M3uUtils.updatePlaylist).toHaveBeenCalled();
       });
@@ -612,7 +769,7 @@ describe('M3U', () => {
       render(
         <M3U {...defaultProps({ m3uAccount: makeM3uAccount(), onClose })} />
       );
-      fireEvent.click(screen.getByRole('button', { name: /update|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await waitFor(() => {
         expect(onClose).toHaveBeenCalled();
       });
@@ -628,7 +785,7 @@ describe('M3U', () => {
       // Clear name if pre-filled, then submit
       const nameInput = screen.getByTestId('text-input-name');
       fireEvent.change(nameInput, { target: { value: '' } });
-      fireEvent.click(screen.getByRole('button', { name: /add|create|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await new Promise((r) => setTimeout(r, 50));
       expect(M3uUtils.addPlaylist).not.toHaveBeenCalled();
     });
@@ -719,7 +876,7 @@ describe('M3U', () => {
         });
       }
 
-      fireEvent.click(screen.getByRole('button', { name: /add|create|save/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save M3U account' }));
       await waitFor(() => {
         expect(M3uUtils.addPlaylist).toHaveBeenCalled();
       });

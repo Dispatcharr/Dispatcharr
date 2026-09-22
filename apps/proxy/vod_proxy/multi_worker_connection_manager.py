@@ -19,6 +19,40 @@ from apps.m3u.models import M3UAccountProfile
 
 logger = logging.getLogger("vod_proxy")
 
+# IPTV clients commonly consume VOD in bursts: they fill a local buffer, close
+# the HTTP Range request, and request the next range much later while playback
+# never stopped.  Keep one logical playback lease across those transport gaps.
+# The exact source and its provider/profile slot remain pinned, but the physical
+# upstream HTTP response is closed as soon as the client request ends.
+VOD_LOGICAL_SESSION_IDLE_SECONDS = 300
+VOD_DISCONNECT_GRACE_SECONDS = VOD_LOGICAL_SESSION_IDLE_SECONDS
+VOD_DISCONNECT_QUEUE_KEY = "vod_proxy:logical_disconnects"
+VOD_DISCONNECT_SWEEPER_LOCK_KEY = "vod_proxy:logical_disconnect_sweeper"
+VOD_DISCONNECT_SWEEP_INTERVAL_SECONDS = 5
+
+
+def vod_logical_session_idle_seconds():
+    """Return the configurable source/slot reconnect reservation window."""
+    try:
+        from apps.proxy.config import BaseConfig
+
+        value = BaseConfig.get_proxy_settings().get(
+            "vod_reconnect_grace_seconds",
+            VOD_LOGICAL_SESSION_IDLE_SECONDS,
+        )
+        return min(max(int(value), 0), 1800)
+    except (TypeError, ValueError):
+        return VOD_LOGICAL_SESSION_IDLE_SECONDS
+
+
+def disconnect_grace_deadline(token):
+    """Read the expiry timestamp embedded in new disconnect lease tokens."""
+    try:
+        return float(str(token or "").split("|", 1)[0])
+    except (TypeError, ValueError):
+        return None
+
+
 # Mid-stream upstream failures that warrant a transparent Range reopen.
 _UPSTREAM_RETRY_EXCEPTIONS = (
     requests.exceptions.ReadTimeout,
@@ -84,6 +118,36 @@ redis.call('DEL', conn_key)
 return 1
 """
 
+_LUA_CLEANUP_AFTER_GRACE = """
+-- vod_cleanup_after_grace
+local conn_key = KEYS[1]
+local grace_key = KEYS[2]
+local expected_token = ARGV[1]
+
+local current_token = redis.call('GET', grace_key)
+if not current_token or current_token ~= expected_token then
+  return 0
+end
+
+if redis.call('EXISTS', conn_key) == 0 then
+  redis.call('DEL', grace_key)
+  return -1
+end
+
+local current = tonumber(redis.call('HGET', conn_key, 'active_streams') or '0')
+if current > 0 then
+  redis.call('DEL', grace_key)
+  return 0
+end
+
+-- The grace token and active-stream check are evaluated atomically.  A newer
+-- Range request either cancels/replaces the token or increments active_streams,
+-- so an older cleanup thread cannot remove the active session.
+redis.call('DEL', conn_key)
+redis.call('DEL', grace_key)
+return 1
+"""
+
 # Metadata HSET only when the session hash still exists. Prevents a worker that
 # held the metadata lock across idle cleanup from recreating a zombie hash.
 _LUA_META_SAVE_IF_EXISTS = """
@@ -102,6 +166,36 @@ end
 return 1
 """
 
+_LUA_ADD_BYTES_SENT = """
+-- vod_add_bytes_sent
+local key = KEYS[1]
+local delta = tonumber(ARGV[1]) or 0
+local activity = ARGV[2]
+if redis.call('EXISTS', key) == 0 then
+  return -1
+end
+local total = tonumber(redis.call('HINCRBY', key, 'bytes_sent', delta))
+redis.call('HSET', key, 'last_activity', activity)
+return total
+"""
+
+_LUA_RESUME_RANGE_REQUEST = """
+-- vod_resume_range
+local conn_key = KEYS[1]
+local grace_key = KEYS[2]
+local activity = ARGV[1]
+if redis.call('EXISTS', conn_key) == 0 then
+  return 0
+end
+-- Cancelling the idle lease and reserving this physical request must be one
+-- Redis operation. Otherwise the sweeper can delete the logical session in
+-- the small gap between DEL and HINCRBY.
+redis.call('DEL', grace_key)
+local new_count = redis.call('HINCRBY', conn_key, 'active_streams', 1)
+redis.call('HSET', conn_key, 'last_activity', activity)
+return new_count
+"""
+
 # Cache register_script handles per redis client (EVALSHA thereafter).
 _vod_script_cache: Dict[int, Dict[str, Any]] = {}
 
@@ -109,6 +203,46 @@ _vod_script_cache: Dict[int, Dict[str, Any]] = {}
 def get_vod_client_stop_key(client_id):
     """Get the Redis key for signaling a VOD client to stop"""
     return f"vod_proxy:client:{client_id}:stop"
+
+
+def _update_playback_history(session_id, status, bytes_sent=0, error=""):
+    """Persist proxy lifecycle data without interpreting media metadata."""
+    try:
+        from django.db import close_old_connections
+        from django.utils import timezone
+        from apps.vod.models import VODPlaybackSession
+
+        close_old_connections()
+        playback = VODPlaybackSession.objects.filter(session_id=session_id).first()
+        if not playback:
+            return
+        playback.status = status
+        playback.bytes_sent = max(playback.bytes_sent, int(bytes_sent or 0))
+        if playback.started_at:
+            playback.watched_seconds = max(
+                playback.watched_seconds,
+                max(0, int((timezone.now() - playback.started_at).total_seconds())),
+            )
+        if status in {
+            VODPlaybackSession.Status.COMPLETED,
+            VODPlaybackSession.Status.STOPPED,
+            VODPlaybackSession.Status.FAILED,
+        }:
+            playback.ended_at = timezone.now()
+        if error:
+            playback.error = str(error)[:2000]
+        playback.save(
+            update_fields=[
+                "status", "bytes_sent", "watched_seconds", "ended_at", "error"
+            ]
+        )
+    except Exception as exc:
+        logger.warning("[%s] Could not update playback history: %s", session_id, exc)
+    finally:
+        try:
+            close_old_connections()
+        except Exception:
+            pass
 
 
 def infer_content_type_from_url(url: str) -> Optional[str]:
@@ -175,7 +309,9 @@ class SerializableConnectionState:
                  content_name: str = None, client_ip: str = None,
                  client_user_agent: str = None, utc_start: str = None,
                  utc_end: str = None, offset: str = None,
-                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = "unknown"):
+                 worker_id: str = None, connection_type: str = "redis_backed",
+                 user_id: str = "unknown", source_key: str = None,
+                 source_metadata: dict = None):
         self.session_id = session_id
         self.stream_url = stream_url
         self.headers = headers
@@ -200,6 +336,8 @@ class SerializableConnectionState:
         self.worker_id = worker_id
         self.connection_type = connection_type
         self.created_at = time.time()
+        self.source_metadata = source_metadata or {}
+        self.source_key = source_key or ''
 
         # Additional tracking fields
         self.bytes_sent = 0
@@ -235,6 +373,8 @@ class SerializableConnectionState:
             'offset': self.offset or '',
             'worker_id': self.worker_id or '',
             'connection_type': self.connection_type or 'redis_backed',
+            'source_key': self.source_key or '',
+            'source_metadata': json.dumps(self.source_metadata or {}),
             'created_at': str(self.created_at),
             # Additional tracking fields
             'bytes_sent': str(self.bytes_sent),
@@ -269,7 +409,11 @@ class SerializableConnectionState:
             offset=data.get('offset') or '',
             worker_id=data.get('worker_id') or None,
             connection_type=data.get('connection_type', 'redis_backed'),
-            user_id=data.get('user_id', 'unknown')
+            user_id=data.get('user_id', 'unknown'),
+            source_key=data.get('source_key') or '',
+            source_metadata=(
+                json.loads(data.get('source_metadata') or '{}')
+            ),
         )
         obj.last_activity = float(data.get('last_activity', time.time()))
         obj.request_count = int(data.get('request_count', 0))
@@ -294,6 +438,7 @@ class RedisBackedVODConnection:
         self.redis_client = redis_client or RedisClient.get_client()
         self.connection_key = f"vod_persistent_connection:{session_id}"
         self.lock_key = f"vod_connection_lock:{session_id}"
+        self.disconnect_grace_key = f"vod_proxy:disconnect_grace:{session_id}"
         self.local_session = None  # Local requests session
         self.local_response = None  # Local current response
 
@@ -368,6 +513,7 @@ class RedisBackedVODConnection:
                 # Session creation: key may not exist yet.
                 self.redis_client.hset(self.connection_key, mapping=data)
                 self.redis_client.expire(self.connection_key, 3600)
+                self._refresh_profile_reservation_ttl(state.m3u_profile_id)
                 return True
 
             # Flat field/value list for Lua: TTL, then pairs
@@ -387,10 +533,29 @@ class RedisBackedVODConnection:
                     f"[{self.session_id}] Skipped metadata save; session no longer exists"
                 )
                 return False
+            self._refresh_profile_reservation_ttl(state.m3u_profile_id)
             return True
         except Exception as e:
             logger.error(f"[{self.session_id}] Error saving connection state to Redis: {e}")
             return False
+
+    def _refresh_profile_reservation_ttl(self, profile_id):
+        if not profile_id:
+            return
+        try:
+            from apps.m3u.connection_pool import (
+                VOD_PROFILE_RESERVATION_TTL,
+                vod_profile_reservation_key,
+            )
+
+            self.redis_client.expire(
+                vod_profile_reservation_key(self.session_id),
+                VOD_PROFILE_RESERVATION_TTL,
+            )
+        except Exception as exc:
+            logger.debug(
+                f"[{self.session_id}] Could not refresh profile reservation TTL: {exc}"
+            )
 
     def _acquire_lock(self, timeout: int = 10) -> bool:
         """Acquire distributed lock for session metadata operations.
@@ -428,7 +593,14 @@ class RedisBackedVODConnection:
                 'incr': client.register_script(_LUA_INCR_ACTIVE_STREAMS),
                 'decr': client.register_script(_LUA_DECR_ACTIVE_STREAMS),
                 'cleanup': client.register_script(_LUA_CLEANUP_IF_IDLE),
+                'cleanup_after_grace': client.register_script(
+                    _LUA_CLEANUP_AFTER_GRACE
+                ),
                 'meta_save': client.register_script(_LUA_META_SAVE_IF_EXISTS),
+                'add_bytes_sent': client.register_script(_LUA_ADD_BYTES_SENT),
+                'resume_range': client.register_script(
+                    _LUA_RESUME_RANGE_REQUEST
+                ),
             }
             _vod_script_cache[cache_key] = cached
         return cached
@@ -439,7 +611,8 @@ class RedisBackedVODConnection:
                          content_name: str = None, client_ip: str = None,
                          client_user_agent: str = None, utc_start: str = None,
                          utc_end: str = None, offset: str = None,
-                         worker_id: str = None, user=None):
+                         worker_id: str = None, user=None,
+                         source_metadata: dict = None):
         """Create Redis connection state.
 
         Returns ``"created"`` (hash written with active_streams=1),
@@ -479,7 +652,9 @@ class RedisBackedVODConnection:
                 utc_end=utc_end,
                 offset=offset,
                 worker_id=worker_id,
-                user_id=user.id if user else "unknown"
+                user_id=user.id if user else "unknown",
+                source_key=(source_metadata or {}).get('key'),
+                source_metadata=source_metadata,
             )
             # Seed 1 so the profile slot is never held while the session looks idle.
             state.active_streams = 1
@@ -762,6 +937,117 @@ class RedisBackedVODConnection:
         except Exception:
             return 0
 
+    def begin_disconnect_grace(self, seconds=VOD_DISCONNECT_GRACE_SECONDS):
+        """Start/replace the logical-idle lease and return its owner token."""
+        if not self.redis_client:
+            return None
+        try:
+            seconds = max(int(seconds), 0)
+            deadline = time.time() + seconds
+            token = f"{deadline:.6f}|{time.time_ns()}:{threading.get_ident()}"
+            self.redis_client.set(
+                self.disconnect_grace_key,
+                token,
+                ex=max(seconds + 60, 60),
+            )
+            return token
+        except Exception as exc:
+            logger.error(
+                "[%s] Could not start disconnect grace: %s",
+                self.session_id,
+                exc,
+            )
+            return None
+
+    def cancel_disconnect_grace(self):
+        """Cancel a pending logical disconnect before accepting a Range request."""
+        if not self.redis_client:
+            return
+        try:
+            self.redis_client.delete(self.disconnect_grace_key)
+        except Exception as exc:
+            logger.error(
+                "[%s] Could not cancel disconnect grace: %s",
+                self.session_id,
+                exc,
+            )
+
+    def add_bytes_sent(self, delta):
+        """Atomically add bytes from one physical Range response."""
+        if not self.redis_client or not delta:
+            state = self._get_connection_state()
+            return state.bytes_sent if state else 0
+        try:
+            return int(
+                self._vod_scripts()['add_bytes_sent'](
+                    keys=[self.connection_key],
+                    args=[int(delta), time.time()],
+                )
+                or 0
+            )
+        except Exception as exc:
+            logger.error(
+                "[%s] Could not add transferred bytes: %s",
+                self.session_id,
+                exc,
+            )
+            state = self._get_connection_state()
+            return state.bytes_sent if state else 0
+
+    def resume_range_request(self):
+        """Atomically cancel idle cleanup and reserve one physical request."""
+        if not self.redis_client:
+            return 0
+        try:
+            return int(
+                self._vod_scripts()['resume_range'](
+                    keys=[self.connection_key, self.disconnect_grace_key],
+                    args=[time.time()],
+                )
+                or 0
+            )
+        except Exception as exc:
+            logger.error(
+                "[%s] Could not resume logical VOD session: %s",
+                self.session_id,
+                exc,
+            )
+            return 0
+
+    def close_local_stream(self):
+        """Close worker-local provider resources without ending the logical session."""
+        if self.local_response:
+            try:
+                self.local_response.close()
+            finally:
+                self.local_response = None
+        if self.local_session:
+            try:
+                self.local_session.close()
+            finally:
+                self.local_session = None
+
+    def finalize_disconnect_grace(self, token):
+        """Atomically remove this session only if this timer still owns it."""
+        if not self.redis_client or not token:
+            return False
+        try:
+            result = int(
+                self._vod_scripts()['cleanup_after_grace'](
+                    keys=[self.connection_key, self.disconnect_grace_key],
+                    args=[token],
+                )
+                or 0
+            )
+            return result == 1
+        except Exception as exc:
+            logger.error(
+                "[%s] Could not finalize disconnect grace: %s",
+                self.session_id,
+                exc,
+            )
+            return False
+
     def get_headers(self):
         """Get headers for response"""
         state = self._get_connection_state()
@@ -788,6 +1074,8 @@ class RedisBackedVODConnection:
                 'offset': state.offset,
                 'worker_id': state.worker_id,
                 'connection_type': state.connection_type,
+                'source_key': state.source_key,
+                'source_metadata': state.source_metadata,
                 'created_at': state.created_at,
                 'last_activity': state.last_activity,
                 'm3u_profile_id': state.m3u_profile_id,
@@ -847,7 +1135,9 @@ class RedisBackedVODConnection:
 
             # Decrement profile connections if we have the state and connection manager
             if state.m3u_profile_id and connection_manager:
-                connection_manager._decrement_profile_connections(state.m3u_profile_id)
+                connection_manager._decrement_profile_connections(
+                    state.m3u_profile_id, self.session_id
+                )
                 logger.info(f"[{self.session_id}] Profile connection count decremented for profile {state.m3u_profile_id}")
             else:
                 if not state.m3u_profile_id:
@@ -877,6 +1167,15 @@ class MultiWorkerVODConnectionManager:
         self.connection_ttl = 3600  # 1 hour TTL for connections
         self.session_ttl = 1800  # 30 minutes TTL for sessions
         self.worker_id = self._get_worker_id()
+        self._disconnect_sweeper_started = False
+        self._disconnect_sweeper_guard = threading.Lock()
+        try:
+            if self.redis_client and self.redis_client.zcard(
+                VOD_DISCONNECT_QUEUE_KEY
+            ):
+                self._ensure_disconnect_sweeper()
+        except Exception:
+            logger.exception("Could not resume logical VOD session sweeper")
         logger.info(f"MultiWorkerVODConnectionManager initialized for worker {self.worker_id}")
 
     def _get_worker_id(self):
@@ -915,19 +1214,47 @@ class MultiWorkerVODConnectionManager:
             return f"bytes={absolute_offset}-{end}"
         return f"bytes={absolute_offset}-"
 
-    def _check_and_reserve_profile_slot(self, m3u_profile) -> bool:
+    def _check_and_reserve_profile_slot(self, m3u_profile, session_id: str) -> bool:
         """
         Atomically check and reserve a connection slot for the given profile.
 
         Returns:
             bool: True if slot was reserved (or unlimited), False if at capacity
         """
-        from apps.m3u.connection_pool import reserve_profile_slot
+        from apps.m3u.connection_pool import (
+            VOD_PROFILE_PENDING_RESERVATION_TTL,
+            VOD_PROFILE_RESERVATION_TTL,
+            reconcile_profile_connection_count,
+            reserve_profile_slot,
+            vod_profile_reservation_key,
+        )
 
         try:
-            reserved, new_count, _failure_reason = reserve_profile_slot(
-                m3u_profile, self.redis_client
+            reservation_key = vod_profile_reservation_key(session_id)
+            reservation_ttl = (
+                VOD_PROFILE_RESERVATION_TTL
+                if self.redis_client.exists(
+                    f"vod_persistent_connection:{session_id}"
+                )
+                else VOD_PROFILE_PENDING_RESERVATION_TTL
             )
+            reserved, new_count, failure_reason = reserve_profile_slot(
+                m3u_profile,
+                self.redis_client,
+                reservation_key=reservation_key,
+                reservation_ttl=reservation_ttl,
+            )
+            if not reserved and failure_reason == "profile_full":
+                reconciled_count = reconcile_profile_connection_count(
+                    m3u_profile.id, self.redis_client
+                )
+                if reconciled_count < m3u_profile.max_streams:
+                    reserved, new_count, failure_reason = reserve_profile_slot(
+                        m3u_profile,
+                        self.redis_client,
+                        reservation_key=reservation_key,
+                        reservation_ttl=reservation_ttl,
+                    )
             if reserved:
                 logger.info(
                     f"[PROFILE-RESERVE] Profile {m3u_profile.id} slot reserved: "
@@ -994,6 +1321,11 @@ class MultiWorkerVODConnectionManager:
                     f"[{client_id}] Session's stored profile {stored_id} "
                     f"is no longer valid; using {fallback_profile.id} instead"
                 )
+                if redis_connection is not None:
+                    self._decrement_profile_connections(
+                        stored_id,
+                        redis_connection.session_id,
+                    )
                 self._rewrite_session_profile_id(
                     redis_connection, stored_id, fallback_profile.id, client_id
                 )
@@ -1065,12 +1397,309 @@ class MultiWorkerVODConnectionManager:
         except Exception as e:
             logger.error(f"Failed to trigger VOD stats update: {e}")
 
-    def _decrement_profile_connections(self, m3u_profile_id: int):
+    def _schedule_logical_disconnect(
+        self,
+        redis_connection,
+        client_id,
+        terminal_status,
+        delay_seconds=None,
+    ):
+        """Queue idle cleanup without creating one sleeping thread per Range."""
+        if delay_seconds is None:
+            delay_seconds = vod_logical_session_idle_seconds()
+        delay_seconds = max(int(delay_seconds), 0)
+        token = redis_connection.begin_disconnect_grace(delay_seconds)
+        if not token or not self.redis_client:
+            logger.warning(
+                "[%s] Could not queue logical VOD disconnect; leaving stale cleanup as fallback",
+                client_id,
+            )
+            return
+
+        member = json.dumps(
+            [client_id, token, str(terminal_status)], separators=(",", ":")
+        )
+        self.redis_client.zadd(
+            VOD_DISCONNECT_QUEUE_KEY,
+            {member: time.time() + delay_seconds},
+        )
+        self._ensure_disconnect_sweeper()
+        logger.debug(
+            "[%s] Logical VOD session remains leased for %ss of inactivity",
+            client_id,
+            delay_seconds,
+        )
+
+    def _ensure_disconnect_sweeper(self):
+        """Start one lightweight logical-session sweeper for this process."""
+        if getattr(self, "_disconnect_sweeper_started", False):
+            return
+        guard = getattr(self, "_disconnect_sweeper_guard", None)
+        if guard is None:
+            guard = threading.Lock()
+            self._disconnect_sweeper_guard = guard
+        with guard:
+            if self._disconnect_sweeper_started:
+                return
+            self._disconnect_sweeper_started = True
+            threading.Thread(
+                target=self._disconnect_sweeper_loop,
+                name="vod-logical-session-sweeper",
+                daemon=True,
+            ).start()
+
+    def _disconnect_sweeper_loop(self):
+        while True:
+            try:
+                self._sweep_due_logical_disconnects()
+            except Exception:
+                logger.exception("Logical VOD session sweep failed")
+            time.sleep(VOD_DISCONNECT_SWEEP_INTERVAL_SECONDS)
+
+    @staticmethod
+    def _decode_redis(value):
+        return value.decode() if isinstance(value, bytes) else value
+
+    def _sweep_due_logical_disconnects(self, now=None, limit=200):
+        """Finalize due leases; a short Redis lock elects one web worker."""
+        if not self.redis_client:
+            return 0
+        if not self.redis_client.set(
+            VOD_DISCONNECT_SWEEPER_LOCK_KEY,
+            self.worker_id,
+            nx=True,
+            ex=max(VOD_DISCONNECT_SWEEP_INTERVAL_SECONDS * 2, 10),
+        ):
+            return 0
+
+        due = self.redis_client.zrangebyscore(
+            VOD_DISCONNECT_QUEUE_KEY,
+            "-inf",
+            now if now is not None else time.time(),
+            start=0,
+            num=limit,
+        )
+        finalized_count = 0
+        for raw_member in due:
+            member = self._decode_redis(raw_member)
+            try:
+                session_id, token, terminal_status = json.loads(member)
+            except (TypeError, ValueError):
+                self.redis_client.zrem(VOD_DISCONNECT_QUEUE_KEY, raw_member)
+                continue
+
+            finalized = self._finalize_logical_disconnect(
+                session_id, token, terminal_status
+            )
+            current_token = self._decode_redis(
+                self.redis_client.get(
+                    f"vod_proxy:disconnect_grace:{session_id}"
+                )
+            )
+            if finalized:
+                finalized_count += 1
+                self.redis_client.zrem(VOD_DISCONNECT_QUEUE_KEY, raw_member)
+            elif current_token != token:
+                # Reconnected or superseded by a newer idle lease.
+                self.redis_client.zrem(VOD_DISCONNECT_QUEUE_KEY, raw_member)
+            else:
+                # Transient Redis/cleanup race. Retry rather than leak the slot.
+                self.redis_client.zadd(
+                    VOD_DISCONNECT_QUEUE_KEY,
+                    {member: time.time() + VOD_DISCONNECT_SWEEP_INTERVAL_SECONDS},
+                )
+        return finalized_count
+
+    def _finalize_logical_disconnect(self, session_id, token, terminal_status):
+        redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
+        state = redis_connection._get_connection_state()
+        if not state or not redis_connection.finalize_disconnect_grace(token):
+            return False
+
+        # A Range request can race immediately after atomic finalization. If it
+        # already recreated the same session, it inherits the reservation and
+        # the old finalizer must neither release that slot nor emit a stale stop.
+        if self.redis_client.exists(redis_connection.connection_key):
+            return True
+
+        if state.m3u_profile_id:
+            self._decrement_profile_connections(
+                state.m3u_profile_id, session_id
+            )
+
+        # Close the tiny gap between the existence check and reservation release:
+        # a request that recreated this session in that interval may have seen the
+        # old reservation as idempotently owned. Re-establish it after release.
+        recreated_state = redis_connection._get_connection_state()
+        if recreated_state:
+            if recreated_state.m3u_profile_id:
+                try:
+                    profile = M3UAccountProfile.objects.get(
+                        id=recreated_state.m3u_profile_id
+                    )
+                    if not self._check_and_reserve_profile_slot(
+                        profile, session_id
+                    ):
+                        logger.error(
+                            "[%s] Recreated VOD session lost its profile slot",
+                            session_id,
+                        )
+                        self.redis_client.setex(
+                            get_vod_client_stop_key(session_id),
+                            60,
+                            "capacity",
+                        )
+                except M3UAccountProfile.DoesNotExist:
+                    logger.warning(
+                        "[%s] Recreated session references missing profile %s",
+                        session_id,
+                        recreated_state.m3u_profile_id,
+                    )
+                    self.redis_client.setex(
+                        get_vod_client_stop_key(session_id),
+                        60,
+                        "missing_profile",
+                    )
+            return True
+
+        user_id = str(state.user_id or "0")
+        username = None
+        try:
+            from django.db import close_old_connections
+            parsed_user_id = int(user_id)
+            if parsed_user_id > 0:
+                from django.contrib.auth import get_user_model
+
+                close_old_connections()
+                username = (
+                    get_user_model().objects.filter(id=parsed_user_id)
+                    .values_list("username", flat=True)
+                    .first()
+                )
+        except (TypeError, ValueError):
+            user_id = "0"
+
+        _update_playback_history(
+            session_id,
+            terminal_status,
+            state.bytes_sent,
+        )
+        self._send_vod_event(
+            "vod_stopped",
+            session_id,
+            state.content_name,
+            state.content_uuid,
+            state.client_ip,
+            user_id,
+            username,
+        )
+        logger.info(
+            "[%s] Logical VOD session finalized after inactivity lease",
+            session_id,
+        )
+        return True
+
+    def stop_logical_session(self, session_id, reason="admin"):
+        """Stop an active VOD request or finalize its buffered lease now.
+
+        Active generators observe the Redis stop key on their next chunk
+        checkpoint.  An idle logical session has no generator left to observe
+        that key, so it can be atomically finalized immediately instead of
+        retaining a provider/profile slot until the inactivity timeout.
+        """
+        if not self.redis_client or not session_id:
+            return False
+        connection = RedisBackedVODConnection(session_id, self.redis_client)
+        state = connection._get_connection_state()
+        if not state:
+            return False
+        if connection.has_active_streams():
+            self.redis_client.setex(
+                get_vod_client_stop_key(session_id), 60, str(reason)
+            )
+            return True
+
+        token = connection.begin_disconnect_grace(0)
+        return bool(
+            token
+            and self._finalize_logical_disconnect(
+                session_id, token, "stopped"
+            )
+        )
+
+    def retire_other_idle_sessions_for_viewer(
+        self,
+        *,
+        client_ip,
+        client_user_agent,
+        user_id=None,
+        keep_session_id=None,
+    ):
+        """End an older buffered playback when the same viewer opens another.
+
+        The client does not send a reliable explicit "playback ended" signal.
+        Without this hand-over a five-minute logical lease would make the next
+        title wait for the provider slot.  Exact viewer fingerprint matching is
+        deliberately stricter than content matching to avoid retiring another
+        household/client behind the same provider account.
+        """
+        if not self.redis_client or not client_ip or not client_user_agent:
+            return 0
+        retired = 0
+        wanted_user_id = str(user_id) if user_id else None
+        for key in self.redis_client.scan_iter(
+            match="vod_persistent_connection:*", count=100
+        ):
+            decoded_key = self._decode_redis(key)
+            session_id = decoded_key.split(":", 1)[1]
+            if session_id == keep_session_id:
+                continue
+            data = self.redis_client.hgetall(key)
+            if not data:
+                continue
+            if isinstance(next(iter(data)), bytes):
+                data = {
+                    self._decode_redis(k): self._decode_redis(v)
+                    for k, v in data.items()
+                }
+            if int(data.get("active_streams", 0) or 0) > 0:
+                continue
+            if data.get("client_ip", "") != client_ip:
+                continue
+            stored_agent = data.get("client_user_agent", "") or data.get(
+                "user_agent", ""
+            )
+            if stored_agent != client_user_agent:
+                continue
+            stored_user_id = str(data.get("user_id", "") or "")
+            if wanted_user_id and stored_user_id not in {wanted_user_id, "unknown"}:
+                continue
+
+            connection = RedisBackedVODConnection(session_id, self.redis_client)
+            token = connection.begin_disconnect_grace(0)
+            if token and self._finalize_logical_disconnect(
+                session_id, token, "stopped"
+            ):
+                retired += 1
+        return retired
+
+    def _decrement_profile_connections(
+        self, m3u_profile_id: int, session_id: str = None
+    ):
         """Decrement profile and shared pool connection counters."""
-        from apps.m3u.connection_pool import release_profile_slot
+        from apps.m3u.connection_pool import (
+            release_profile_slot,
+            vod_profile_reservation_key,
+        )
 
         try:
-            release_profile_slot(m3u_profile_id, self.redis_client)
+            release_profile_slot(
+                m3u_profile_id,
+                self.redis_client,
+                reservation_key=(
+                    vod_profile_reservation_key(session_id) if session_id else None
+                ),
+            )
             profile_key = self._get_profile_connections_key(m3u_profile_id)
             new_count = int(self.redis_client.get(profile_key) or 0)
             logger.info(f"[PROFILE-DECR] Profile {m3u_profile_id} connections: {new_count}")
@@ -1127,7 +1756,7 @@ class MultiWorkerVODConnectionManager:
             conn._close_local_http()
 
         if release_profile:
-            self._decrement_profile_connections(profile_id)
+            self._decrement_profile_connections(profile_id, client_id or None)
             if cleanup_session and conn:
                 # 1s settle window; cleanup() is a no-op if a reconnect INCRs first.
                 def delayed_cleanup():
@@ -1153,7 +1782,9 @@ class MultiWorkerVODConnectionManager:
 
     def stream_content_with_session(self, session_id, content_obj, stream_url, m3u_profile,
                                   client_ip, client_user_agent, request,
-                                  utc_start=None, utc_end=None, offset=None, range_header=None, user=None):
+                                  utc_start=None, utc_end=None, offset=None,
+                                  range_header=None, user=None,
+                                  source_metadata=None):
         """Stream content with Redis-backed persistent connection"""
 
         # Generate client ID
@@ -1165,6 +1796,7 @@ class MultiWorkerVODConnectionManager:
         # Reservations to undo if setup fails before the generator runs
         profile_connections_incremented = False
         active_streams_reserved = False
+        claimed_active_streams = None
         redis_connection = None
         existing_state = None
         session_is_new = False
@@ -1176,45 +1808,117 @@ class MultiWorkerVODConnectionManager:
         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed streaming request for {content_type} {content_name}")
 
         try:
-            # First, try to find an existing idle session that matches our criteria
-            matching_session_id = self.find_matching_idle_session(
-                content_type=content_type,
-                content_uuid=content_uuid,
-                client_ip=client_ip,
-                client_user_agent=client_user_agent,
-                utc_start=utc_start,
-                utc_end=utc_end,
-                offset=offset
+            # A known session path is the fast path. It avoids scanning every
+            # VOD session for each short client Range request.
+            requested_connection = RedisBackedVODConnection(
+                session_id,
+                self.redis_client,
             )
+            requested_state = requested_connection._get_connection_state()
+            source_key = (source_metadata or {}).get('key')
 
-            idle_stream_count = 0
-
-            # Use matching session if found, otherwise use the provided session_id
-            if matching_session_id:
-                logger.info(f"[{client_id}] Worker {self.worker_id} - Found matching idle session: {matching_session_id}")
-                effective_session_id = matching_session_id
-                client_id = matching_session_id  # Update client_id for logging consistency
-
-                # IMMEDIATELY reserve this session by incrementing active streams to prevent cleanup
-                temp_connection = RedisBackedVODConnection(effective_session_id, self.redis_client)
-                idle_stream_count = temp_connection.increment_active_streams()
-                if idle_stream_count:
-                    logger.info(f"[{client_id}] Reserved idle session - incremented active streams")
-                    active_streams_reserved = True
+            if requested_state:
+                state_matches = (
+                    requested_state.content_obj_type == content_type
+                    and requested_state.content_uuid == content_uuid
+                    and requested_state.client_ip == (client_ip or "")
+                    and requested_state.client_user_agent
+                    == (client_user_agent or "")
+                    and requested_state.utc_start == (utc_start or "")
+                    and requested_state.utc_end == (utc_end or "")
+                    and requested_state.offset
+                    == (str(offset) if offset else "")
+                    and (
+                        not source_key
+                        or requested_state.source_key == source_key
+                    )
+                    and (
+                        not user
+                        or str(requested_state.user_id) in {
+                            str(user.id),
+                            "unknown",
+                        }
+                    )
+                )
+                if not state_matches:
+                    logger.warning(
+                        "[%s] Logical VOD session does not match this request",
+                        session_id,
+                    )
+                    return HttpResponse("Session does not match request", status=409)
+                claimed_active_streams = requested_connection.resume_range_request()
+                if claimed_active_streams <= 0:
+                    # The inactivity sweeper won the race after state lookup.
+                    # Continue through the normal new-session path rather than
+                    # returning a transient 500 to the player.
+                    requested_state = None
                 else:
-                    logger.warning(f"[{client_id}] Failed to reserve idle session - falling back to new session")
+                    matching_session_id = None
                     effective_session_id = session_id
-                    matching_session_id = None  # Clear the match so we create a new connection
-                    idle_stream_count = 0
-            else:
-                logger.info(f"[{client_id}] Worker {self.worker_id} - No matching idle session found, using new session")
-                effective_session_id = session_id
+                    redis_connection = requested_connection
+                    existing_state = requested_state
+                    active_streams_reserved = True
+                    logger.debug(
+                        "[%s] Reusing known logical session without Redis scan",
+                        session_id,
+                    )
+            if not requested_state:
+                # Clients may return to the original XC URL without keeping the
+                # redirected session path. Find the exact logical source lease once.
+                matching_session_id = self.find_matching_idle_session(
+                    content_type=content_type,
+                    content_uuid=content_uuid,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    utc_start=utc_start,
+                    utc_end=utc_end,
+                    offset=offset,
+                    source_key=source_key,
+                    user_id=user.id if user else None,
+                )
+
+            # Use matching session if found, otherwise use the provided session ID.
+            if not requested_state:
+                if matching_session_id:
+                    logger.info(f"[{client_id}] Worker {self.worker_id} - Found matching idle session: {matching_session_id}")
+                    effective_session_id = matching_session_id
+                    client_id = matching_session_id  # Update client_id for logging consistency
+
+                    # Immediately reserve this session by incrementing active
+                    # streams before the old inactivity lease can finalize it.
+                    temp_connection = RedisBackedVODConnection(
+                        effective_session_id, self.redis_client
+                    )
+                    claimed_active_streams = temp_connection.resume_range_request()
+                    if claimed_active_streams > 0:
+                        logger.info(f"[{client_id}] Reserved idle session - incremented active streams")
+                        active_streams_reserved = True
+                    else:
+                        logger.warning(f"[{client_id}] Failed to reserve idle session - falling back to new session")
+                        effective_session_id = session_id
+                        matching_session_id = None  # Create a new connection
+                else:
+                    logger.info(f"[{client_id}] Worker {self.worker_id} - No matching idle session found, using new session")
+                    effective_session_id = session_id
 
             # Create Redis-backed connection
-            redis_connection = RedisBackedVODConnection(effective_session_id, self.redis_client)
+            if redis_connection is None:
+                redis_connection = RedisBackedVODConnection(
+                    effective_session_id, self.redis_client
+                )
 
             # Check if connection exists, create if not
-            existing_state = redis_connection._get_connection_state()
+            if existing_state is None:
+                existing_state = redis_connection._get_connection_state()
+            if existing_state is not None and not active_streams_reserved:
+                # The session may have appeared between the first lookup and
+                # the create path. Claim this physical request before treating
+                # it as an existing logical session.
+                claimed_active_streams = redis_connection.resume_range_request()
+                if claimed_active_streams > 0:
+                    active_streams_reserved = True
+                else:
+                    existing_state = None
             if matching_session_id and not existing_state:
                 # Idle INCR succeeded but the hash is unreadable. Do not create
                 # a second active_streams stake on the same session.
@@ -1225,12 +1929,13 @@ class MultiWorkerVODConnectionManager:
                     redis_connection.decrement_active_streams()
                     active_streams_reserved = False
                 return HttpResponse("Failed to create connection", status=500)
-
             if not existing_state:
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Creating new Redis-backed connection")
 
                 # Atomically check and reserve a profile connection slot (INCR-first)
-                if not self._check_and_reserve_profile_slot(m3u_profile):
+                if not self._check_and_reserve_profile_slot(
+                    m3u_profile, effective_session_id
+                ):
                     logger.warning(f"[{client_id}] Profile {m3u_profile.name} connection limit exceeded")
                     if active_streams_reserved:
                         redis_connection.decrement_active_streams()
@@ -1270,12 +1975,15 @@ class MultiWorkerVODConnectionManager:
                     utc_end=utc_end,
                     offset=str(offset) if offset else None,
                     worker_id=self.worker_id,
-                    user=user
+                    user=user,
+                    source_metadata=source_metadata,
                 )
                 if create_result is False:
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection")
                     # Roll back the profile slot reservation since connection failed
-                    self._decrement_profile_connections(m3u_profile.id)
+                    self._decrement_profile_connections(
+                        m3u_profile.id, effective_session_id
+                    )
                     profile_connections_incremented = False
                     return HttpResponse("Failed to create connection", status=500)
 
@@ -1291,7 +1999,9 @@ class MultiWorkerVODConnectionManager:
                         logger.error(
                             f"[{client_id}] Failed to reserve active_streams after create race"
                         )
-                        self._decrement_profile_connections(m3u_profile.id)
+                        self._decrement_profile_connections(
+                            m3u_profile.id, effective_session_id
+                        )
                         profile_connections_incremented = False
                         return HttpResponse("Failed to create connection", status=500)
                     active_streams_reserved = True
@@ -1304,14 +2014,18 @@ class MultiWorkerVODConnectionManager:
                         rewrite_dead=(new_count == 1),
                     )
                     if new_count > 1:
-                        # Sibling already holds the profile slot. Drop the
-                        # view-profile reserve we took before create.
-                        self._decrement_profile_connections(m3u_profile.id)
+                        # The slot is owned by the logical session key, not by
+                        # this physical Range request. A sibling therefore
+                        # shares the existing reservation and must not release it.
                         profile_connections_incremented = False
                     elif effective_profile.id != m3u_profile.id:
                         # 0→1 on a session bound to a different profile: swap.
-                        self._decrement_profile_connections(m3u_profile.id)
-                        if not self._check_and_reserve_profile_slot(effective_profile):
+                        self._decrement_profile_connections(
+                            m3u_profile.id, effective_session_id
+                        )
+                        if not self._check_and_reserve_profile_slot(
+                            effective_profile, effective_session_id
+                        ):
                             logger.warning(
                                 f"[{client_id}] Profile {effective_profile.name} "
                                 f"connection limit exceeded after create race"
@@ -1329,44 +2043,28 @@ class MultiWorkerVODConnectionManager:
 
                 # Claim active_streams before get_stream so a concurrent
                 # GeneratorExit cannot see 0 and release the profile slot.
-                if matching_session_id:
-                    effective_profile = self._resolve_effective_profile(
-                        existing_state,
-                        m3u_profile,
-                        client_id=client_id,
-                        redis_connection=redis_connection,
-                        rewrite_dead=(idle_stream_count == 1),
+                effective_profile = self._resolve_effective_profile(
+                    existing_state,
+                    m3u_profile,
+                    client_id=client_id,
+                    redis_connection=redis_connection,
+                    rewrite_dead=(claimed_active_streams == 1),
+                )
+                # resume_range_request() already claimed this physical request.
+                # Refresh the same logical session's profile reservation without
+                # allocating a second provider slot.
+                if not self._check_and_reserve_profile_slot(
+                    effective_profile, effective_session_id
+                ):
+                    logger.warning(
+                        f"[{client_id}] Profile {effective_profile.name} "
+                        "connection limit exceeded on reconnect"
                     )
-                    if idle_stream_count == 1:
-                        if not self._check_and_reserve_profile_slot(effective_profile):
-                            logger.warning(f"[{client_id}] Profile {effective_profile.name} connection limit exceeded on session reuse")
-                            redis_connection.decrement_active_streams()
-                            active_streams_reserved = False
-                            return HttpResponse("Connection limit exceeded for profile", status=429)
-                        profile_connections_incremented = True
-                else:
-                    new_count = redis_connection.increment_active_streams()
-                    if new_count == 0:
-                        logger.error(f"[{client_id}] Failed to increment active streams")
-                        return HttpResponse("Failed to reserve stream", status=500)
-                    effective_profile = self._resolve_effective_profile(
-                        existing_state,
-                        m3u_profile,
-                        client_id=client_id,
-                        redis_connection=redis_connection,
-                        rewrite_dead=(new_count == 1),
+                    redis_connection.decrement_active_streams()
+                    active_streams_reserved = False
+                    return HttpResponse(
+                        "Connection limit exceeded for profile", status=429
                     )
-                    if new_count == 1:
-                        # 0→1: previous teardown already released the profile slot.
-                        if not self._check_and_reserve_profile_slot(effective_profile):
-                            logger.warning(f"[{client_id}] Profile {effective_profile.name} connection limit exceeded on reconnect")
-                            redis_connection.decrement_active_streams()
-                            return HttpResponse("Connection limit exceeded for profile", status=429)
-                        profile_connections_incremented = True
-                        active_streams_reserved = True
-                    else:
-                        # Sibling already holds the profile slot.
-                        active_streams_reserved = True
 
                 # Transfer ownership to current worker and update session activity
                 if redis_connection._acquire_lock():
@@ -1407,8 +2105,21 @@ class MultiWorkerVODConnectionManager:
             # Create streaming generator
             def stream_generator():
                 stream_decremented = False
-                profile_decremented = False
                 stop_signal_detected = False
+                bytes_sent = 0
+                accounted_bytes = 0
+                session_total_bytes = existing_state.bytes_sent if existing_state else 0
+
+                def account_transferred_bytes():
+                    nonlocal accounted_bytes, session_total_bytes
+                    delta = bytes_sent - accounted_bytes
+                    if delta > 0:
+                        new_total = redis_connection.add_bytes_sent(delta)
+                        if new_total >= 0:
+                            session_total_bytes = new_total
+                        accounted_bytes = bytes_sent
+                    return session_total_bytes
+
                 try:
                     logger.info(f"[{client_id}] Worker {self.worker_id} - Starting Redis-backed stream")
 
@@ -1427,7 +2138,6 @@ class MultiWorkerVODConnectionManager:
                     else:
                         logger.debug(f"[{client_id}] Active streams already incremented in connection reuse path")
 
-                    bytes_sent = 0
                     chunk_count = 0
                     consecutive_upstream_failures = 0
                     range_start = self._range_start_byte(range_header)
@@ -1444,7 +2154,7 @@ class MultiWorkerVODConnectionManager:
                                     resume_range
                                 )
                                 if current_upstream is None:
-                                    raise ConnectionError(
+                                    raise requests.exceptions.ConnectionError(
                                         f"Upstream reopen returned no stream "
                                         f"for {resume_range}"
                                     )
@@ -1466,15 +2176,9 @@ class MultiWorkerVODConnectionManager:
                                             break
 
                                         logger.debug(f"Client: [{client_id}] Worker: {self.worker_id} sent {chunk_count} chunks for VOD: {content_name}")
-                                        if redis_connection._acquire_lock():
-                                            try:
-                                                state = redis_connection._get_connection_state()
-                                                if state:
-                                                    state.last_activity = time.time()
-                                                    state.bytes_sent = bytes_sent
-                                                    redis_connection._save_connection_state(state)
-                                            finally:
-                                                redis_connection._release_lock()
+                                        # Account bytes atomically across physical
+                                        # Range requests in this logical playback.
+                                        account_transferred_bytes()
 
                             # Natural EOF or stop signal: leave the retry loop.
                             break
@@ -1511,84 +2215,66 @@ class MultiWorkerVODConnectionManager:
                         logger.info(f"[{client_id}] Worker {self.worker_id} - Stream stopped by signal: {bytes_sent} bytes sent")
                     else:
                         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed stream completed: {bytes_sent} bytes sent")
+                    account_transferred_bytes()
+                    from apps.vod.models import VODPlaybackSession
                     stream_decremented, has_remaining = redis_connection.decrement_active_streams_and_check()
 
-                    # Schedule smart cleanup if no active streams after normal completion
-                    if stream_decremented and not has_remaining and not profile_decremented:
-                        # Decrement profile counter immediately; don't defer to daemon thread.
-                        # Use this request's own resolved profile (not a fresh Redis read)
-                        # so it always matches whatever was actually reserved above.
-                        profile_id = effective_profile.id
-                        if profile_id:
-                            self._decrement_profile_connections(profile_id)
-                            profile_decremented = True
-                            logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} on normal completion")
-
-                        def delayed_cleanup():
-                            time.sleep(1)  # Wait 1 second
-                            # Re-check active_streams: a seeking/reconnecting client may
-                            # have incremented it within the settle window.
-                            if not redis_connection.has_active_streams():
-                                self._send_vod_event(
-                                    'vod_stopped', client_id, content_name,
-                                    content_uuid, client_ip,
-                                    str(user.id) if user else '0',
-                                    user.username if user else None
-                                )
-                            logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after normal completion")
-                            redis_connection.cleanup(current_worker_id=self.worker_id)
-
-                        cleanup_thread = threading.Thread(target=delayed_cleanup)
-                        cleanup_thread.daemon = True
-                        cleanup_thread.start()
+                    # The provider HTTP response may be finished while the
+                    # client continues playing its local buffer. Keep the
+                    # logical slot/source lease until inactivity expires.
+                    if stream_decremented and not has_remaining:
+                        self._schedule_logical_disconnect(
+                            redis_connection,
+                            client_id,
+                            VODPlaybackSession.Status.STOPPED
+                            if stop_signal_detected
+                            else VODPlaybackSession.Status.COMPLETED,
+                            delay_seconds=(
+                                0
+                                if stop_signal_detected
+                                else None
+                            ),
+                        )
 
                 except GeneratorExit:
                     logger.info(f"[{client_id}] Worker {self.worker_id} - Client disconnected from Redis-backed stream")
+                    from apps.vod.models import VODPlaybackSession
+                    account_transferred_bytes()
                     if not stream_decremented:
                         stream_decremented, has_remaining = redis_connection.decrement_active_streams_and_check()
                     else:
                         has_remaining = redis_connection.has_active_streams()
 
                     # Schedule smart cleanup if this stream's DECR left none remaining
-                    if stream_decremented and not has_remaining and not profile_decremented:
-                        # Decrement profile counter immediately; don't defer to daemon thread.
-                        profile_id = effective_profile.id
-                        if profile_id:
-                            self._decrement_profile_connections(profile_id)
-                            profile_decremented = True
-                            logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} on client disconnect")
-
-                        def delayed_cleanup():
-                            time.sleep(1)  # Wait 1 second
-                            # Re-check active_streams: a seeking/reconnecting client may
-                            # have incremented it within the settle window.
-                            if not redis_connection.has_active_streams():
-                                self._send_vod_event(
-                                    'vod_stopped', client_id, content_name,
-                                    content_uuid, client_ip,
-                                    str(user.id) if user else '0',
-                                    user.username if user else None
-                                )
-                            logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after client disconnect")
-                            redis_connection.cleanup(current_worker_id=self.worker_id)
-
-                        cleanup_thread = threading.Thread(target=delayed_cleanup)
-                        cleanup_thread.daemon = True
-                        cleanup_thread.start()
+                    if stream_decremented and not has_remaining:
+                        self._schedule_logical_disconnect(
+                            redis_connection,
+                            client_id,
+                            VODPlaybackSession.Status.STOPPED,
+                        )
 
                 except Exception as e:
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Error in Redis-backed stream: {e}")
+                    from apps.vod.models import VODPlaybackSession
+                    account_transferred_bytes()
+                    _update_playback_history(
+                        client_id,
+                        VODPlaybackSession.Status.FAILED,
+                        session_total_bytes,
+                        str(e),
+                    )
                     if not stream_decremented:
                         stream_decremented, has_remaining = redis_connection.decrement_active_streams_and_check()
                     else:
                         has_remaining = redis_connection.has_active_streams()
 
                     # Decrement profile counter only when this stream's DECR hit zero
-                    if stream_decremented and not has_remaining and not profile_decremented:
+                    if stream_decremented and not has_remaining:
                         profile_id = effective_profile.id
                         if profile_id:
-                            self._decrement_profile_connections(profile_id)
-                            profile_decremented = True
+                            self._decrement_profile_connections(
+                                profile_id, effective_session_id
+                            )
                             logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} on stream error")
 
                         def delayed_cleanup():
@@ -1605,28 +2291,20 @@ class MultiWorkerVODConnectionManager:
                     # This request's provider HTTP is never shared with a reconnect.
                     redis_connection._close_local_http()
                     if not stream_decremented:
+                        account_transferred_bytes()
                         stream_decremented, has_remaining = redis_connection.decrement_active_streams_and_check()
-                        if stream_decremented and not has_remaining and not profile_decremented:
-                            profile_id = effective_profile.id
-                            if profile_id:
-                                self._decrement_profile_connections(profile_id)
-                                profile_decremented = True
-                                logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} in finally block")
+                        if stream_decremented and not has_remaining:
+                            from apps.vod.models import VODPlaybackSession
 
-                            # Delayed cleanup: wait 1s for seeking clients to reconnect
-                            # before closing the provider connection and Redis keys.
-                            # cleanup() atomically re-checks active_streams (Lua), so a
-                            # reconnecting client that increments active_streams in
-                            # time will prevent Redis key deletion.
-                            def delayed_cleanup():
-                                time.sleep(1)
-                                logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup in finally block")
-                                # No connection_manager; profile already decremented above
-                                redis_connection.cleanup(current_worker_id=self.worker_id)
-
-                            cleanup_thread = threading.Thread(target=delayed_cleanup)
-                            cleanup_thread.daemon = True
-                            cleanup_thread.start()
+                            self._schedule_logical_disconnect(
+                                redis_connection,
+                                client_id,
+                                VODPlaybackSession.Status.STOPPED,
+                            )
+                    # Never hold an upstream HTTP socket during the logical
+                    # buffer lease; only Redis state and the entitlement slot
+                    # remain reserved.
+                    redis_connection.close_local_stream()
 
             # Create streaming response
             response = StreamingHttpResponse(
@@ -1643,6 +2321,7 @@ class MultiWorkerVODConnectionManager:
             response['X-Content-Type-Options'] = 'nosniff'
             response['Connection'] = 'keep-alive'
             response['X-Worker-ID'] = self.worker_id  # Identify which worker served this
+            response['X-Dispatcharr-Session'] = effective_session_id
 
             if connection_headers.get('content_length'):
                 response['Accept-Ranges'] = 'bytes'
@@ -1987,8 +2666,15 @@ class MultiWorkerVODConnectionManager:
 
     def find_matching_idle_session(self, content_type: str, content_uuid: str,
                                  client_ip: str, client_user_agent: str,
-                                 utc_start=None, utc_end=None, offset=None) -> Optional[str]:
-        """Find existing Redis-backed session that matches criteria using consolidated connection state"""
+                                 utc_start=None, utc_end=None, offset=None,
+                                 source_key=None, user_id=None) -> Optional[str]:
+        """Find the newest exact logical playback for this client/source.
+
+        Physical Range requests may briefly overlap while a player replaces
+        one request with the next. Matching an active session is intentional:
+        transport request count must not create another logical playback,
+        history row, notification, or provider reservation.
+        """
         if not self.redis_client:
             return None
 
@@ -2018,29 +2704,27 @@ class MultiWorkerVODConnectionManager:
                         if stored_content_type != content_type or stored_content_uuid != content_uuid:
                             continue
 
+                        # Canonical UUIDs are shared by category variants. A
+                        # reconnect may only adopt a session for the same
+                        # concrete upstream source.
+                        if source_key and connection_data.get('source_key', '') != source_key:
+                            continue
+
                         # Extract session ID
                         session_id = key.replace('vod_persistent_connection:', '')
 
-                        # Check if Redis-backed connection exists and has no active streams
-                        redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
-                        if redis_connection.has_active_streams():
-                            continue
-
-                        # Calculate match score
-                        score = 10  # Content match
-                        match_reasons = ["content"]
-
-                        # Check other criteria (using consolidated data)
+                        # Do not let another viewer adopt a buffered source just
+                        # because canonical content and timeshift fields match.
                         stored_client_ip = connection_data.get('client_ip', '')
                         stored_user_agent = connection_data.get('client_user_agent', '') or connection_data.get('user_agent', '')
-
-                        if stored_client_ip and stored_client_ip == client_ip:
-                            score += 5
-                            match_reasons.append("ip")
-
-                        if stored_user_agent and stored_user_agent == client_user_agent:
-                            score += 3
-                            match_reasons.append("user-agent")
+                        if stored_client_ip != (client_ip or ""):
+                            continue
+                        if stored_user_agent != (client_user_agent or ""):
+                            continue
+                        if user_id is not None:
+                            stored_user_id = str(connection_data.get('user_id', '') or '')
+                            if stored_user_id not in {str(user_id), 'unknown'}:
+                                continue
 
                         # Check timeshift parameters (using consolidated data)
                         stored_utc_start = connection_data.get('utc_start', '')
@@ -2051,19 +2735,17 @@ class MultiWorkerVODConnectionManager:
                         current_utc_end = utc_end or ""
                         current_offset = str(offset) if offset else ""
 
-                        if (stored_utc_start == current_utc_start and
-                            stored_utc_end == current_utc_end and
-                            stored_offset == current_offset):
-                            score += 7
-                            match_reasons.append("timeshift")
+                        if not (
+                            stored_utc_start == current_utc_start
+                            and stored_utc_end == current_utc_end
+                            and stored_offset == current_offset
+                        ):
+                            continue
 
-                        if score >= 13:  # Good match threshold
-                            matching_sessions.append({
-                                'session_id': session_id,
-                                'score': score,
-                                'reasons': match_reasons,
-                                'last_activity': float(connection_data.get('last_activity', '0'))
-                            })
+                        matching_sessions.append({
+                            'session_id': session_id,
+                            'last_activity': float(connection_data.get('last_activity', '0'))
+                        })
 
                     except Exception as e:
                         logger.debug(f"Error processing connection key {key}: {e}")
@@ -2072,13 +2754,16 @@ class MultiWorkerVODConnectionManager:
                 if cursor == 0:
                     break
 
-            # Sort by score and last activity
-            matching_sessions.sort(key=lambda x: (x['score'], x['last_activity']), reverse=True)
+            matching_sessions.sort(
+                key=lambda x: x['last_activity'], reverse=True
+            )
 
             if matching_sessions:
                 best_match = matching_sessions[0]
-                logger.info(f"Found matching Redis-backed idle session: {best_match['session_id']} "
-                          f"(score: {best_match['score']}, reasons: {', '.join(best_match['reasons'])})")
+                logger.info(
+                    "Found matching Redis-backed logical session: %s",
+                    best_match['session_id'],
+                )
                 return best_match['session_id']
 
             return None

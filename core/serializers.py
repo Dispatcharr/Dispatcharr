@@ -10,7 +10,16 @@ from dispatcharr.log_collector import (
     MAX_LOG_KEEP,
     MAX_LOG_MB,
 )
-from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY
+from .models import (
+    CoreSettings,
+    UserAgent,
+    StreamProfile,
+    OutputProfile,
+    DVR_SETTINGS_KEY,
+    NETWORK_ACCESS_KEY,
+    SYSTEM_SETTINGS_KEY,
+    VOD_SETTINGS_KEY,
+)
 
 
 def _clamp_int(value, default, lo, hi):
@@ -60,7 +69,32 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
         model = CoreSettings
         fields = "__all__"
 
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        if instance.key == VOD_SETTINGS_KEY:
+            value = dict(representation.get("value") or {})
+            # The dedicated VOD metadata endpoint exposes only whether a token
+            # exists. Never return a stored TMDB credential through the generic
+            # settings collection.
+            value.pop("tmdb_api_token", None)
+            representation["value"] = value
+        return representation
+
     def update(self, instance, validated_data):
+        if instance.key == VOD_SETTINGS_KEY:
+            value = validated_data.get("value")
+            existing = instance.value if isinstance(instance.value, dict) else {}
+            if (
+                isinstance(value, dict)
+                and "tmdb_api_token" not in value
+                and existing.get("tmdb_api_token")
+            ):
+                # Generic settings clients only receive the redacted value.
+                # Their ordinary round-trip must not erase the stored secret.
+                validated_data["value"] = {
+                    **value,
+                    "tmdb_api_token": existing["tmdb_api_token"],
+                }
         if instance.key == NETWORK_ACCESS_KEY:
             errors = False
             invalid = {}
@@ -129,6 +163,9 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
+    vod_reconnect_grace_seconds = serializers.IntegerField(
+        min_value=0, max_value=1800, required=False, default=300
+    )
     validate_redirect_urls = serializers.BooleanField(required=False, default=True)
 
     def validate_buffering_timeout(self, value):

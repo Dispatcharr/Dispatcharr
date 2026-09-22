@@ -67,14 +67,24 @@ const PageContent = () => {
   if (authUser.user_level <= USER_LEVELS.STANDARD) {
     handleStreamsReady();
     return (
-      <Box style={{ padding: 10 }}>
+      <Box
+        id="channels-container"
+        h="100%"
+        style={{ minHeight: 0, overflow: 'hidden', padding: 10 }}
+      >
         <ChannelsTable onReady={handleChannelsReady} />
       </Box>
     );
   }
 
   return (
-    <Box h={'100vh'} w={'100%'} display={'flex'} style={{ overflowX: 'auto' }}>
+    <Box
+      id="channels-container"
+      h="100%"
+      w="100%"
+      display="flex"
+      style={{ minHeight: 0, overflowX: 'auto', overflowY: 'hidden' }}
+    >
       <Allotment
         defaultSizes={allotmentSizes}
         h={'100%'}
@@ -85,13 +95,23 @@ const PageContent = () => {
         onChange={handleSplitChange}
         onResize={handleResize}
       >
-        <Box p={10} miw={'100px'} style={{ overflowX: 'auto' }}>
-          <Box miw={'625px'}>
+        <Box
+          p={10}
+          h="100%"
+          miw="100px"
+          style={{ minHeight: 0, overflowX: 'auto', overflowY: 'hidden' }}
+        >
+          <Box h="100%" miw="625px" style={{ minHeight: 0 }}>
             <ChannelsTable onReady={handleChannelsReady} />
           </Box>
         </Box>
-        <Box p={10} miw={'100px'} style={{ overflowX: 'auto' }}>
-          <Box miw={'625px'}>
+        <Box
+          p={10}
+          h="100%"
+          miw="100px"
+          style={{ minHeight: 0, overflowX: 'auto', overflowY: 'hidden' }}
+        >
+          <Box h="100%" miw="625px" style={{ minHeight: 0 }}>
             <StreamsTable onReady={handleStreamsReady} />
           </Box>
         </Box>

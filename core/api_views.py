@@ -6,6 +6,7 @@ from django.conf import settings as django_settings
 from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes, action
@@ -159,6 +160,92 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
         return response
+
+    @action(detail=False, methods=["get"], url_path="resources")
+    def resources(self, request):
+        """Return a read-only process, container, shared-memory and disk snapshot."""
+        if getattr(request.user, "user_level", 0) < 10:
+            raise PermissionDenied("Only administrators can view resource usage.")
+        import psutil
+
+        process = psutil.Process(os.getpid())
+        with process.oneshot():
+            process_memory = process.memory_info().rss
+            threads = process.num_threads()
+            started_at = process.create_time()
+        system_memory = psutil.virtual_memory()
+
+        # psutil reports host RAM from inside a container. cgroup v2's
+        # memory.current remains the authoritative whole-container usage even
+        # when the operator intentionally leaves memory.max unlimited.
+        memory_used = process_memory
+        memory_total = system_memory.total
+        memory_limit = None
+        memory_limited = False
+        try:
+            with open("/sys/fs/cgroup/memory.max", encoding="utf-8") as handle:
+                raw_limit = handle.read().strip()
+            with open("/sys/fs/cgroup/memory.current", encoding="utf-8") as handle:
+                raw_used = handle.read().strip()
+            if raw_used.isdigit():
+                memory_used = int(raw_used)
+            if raw_limit.isdigit():
+                cgroup_limit = int(raw_limit)
+                if cgroup_limit > 0:
+                    memory_limit = cgroup_limit
+                    memory_total = cgroup_limit
+                    memory_limited = True
+        except (OSError, ValueError):
+            pass
+
+        shared_memory = {
+            "path": "/dev/shm",
+            "used_bytes": 0,
+            "total_bytes": 0,
+            "free_bytes": 0,
+            "percent": 0,
+        }
+        try:
+            shm = psutil.disk_usage("/dev/shm")
+            shared_memory.update(
+                used_bytes=shm.used,
+                total_bytes=shm.total,
+                free_bytes=shm.free,
+                percent=shm.percent,
+            )
+        except OSError:
+            pass
+
+        storage_path = "/data" if os.path.isdir("/data") else str(django_settings.BASE_DIR)
+        storage = psutil.disk_usage(storage_path)
+        return Response(
+            {
+                "process": {
+                    "memory_bytes": process_memory,
+                    "cpu_percent": process.cpu_percent(interval=0.05),
+                    "threads": threads,
+                    "started_at": started_at,
+                },
+                "memory": {
+                    "used_bytes": memory_used,
+                    "total_bytes": memory_total,
+                    "limit_bytes": memory_limit,
+                    "host_total_bytes": system_memory.total,
+                    "limited": memory_limited,
+                    "percent": round((memory_used / memory_total) * 100, 1)
+                    if memory_total else 0,
+                },
+                "shared_memory": shared_memory,
+                "storage": {
+                    "path": storage_path,
+                    "used_bytes": storage.used,
+                    "total_bytes": storage.total,
+                    "free_bytes": storage.free,
+                    "percent": storage.percent,
+                },
+            }
+        )
+
     @action(detail=False, methods=["post"], url_path="check")
     def check(self, request, *args, **kwargs):
         data = request.data
@@ -229,6 +316,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "vod_reconnect_grace_seconds": 300,
                 "validate_redirect_urls": True,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
@@ -748,4 +836,3 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
         return Response({
             'unread_count': unread_count
         })
-

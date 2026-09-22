@@ -130,6 +130,8 @@ const flexibleColumns = [
   },
 ];
 
+const EMPTY_CHANNELS = [];
+
 const defaultColumnSizing = Object.fromEntries(
   flexibleColumns.map(({ id, size }) => [id, size])
 );
@@ -323,7 +325,9 @@ const ChannelsTable = ({ onReady }) => {
    */
 
   // store/channelsTable
-  const rawChannels = useChannelsTableStore((s) => s.channels);
+  const storedChannels = useChannelsTableStore((s) => s.channels);
+  const channelsStoreInvalid = !Array.isArray(storedChannels);
+  const rawChannels = channelsStoreInvalid ? EMPTY_CHANNELS : storedChannels;
   // Drop nullish entries so a bad row can't crash row rendering.
   const data = useMemo(
     () =>
@@ -939,7 +943,7 @@ const ChannelsTable = ({ onReady }) => {
 
   // Store still has a nullish entry beyond just this render; refetch to clear it.
   useEffect(() => {
-    if (!rawChannels.some((c) => !c)) {
+    if (!channelsStoreInvalid && !rawChannels.some((c) => !c)) {
       hasAttemptedChannelRepair.current = false;
       return;
     }
@@ -951,7 +955,7 @@ const ChannelsTable = ({ onReady }) => {
       );
       fetchData();
     }
-  }, [rawChannels, fetchData]);
+  }, [channelsStoreInvalid, rawChannels, fetchData]);
 
   useEffect(() => {
     const profileName = profiles[selectedProfileId]?.name;
@@ -1334,7 +1338,14 @@ const ChannelsTable = ({ onReady }) => {
 
   return (
     <>
-      <Box>
+      <Box
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          minHeight: 0,
+        }}
+      >
         {/* Header Row: outside the Paper */}
         <Flex style={{ alignItems: 'center', paddingBottom: 10 }} gap={15}>
           <Text
@@ -1702,7 +1713,8 @@ const ChannelsTable = ({ onReady }) => {
           style={{
             display: 'flex',
             flexDirection: 'column',
-            height: 'calc(100vh - 60px)',
+            flex: 1,
+            minHeight: 0,
             backgroundColor: '#27272A',
           }}
         >
@@ -1738,7 +1750,8 @@ const ChannelsTable = ({ onReady }) => {
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                height: 'calc(100vh - 100px)',
+                flex: 1,
+                minHeight: 0,
               }}
             >
               <Box

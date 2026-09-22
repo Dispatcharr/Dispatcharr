@@ -102,6 +102,7 @@ vi.mock('../../utils/pages/StatsUtils', () => {
     stopChannel: vi.fn(),
     stopClient: vi.fn(),
     stopVODClient: vi.fn(),
+    switchVODSource: vi.fn(),
   };
 });
 

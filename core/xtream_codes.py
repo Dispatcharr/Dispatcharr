@@ -2,8 +2,43 @@ import requests
 import logging
 import traceback
 import json
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
+
+_SENSITIVE_PARAMETER_NAMES = {
+    "username",
+    "user",
+    "password",
+    "pass",
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "apikey",
+}
+
+
+def _safe_url_for_log(url):
+    """Return an endpoint URL without query parameters or user information."""
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, "", ""))
+    except (TypeError, ValueError):
+        return "<invalid-url>"
+
+
+def _safe_params_for_log(params):
+    if not isinstance(params, dict):
+        return None if params is None else "<non-dict>"
+    return {
+        key: "<redacted>" if str(key).lower() in _SENSITIVE_PARAMETER_NAMES else value
+        for key, value in params.items()
+    }
 
 
 def normalize_server_url(url):
@@ -70,33 +105,38 @@ class Client:
 
     def _make_request(self, endpoint, params=None):
         """Make request with detailed error handling"""
+        url = f"{self.server_url}/{endpoint}"
+        safe_url = _safe_url_for_log(url)
         try:
-            url = f"{self.server_url}/{endpoint}"
-            logger.debug(f"XC API Request: {url} with params: {params}")
+            logger.debug(
+                "XC API request: %s with params: %s",
+                safe_url,
+                _safe_params_for_log(params),
+            )
 
             response = self.session.get(url, params=params, timeout=60)
             response.raise_for_status()
 
             # Check if response is empty
             if not response.content:
-                error_msg = f"XC API returned empty response from {url}"
+                error_msg = f"XC API returned an empty response from {safe_url}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
             # Check for common blocking responses before trying to parse JSON
             response_text = response.text.strip()
             if response_text.lower() in ['blocked', 'forbidden', 'access denied', 'unauthorized']:
-                error_msg = f"XC API request blocked by server from {url}. Response: {response_text}"
+                error_msg = f"XC API request to {safe_url} was blocked: {response_text}"
                 logger.error(error_msg)
-                logger.error(f"This may indicate IP blocking, User-Agent filtering, or rate limiting")
+                logger.error("This may indicate IP blocking, User-Agent filtering, or rate limiting")
                 raise ValueError(error_msg)
 
             try:
                 data = response.json()
             except requests.exceptions.JSONDecodeError as json_err:
-                error_msg = f"XC API returned invalid JSON from {url}. Response: {response.text[:1000]}"
+                error_msg = f"XC API returned invalid JSON from {safe_url}"
                 logger.error(error_msg)
-                logger.error(f"JSON decode error: {str(json_err)}")
+                logger.error("JSON decode error: %s", json_err)
 
                 # Check if it looks like an HTML error page
                 if response_text.startswith('<'):
@@ -112,17 +152,24 @@ class Client:
 
             return data
         except requests.RequestException as e:
-            error_msg = f"XC API Request failed: {str(e)}"
-            logger.error(error_msg)
-            logger.error(f"Request details: URL={url}, Params={params}")
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            logger.error(
+                "XC API request failed: endpoint=%s error=%s status=%s",
+                safe_url,
+                type(e).__name__,
+                status if status is not None else "unavailable",
+            )
             raise
         except ValueError as e:
             # This could be from JSON parsing or our explicit raises
-            logger.error(f"XC API Invalid response: {str(e)}")
+            logger.error("XC API invalid response: %s", e)
             raise
         except Exception as e:
-            logger.error(f"XC API Unexpected error: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(
+                "XC API unexpected error at %s: %s",
+                safe_url,
+                type(e).__name__,
+            )
             raise
 
     def authenticate(self):
@@ -141,7 +188,7 @@ class Client:
                 logger.error(f"{error_msg}. Response: {self.server_info}")
                 raise ValueError(error_msg)
 
-            logger.info(f"XC Authentication successful for user {self.username}")
+            logger.info("XC authentication successful")
             return self.server_info
         except Exception as e:
             logger.error(f"XC Authentication failed: {str(e)}")

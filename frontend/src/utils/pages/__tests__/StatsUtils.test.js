@@ -7,6 +7,7 @@ vi.mock('../../../api.js', () => ({
     stopChannel: vi.fn(),
     stopClient: vi.fn(),
     stopVODClient: vi.fn(),
+    switchVODSource: vi.fn(),
     fetchActiveChannelStats: vi.fn(),
     fetchAllConnectionStats: vi.fn(),
     getAllConnectionStats: vi.fn(),
@@ -109,6 +110,25 @@ describe('StatsUtils', () => {
       await expect(StatsUtils.stopVODClient(clientId)).rejects.toThrow(
         'Failed to stop VOD client'
       );
+    });
+  });
+
+  describe('switchVODSource', () => {
+    it('forwards the logical session, relation and mode', async () => {
+      API.switchVODSource.mockResolvedValue({ message: 'queued' });
+
+      const result = await StatsUtils.switchVODSource(
+        'vod-client-123',
+        42,
+        'next_request'
+      );
+
+      expect(API.switchVODSource).toHaveBeenCalledWith(
+        'vod-client-123',
+        42,
+        'next_request'
+      );
+      expect(result).toEqual({ message: 'queued' });
     });
   });
 

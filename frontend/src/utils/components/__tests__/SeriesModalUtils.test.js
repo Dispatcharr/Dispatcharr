@@ -202,6 +202,16 @@ describe('SeriesModalUtils', () => {
       expect(formatStreamLabel(relation)).toBe('Provider 1 (Stream 100)');
     });
 
+    it('should include the selected category', () => {
+      const relation = {
+        ...baseRelation,
+        category: { name: 'NICKELODEON' }
+      };
+      expect(formatStreamLabel(relation)).toBe(
+        'Provider 1 — NICKELODEON (Stream 100)'
+      );
+    });
+
     it('should prioritize quality_info over detailed_info', () => {
       const relation = {
         ...baseRelation,
@@ -303,14 +313,16 @@ describe('SeriesModalUtils', () => {
       expect(url).toBe('https://example.com/proxy/vod/episode/episode-123');
     });
 
-    it('should generate stream URL with stream_id parameter', () => {
+    it('should generate stream URL with exact stream and account parameters', () => {
       const episode = { uuid: 'episode-123' };
       const provider = {
         stream_id: 'stream-456',
         m3u_account: { id: 1 }
       };
       const url = getEpisodeStreamUrl(episode, provider, 'prod');
-      expect(url).toBe('https://example.com/proxy/vod/episode/episode-123?stream_id=stream-456');
+      expect(url).toBe(
+        'https://example.com/proxy/vod/episode/episode-123?stream_id=stream-456&m3u_account_id=1'
+      );
     });
 
     it('should generate stream URL with m3u_account_id when no stream_id', () => {
@@ -336,6 +348,21 @@ describe('SeriesModalUtils', () => {
       };
       const url = getEpisodeStreamUrl(episode, provider, 'prod');
       expect(url).toContain('stream%20with%20spaces');
+    });
+
+    it('should prefer the relation-scoped episode stream ID', () => {
+      const episode = {
+        uuid: 'episode-123',
+        stream_id: 'episode-stream'
+      };
+      const provider = {
+        stream_id: 'series-stream',
+        m3u_account: { id: 1 }
+      };
+      const url = getEpisodeStreamUrl(episode, provider, 'prod');
+      expect(url).toContain('stream_id=episode-stream');
+      expect(url).not.toContain('stream_id=series-stream');
+      expect(url).toContain('m3u_account_id=1');
     });
   });
 

@@ -22,6 +22,8 @@ import ConnectPage from './pages/Connect';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
+import VODProfilesPage from './pages/VODProfiles';
+import VODPlaybackHistoryPage from './pages/VODPlaybackHistory';
 import useAuthStore from './store/auth';
 import useBrowserStorage from './hooks/useBrowserStorage';
 import FloatingVideo from './components/FloatingVideo';
@@ -40,8 +42,8 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { defaultRoute, getSafeNextPath } from './utils/loginRedirect';
 import 'allotment/dist/style.css';
 
-const drawerWidth = 240;
-const miniDrawerWidth = 60;
+const drawerWidth = 252;
+const miniDrawerWidth = 72;
 
 const LoginRedirect = () => {
   const location = useLocation();
@@ -49,6 +51,84 @@ const LoginRedirect = () => {
   const next = target ? `?next=${encodeURIComponent(target)}` : '';
   return <Navigate to={`/login${next}`} replace />;
 };
+
+const RoutedContent = React.memo(function RoutedContent({
+  authReady,
+  isCheckingAuth,
+}) {
+  const location = useLocation();
+  const hasOwnScroller =
+    authReady &&
+    (location.pathname === '/channels' ||
+      location.pathname.startsWith('/sources') ||
+      location.pathname.startsWith('/vods'));
+
+  return (
+    <Box
+      p={2}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        width: '100%',
+        overflow: hasOwnScroller ? 'hidden' : 'auto',
+      }}
+    >
+      {isCheckingAuth ? (
+        <LoginLoadingCard />
+      ) : (
+        <Routes>
+          {authReady ? (
+            <>
+              <Route path="/channels" element={<Channels />} />
+              <Route
+                path="/sources"
+                element={<Navigate to="/sources/m3u" replace />}
+              />
+              <Route
+                path="/sources/m3u"
+                element={<ContentSources section="m3u" />}
+              />
+              <Route
+                path="/sources/epg"
+                element={<ContentSources section="epg" />}
+              />
+              <Route path="/guide" element={<Guide />} />
+              <Route path="/dvr" element={<DVR />} />
+              <Route path="/stats" element={<Stats />} />
+              <Route path="/logs" element={<LogFilesPage />} />
+              <Route path="/logs/:name" element={<LogFileViewPage />} />
+              <Route path="/plugins/browse" element={<PluginBrowsePage />} />
+              <Route path="/plugins" element={<PluginsPage />} />
+              <Route path="/connect" element={<ConnectPage />} />
+              <Route path="/users" element={<Users />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/logos" element={<LogosPage />} />
+              <Route path="/vods" element={<VODsPage />} />
+              <Route path="/vods/profiles" element={<VODProfilesPage />} />
+              <Route
+                path="/vods/playback-history"
+                element={<VODPlaybackHistoryPage />}
+              />
+            </>
+          ) : (
+            <Route path="/login" element={<Login />} />
+          )}
+          <Route
+            path="*"
+            element={
+              authReady ? (
+                <Navigate to={defaultRoute} replace />
+              ) : (
+                <LoginRedirect />
+              )
+            }
+          />
+        </Routes>
+      )}
+    </Box>
+  );
+});
 
 const App = () => {
   const [open, setOpen] = useBrowserStorage('dispatcharr_sidebar_open', true);
@@ -127,6 +207,7 @@ const App = () => {
         <WebsocketProvider>
           <Router>
             <AppShell
+              transitionDuration={0}
               header={{
                 height: 0,
               }}
@@ -143,7 +224,7 @@ const App = () => {
                 />
               )}
 
-              <AppShell.Main>
+              <AppShell.Main style={{ minWidth: 0, overflow: 'hidden' }}>
                 <Box
                   style={{
                     display: 'flex',
@@ -151,56 +232,17 @@ const App = () => {
                     // transition: 'margin-left 0.3s',
                     backgroundColor: '#18181b',
                     height: '100vh',
+                    minHeight: 0,
+                    minWidth: 0,
+                    width: '100%',
+                    overflow: 'hidden',
                     color: 'white',
                   }}
                 >
-                  <Box sx={{ p: 2, flex: 1, overflow: 'auto' }}>
-                    {isCheckingAuth ? (
-                      <LoginLoadingCard />
-                    ) : (
-                      <Routes>
-                        {authReady ? (
-                          <>
-                            <Route path="/channels" element={<Channels />} />
-                            <Route
-                              path="/sources"
-                              element={<ContentSources />}
-                            />
-                            <Route path="/guide" element={<Guide />} />
-                            <Route path="/dvr" element={<DVR />} />
-                            <Route path="/stats" element={<Stats />} />
-                            <Route path="/logs" element={<LogFilesPage />} />
-                            <Route
-                              path="/logs/:name"
-                              element={<LogFileViewPage />}
-                            />
-                            <Route
-                              path="/plugins/browse"
-                              element={<PluginBrowsePage />}
-                            />
-                            <Route path="/plugins" element={<PluginsPage />} />
-                            <Route path="/connect" element={<ConnectPage />} />
-                            <Route path="/users" element={<Users />} />
-                            <Route path="/settings" element={<Settings />} />
-                            <Route path="/logos" element={<LogosPage />} />
-                            <Route path="/vods" element={<VODsPage />} />
-                          </>
-                        ) : (
-                          <Route path="/login" element={<Login />} />
-                        )}
-                        <Route
-                          path="*"
-                          element={
-                            authReady ? (
-                              <Navigate to={defaultRoute} replace />
-                            ) : (
-                              <LoginRedirect />
-                            )
-                          }
-                        />
-                      </Routes>
-                    )}
-                  </Box>
+                  <RoutedContent
+                    authReady={authReady}
+                    isCheckingAuth={isCheckingAuth}
+                  />
                 </Box>
               </AppShell.Main>
             </AppShell>

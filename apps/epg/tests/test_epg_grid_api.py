@@ -1012,5 +1012,3 @@ class EPGGridStreamingResponseTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(getattr(response, "streaming", False))
         self.assertIn("error", response.data)
-
-

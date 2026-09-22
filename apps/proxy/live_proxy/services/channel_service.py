@@ -564,7 +564,10 @@ class ChannelService:
         # Check if channel exists
         channel_exists = proxy_server.check_if_channel_exists(channel_id)
         if not channel_exists:
-            logger.warning(f"Channel {channel_id} not found in any worker or Redis")
+            # Stopping an already absent channel is idempotent. This commonly
+            # follows channel deletion or auto-sync cleanup and is not an
+            # operational warning.
+            logger.debug("Channel %s was already stopped", channel_id)
             return {'status': 'error', 'message': 'Channel not found'}
 
         # Get channel state information for result

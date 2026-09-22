@@ -5,6 +5,7 @@ services:
     #   dockerfile: docker/Dockerfile.dev
     image: ghcr.io/dispatcharr/dispatcharr:base
     container_name: dispatcharr_debug
+    shm_size: 256mb
     ports:
       - 5656:5656 # API port
       - 9193:9191 # Web UI port

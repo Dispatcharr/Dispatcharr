@@ -20,6 +20,7 @@ from apps.vod.tasks import (
     process_movie_batch,
     process_series_batch,
     refresh_movie_advanced_data,
+    refresh_series_episodes,
     should_apply_provider_list_field,
 )
 
@@ -41,6 +42,268 @@ class VODListFieldHelperTests(SimpleTestCase):
         self.assertTrue(should_apply_provider_list_field("", "new plot"))
         self.assertTrue(should_apply_provider_list_field("old", "new"))
         self.assertTrue(should_apply_provider_list_field(None, "Comedy"))
+
+
+class VODBatchSourceVariantTests(TestCase):
+    def setUp(self):
+        self.account = M3UAccount.objects.create(
+            name="Variant Provider",
+            server_url="http://example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+            custom_properties={"enable_vod": True},
+        )
+
+    def _categories(self, category_type):
+        first = VODCategory.objects.create(
+            name=f"First {category_type}",
+            category_type=category_type,
+        )
+        second = VODCategory.objects.create(
+            name=f"Second {category_type}",
+            category_type=category_type,
+        )
+        first_relation = M3UVODCategoryRelation.objects.create(
+            category=first,
+            m3u_account=self.account,
+            enabled=True,
+        )
+        second_relation = M3UVODCategoryRelation.objects.create(
+            category=second,
+            m3u_account=self.account,
+            enabled=True,
+        )
+        return (
+            {"10": first, "20": second},
+            {first.id: first_relation, second.id: second_relation},
+        )
+
+    def test_movie_batch_keeps_all_sources_for_same_tmdb_id(self):
+        categories, relations = self._categories("movie")
+        process_movie_batch(
+            self.account,
+            [
+                {
+                    "stream_id": 1001,
+                    "name": "NF - Shared Movie",
+                    "tmdb_id": "500",
+                    "category_id": "10",
+                },
+                {
+                    "stream_id": 1002,
+                    "name": "DE - Shared Movie",
+                    "tmdb_id": "500",
+                    "category_id": "20",
+                },
+            ],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(Movie.objects.filter(tmdb_id="500").count(), 1)
+        source_relations = M3UMovieRelation.objects.filter(
+            m3u_account=self.account,
+            movie__tmdb_id="500",
+        ).order_by("stream_id")
+        self.assertEqual(source_relations.count(), 2)
+        self.assertEqual(
+            [relation.category_id for relation in source_relations],
+            [categories["10"].id, categories["20"].id],
+        )
+        self.assertEqual(
+            [
+                relation.custom_properties["basic_data"]["name"]
+                for relation in source_relations
+            ],
+            ["NF - Shared Movie", "DE - Shared Movie"],
+        )
+
+    def test_movie_batch_preserves_manual_tmdb_source_assignment(self):
+        categories, relations = self._categories("movie")
+        row = {
+            "stream_id": 1001,
+            "name": "Wrong Provider Movie",
+            "tmdb_id": "500",
+            "category_id": "10",
+        }
+        process_movie_batch(
+            self.account,
+            [row],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+        relation = M3UMovieRelation.objects.get(stream_id="1001")
+        target = Movie.objects.create(
+            name="Correct TMDB Movie",
+            display_name="Correct TMDB Movie",
+            tmdb_id="76600",
+            tmdb_match_id="76600",
+            tmdb_status="matched",
+        )
+        relation.movie = target
+        relation.tmdb_override_id = "76600"
+        relation.save(update_fields=["movie", "tmdb_override_id"])
+
+        process_movie_batch(
+            self.account,
+            [row],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+
+        relation.refresh_from_db()
+        self.assertEqual(relation.movie_id, target.id)
+        self.assertEqual(relation.tmdb_override_id, "76600")
+
+    def test_series_batch_keeps_all_sources_for_same_tmdb_id(self):
+        categories, relations = self._categories("series")
+        process_series_batch(
+            self.account,
+            [
+                {
+                    "series_id": 2001,
+                    "name": "NF - Shared Series",
+                    "tmdb": "246",
+                    "category_id": "10",
+                },
+                {
+                    "series_id": 2002,
+                    "name": "NICK - Shared Series",
+                    "tmdb": "246",
+                    "category_id": "20",
+                },
+            ],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(Series.objects.filter(tmdb_id="246").count(), 1)
+        source_relations = M3USeriesRelation.objects.filter(
+            m3u_account=self.account,
+            series__tmdb_id="246",
+        ).order_by("external_series_id")
+        self.assertEqual(source_relations.count(), 2)
+        self.assertEqual(
+            [relation.category_id for relation in source_relations],
+            [categories["10"].id, categories["20"].id],
+        )
+        self.assertEqual(
+            [
+                relation.custom_properties["basic_data"]["name"]
+                for relation in source_relations
+            ],
+            ["NF - Shared Series", "NICK - Shared Series"],
+        )
+
+    def test_series_batch_preserves_manual_tmdb_source_assignment(self):
+        categories, relations = self._categories("series")
+        row = {
+            "series_id": 2001,
+            "name": "Wrong Provider Series",
+            "tmdb": "246",
+            "category_id": "10",
+        }
+        process_series_batch(
+            self.account,
+            [row],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+        relation = M3USeriesRelation.objects.get(external_series_id="2001")
+        target = Series.objects.create(
+            name="Correct TMDB Series",
+            display_name="Correct TMDB Series",
+            tmdb_id="1399",
+            tmdb_match_id="1399",
+            tmdb_status="matched",
+        )
+        relation.series = target
+        relation.tmdb_override_id = "1399"
+        relation.save(update_fields=["series", "tmdb_override_id"])
+
+        process_series_batch(
+            self.account,
+            [row],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+
+        relation.refresh_from_db()
+        self.assertEqual(relation.series_id, target.id)
+        self.assertEqual(relation.tmdb_override_id, "1399")
+
+    def test_movie_batch_skips_blank_provider_rows_without_losing_valid_rows(self):
+        categories, relations = self._categories("movie")
+
+        process_movie_batch(
+            self.account,
+            [
+                {"stream_id": 3001, "name": None, "category_id": "10"},
+                {"stream_id": None, "name": "Missing ID", "category_id": "10"},
+                {"stream_id": 3002, "name": "  Valid Movie  ", "category_id": "20"},
+            ],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(Movie.objects.count(), 1)
+        self.assertEqual(Movie.objects.get().name, "Valid Movie")
+        self.assertEqual(
+            list(M3UMovieRelation.objects.values_list("stream_id", flat=True)),
+            ["3002"],
+        )
+
+    def test_series_batch_skips_blank_provider_rows_without_losing_valid_rows(self):
+        categories, relations = self._categories("series")
+
+        process_series_batch(
+            self.account,
+            [
+                {"series_id": 4001, "name": "   ", "category_id": "10"},
+                {"series_id": "", "name": "Missing ID", "category_id": "10"},
+                {"series_id": 4002, "name": "  Valid Series  ", "category_id": "20"},
+            ],
+            categories,
+            relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(Series.objects.count(), 1)
+        self.assertEqual(Series.objects.get().name, "Valid Series")
+        self.assertEqual(
+            list(
+                M3USeriesRelation.objects.values_list(
+                    "external_series_id", flat=True
+                )
+            ),
+            ["4002"],
+        )
+
+    def test_movie_batch_database_failure_is_not_reported_as_success(self):
+        categories, relations = self._categories("movie")
+
+        with patch.object(
+            Movie.objects,
+            "bulk_create",
+            side_effect=RuntimeError("database unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                process_movie_batch(
+                    self.account,
+                    [{"stream_id": 5001, "name": "Valid", "category_id": "10"}],
+                    categories,
+                    relations,
+                    scan_start_time=timezone.now(),
+                )
 
 
 class VODSyncPreserveDetailsTests(TestCase):
@@ -172,14 +435,14 @@ class VODSyncPreserveDetailsTests(TestCase):
         self.assertTrue((self.relation.custom_properties or {}).get("detailed_fetched"))
 
     @patch("core.xtream_codes.Client")
-    def test_refresh_skips_when_detailed_fetched_and_recent(self, mock_client_cls):
+    def test_refresh_skips_when_details_were_already_fetched(self, mock_client_cls):
         result = refresh_movie_advanced_data(self.relation.id, force_refresh=False)
 
-        self.assertEqual(result, "Advanced data recently fetched, skipping.")
+        self.assertEqual(result, "Advanced data already fetched, skipping.")
         mock_client_cls.assert_not_called()
 
     @patch("core.xtream_codes.Client")
-    def test_refresh_runs_after_age_window(self, mock_client_cls):
+    def test_old_details_refresh_only_when_forced(self, mock_client_cls):
         self.relation.last_advanced_refresh = timezone.now() - timedelta(hours=25)
         self.relation.save(update_fields=["last_advanced_refresh"])
 
@@ -190,10 +453,56 @@ class VODSyncPreserveDetailsTests(TestCase):
             "movie_data": {},
         }
 
-        result = refresh_movie_advanced_data(self.relation.id, force_refresh=False)
+        result = refresh_movie_advanced_data(self.relation.id, force_refresh=True)
 
         self.assertEqual(result, "Advanced data refreshed.")
         mock_client.get_vod_info.assert_called_once()
+
+    @patch("core.xtream_codes.Client")
+    def test_source_refresh_does_not_overwrite_manual_tmdb_target(
+        self, mock_client_cls
+    ):
+        target = Movie.objects.create(
+            name="TMDB title",
+            display_name="TMDB title",
+            description="TMDB plot",
+            tmdb_id="76600",
+            tmdb_match_id="76600",
+            tmdb_status="matched",
+        )
+        self.relation.movie = target
+        self.relation.tmdb_override_id = "76600"
+        self.relation.custom_properties = {"detailed_fetched": False}
+        self.relation.save(
+            update_fields=["movie", "tmdb_override_id", "custom_properties"]
+        )
+        mock_client = MagicMock()
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+        mock_client.get_vod_info.return_value = {
+            "info": {
+                "name": "Wrong provider title",
+                "plot": "Wrong provider plot",
+                "tmdb_id": "900001",
+            },
+            "movie_data": {"stream_id": 1001},
+        }
+
+        result = refresh_movie_advanced_data(
+            self.relation.id, force_refresh=False
+        )
+
+        target.refresh_from_db()
+        self.relation.refresh_from_db()
+        self.assertEqual(
+            result,
+            "Advanced source data refreshed; canonical override preserved.",
+        )
+        self.assertEqual(target.name, "TMDB title")
+        self.assertEqual(target.description, "TMDB plot")
+        self.assertEqual(
+            self.relation.custom_properties["detailed_info"]["name"],
+            "Wrong provider title",
+        )
 
 
 class VODSeriesSyncPreserveDetailsTests(TestCase):
@@ -271,6 +580,36 @@ class VODSeriesSyncPreserveDetailsTests(TestCase):
         self.assertEqual(
             props.get("detailed_info", {}).get("plot"),
             "Dummy series plot for advanced detail.",
+        )
+
+    @patch("apps.vod.tasks.XtreamCodesClient")
+    def test_episode_refresh_stores_relation_specific_series_details(
+        self, mock_client_cls
+    ):
+        mock_client = MagicMock()
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+        mock_client.get_series_info.return_value = {
+            "info": {
+                "name": "Clean Provider Series Title",
+                "plot": "Provider-specific plot",
+                "backdrop_path": ["https://cdn.example.com/provider-series.jpg"],
+            },
+            "episodes": {},
+        }
+
+        refresh_series_episodes(
+            self.account,
+            self.series,
+            self.relation.external_series_id,
+        )
+
+        self.relation.refresh_from_db()
+        details = (self.relation.custom_properties or {}).get("detailed_info", {})
+        self.assertEqual(details.get("name"), "Clean Provider Series Title")
+        self.assertEqual(details.get("plot"), "Provider-specific plot")
+        self.assertEqual(
+            details.get("backdrop_path"),
+            ["https://cdn.example.com/provider-series.jpg"],
         )
 
 
@@ -584,6 +923,40 @@ class VODDuplicateAcrossCategoriesBatchTests(TestCase):
             1,
         )
 
+    def test_provider_tmdb_id_reuses_locked_manually_matched_movie(self):
+        target = Movie.objects.create(
+            name="Canonical Movie",
+            description="Curated movie description",
+            tmdb_match_id="800010",
+            tmdb_enrichment_signature="processed",
+        )
+
+        process_movie_batch(
+            self.account,
+            [
+                {
+                    "stream_id": 5010,
+                    "name": "Provider Movie",
+                    "category_id": "10",
+                    "tmdb_id": "800010",
+                    "plot": "Provider movie description",
+                }
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        relation = M3UMovieRelation.objects.get(
+            m3u_account=self.account,
+            stream_id="5010",
+        )
+        target.refresh_from_db()
+        self.assertEqual(relation.movie_id, target.id)
+        self.assertEqual(Movie.objects.count(), 1)
+        self.assertEqual(target.description, "Curated movie description")
+        self.assertEqual(target.tmdb_enrichment_signature, "processed")
+
     def test_series_in_two_categories_creates_a_relation_for_each(self):
         process_series_batch(
             self.account,
@@ -623,6 +996,40 @@ class VODDuplicateAcrossCategoriesBatchTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_provider_tmdb_id_reuses_locked_manually_matched_series(self):
+        target = Series.objects.create(
+            name="Canonical Series",
+            description="Curated series description",
+            tmdb_match_id="800110",
+            tmdb_enrichment_signature="processed",
+        )
+
+        process_series_batch(
+            self.account,
+            [
+                {
+                    "series_id": 6010,
+                    "name": "Provider Series",
+                    "category_id": "20",
+                    "tmdb_id": "800110",
+                    "plot": "Provider series description",
+                }
+            ],
+            self.series_categories,
+            self.series_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        relation = M3USeriesRelation.objects.get(
+            m3u_account=self.account,
+            external_series_id="6010",
+        )
+        target.refresh_from_db()
+        self.assertEqual(relation.series_id, target.id)
+        self.assertEqual(Series.objects.count(), 1)
+        self.assertEqual(target.description, "Curated series description")
+        self.assertEqual(target.tmdb_enrichment_signature, "processed")
 
     def test_later_movie_occurrence_fills_blank_description(self):
         process_movie_batch(

@@ -347,7 +347,7 @@ const setupMocks = ({
       selectedStreamIds,
       setAllQueryIds: vi.fn(),
       setPagination: vi.fn(),
-       setSorting,
+      setSorting,
       setSelectedStreamIds: vi.fn(),
     })
   );
@@ -444,9 +444,9 @@ describe('StreamsTable', () => {
       render(<StreamsTable />);
 
       expect(capturedTableOptions.tableId).toBe('streams-table');
-      expect(capturedTableOptions.pairedColumnSizing.map(({ id }) => id)).toEqual(
-        ['name', 'group', 'm3u']
-      );
+      expect(
+        capturedTableOptions.pairedColumnSizing.map(({ id }) => id)
+      ).toEqual(['name', 'group', 'm3u']);
       const nameColumn = capturedTableOptions.columns.find(
         (column) => column.accessorKey === 'name'
       );
@@ -474,9 +474,7 @@ describe('StreamsTable', () => {
       setupMocks({ setSorting });
       vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
         defaultValue,
-        key === 'streams-table-column-sizing'
-          ? setColumnSizing
-          : vi.fn(),
+        key === 'streams-table-column-sizing' ? setColumnSizing : vi.fn(),
       ]);
       render(<StreamsTable />);
 
@@ -664,7 +662,9 @@ describe('StreamsTable', () => {
       setupMocks({ expandedChannelId: 42 });
       render(
         <StreamRowActions
-          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          theme={{
+            tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } },
+          }}
           row={{ original: makeStream() }}
           editStream={vi.fn()}
           handleDeleteStream={vi.fn()}
@@ -681,7 +681,9 @@ describe('StreamsTable', () => {
       setupMocks();
       render(
         <StreamRowActions
-          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          theme={{
+            tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } },
+          }}
           row={{ original: makeStream() }}
           editStream={vi.fn()}
           handleDeleteStream={vi.fn()}
@@ -844,12 +846,12 @@ describe('StreamsTable', () => {
       expect(screen.getByText('Add Individual Stream')).toBeInTheDocument();
     });
 
-    it('navigates to /sources when "Add M3U" is clicked', async () => {
+    it('navigates to /sources/m3u when "Add M3U" is clicked', async () => {
       const mockNavigate = vi.fn();
       vi.mocked(useNavigate).mockReturnValue(mockNavigate);
       await renderEmpty();
       fireEvent.click(screen.getByText('Add M3U'));
-      expect(mockNavigate).toHaveBeenCalledWith('/sources');
+      expect(mockNavigate).toHaveBeenCalledWith('/sources/m3u');
     });
 
     it('opens stream form when "Add Individual Stream" is clicked', async () => {
@@ -1046,7 +1048,9 @@ describe('StreamsTable', () => {
       // Open the lazily mounted overflow menu before selecting Preview Stream.
       const { container, getByText } = render(actionsCell({ cell, row }));
       fireEvent.click(
-        container.querySelector('[data-testid="icon-ellipsis"]').closest('button')
+        container
+          .querySelector('[data-testid="icon-ellipsis"]')
+          .closest('button')
       );
       fireEvent.click(getByText('Preview Stream'));
       expect(mockShowVideo).toHaveBeenCalled();

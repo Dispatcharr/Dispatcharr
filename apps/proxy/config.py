@@ -56,6 +56,7 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "vod_reconnect_grace_seconds": 300,
                 "validate_redirect_urls": True,
             }
 

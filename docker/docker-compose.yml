@@ -201,6 +201,9 @@ services:
     image: postgres:17
     container_name: dispatcharr_db
     restart: unless-stopped
+    # PostgreSQL parallel queries use dynamic shared memory. Docker's generic
+    # 64 MiB default is unnecessarily tight for larger media libraries.
+    shm_size: 256mb
     environment:
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch

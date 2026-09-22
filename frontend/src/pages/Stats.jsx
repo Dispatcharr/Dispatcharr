@@ -33,6 +33,7 @@ import {
   stopClient,
   stopTimeshiftSession,
   stopVODClient,
+  switchVODSource,
 } from '../utils/pages/StatsUtils.js';
 import {
   computeCatchupArchivePositionSecs,
@@ -48,6 +49,8 @@ const TimeshiftConnectionCard = React.lazy(
 const StreamConnectionCard = React.lazy(
   () => import('../components/cards/StreamConnectionCard.jsx')
 );
+const VODModal = React.lazy(() => import('../components/VODModal.jsx'));
+const SeriesModal = React.lazy(() => import('../components/SeriesModal.jsx'));
 
 const Connections = ({
   combinedConnections,
@@ -55,6 +58,8 @@ const Connections = ({
   channelsByUUID,
   channels,
   handleStopVODClient,
+  handleSwitchVODSource,
+  handleOpenVODDetails,
   handleStopTimeshiftSession,
   currentPrograms,
   catchupPrograms,
@@ -94,6 +99,8 @@ const Connections = ({
                 key={connection.id}
                 vodContent={connection.data}
                 stopVODClient={handleStopVODClient}
+                switchVODSource={handleSwitchVODSource}
+                openVODDetails={handleOpenVODDetails}
               />
             );
           } else if (connection.type === 'timeshift') {
@@ -130,6 +137,7 @@ const StatsPage = () => {
   const [catchupPrograms, setCatchupPrograms] = useState({});
   const [channels, setChannels] = useState({}); // id -> channel
   const [channelsByUUID, setChannelsByUUID] = useState({}); // uuid -> id
+  const [vodDetailTarget, setVODDetailTarget] = useState(null);
 
   useEffect(() => {
     enableLogoRendering();
@@ -201,6 +209,12 @@ const StatsPage = () => {
   const handleStopVODClient = async (clientId) => {
     await stopVODClient(clientId);
     fetchAllStats();
+  };
+
+  const handleSwitchVODSource = async (clientId, relationId, mode) => {
+    const response = await switchVODSource(clientId, relationId, mode);
+    await fetchAllStats();
+    return response;
   };
 
   const handleStopTimeshiftSession = async (sessionId) => {
@@ -353,7 +367,9 @@ const StatsPage = () => {
   // do cheap local checks until the next boundary.
   const timeshiftProgrammeKey = useMemo(() => {
     return timeshiftSessions
-      .map((session) => `${session.session_id}:${session.programme_start || ''}`)
+      .map(
+        (session) => `${session.session_id}:${session.programme_start || ''}`
+      )
       .sort()
       .join(',');
   }, [timeshiftSessions]);
@@ -619,6 +635,8 @@ const StatsPage = () => {
               channelsByUUID={channelsByUUID}
               channels={channels}
               handleStopVODClient={handleStopVODClient}
+              handleSwitchVODSource={handleSwitchVODSource}
+              handleOpenVODDetails={setVODDetailTarget}
               handleStopTimeshiftSession={handleStopTimeshiftSession}
               currentPrograms={currentPrograms}
               catchupPrograms={catchupPrograms}
@@ -626,6 +644,33 @@ const StatsPage = () => {
           </Box>
         </Box>
       </Box>
+
+      {vodDetailTarget?.contentType === 'movie' && (
+        <ErrorBoundary inline>
+          <Suspense fallback={<LoadingOverlay visible />}>
+            <VODModal
+              vod={vodDetailTarget}
+              opened
+              onClose={() => setVODDetailTarget(null)}
+              initialRelationId={vodDetailTarget.relation_id}
+              allowSourceEditing
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      {vodDetailTarget?.contentType === 'series' && (
+        <ErrorBoundary inline>
+          <Suspense fallback={<LoadingOverlay visible />}>
+            <SeriesModal
+              series={vodDetailTarget}
+              opened
+              onClose={() => setVODDetailTarget(null)}
+              initialRelationId={vodDetailTarget.relation_id}
+              allowSourceEditing
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
 
       {/* System Events Section - Fixed at bottom */}
       <Box

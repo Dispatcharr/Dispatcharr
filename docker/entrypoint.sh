@@ -130,6 +130,13 @@ if [[ "$DISPATCHARR_ENV" == "aio" ]]; then
 else
     export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
 fi
+
+# The runtime owns /dev/shm, so the application cannot enlarge it itself.
+# Check before PostgreSQL starts and emit one actionable warning for custom AIO
+# deployments that still use Docker's generic 64 MiB default.
+. /app/docker/init/00-check-shm.sh
+check_dispatcharr_shared_memory
+
 export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
@@ -338,7 +345,7 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     prepare_pg_socket_dir
     su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
-    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -d template1" >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL to be ready..."
         sleep 1
     done
@@ -354,7 +361,7 @@ else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
     # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
     echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -q >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
         sleep 1
     done
@@ -387,12 +394,6 @@ if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     npm_pid=$(pgrep vite | sort | head -n1)
     echo "✅ vite started with PID $npm_pid"
     if [ -n "$npm_pid" ]; then pids+=("$npm_pid"); pid_names[$npm_pid]="vite"; fi
-else
-    echo "🚀 Starting nginx..."
-    nginx
-    nginx_pid=$(pgrep nginx | sort | head -n1)
-    echo "✅ nginx started with PID $nginx_pid"
-    if [ -n "$nginx_pid" ]; then pids+=("$nginx_pid"); pid_names[$nginx_pid]="nginx"; fi
 fi
 
 
@@ -441,6 +442,39 @@ DISPATCHARR_NOFILE="${DISPATCHARR_NOFILE:-65536}"
 nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "ulimit -n $DISPATCHARR_NOFILE 2>/dev/null || true; cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL, nofile $DISPATCHARR_NOFILE)"
 pids+=("$uwsgi_pid"); pid_names[$uwsgi_pid]="uwsgi"
+
+# Keep the public listener closed until both HTTP and WebSocket backends are
+# accepting connections. This avoids transient 502s and stale-asset requests
+# while migrations, static collection, uWSGI, and Daphne are still starting.
+if [[ "$DISPATCHARR_ENV" != "dev" ]]; then
+    echo "⏳ Waiting for application backends..."
+    backend_wait_seconds=0
+    while true; do
+        if ! kill -0 "$uwsgi_pid" 2>/dev/null; then
+            echo "❌ uWSGI exited before the application backends became ready."
+            exit 1
+        fi
+
+        if [[ -S /app/uwsgi.sock ]] && "$VIRTUAL_ENV/bin/python" -c \
+            'import socket; connection = socket.create_connection(("127.0.0.1", 8001), timeout=1); connection.close()' \
+            >/dev/null 2>&1; then
+            break
+        fi
+
+        if (( backend_wait_seconds >= 60 )); then
+            echo "❌ Application backends did not become ready within 60 seconds."
+            exit 1
+        fi
+        sleep 1
+        backend_wait_seconds=$((backend_wait_seconds + 1))
+    done
+
+    echo "🚀 Starting nginx..."
+    nginx
+    nginx_pid=$(pgrep nginx | sort | head -n1)
+    echo "✅ nginx started with PID $nginx_pid"
+    if [ -n "$nginx_pid" ]; then pids+=("$nginx_pid"); pid_names[$nginx_pid]="nginx"; fi
+fi
 
 # Wait for services to fully initialize before checking hardware
 echo "⏳ Waiting for services to fully initialize before hardware check..."

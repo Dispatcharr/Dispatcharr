@@ -1,6 +1,8 @@
 from django.apps import AppConfig
 import os
 import sys
+from django.core.cache import cache
+from django.core.signals import request_started
 from django.db.models.signals import post_migrate
 
 
@@ -9,19 +11,8 @@ class PluginsConfig(AppConfig):
     verbose_name = "Plugins"
 
     def ready(self):
-        """Wire up plugin discovery without hitting the DB during app init.
-
-        - Skip during common management commands that don't need discovery.
-        - Register post_migrate handler to sync plugin registry to DB after migrations.
-        - Run in-memory discovery (no DB) in every non-Celery process so plugin
-          modules are imported and monkey-patches apply. This includes uWSGI workers
-          under lazy-apps=true, which each start cold and never inherit a warmed fork.
-          Celery workers skip here and discover via the worker_ready signal instead.
-        - One-shot startup tasks (schedule setup, repo refresh) are gated by
-          should_skip_initialization() so they only fire in the master/main process.
-        """
+        """Wire plugin discovery without querying the DB during app loading."""
         try:
-            # Allow explicit opt-out via env var
             if os.environ.get("DISPATCHARR_SKIP_PLUGIN_AUTODISCOVERY", "").lower() in ("1", "true", "yes"):
                 return
 
@@ -33,13 +24,13 @@ class PluginsConfig(AppConfig):
             if argv and argv[0] in mgmt_cmds_to_skip:
                 return
 
-            # Run discovery with DB sync after the plugins app has been migrated
             def _post_migrate_discover(sender=None, app_config=None, **kwargs):
                 try:
                     if app_config and getattr(app_config, 'label', None) != 'plugins':
                         return
                     from .loader import PluginManager
                     PluginManager.get().discover_plugins(sync_db=True)
+                    self._setup_repo_refresh_schedule()
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception("Plugin discovery failed in post_migrate")
@@ -47,36 +38,38 @@ class PluginsConfig(AppConfig):
             post_migrate.connect(
                 _post_migrate_discover,
                 dispatch_uid="apps.plugins.post_migrate_discover",
+                weak=False,
             )
 
-            from dispatcharr.app_initialization import should_skip_initialization
-            # Skip discovery for Celery (worker_ready signal handles it) and
-            # pure management commands that don't serve requests. Every other
-            # process - including each uWSGI worker under lazy-apps=true - runs
-            # discovery so plugin modules are imported and monkey-patches apply.
             _no_discovery_cmds = {'celery', 'beat', 'migrate', 'dbshell', 'loaddata'}
             if not any(cmd in sys.argv for cmd in _no_discovery_cmds):
-                from .loader import PluginManager
-                PluginManager.get().discover_plugins(sync_db=False)
-
-            if should_skip_initialization():
-                return
+                request_started.connect(
+                    self._discover_for_web_process,
+                    dispatch_uid="apps.plugins.discover_for_web_process",
+                    weak=False,
+                )
         except Exception:
-            # Avoid breaking startup due to plugin errors
             import logging
 
             logging.getLogger(__name__).exception("Plugin discovery wiring failed during app ready")
 
-        # Register periodic task for refreshing plugin repo manifests
-        self._setup_repo_refresh_schedule()
+    def _discover_for_web_process(self, **kwargs):
+        """Discover plugins at the first request, after Django is fully ready."""
+        try:
+            from .loader import PluginManager
 
-        # Refresh repo manifests once at startup so the UI always has current data
-        self._enqueue_startup_refresh()
+            PluginManager.get().discover_plugins(sync_db=False, use_cache=True)
+            request_started.disconnect(
+                dispatch_uid="apps.plugins.discover_for_web_process"
+            )
+            if cache.add("plugins:startup_repo_refresh", True, timeout=300):
+                self._enqueue_startup_refresh()
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("Plugin discovery failed at request startup")
 
     def _enqueue_startup_refresh(self):
-        from dispatcharr.app_initialization import should_skip_initialization
-        if should_skip_initialization():
-            return
         try:
             from .tasks import refresh_plugin_repos
             refresh_plugin_repos.apply_async(countdown=10)
@@ -88,10 +81,6 @@ class PluginsConfig(AppConfig):
 
     def _setup_repo_refresh_schedule(self):
         from django.db import close_old_connections
-
-        from dispatcharr.app_initialization import should_skip_initialization
-        if should_skip_initialization():
-            return
         try:
             from core.scheduling import create_or_update_periodic_task, delete_periodic_task
             from core.models import CoreSettings

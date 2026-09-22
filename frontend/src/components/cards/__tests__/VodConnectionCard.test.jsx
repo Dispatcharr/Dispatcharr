@@ -27,14 +27,29 @@ vi.mock('../../../utils/cards/VodConnectionCardUtils.js', () => ({
 
 // ── logo ──────────────────────────────────────────────────────────────────────
 vi.mock('../../../images/logo.png', () => ({ default: 'default-logo.png' }));
+vi.mock('../../VODCandidateSourcesModal.jsx', () => ({
+  default: ({ opened, onSwitch }) =>
+    opened ? (
+      <button onClick={() => onSwitch(22, 'now')}>
+        Candidate source modal
+      </button>
+    ) : null,
+}));
 
 // ── Mantine core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, color, variant }) => (
+  ActionIcon: ({
+    children,
+    onClick,
+    color,
+    variant,
+    'aria-label': ariaLabel,
+  }) => (
     <button
       data-testid="action-icon"
       data-color={color}
       data-variant={variant}
+      aria-label={ariaLabel}
       onClick={onClick}
     >
       {children}
@@ -142,7 +157,9 @@ vi.mock('lucide-react', () => ({
   ChevronDown: ({ size, style }) => (
     <svg data-testid="icon-chevron-down" data-size={size} style={style} />
   ),
+  Eye: () => <svg data-testid="icon-eye" />,
   HardDriveUpload: () => <svg data-testid="icon-hdd-upload" />,
+  Shuffle: () => <svg data-testid="icon-shuffle" />,
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
 }));
@@ -150,6 +167,7 @@ vi.mock('lucide-react', () => ({
 // ── Imports after mocks ───────────────────────────────────────────────────────
 import {
   formatDuration,
+  fromNow,
   useDateTimeFormat,
 } from '../../../utils/dateTimeUtils.js';
 import {
@@ -254,6 +272,37 @@ describe('VodConnectionCard', () => {
   // ── Basic rendering ────────────────────────────────────────────────────────
 
   describe('rendering', () => {
+    it('opens the canonical detail target supplied by VOD stats', () => {
+      const openVODDetails = vi.fn();
+      render(
+        <VodConnectionCard
+          vodContent={makeMovieContent({
+            individual_connection: makeConnection({
+              source: {
+                detail_content_type: 'movie',
+                detail_canonical_id: 42,
+                detail_relation_id: 77,
+              },
+            }),
+          })}
+          stopVODClient={vi.fn()}
+          openVODDetails={openVODDetails}
+        />
+      );
+
+      fireEvent.click(
+        screen.getByLabelText('Open details for Test Movie (2022)')
+      );
+
+      expect(openVODDetails).toHaveBeenCalledWith({
+        id: 42,
+        name: 'Test Movie (2022)',
+        contentType: 'movie',
+        content_type: 'movie',
+        relation_id: 77,
+      });
+    });
+
     it('renders the card element', () => {
       render(
         <VodConnectionCard
@@ -302,6 +351,33 @@ describe('VodConnectionCard', () => {
       expect(screen.getByTestId('icon-square-x')).toBeInTheDocument();
     });
 
+    it('shows when a logical VOD session is waiting for a seek reconnect', () => {
+      render(
+        <VodConnectionCard
+          vodContent={makeMovieContent({
+            individual_connection: makeConnection({
+              connection_state: 'reconnecting',
+              provider_connection_active: false,
+              slot_reserved: true,
+              reconnect_seconds_remaining: 120,
+            }),
+          })}
+          stopVODClient={vi.fn()}
+        />
+      );
+
+      expect(
+        screen.getByText('Buffered / reconnecting · 120s')
+      ).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByText('Show Details').closest('[data-testid="group"]')
+      );
+      expect(screen.getByText('Provider HTTP:')).toBeInTheDocument();
+      expect(screen.getByText('Closed')).toBeInTheDocument();
+      expect(screen.getByText('Provider slot:')).toBeInTheDocument();
+      expect(screen.getByText('Reserved · up to 120s')).toBeInTheDocument();
+    });
+
     it('renders the client IP in the connection section', () => {
       render(
         <VodConnectionCard
@@ -310,6 +386,73 @@ describe('VodConnectionCard', () => {
         />
       );
       expect(screen.getByText('192.168.1.100')).toBeInTheDocument();
+    });
+
+    it('renders the exact M3U category source and stream ID', () => {
+      render(
+        <VodConnectionCard
+          vodContent={makeMovieContent({
+            individual_connection: makeConnection({
+              source: {
+                label: 'Provider — NICKELODEON',
+                stream_id: '513301',
+              },
+            }),
+          })}
+          stopVODClient={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText('Provider — NICKELODEON')).toBeInTheDocument();
+      expect(screen.getByText('Stream ID: 513301')).toBeInTheDocument();
+    });
+
+    it('opens and controls the Compact source picker', () => {
+      const switchVODSource = vi.fn();
+      render(
+        <VodConnectionCard
+          vodContent={makeMovieContent({
+            individual_connection: makeConnection({
+              source: {
+                access_policy_id: 7,
+                access_policy_export_mode: 'compact',
+                canonical_id: 3,
+                relation_id: 11,
+              },
+            }),
+          })}
+          stopVODClient={vi.fn()}
+          switchVODSource={switchVODSource}
+        />
+      );
+
+      fireEvent.click(screen.getByLabelText('View or switch Compact source'));
+      fireEvent.click(screen.getByText('Candidate source modal'));
+
+      expect(switchVODSource).toHaveBeenCalledWith('client-abc-123', 22, 'now');
+    });
+
+    it('does not offer source switching outside Compact mode', () => {
+      render(
+        <VodConnectionCard
+          vodContent={makeMovieContent({
+            individual_connection: makeConnection({
+              source: {
+                access_policy_id: 7,
+                access_policy_export_mode: 'variants',
+                canonical_id: 3,
+                relation_id: 11,
+              },
+            }),
+          })}
+          stopVODClient={vi.fn()}
+          switchVODSource={vi.fn()}
+        />
+      );
+
+      expect(
+        screen.queryByLabelText('View or switch Compact source')
+      ).not.toBeInTheDocument();
     });
 
     it('renders "Unknown IP" when client_ip is absent', () => {
@@ -755,6 +898,45 @@ describe('VodConnectionCard', () => {
         .closest('[data-testid="group"]');
       fireEvent.click(header);
       expect(screen.queryByText('Watch Duration:')).not.toBeInTheDocument();
+    });
+
+    it('formats the Unix seek timestamp as seconds converted to milliseconds', () => {
+      const vodContent = makeMovieContent({
+        individual_connection: makeConnection({
+          last_seek_percentage: 25,
+          last_seek_byte: 1024,
+          last_seek_timestamp: 1_787_580_000,
+        }),
+      });
+      render(
+        <VodConnectionCard vodContent={vodContent} stopVODClient={vi.fn()} />
+      );
+      fireEvent.click(
+        screen.getByText('Show Details').closest('[data-testid="group"]')
+      );
+
+      expect(fromNow).toHaveBeenCalledWith(1_787_580_000_000);
+    });
+
+    it('shows VOD pass-through delivery and container details', () => {
+      const vodContent = makeMovieContent({
+        individual_connection: makeConnection({
+          delivery_mode: 'proxy_passthrough',
+          source_container: 'mkv',
+          delivered_container: 'mkv',
+          delivered_content_type: 'video/x-matroska',
+        }),
+      });
+      render(
+        <VodConnectionCard vodContent={vodContent} stopVODClient={vi.fn()} />
+      );
+      fireEvent.click(
+        screen.getByText('Show Details').closest('[data-testid="group"]')
+      );
+
+      expect(screen.getByText('Byte proxy (pass-through)')).toBeInTheDocument();
+      expect(screen.getByText('Source Format:')).toBeInTheDocument();
+      expect(screen.getByText('MKV (video/x-matroska)')).toBeInTheDocument();
     });
   });
 

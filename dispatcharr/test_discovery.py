@@ -20,7 +20,8 @@ _SHARED_PATH_PREFIXES: tuple[str, ...] = (
 # No test package of its own; route to these installed app tests instead.
 _PATH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("apps/api/", ("__all__",)),
-    ("apps/vod/", ("apps.output",)),
+    # VOD owns source-management tests and also feeds the XC output layer.
+    ("apps/vod/", ("apps.vod", "apps.output")),
     ("apps/hdhr/", ("apps.output", "apps.channels")),
 )
 

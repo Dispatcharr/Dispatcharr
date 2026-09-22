@@ -163,6 +163,7 @@ import useUsersStore from '../../../store/users';
 import useChannelsStore from '../../../store/channels';
 import useAuthStore from '../../../store/auth';
 import useWarningsStore from '../../../store/warnings';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useDateTimeFormat, format } from '../../../utils/dateTimeUtils.js';
 import { useTable } from '../CustomTable';
 import API from '../../../api';
@@ -198,9 +199,11 @@ const setupMocks = ({
   users = [makeUser()],
   authUser = makeAdminUser(),
   profiles = { 10: { id: 10, name: 'HD Profile' } },
+  columnSizing = {},
   isWarningSuppressed = vi.fn(() => false),
   suppressWarning = vi.fn(),
 } = {}) => {
+  const setColumnSizing = vi.fn();
   vi.mocked(useUsersStore).mockImplementation((sel) => sel({ users }));
 
   vi.mocked(useChannelsStore).mockImplementation((sel) => sel({ profiles }));
@@ -210,6 +213,14 @@ const setupMocks = ({
   vi.mocked(useWarningsStore).mockImplementation((sel) =>
     sel({ isWarningSuppressed, suppressWarning })
   );
+
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
+    if (key === 'users-table-column-sizing') {
+      return [columnSizing, setColumnSizing];
+    }
+    if (key === 'table-size') return ['default', vi.fn()];
+    return [defaultValue, vi.fn()];
+  });
 
   vi.mocked(useDateTimeFormat).mockReturnValue({
     fullDateFormat: 'MM/DD/YYYY',
@@ -223,6 +234,8 @@ const setupMocks = ({
       getHeaderGroups: () => [],
     };
   });
+
+  return { setColumnSizing };
 };
 
 const getActionsCell = () =>
@@ -293,6 +306,15 @@ describe('UsersTable', () => {
       setupMocks({ users });
       render(<UsersTable />);
       expect(capturedTableOptions.allRowIds).toEqual([1, 2]);
+    });
+
+    it('restores and persists user table column widths', () => {
+      const columnSizing = { username: 260 };
+      const { setColumnSizing } = setupMocks({ columnSizing });
+      render(<UsersTable />);
+
+      expect(capturedTableOptions.columnSizing).toEqual(columnSizing);
+      expect(capturedTableOptions.setColumnSizing).toBe(setColumnSizing);
     });
   });
 
@@ -724,6 +746,29 @@ describe('UsersTable', () => {
     });
   });
 
+  describe('vod_policy column', () => {
+    it('renders the assigned VOD profile and inherited state', () => {
+      setupMocks();
+      render(<UsersTable />);
+      const col = getCol('vod_policy');
+      const { getByText } = render(
+        col.cell({
+          getValue: () => ({ name: 'Family VOD', inherited: true }),
+        })
+      );
+      expect(getByText('Family VOD')).toBeInTheDocument();
+      expect(getByText('Default')).toBeInTheDocument();
+    });
+
+    it('renders a dash when no VOD profile is available', () => {
+      setupMocks();
+      render(<UsersTable />);
+      const col = getCol('vod_policy');
+      const { getByText } = render(col.cell({ getValue: () => null }));
+      expect(getByText('-')).toBeInTheDocument();
+    });
+  });
+
   // ── useTable options ───────────────────────────────────────────────────────
 
   describe('useTable options', () => {
@@ -881,9 +926,12 @@ describe('UsersTable', () => {
         'date_joined',
         'last_login',
       ].forEach((id) => expect(getCol(id).sortable).toBe(true));
-      ['custom_properties', 'channel_profiles', 'actions'].forEach((id) =>
-        expect(getCol(id).sortable).toBeUndefined()
-      );
+      [
+        'custom_properties',
+        'channel_profiles',
+        'vod_policy',
+        'actions',
+      ].forEach((id) => expect(getCol(id).sortable).toBeUndefined());
     });
 
     it('cycles ascending → descending → unsorted on repeated clicks', () => {

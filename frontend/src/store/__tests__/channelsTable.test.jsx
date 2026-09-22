@@ -118,6 +118,45 @@ describe('useChannelsTableStore', () => {
       expect(result.current.pageCount).toBe(0);
     });
 
+    it('normalizes a legacy bare-array response', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+      const channels = [{ id: 1, name: 'Legacy channel' }];
+
+      act(() => {
+        result.current.queryChannels(
+          channels,
+          new URLSearchParams({ page_size: '50' })
+        );
+      });
+
+      expect(result.current.channels).toEqual(channels);
+      expect(result.current.totalCount).toBe(1);
+      expect(result.current.pageCount).toBe(1);
+    });
+
+    it('keeps the last valid page when a malformed response arrives', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+      const channels = [{ id: 1, name: 'Existing channel' }];
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const params = new URLSearchParams({ page_size: '50' });
+      act(() => {
+        result.current.queryChannels({ results: channels, count: 1 }, params);
+      });
+
+      let accepted;
+      act(() => {
+        accepted = result.current.queryChannels({ count: 1 }, params);
+      });
+
+      expect(accepted).toBe(false);
+      expect(result.current.channels).toEqual(channels);
+      expect(result.current.totalCount).toBe(1);
+      expect(consoleError).toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
     it('should default to an empty channels array when results is missing', () => {
       const { result } = renderHook(() => useChannelsTableStore());
 

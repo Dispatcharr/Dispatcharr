@@ -378,6 +378,14 @@ class Channel(models.Model):
         related_name="auto_created_channels",
         help_text="The M3U account that auto-created this channel"
     )
+    auto_created_from = models.ForeignKey(
+        "ChannelGroupM3UAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="auto_created_channels",
+        help_text="The provider group membership that auto-created this channel",
+    )
 
     # Populated at import; rolled up via ChannelStream signal / m3u refresh.
     is_catchup = models.BooleanField(
@@ -983,6 +991,7 @@ class Channel(models.Model):
         from apps.m3u.connection_pool import (
             move_credential_slot_on_profile_switch,
             profile_connections_key,
+            profile_connections_version_key,
         )
         from apps.m3u.models import M3UAccountProfile
 
@@ -1010,8 +1019,10 @@ class Channel(models.Model):
         pipe = redis_client.pipeline()
         if old_count > 0:
             pipe.decr(old_profile_connections_key)
+            pipe.incr(profile_connections_version_key(current_profile_id))
         pipe.set(f"stream_profile:{stream_id}", new_profile_id)
         pipe.incr(new_profile_connections_key)
+        pipe.incr(profile_connections_version_key(new_profile_id))
         pipe.execute()
         logger.info(
             f"Updated stream {stream_id} profile from {current_profile_id} to {new_profile_id}"

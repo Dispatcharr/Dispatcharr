@@ -285,6 +285,7 @@ const setupMocks = ({
   suppressWarning = vi.fn(),
   tableSize = 'default',
   typeFilter = ['xmltv', 'schedules_direct', 'dummy'],
+  columnSizing = {},
 } = {}) => {
   vi.mocked(useEPGsStore).mockImplementation((sel) =>
     sel({ epgs, refreshProgress })
@@ -295,9 +296,12 @@ const setupMocks = ({
   );
 
   const mockSetTypeFilter = vi.fn();
+  const mockSetColumnSizing = vi.fn();
   vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
     if (key === 'table-size') return [tableSize, vi.fn()];
     if (key === 'epg-table-type-filter') return [typeFilter, mockSetTypeFilter];
+    if (key === 'epg-table-column-sizing')
+      return [columnSizing, mockSetColumnSizing];
     return [defaultValue, vi.fn()];
   });
 
@@ -312,7 +316,7 @@ const setupMocks = ({
     };
   });
 
-  return { mockSetTypeFilter };
+  return { mockSetTypeFilter, mockSetColumnSizing };
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -1347,6 +1351,21 @@ describe('EPGsTable', () => {
       setupMocks();
       render(<EPGsTable />);
       expect(capturedTableOptions.renderTopToolbar).toBe(false);
+    });
+
+    it('restores and updates persisted column widths', () => {
+      const columnSizing = { name: 280 };
+      const { mockSetColumnSizing } = setupMocks({ columnSizing });
+      render(<EPGsTable />);
+
+      expect(capturedTableOptions.columnSizing).toEqual(columnSizing);
+      expect(capturedTableOptions.setColumnSizing).toBe(mockSetColumnSizing);
+    });
+
+    it('uses a taller row height for EPG sources', () => {
+      setupMocks({ tableSize: 'default' });
+      render(<EPGsTable />);
+      expect(capturedTableOptions.getRowStyles()).toEqual({ minHeight: 52 });
     });
 
     it('actions column size is 75 in compact mode', () => {

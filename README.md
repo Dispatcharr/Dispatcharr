@@ -108,6 +108,15 @@ First-time web setup is limited to local/private networks by default. If you are
 
 Behind a reverse proxy, set `DISPATCHARR_TRUSTED_PROXIES` to your proxy's IP or CIDR so Network Access, Stats, and rate limits see real client IPs (defaults trust private/loopback peers; use `none` to ignore forwarded headers).
 
+Redis recommends Linux memory overcommit for reliable background saves and
+replication. Configure it on the Docker host (the setting is not namespaced and
+cannot be applied portably from an unprivileged container):
+
+```bash
+echo 'vm.overcommit_memory = 1' | sudo tee /etc/sysctl.d/99-dispatcharr.conf
+sudo sysctl --system
+```
+
 ---
 
 ### 🐋 Docker Compose Options

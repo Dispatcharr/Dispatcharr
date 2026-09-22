@@ -110,6 +110,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
+    "django.contrib.postgres",
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
@@ -457,6 +458,16 @@ CELERY_BEAT_SCHEDULE = {
     "check-account-expirations": {
         "task": "apps.m3u.tasks.check_account_expirations",
         "schedule": 86400.0,  # Once every 24 hours
+    },
+    # Recover a lost VOD profile task without making the read-only profile API
+    # trigger background work whenever an administrator opens the dialog.
+    "reconcile-vod-profile-selection-queue": {
+        "task": "apps.vod.tasks.reconcile_vod_profile_selection_queue",
+        "schedule": 60.0,
+    },
+    "reconcile-vod-metadata-queue": {
+        "task": "apps.vod.tasks.reconcile_vod_metadata_queue",
+        "schedule": 60.0,
     },
 }
 

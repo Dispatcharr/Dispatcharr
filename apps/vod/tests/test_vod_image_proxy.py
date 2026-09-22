@@ -164,6 +164,25 @@ class VODImageProxyHelpersTestCase(TestCase):
         )
         self.assertEqual(art["movie_image"], "https://cdn.example.com/detailed.jpg")
 
+    def test_tmdb_artwork_can_be_preferred_without_overwriting_provider_art(self):
+        provider_url = "https://cdn.example.com/provider.jpg"
+        tmdb_url = "https://image.tmdb.org/t/p/w500/poster.jpg"
+        art = prefer_relation_artwork(
+            {"movie_image": provider_url},
+            {},
+            tmdb_poster_url=tmdb_url,
+            prefer_tmdb=True,
+        )
+        self.assertEqual(art["movie_image"], tmdb_url)
+
+        art = prefer_relation_artwork(
+            {"movie_image": provider_url},
+            {},
+            tmdb_poster_url=tmdb_url,
+            prefer_tmdb=False,
+        )
+        self.assertEqual(art["movie_image"], provider_url)
+
 
 class VODImageProxyEndpointTestCase(TestCase):
     def setUp(self):
