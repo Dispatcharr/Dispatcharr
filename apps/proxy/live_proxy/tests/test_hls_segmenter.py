@@ -281,6 +281,28 @@ class SegmenterTests(unittest.TestCase):
         self.assertLess(out[0].duration, 6.5)
         self.assertEqual(round(out[0].duration), 6)
 
+    def test_force_cut_segment_closes_on_next_keyframe(self):
+        # The segment opened mid-GOP ends at the next keyframe even when
+        # that is under the 4s minimum. The segment after that keyframe
+        # waits for the normal target again.
+        seg = TSSegmenter(
+            target_duration=4.0,
+            max_segment_duration=6.4,
+            startup_keyframe_cuts=0,
+        )
+        seg.feed(make_pat())
+        seg.feed(make_pmt())
+        seg.feed(make_video_pes(0.0, keyframe=True))
+        forced = seg.feed(make_video_pes(6.4, keyframe=False))
+        self.assertEqual(len(forced), 1)
+        early = seg.feed(make_video_pes(6.9, keyframe=True))
+        self.assertEqual(len(early), 1)
+        self.assertAlmostEqual(early[0].duration, 0.5, places=2)
+        self.assertEqual(seg.feed(make_video_pes(8.9, keyframe=True)), [])
+        normal = seg.feed(make_video_pes(10.9, keyframe=True))
+        self.assertEqual(len(normal), 1)
+        self.assertAlmostEqual(normal[0].duration, 4.0, places=2)
+
     def test_cuts_on_keyframes_at_target_duration(self):
         seg = self.make_started(target=4.0)
         # 2-second GOPs: cuts must land every 2 GOPs (4.0s)

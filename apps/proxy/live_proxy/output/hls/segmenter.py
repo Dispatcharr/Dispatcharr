@@ -502,6 +502,10 @@ class TSSegmenter:
         self._collecting = False
         self._pending_discontinuity = False
         self._current_discontinuity = False
+        # Set when a force-cut opens a segment mid-GOP. The next keyframe
+        # closes it even under the normal 4s minimum, so the undecodable
+        # stretch stays as short as the wait for that keyframe.
+        self._opened_mid_gop = False
         # Latest H.264 SPS/PPS or HEVC VPS/SPS/PPS seen in-band. Injected
         # after PAT/PMT when a segment opens on a keyframe that lacks them.
         self._param_sets = {}
@@ -542,6 +546,7 @@ class TSSegmenter:
         self._seg_first_pts = None
         self._seg_last_pts = None
         self._pending_discontinuity = True
+        self._opened_mid_gop = False
         self._param_sets = {}
         return finished
 
@@ -672,8 +677,13 @@ class TSSegmenter:
                     # Fast-start ladder: while starter cuts remain, any
                     # keyframe closes the segment (elapsed > 0 skips
                     # same-PTS duplicates); afterwards the normal target
-                    # applies.
-                    cut_at = 0.0 if self._startup_cuts_remaining > 0 else self.target_duration
+                    # applies. A segment opened by a force-cut is not
+                    # independently decodable, so the next keyframe ends
+                    # it immediately instead of holding another 4s.
+                    if self._startup_cuts_remaining > 0 or self._opened_mid_gop:
+                        cut_at = 0.0
+                    else:
+                        cut_at = self.target_duration
                     if elapsed >= cut_at and elapsed > 0:
                         # Closing keyframe is not in this segment's bytes; do
                         # not fold its PTS into the measured span before finish.
@@ -689,7 +699,7 @@ class TSSegmenter:
                 if elapsed >= self.max_segment_duration:
                     finished = self._finish_segment(self._extinf_duration(elapsed))
                     # Mid-GOP: no inject (segment is not independently decodable).
-                    self._begin_segment(pts)
+                    self._begin_segment(pts, mid_gop=True)
                 else:
                     self._note_pts(pts)
             elif pts is not None and self._collecting:
@@ -825,8 +835,9 @@ class TSSegmenter:
             buf[3] = (buf[3] & 0xF0) | ((first_cc + i) & 0x0F)
             self._current.extend(bytes(buf))
 
-    def _begin_segment(self, pts, opening_packet=None, opening_params=None):
+    def _begin_segment(self, pts, opening_packet=None, opening_params=None, mid_gop=False):
         self._current = bytearray()
+        self._opened_mid_gop = mid_gop
         if self._pat_packet:
             self._current.extend(self._pat_packet)
         if self._pmt_packet:
