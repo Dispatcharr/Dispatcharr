@@ -16,6 +16,7 @@ jobs:
       - uses: Dispatcharr/repo-bot/actions/pr-freshness@v1
         with:
           github-token: ${{ steps.app-token.outputs.token }}
+          marker-author: dispatcharr-issues-bot[bot]
           days-before-stale: 7
           days-before-close: 7
           check-conflicts: true
