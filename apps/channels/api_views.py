@@ -31,7 +31,7 @@ from apps.channels.dvr_access import (
     recordings_queryset_for_user,
 )
 
-from core.models import CoreSettings
+from core.models import CoreSettings, DEFAULT_DVR_STORAGE_ROOT
 from core.utils import (
     RedisClient,
     build_absolute_uri_with_port,
@@ -3372,13 +3372,34 @@ def _recording_auth_query_suffix(request):
     return "?" + urlencode({"token": token})
 
 
-RECORDINGS_STORAGE_ROOT = "/data/recordings"
+# Kept as the compile-time default for existing callers/tests that expect
+# the historical fixed path. Use dvr_storage_allowed_roots() below for the
+# actual security check -- it also allows the CURRENT custom root (if an
+# admin has set core.models.CoreSettings.get_dvr_storage_root away from
+# this default), so recordings already on disk under whichever root was
+# active when they were made stay servable/downloadable/deletable even
+# after the setting changes.
+RECORDINGS_STORAGE_ROOT = DEFAULT_DVR_STORAGE_ROOT
+
+
+def dvr_storage_allowed_roots():
+    """Every root a real recording file could legitimately live under right
+    now: the historical default, plus the current custom override if one is
+    set. Order doesn't matter -- resolve_safe_local_data_path just needs the
+    path to fall under ANY of them."""
+    from core.models import CoreSettings
+
+    current = CoreSettings.get_dvr_storage_root()
+    return (DEFAULT_DVR_STORAGE_ROOT,) if current == DEFAULT_DVR_STORAGE_ROOT else (
+        DEFAULT_DVR_STORAGE_ROOT,
+        current,
+    )
 
 
 def _resolve_recording_storage_path(path):
-    """Return a realpath under /data/recordings, or None if unsafe/missing path."""
+    """Return a realpath under an allowed DVR storage root, or None if unsafe/missing path."""
     return resolve_safe_local_data_path(
-        path, allowed_roots=(RECORDINGS_STORAGE_ROOT,)
+        path, allowed_roots=dvr_storage_allowed_roots()
     )
 
 
@@ -3953,7 +3974,26 @@ class RecordingViewSet(viewsets.ModelViewSet):
             pass
 
         # 3. Defer slow teardown to a background thread.
-        recordings_root = os.path.normpath(RECORDINGS_STORAGE_ROOT)
+        # Roots checked longest-first so a root that happens to be a prefix
+        # of another (unlikely, but this is a security boundary) can't match
+        # the wrong one.
+        _allowed_roots = sorted(
+            (os.path.normpath(r) for r in dvr_storage_allowed_roots()),
+            key=len, reverse=True,
+        )
+
+        def _root_for(path: str) -> str:
+            """Whichever configured DVR root *path* actually lives under --
+            not necessarily the currently-active one, since a file recorded
+            before a storage-root change still lives under the old root.
+            Falls back to the current default if it matches neither (should
+            not happen for a real recording path, but pruning just becomes a
+            no-op rather than an error in that case)."""
+            normalized = os.path.normpath(path)
+            for root in _allowed_roots:
+                if normalized == root or normalized.startswith(root + os.sep):
+                    return root
+            return _allowed_roots[-1]
 
         def _safe_remove(path: str):
             if not path or not isinstance(path, str):
@@ -3982,11 +4022,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
             if not path or not isinstance(path, str):
                 return
             try:
+                root = _root_for(path)
                 parent = os.path.dirname(os.path.normpath(path))
                 while (
                     parent
-                    and parent != recordings_root
-                    and parent.startswith(recordings_root + os.sep)
+                    and parent != root
+                    and parent.startswith(root + os.sep)
                     and os.path.isdir(parent)
                     and not os.listdir(parent)
                 ):

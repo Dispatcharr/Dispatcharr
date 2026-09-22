@@ -259,6 +259,11 @@ STREAM_SETTINGS_KEY = "stream_settings"
 DVR_SETTINGS_KEY = "dvr_settings"
 BACKUP_SETTINGS_KEY = "backup_settings"
 PROXY_SETTINGS_KEY = "proxy_settings"
+
+# The DVR storage root every install has always used. dvr_settings.storage_root
+# (below) is an optional override -- absent/blank means "use this", so an
+# install that never touches the new setting keeps this exact path forever.
+DEFAULT_DVR_STORAGE_ROOT = "/data/recordings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
@@ -684,7 +689,20 @@ class CoreSettings(models.Model):
             "post_offset_minutes": 0,
             "series_rules": [],
             "output_profile_id": None,
+            "storage_root": "",
         })
+
+    @classmethod
+    def get_dvr_storage_root(cls):
+        """The absolute path new recordings are written under and served
+        from. Blank/absent (the default for every existing install) falls
+        back to DEFAULT_DVR_STORAGE_ROOT -- changing this only affects
+        recordings made AFTER the change; recordings already on disk keep
+        resolving under whichever root they were actually written to (see
+        apps.channels.api_views.dvr_storage_allowed_roots), so switching
+        this never strands existing files."""
+        root = (cls.get_dvr_settings().get("storage_root") or "").strip()
+        return root or DEFAULT_DVR_STORAGE_ROOT
 
     @classmethod
     def get_dvr_tv_template(cls):
