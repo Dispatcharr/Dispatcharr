@@ -151,7 +151,7 @@ def _resolve_output_profile(request, user):
     return None
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def stream_ts(request, channel_id, user=None, force_output_format=None):
     if not network_access_allowed(request, "STREAMS"):
@@ -174,6 +174,23 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
     try:
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
+
+        if request.method == "HEAD":
+            if channel.get_stream_profile().is_redirect():
+                content_type = "application/octet-stream"
+            else:
+                output_format = _resolve_output_format(
+                    user, force_output_format, request
+                )
+                content_type = {
+                    "mpegts": "video/mp2t",
+                    "fmp4": "video/mp4",
+                }.get(output_format, "application/octet-stream")
+
+            response = HttpResponse(status=200, content_type=content_type)
+            response["Cache-Control"] = "no-cache"
+            return response
+
         allowed_m3u_profiles = None
         if user and channel.get_stream_profile().is_redirect():
             from apps.m3u.utils import get_allowed_m3u_profiles
