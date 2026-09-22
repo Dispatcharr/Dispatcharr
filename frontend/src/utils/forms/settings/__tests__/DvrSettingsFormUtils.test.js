@@ -65,6 +65,7 @@ describe('DvrSettingsFormUtils', () => {
       const result = DvrSettingsFormUtils.getDvrSettingsFormInitialValues();
 
       expect(result).toEqual({
+        storage_root: '',
         tv_template: '',
         movie_template: '',
         tv_fallback_template: '',
