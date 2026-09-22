@@ -626,6 +626,16 @@ export const WebsocketProvider = ({ children }) => {
               }
               break;
 
+            case 'recording_reassigned':
+              notifications.show({
+                title: 'Recording kept',
+                message:
+                  'Another user still wanted this recording, so ownership was transferred instead of deleting it.',
+                color: 'blue',
+              });
+              scheduleRecordingFetch();
+              break;
+
             case 'epg_fetch_error':
               notifications.show({
                 title: 'EPG Source Error',
