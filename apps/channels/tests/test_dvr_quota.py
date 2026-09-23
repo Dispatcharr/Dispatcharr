@@ -258,3 +258,24 @@ class DvrDiskUsageApiTests(TestCase):
         client.force_authenticate(user=user)
         response = client.get("/api/channels/recordings/disk-usage/")
         self.assertEqual(response.status_code, 403)
+
+    def test_falls_back_to_nearest_existing_ancestor_when_storage_root_missing(self):
+        """The DVR storage root may not exist yet (fresh install, or a test
+        environment that never wrote a recording) -- the endpoint should
+        still succeed by walking up to whichever ancestor does exist,
+        rather than 503ing."""
+        from apps.channels import api_views
+
+        user = self._user(dvr_access="view")
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        original_root = api_views.RECORDINGS_STORAGE_ROOT
+        api_views.RECORDINGS_STORAGE_ROOT = "/this/path/does/not/exist/recordings"
+        try:
+            response = client.get("/api/channels/recordings/disk-usage/")
+        finally:
+            api_views.RECORDINGS_STORAGE_ROOT = original_root
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("free_bytes", response.data)
