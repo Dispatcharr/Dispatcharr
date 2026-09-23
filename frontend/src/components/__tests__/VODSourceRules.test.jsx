@@ -82,6 +82,14 @@ vi.mock('@mantine/core', () => {
       </label>
     ),
     Paper: Wrapper,
+    Pagination: ({ value, total, onChange }) => (
+      <button
+        aria-label="Next preview page"
+        onClick={() => onChange(value + 1)}
+      >
+        {value}/{total}
+      </button>
+    ),
     Select: ({
       label,
       value,
@@ -207,14 +215,17 @@ describe('VODSourceRules', () => {
       expect.objectContaining({ id: 42, canonical_title: 'Canonical Movie' })
     );
     await waitFor(() =>
-      expect(API.previewVODAccessPolicyStreamFilter).toHaveBeenCalledWith({
-        source_rules: expect.arrayContaining([
-          expect.objectContaining({ id: 'exclude-3d' }),
-        ]),
-        target_rule_id: 'exclude-3d',
-        category_relation_ids: ['7', '9'],
-        restrict_to_categories: true,
-      })
+      expect(API.previewVODAccessPolicyStreamFilter).toHaveBeenCalledWith(
+        {
+          source_rules: expect.arrayContaining([
+            expect.objectContaining({ id: 'exclude-3d' }),
+          ]),
+          target_rule_id: 'exclude-3d',
+          category_relation_ids: ['7', '9'],
+          restrict_to_categories: true,
+        },
+        { page: 1, page_size: 50 }
+      )
     );
   });
 
@@ -238,7 +249,8 @@ describe('VODSourceRules', () => {
           target_rule_id: 'exclude-3d',
           category_relation_ids: ['7'],
           restrict_to_categories: true,
-        })
+        }),
+        { page: 1, page_size: 50 }
       )
     );
   });

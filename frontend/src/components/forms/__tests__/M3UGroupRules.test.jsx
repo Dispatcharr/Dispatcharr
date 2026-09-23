@@ -111,6 +111,14 @@ vi.mock('@mantine/core', () => {
         ))}
       </select>
     ),
+    Pagination: ({ value, total, onChange }) => (
+      <button
+        aria-label="Next preview page"
+        onClick={() => onChange(value + 1)}
+      >
+        {value}/{total}
+      </button>
+    ),
     ScrollArea: Wrapper,
     Select: ({ value, onChange, data, disabled }) => (
       <select
@@ -239,7 +247,8 @@ describe('M3UGroupRules', () => {
     expect(API.previewM3UGroupRule).toHaveBeenCalledWith(
       49,
       5,
-      expect.objectContaining({ regex_pattern: '^GERMANY' })
+      expect.objectContaining({ regex_pattern: '^GERMANY' }),
+      { page: 1, page_size: 50 }
     );
     fireEvent.click(screen.getByText('Save and apply to existing'));
     await waitFor(() =>
@@ -373,9 +382,8 @@ describe('M3UGroupRules', () => {
     expect(container.querySelectorAll('[data-invalid="true"]')).toHaveLength(2);
   });
 
-  it('keeps profile import rules as a draft until Save and apply', () => {
+  it('uses save, preview, and save-and-apply for profile import rules', () => {
     const onChange = vi.fn();
-    const onApplied = vi.fn();
     render(
       <M3UGroupRules
         mode="profile"
@@ -393,7 +401,18 @@ describe('M3UGroupRules', () => {
           },
         ]}
         onChange={onChange}
-        onApplied={onApplied}
+        categoryRows={[
+          {
+            relation_id: 22,
+            categoryName: 'HINDI MOVIES',
+            categoryType: 'movie',
+            accountId: '49',
+            accountName: 'Provider',
+            enabled: false,
+            explicit: false,
+            item_count: 12,
+          },
+        ]}
       />
     );
 
@@ -403,7 +422,7 @@ describe('M3UGroupRules', () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.queryByText('If no rule matches')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('Save and apply'));
+    fireEvent.click(screen.getByLabelText('Save rule'));
     expect(onChange).toHaveBeenCalledWith([
       expect.objectContaining({
         id: 'profile-rule-1',
@@ -412,6 +431,10 @@ describe('M3UGroupRules', () => {
         order: 0,
       }),
     ]);
-    expect(onApplied).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByLabelText('Preview rule'));
+    expect(screen.getByText('HINDI MOVIES')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Save and apply'));
+    expect(onChange).toHaveBeenCalledTimes(2);
   });
 });

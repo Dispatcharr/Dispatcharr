@@ -86,6 +86,8 @@ from rest_framework.utils.urls import replace_query_param, remove_query_param
 
 logger = logging.getLogger(__name__)
 PLAYBACK_METADATA_INLINE_TITLE_LIMIT = 25
+FILTER_PREVIEW_PAGE_SIZE = 50
+FILTER_PREVIEW_MAX_PAGE_SIZE = 200
 
 
 def _tmdb_content_payload(content):
@@ -3735,9 +3737,8 @@ class VODAccessPolicyViewSet(viewsets.ModelViewSet):
 
         This intentionally does not build or mutate a profile.  It evaluates
         the complete ordered draft, then returns only sources for which the
-        requested rule is the first match.  The bounded sample keeps this
-        useful on very large provider catalogs without materializing another
-        catalog in PostgreSQL.
+        requested rule is the first match. Results are paginated while the
+        complete inventory is evaluated so the total remains exact.
         """
         denied = self._admin_only(request)
         if denied is not None:
@@ -3749,6 +3750,32 @@ class VODAccessPolicyViewSet(viewsets.ModelViewSet):
         restrict_to_categories = (
             request.data.get("restrict_to_categories") is True
         )
+        try:
+            page = int(request.query_params.get("page", 1))
+            page_size = int(
+                request.query_params.get(
+                    "page_size", FILTER_PREVIEW_PAGE_SIZE
+                )
+            )
+        except (TypeError, ValueError):
+            page = 0
+            page_size = 0
+        if (
+            page < 1
+            or page_size < 1
+            or page_size > FILTER_PREVIEW_MAX_PAGE_SIZE
+        ):
+            return Response(
+                {
+                    "detail": (
+                        "page must be positive and page_size must be between "
+                        f"1 and {FILTER_PREVIEW_MAX_PAGE_SIZE}"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        page_start = (page - 1) * page_size
+        page_end = page_start + page_size
         if not isinstance(category_relation_ids, list):
             return Response(
                 {"detail": "category_relation_ids must be a list"},
@@ -3815,8 +3842,6 @@ class VODAccessPolicyViewSet(viewsets.ModelViewSet):
         rows = []
         matching_count = 0
         inventory_count = 0
-        sample_limit = 200
-        truncated = False
         needs_canonical_metadata = content_rules_use_canonical_metadata(
             normalized_rules
         )
@@ -3880,10 +3905,10 @@ class VODAccessPolicyViewSet(viewsets.ModelViewSet):
                 match = relation_stream_filter_match(relation, policy, metadata)
                 if match is None or match[0] != target_rule_id:
                     continue
-                if len(rows) >= sample_limit:
-                    truncated = True
-                    break
+                match_index = matching_count
                 matching_count += 1
+                if not page_start <= match_index < page_end:
+                    continue
                 content = getattr(relation, canonical_field)
                 provider_title = _relation_source_name(relation)
                 rows.append(
@@ -3904,14 +3929,12 @@ class VODAccessPolicyViewSet(viewsets.ModelViewSet):
                         "result": "include" if match[1] else "exclude",
                     }
                 )
-            if truncated:
-                break
-
         return Response(
             {
                 "count": matching_count,
                 "inventory_count": inventory_count,
-                "truncated": truncated,
+                "page": page,
+                "page_size": page_size,
                 "first_match_wins": True,
                 "results": rows,
             }

@@ -1541,9 +1541,10 @@ export default class API {
     );
   }
 
-  static async previewM3UGroupRule(accountId, id, values) {
+  static async previewM3UGroupRule(accountId, id, values, params = {}) {
+    const query = new URLSearchParams(params).toString();
     return await request(
-      `${host}/api/m3u/accounts/${accountId}/group-rules/${id}/preview/`,
+      `${host}/api/m3u/accounts/${accountId}/group-rules/${id}/preview/${query ? `?${query}` : ''}`,
       { method: 'POST', body: values }
     );
   }
@@ -1786,9 +1787,10 @@ export default class API {
     });
   }
 
-  static async previewVODAccessPolicyStreamFilter(values) {
+  static async previewVODAccessPolicyStreamFilter(values, params = {}) {
+    const query = new URLSearchParams(params).toString();
     return await request(
-      `${host}/api/vod/access-policies/preview-stream-filter/`,
+      `${host}/api/vod/access-policies/preview-stream-filter/${query ? `?${query}` : ''}`,
       {
         method: 'POST',
         body: values,
@@ -2439,15 +2441,16 @@ export default class API {
     return await request(`${host}/api/m3u/accounts/${accountId}/filters/`);
   }
 
-  static async previewM3UFilter(accountId, filterId, values) {
+  static async previewM3UFilter(accountId, filterId, values, params = {}) {
+    const query = new URLSearchParams(params).toString();
     if (!filterId) {
       return await request(
-        `${host}/api/m3u/accounts/${accountId}/filters/preview-draft/`,
+        `${host}/api/m3u/accounts/${accountId}/filters/preview-draft/${query ? `?${query}` : ''}`,
         { method: 'POST', body: values }
       );
     }
     return await request(
-      `${host}/api/m3u/accounts/${accountId}/filters/${filterId}/preview/`,
+      `${host}/api/m3u/accounts/${accountId}/filters/${filterId}/preview/${query ? `?${query}` : ''}`,
       { method: 'POST', body: values }
     );
   }

@@ -2080,6 +2080,45 @@ class VODSourceManagementTests(TestCase):
             self.english_relation.id,
         )
 
+    def test_draft_stream_filter_preview_paginates_all_matching_sources(self):
+        admin = get_user_model().objects.create_user(
+            username="paged-filter-preview-admin",
+            password="test-password",
+            user_level=10,
+        )
+        request = APIRequestFactory().post(
+            "/api/vod/access-policies/preview-stream-filter/?page=2&page_size=1",
+            {
+                "target_rule_id": "all-sources",
+                "category_relation_ids": [
+                    self.german_category.id,
+                    self.english_category.id,
+                ],
+                "restrict_to_categories": True,
+                "source_rules": [
+                    {
+                        "id": "all-sources",
+                        "match_field": "stream",
+                        "regex_pattern": "",
+                        "result": "include",
+                    }
+                ],
+            },
+            format="json",
+        )
+        force_authenticate(request, user=admin)
+
+        response = VODAccessPolicyViewSet.as_view(
+            {"post": "preview_stream_filter"}
+        )(request)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(response.data["inventory_count"], 2)
+        self.assertEqual(response.data["page"], 2)
+        self.assertEqual(response.data["page_size"], 1)
+        self.assertEqual(len(response.data["results"]), 1)
+
     def test_empty_category_expression_applies_feature_filter_globally(self):
         self.english_category.metadata_defaults = {
             **self.english_category.metadata_defaults,

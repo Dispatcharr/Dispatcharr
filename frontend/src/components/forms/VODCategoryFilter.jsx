@@ -780,7 +780,6 @@ const VODCategoryFilter = ({
           mode={mode}
           value={rules}
           onChange={onRulesChange}
-          onApplied={() => setRulesOpen(false)}
           accountOptions={accountOptions}
           categoryRows={categoryStates}
         />

@@ -769,15 +769,6 @@ const LiveGroupFilter = ({ playlist, groupStates, setGroupStates }) => {
                 </TableTd>
                 <TableTd>
                   <Group gap={4} justify="center" wrap="nowrap">
-                    <Tooltip label="Preview imported content" withArrow>
-                      <ActionIcon
-                        variant="subtle"
-                        onClick={() => setPreviewGroupId(group.channel_group)}
-                        aria-label={`Preview ${group.name}`}
-                      >
-                        <Eye size={16} />
-                      </ActionIcon>
-                    </Tooltip>
                     <Tooltip label="Configure advanced options" withArrow>
                       <ActionIcon
                         variant="subtle"
@@ -794,6 +785,15 @@ const LiveGroupFilter = ({ playlist, groupStates, setGroupStates }) => {
                         aria-label={`Configure ${group.name}`}
                       >
                         <Cog size={16} />
+                      </ActionIcon>
+                    </Tooltip>
+                    <Tooltip label="Preview imported content" withArrow>
+                      <ActionIcon
+                        variant="subtle"
+                        onClick={() => setPreviewGroupId(group.channel_group)}
+                        aria-label={`Preview ${group.name}`}
+                      >
+                        <Eye size={16} />
                       </ActionIcon>
                     </Tooltip>
                   </Group>

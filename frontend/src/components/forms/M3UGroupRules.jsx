@@ -43,6 +43,9 @@ import LanguagePicker from '../LanguagePicker.jsx';
 import VideoFeaturePicker from '../VideoFeaturePicker.jsx';
 import { RESOLUTION_VALUES } from '../../utils/vodMetadataOptions.js';
 import { firstMatchingCategoryRule } from './VODProfileCategoryRules.utils.js';
+import ListPagination from '../ListPagination.jsx';
+
+const PREVIEW_PAGE_SIZE = 50;
 
 const SortableRuleRow = ({ ruleId, error, children }) => {
   const {
@@ -91,7 +94,6 @@ const M3UGroupRules = ({
   mode = 'account',
   value = [],
   onChange,
-  onApplied,
   accountOptions = [],
   categoryRows = [],
 }) => {
@@ -101,6 +103,8 @@ const M3UGroupRules = ({
   const [preview, setPreview] = useState(null);
   const [previewRule, setPreviewRule] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewPage, setPreviewPage] = useState(1);
+  const [previewPageSize, setPreviewPageSize] = useState(PREVIEW_PAGE_SIZE);
   const [ruleErrors, setRuleErrors] = useState({});
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -267,29 +271,33 @@ const M3UGroupRules = ({
     };
   };
 
-  const applyProfileDraft = () => {
+  const saveProfileDraft = ({ apply = false } = {}) => {
     const errors = getValidationErrors();
     setRuleErrors(errors);
     if (Object.keys(errors).length) {
       showNotification({
-        title: 'Import rules were not applied',
+        title: 'Import rules were not saved',
         message: 'Correct the highlighted import rules first.',
         color: 'red',
       });
-      return;
+      return false;
     }
     const applied = rules.map((rule, index) => ({
       ...rulePayload(rule),
       order: index,
     }));
     onChange?.(applied);
+    setRules(applied.map((rule) => ({ ...rule, isNew: false })));
     showNotification({
-      title: 'Import rules applied to profile draft',
-      message:
-        'Review the resulting source selection, then save the VOD profile to rebuild its output catalog.',
+      title: apply
+        ? 'Import rules saved and applied'
+        : 'Import rules saved to profile draft',
+      message: apply
+        ? 'The current source selection now reflects the ordered rules. Save the VOD profile to rebuild its output catalog.'
+        : 'Preview a rule to review and apply its effect. Save the VOD profile to persist the draft.',
       color: 'green',
     });
-    onApplied?.();
+    return true;
   };
 
   const saveRule = async (rule, notify = true) => {
@@ -323,12 +331,10 @@ const M3UGroupRules = ({
     }
   };
 
-  const openPreview = async (rule) => {
-    if (!profileMode && rule.isNew) return;
+  const loadPreview = async (rule, page, pageSize) => {
     if (!validateRule(rule)) return;
     const payload = rulePayload(rule);
     if (!payload) return;
-    setPreviewRule(rule);
     setPreviewLoading(true);
     try {
       if (profileMode) {
@@ -350,15 +356,48 @@ const M3UGroupRules = ({
           }));
         setPreview({ count: results.length, results });
       } else {
-        setPreview(await API.previewM3UGroupRule(accountId, rule.id, payload));
+        setPreview(
+          await API.previewM3UGroupRule(accountId, rule.id, payload, {
+            page,
+            page_size: pageSize,
+          })
+        );
       }
     } finally {
       setPreviewLoading(false);
     }
   };
 
+  const openPreview = async (rule) => {
+    if (rule.isNew) return;
+    setPreviewRule(rule);
+    setPreviewPage(1);
+    await loadPreview(rule, 1, previewPageSize);
+  };
+
+  const changePreviewPage = async (page) => {
+    setPreviewPage(page);
+    if (!profileMode && previewRule) {
+      await loadPreview(previewRule, page, previewPageSize);
+    }
+  };
+
+  const changePreviewPageSize = async (pageSize) => {
+    setPreviewPageSize(pageSize);
+    setPreviewPage(1);
+    if (!profileMode && previewRule) {
+      await loadPreview(previewRule, 1, pageSize);
+    }
+  };
+
   const applyPreview = async () => {
     if (!previewRule) return;
+    if (profileMode) {
+      if (!saveProfileDraft({ apply: true })) return;
+      setPreview(null);
+      setPreviewRule(null);
+      return;
+    }
     setPreviewLoading(true);
     try {
       const saved = await saveRule(previewRule, false);
@@ -387,8 +426,20 @@ const M3UGroupRules = ({
 
   const deleteRule = async (id) => {
     const rule = rules.find((item) => item.id === id);
-    if (profileMode || rule?.isNew) {
-      commitRules(rules.filter((rule) => rule.id !== id));
+    if (profileMode) {
+      const next = rules.filter((rule) => rule.id !== id);
+      commitRules(next);
+      onChange?.(
+        next.map((item, index) => ({
+          ...rulePayload(item),
+          order: index,
+        }))
+      );
+      setRuleErrors({});
+      return;
+    }
+    if (rule?.isNew) {
+      commitRules(rules.filter((item) => item.id !== id));
       setRuleErrors({});
       return;
     }
@@ -415,7 +466,10 @@ const M3UGroupRules = ({
         previous.find((item) => item.id === rule.id)?.order !== rule.order
     );
     commitRules(reordered);
-    if (profileMode) return;
+    if (profileMode) {
+      onChange?.(reordered.map((rule) => rulePayload(rule)));
+      return;
+    }
     setLoading(true);
     try {
       const saved = await Promise.all(
@@ -453,7 +507,7 @@ const M3UGroupRules = ({
           </Text>
           <Text c="dimmed" size="xs">
             {profileMode
-              ? 'First matching rule wins. Changes remain a local rule draft until Save and apply is selected. The main Save profile button then stores the profile and starts one catalog rebuild.'
+              ? 'First matching rule wins. Save stores the ordered rule draft. Preview shows its effect, and Save and apply updates the current source selection. The main Save profile button persists the profile and starts one catalog rebuild.'
               : 'First matching rule wins. Use an earlier disable or ignore rule for exclusions. Existing choices and learned or manual metadata are not changed unless you preview and explicitly apply a rule.'}
           </Text>
         </div>
@@ -467,22 +521,13 @@ const M3UGroupRules = ({
           >
             Add rule
           </Button>
-          {profileMode && (
-            <Button
-              size="xs"
-              leftSection={<Save size={14} />}
-              onClick={applyProfileDraft}
-            >
-              Save and apply
-            </Button>
-          )}
         </Group>
       </Group>
 
       {rules.length === 0 ? (
         <Alert color="gray" variant="light">
           {profileMode
-            ? 'No rule configured. Save and apply an empty draft to clear existing profile rules. Categories without a matching rule stay blocked unless they are allowed directly in Sources.'
+            ? 'No rule configured. Categories stay blocked unless they are allowed directly in Sources.'
             : 'No rule configured. New unmatched groups are imported inactive.'}
         </Alert>
       ) : (
@@ -710,16 +755,16 @@ const M3UGroupRules = ({
                       </TableTd>
                       <TableTd>
                         <Group gap={4} wrap="nowrap">
-                          {!profileMode && (
-                            <ActionIcon
-                              aria-label="Save rule"
-                              color="blue"
-                              variant="subtle"
-                              onClick={() => saveRule(rule)}
-                            >
-                              <Save size={15} />
-                            </ActionIcon>
-                          )}
+                          <ActionIcon
+                            aria-label="Save rule"
+                            color="blue"
+                            variant="subtle"
+                            onClick={() =>
+                              profileMode ? saveProfileDraft() : saveRule(rule)
+                            }
+                          >
+                            <Save size={15} />
+                          </ActionIcon>
                           <ActionIcon
                             aria-label={
                               profileMode
@@ -728,7 +773,7 @@ const M3UGroupRules = ({
                             }
                             color="green"
                             variant="subtle"
-                            disabled={!profileMode && rule.isNew}
+                            disabled={rule.isNew}
                             onClick={() => openPreview(rule)}
                           >
                             <Play size={15} />
@@ -784,7 +829,13 @@ const M3UGroupRules = ({
                 </TableTr>
               </TableThead>
               <TableTbody>
-                {(preview?.results || []).map((row) => (
+                {(profileMode
+                  ? (preview?.results || []).slice(
+                      (previewPage - 1) * previewPageSize,
+                      previewPage * previewPageSize
+                    )
+                  : preview?.results || []
+                ).map((row) => (
                   <TableTr key={row.relation_id}>
                     {profileMode && <TableTd>{row.account_name}</TableTd>}
                     <TableTd>{row.name}</TableTd>
@@ -804,11 +855,14 @@ const M3UGroupRules = ({
               </TableTbody>
             </Table>
           </ScrollArea>
-          {preview?.truncated && (
-            <Text size="xs" c="dimmed">
-              Showing the first 200 matches.
-            </Text>
-          )}
+          <ListPagination
+            page={previewPage}
+            pageSize={previewPageSize}
+            total={preview?.count || 0}
+            onPageChange={changePreviewPage}
+            onPageSizeChange={changePreviewPageSize}
+            pageSizes={[25, 50, 100, 200]}
+          />
           <Group justify="flex-end">
             <Button
               variant="default"
@@ -819,15 +873,16 @@ const M3UGroupRules = ({
             >
               Close
             </Button>
-            {!profileMode && (
-              <Button
-                loading={previewLoading}
-                disabled={!preview?.count || previewRule?.action === 'ignore'}
-                onClick={applyPreview}
-              >
-                Save and apply to existing
-              </Button>
-            )}
+            <Button
+              loading={previewLoading}
+              disabled={
+                !preview?.count ||
+                (!profileMode && previewRule?.action === 'ignore')
+              }
+              onClick={applyPreview}
+            >
+              {profileMode ? 'Save and apply' : 'Save and apply to existing'}
+            </Button>
           </Group>
         </Stack>
       </Modal>

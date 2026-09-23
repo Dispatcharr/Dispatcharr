@@ -26,6 +26,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+PREVIEW_PAGE_SIZE = 50
+PREVIEW_MAX_PAGE_SIZE = 200
+
+
+def _preview_page_params(request):
+    try:
+        page = int(request.query_params.get("page", 1))
+        page_size = int(
+            request.query_params.get("page_size", PREVIEW_PAGE_SIZE)
+        )
+    except (TypeError, ValueError):
+        return None
+    if page < 1 or page_size < 1 or page_size > PREVIEW_MAX_PAGE_SIZE:
+        return None
+    return page, page_size
+
 from .models import (
     M3UAccount,
     M3UFilter,
@@ -842,9 +858,24 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
         # Perform the actual save
         serializer.save(m3u_account_id=account_id)
 
-    def _preview_response(self, target_id, draft):
+    def _preview_response(self, target_id, draft, request):
         import re
         from apps.channels.models import Stream
+
+        pagination = _preview_page_params(request)
+        if pagination is None:
+            return Response(
+                {
+                    "detail": (
+                        "page must be positive and page_size must be between "
+                        f"1 and {PREVIEW_MAX_PAGE_SIZE}"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        page, page_size = pagination
+        page_start = (page - 1) * page_size
+        page_end = page_start + page_size
 
         ordered = list(self.get_queryset().order_by("order", "id"))
         entries = []
@@ -876,6 +907,10 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
         matches = []
         inventory_count = 0
         account_id = self.kwargs["account_id"]
+        account = get_object_or_404(
+            M3UAccount.objects.only("id", "name", "status", "updated_at"),
+            pk=account_id,
+        )
         catalog_complete = has_live_filter_catalog(account_id)
 
         if catalog_complete:
@@ -918,8 +953,9 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
                 if not pattern.search(target_value or ""):
                     continue
                 if filter_id == (target_id if target_id is not None else "draft"):
+                    match_index = match_count
                     match_count += 1
-                    if len(matches) < 200:
+                    if page_start <= match_index < page_end:
                         matches.append(
                             {
                                 "id": stream.get("id"),
@@ -937,7 +973,8 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
             {
                 "count": match_count,
                 "results": matches,
-                "truncated": match_count > len(matches),
+                "page": page,
+                "page_size": page_size,
                 "first_match_wins": True,
                 "inventory_count": inventory_count,
                 "inventory": (
@@ -946,6 +983,15 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
                     else "currently imported streams"
                 ),
                 "catalog_complete": catalog_complete,
+                "account_name": account.name,
+                "last_completed_refresh": (
+                    account.updated_at.isoformat() if account.updated_at else None
+                ),
+                "refresh_in_progress": account.status
+                in {
+                    M3UAccount.Status.FETCHING,
+                    M3UAccount.Status.PARSING,
+                },
             }
         )
 
@@ -968,7 +1014,7 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
             )
         }
         draft["custom_properties"] = draft["custom_properties"] or {}
-        return self._preview_response(target.pk, draft)
+        return self._preview_response(target.pk, draft, request)
 
     @action(detail=False, methods=["post"], url_path="preview-draft")
     def preview_draft(self, request, *args, **kwargs):
@@ -979,7 +1025,7 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         draft = dict(serializer.validated_data)
         draft["custom_properties"] = draft.get("custom_properties") or {}
-        return self._preview_response(None, draft)
+        return self._preview_response(None, draft, request)
 
 
 class M3UGroupRuleViewSet(viewsets.ModelViewSet):
@@ -1120,13 +1166,28 @@ class M3UGroupRuleViewSet(viewsets.ModelViewSet):
     def preview(self, request, *args, **kwargs):
         if getattr(request.user, "user_level", 0) < 10:
             return Response(status=status.HTTP_403_FORBIDDEN)
+        pagination = _preview_page_params(request)
+        if pagination is None:
+            return Response(
+                {
+                    "detail": (
+                        "page must be positive and page_size must be between "
+                        f"1 and {PREVIEW_MAX_PAGE_SIZE}"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        page, page_size = pagination
         rule = self.get_object()
         matches = self._preview_rows(rule, draft=request.data)
+        page_start = (page - 1) * page_size
+        page_end = page_start + page_size
         return Response(
             {
                 "count": len(matches),
-                "results": matches[:200],
-                "truncated": len(matches) > 200,
+                "results": matches[page_start:page_end],
+                "page": page,
+                "page_size": page_size,
                 "first_match_wins": True,
             }
         )

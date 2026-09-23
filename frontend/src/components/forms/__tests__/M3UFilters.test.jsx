@@ -85,6 +85,14 @@ vi.mock('@mantine/core', () => {
     ),
     Group: Wrapper,
     Modal,
+    Pagination: ({ value, total, onChange }) => (
+      <button
+        aria-label="Next preview page"
+        onClick={() => onChange(value + 1)}
+      >
+        {value}/{total}
+      </button>
+    ),
     ScrollArea: Wrapper,
     Select: ({ value, onChange, data = [], 'aria-label': ariaLabel }) => (
       <select
@@ -125,6 +133,7 @@ import M3UFilters from '../M3UFilters.jsx';
 
 const playlist = {
   id: 10,
+  name: 'Example provider',
   filters: [
     {
       id: 1,
@@ -145,6 +154,9 @@ describe('M3UFilters', () => {
       count: 1,
       inventory_count: 12,
       catalog_complete: true,
+      account_name: 'Example provider',
+      last_completed_refresh: '2026-09-22T06:00:00Z',
+      refresh_in_progress: false,
       results: [
         {
           id: 7,
@@ -250,15 +262,44 @@ describe('M3UFilters', () => {
       expect(API.previewM3UFilter).toHaveBeenCalledWith(
         10,
         1,
-        expect.objectContaining({ regex_pattern: 'HBO.*' })
+        expect.objectContaining({ regex_pattern: 'HBO.*' }),
+        { page: 1, page_size: 50 }
       )
     );
     expect(await screen.findByText('HBO HD')).toBeInTheDocument();
     expect(
-      screen.getByText('1 matching streams from 12 candidates')
+      screen.getByRole('heading', {
+        name: 'Stream filter preview · Example provider',
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('1 matching stream from 12 candidates in enabled groups')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Data from the last completed Live TV refresh:/)
     ).toBeInTheDocument();
     expect(
       screen.queryByRole('columnheader', { name: 'URL' })
     ).not.toBeInTheDocument();
+  });
+
+  it('explains when the selected rule has no matches', async () => {
+    API.previewM3UFilter.mockResolvedValue({
+      count: 0,
+      inventory_count: 12,
+      catalog_complete: true,
+      account_name: 'Example provider',
+      last_completed_refresh: '2026-09-22T06:00:00Z',
+      refresh_in_progress: false,
+      results: [],
+    });
+    render(<M3UFilters playlist={playlist} isOpen onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByLabelText('Preview stream filter'));
+
+    expect(
+      await screen.findByText(
+        'No streams matched this rule in the last completed Live TV refresh.'
+      )
+    ).toBeInTheDocument();
   });
 });

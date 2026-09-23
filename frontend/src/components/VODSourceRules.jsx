@@ -43,6 +43,9 @@ import LanguagePicker from './LanguagePicker.jsx';
 import VideoFeaturePicker from './VideoFeaturePicker.jsx';
 import VODSourcePreviewTable from './VODSourcePreviewTable.jsx';
 import API from '../api.js';
+import ListPagination from './ListPagination.jsx';
+
+const PREVIEW_PAGE_SIZE = 50;
 
 const RULE_DEFAULTS = {
   match_field: 'stream',
@@ -211,6 +214,9 @@ const VODSourceRules = ({
   const [previewError, setPreviewError] = useState('');
   const [preview, setPreview] = useState({ count: 0, results: [] });
   const [previewElapsed, setPreviewElapsed] = useState(0);
+  const [previewPage, setPreviewPage] = useState(1);
+  const [previewPageSize, setPreviewPageSize] = useState(PREVIEW_PAGE_SIZE);
+  const [previewRequest, setPreviewRequest] = useState(null);
   const [editorOpened, setEditorOpened] = useState(false);
   const [editorRule, setEditorRule] = useState(createRule());
   const sensors = useSensors(
@@ -255,25 +261,50 @@ const VODSourceRules = ({
       Number(editorRule.min_resolution) > Number(editorRule.max_resolution))
   );
 
-  const previewRule = async (ruleId, sourceRules = normalized) => {
-    setPreviewOpened(true);
+  const loadPreview = async (request, page, pageSize) => {
     setPreviewLoading(true);
     setPreviewError('');
     setPreviewElapsed(0);
     setPreview({ count: 0, results: [] });
     try {
       setPreview(
-        await API.previewVODAccessPolicyStreamFilter({
-          source_rules: sourceRules,
-          target_rule_id: ruleId,
-          category_relation_ids: categoryRelationIds,
-          restrict_to_categories: true,
-        })
+        await API.previewVODAccessPolicyStreamFilter(
+          {
+            source_rules: request.sourceRules,
+            target_rule_id: request.ruleId,
+            category_relation_ids: categoryRelationIds,
+            restrict_to_categories: true,
+          },
+          { page, page_size: pageSize }
+        )
       );
     } catch (error) {
       setPreviewError(error?.message || 'The filter preview could not load.');
     } finally {
       setPreviewLoading(false);
+    }
+  };
+
+  const previewRule = async (ruleId, sourceRules = normalized) => {
+    const request = { ruleId, sourceRules };
+    setPreviewRequest(request);
+    setPreviewOpened(true);
+    setPreviewPage(1);
+    await loadPreview(request, 1, previewPageSize);
+  };
+
+  const changePreviewPage = async (page) => {
+    setPreviewPage(page);
+    if (previewRequest) {
+      await loadPreview(previewRequest, page, previewPageSize);
+    }
+  };
+
+  const changePreviewPageSize = async (pageSize) => {
+    setPreviewPageSize(pageSize);
+    setPreviewPage(1);
+    if (previewRequest) {
+      await loadPreview(previewRequest, 1, pageSize);
     }
   };
 
@@ -743,11 +774,7 @@ const VODSourceRules = ({
           {previewError && <Alert color="red">{previewError}</Alert>}
           {!previewLoading && !previewError && (
             <>
-              <Text fw={600}>
-                {preview.truncated
-                  ? `${preview.count || 0}+ matching sources (first 200 shown)`
-                  : `${preview.count || 0} matching sources`}
-              </Text>
+              <Text fw={600}>{preview.count || 0} matching sources</Text>
               <Text size="xs" c="dimmed">
                 Examined {preview.inventory_count || 0} sources from the
                 currently selected provider categories.
@@ -765,6 +792,14 @@ const VODSourceRules = ({
                   minWidth={760}
                 />
               </ScrollArea>
+              <ListPagination
+                page={previewPage}
+                pageSize={previewPageSize}
+                total={preview.count || 0}
+                onPageChange={changePreviewPage}
+                onPageSizeChange={changePreviewPageSize}
+                pageSizes={[25, 50, 100, 200]}
+              />
             </>
           )}
         </Stack>

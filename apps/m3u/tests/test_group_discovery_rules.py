@@ -1,9 +1,13 @@
 from types import SimpleNamespace
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
+from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.m3u.group_rules import compile_group_rules, evaluate_group_rules
-from apps.m3u.models import M3UGroupRule
+from apps.accounts.models import User
+from apps.m3u.api_views import M3UGroupRuleViewSet
+from apps.m3u.models import M3UAccount, M3UGroupRule
+from apps.vod.models import M3UVODCategoryRelation, VODCategory
 
 
 def rule(
@@ -129,3 +133,53 @@ class GroupDiscoveryRuleTests(SimpleTestCase):
             decision.metadata_defaults,
             {"audio_languages": ["ger", "eng"], "resolution": "1080p"},
         )
+
+
+class GroupDiscoveryRulePreviewTests(TestCase):
+    def test_preview_paginates_every_matching_category(self):
+        admin = User.objects.create_user(
+            username="group-preview-admin",
+            password="test-password",
+            user_level=10,
+        )
+        account = M3UAccount.objects.create(
+            name="group-preview-account",
+            server_url="https://provider.example",
+        )
+        for name in ("Movies A", "Movies B", "Movies C"):
+            category = VODCategory.objects.create(
+                name=name,
+                category_type="movie",
+            )
+            M3UVODCategoryRelation.objects.create(
+                m3u_account=account,
+                category=category,
+            )
+        group_rule = M3UGroupRule.objects.create(
+            m3u_account=account,
+            scope=M3UGroupRule.Scope.MOVIE,
+            regex_pattern="^Movies",
+            action=M3UGroupRule.Action.ENABLE,
+            order=0,
+        )
+        request = APIRequestFactory().post(
+            "/group-rules/preview/?page=2&page_size=1",
+            {
+                "regex_pattern": "^Movies",
+                "action": "enable",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=admin)
+
+        response = M3UGroupRuleViewSet.as_view({"post": "preview"})(
+            request,
+            account_id=account.id,
+            pk=group_rule.id,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(response.data["page"], 2)
+        self.assertEqual(response.data["page_size"], 1)
+        self.assertEqual(len(response.data["results"]), 1)
