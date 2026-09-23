@@ -1116,6 +1116,8 @@ describe('useVODStore', () => {
       year: 2023,
       cover: 'http://example.com/cover.jpg',
       source_metadata: { values: { video_codec: 'hevc' } },
+      detail_refresh_status: 'pending',
+      episodes_fetched: false,
       episodes: {
         1: [
           {
@@ -1150,6 +1152,8 @@ describe('useVODStore', () => {
     expect(api.getSeriesInfo).toHaveBeenCalledWith(1, null);
     expect(seriesInfo.id).toBe(1);
     expect(seriesInfo.name).toBe('Test Series');
+    expect(seriesInfo.detail_refresh_status).toBe('pending');
+    expect(seriesInfo.episodes_fetched).toBe(false);
     expect(seriesInfo.episodesList).toHaveLength(2);
     expect(seriesInfo.source_metadata).toEqual({
       values: { video_codec: 'hevc' },

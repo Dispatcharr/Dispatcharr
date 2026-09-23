@@ -382,6 +382,8 @@ const SeriesModal = ({
   const [changingMetadataLock, setChangingMetadataLock] = useState(false);
   const [dataView, setDataView] = useState('primary');
   const [loadingProviders, setLoadingProviders] = useState(false);
+  const [detailRefreshStatus, setDetailRefreshStatus] = useState('');
+  const [startingDetailRefresh, setStartingDetailRefresh] = useState(false);
   const providersRequestIdRef = useRef(0);
   const detailsRequestIdRef = useRef(0);
   const profilePreferenceAppliedRef = useRef('');
@@ -392,6 +394,10 @@ const SeriesModal = ({
     if (opened && series?.id) {
       const providersRequestId = ++providersRequestIdRef.current;
       const detailsRequestId = ++detailsRequestIdRef.current;
+      setDetailedSeries(null);
+      setCanonicalSeriesDetails(null);
+      setSelectedProvider(null);
+      setDetailRefreshStatus('');
       setLoadingDetails(true);
       setLoadingProviders(true);
       fetchSeriesProviders(series.id)
@@ -425,6 +431,7 @@ const SeriesModal = ({
           setDetailedSeries(details);
           setCanonicalSeriesDetails(details);
           setDetailedSeriesProviderId(providerId);
+          setDetailRefreshStatus(details.detail_refresh_status || '');
           if (providerId && details.source_metadata) {
             setProviders((current) =>
               current.map((provider) =>
@@ -472,6 +479,8 @@ const SeriesModal = ({
       setEditingCanonical(false);
       setDataView('primary');
       setLoadingProviders(false);
+      setDetailRefreshStatus('');
+      setStartingDetailRefresh(false);
     }
   }, [opened]);
 
@@ -491,6 +500,7 @@ const SeriesModal = ({
     profilePreferenceAppliedRef.current = signature;
     setSelectedProvider(provider);
     setDetailedSeriesProviderId(null);
+    setDetailRefreshStatus('');
     const requestId = ++detailsRequestIdRef.current;
     setLoadingDetails(true);
     setDetailedSeries((current) =>
@@ -504,6 +514,7 @@ const SeriesModal = ({
         setCanonicalSeriesDetails((current) => current || details);
         setDetailedSeries(details);
         setDetailedSeriesProviderId(provider.id);
+        setDetailRefreshStatus(details.detail_refresh_status || '');
         if (details.source_metadata) {
           setProviders((current) =>
             current.map((candidate) =>
@@ -589,6 +600,7 @@ const SeriesModal = ({
     setSelectedProvider(provider);
     if (provider) {
       setDetailedSeriesProviderId(null);
+      setDetailRefreshStatus('');
       const requestId = ++detailsRequestIdRef.current;
       setLoadingDetails(true);
       // Clear episodes immediately so the previous provider's list cannot flash
@@ -601,6 +613,7 @@ const SeriesModal = ({
           setCanonicalSeriesDetails((current) => current || details);
           setDetailedSeries(details);
           setDetailedSeriesProviderId(provider.id);
+          setDetailRefreshStatus(details.detail_refresh_status || '');
           if (details.source_metadata) {
             setProviders((current) =>
               current.map((candidate) =>
@@ -617,6 +630,77 @@ const SeriesModal = ({
             setLoadingDetails(false);
           }
         });
+    }
+  };
+
+  useEffect(() => {
+    if (
+      !opened ||
+      !series?.id ||
+      !selectedProvider?.id ||
+      detailRefreshStatus !== 'pending'
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let polling = false;
+    const relationId = selectedProvider.id;
+    const interval = window.setInterval(async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const details = await fetchSeriesInfo(series.id, relationId);
+        if (cancelled) return;
+        setDetailRefreshStatus(details.detail_refresh_status || '');
+        setCanonicalSeriesDetails((current) => current || details);
+        setDetailedSeries(details);
+        setDetailedSeriesProviderId(relationId);
+        if (details.source_metadata) {
+          setProviders((current) =>
+            current.map((provider) =>
+              String(provider.id) === String(relationId)
+                ? { ...provider, source_metadata: details.source_metadata }
+                : provider
+            )
+          );
+        }
+      } catch {
+        if (!cancelled) setDetailRefreshStatus('unavailable');
+      } finally {
+        polling = false;
+      }
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    detailRefreshStatus,
+    fetchSeriesInfo,
+    opened,
+    selectedProvider?.id,
+    series?.id,
+  ]);
+
+  const refreshSelectedProviderEpisodes = async () => {
+    if (!selectedProvider?.id || startingDetailRefresh) return;
+    const requestId = detailsRequestIdRef.current;
+    const relationId = selectedProvider.id;
+    setStartingDetailRefresh(true);
+    try {
+      const response = await API.refreshSeriesProviderInfo(
+        series.id,
+        relationId
+      );
+      if (detailsRequestIdRef.current === requestId) {
+        setDetailRefreshStatus(response.detail_refresh_status || 'pending');
+      }
+    } catch {
+      if (detailsRequestIdRef.current === requestId) {
+        setDetailRefreshStatus('unavailable');
+      }
+    } finally {
+      setStartingDetailRefresh(false);
     }
   };
 
@@ -661,6 +745,7 @@ const SeriesModal = ({
       setDetailedSeries(details);
       setCanonicalSeriesDetails(details);
       setDetailedSeriesProviderId(selectedProvider?.id || null);
+      setDetailRefreshStatus(details.detail_refresh_status || '');
     }
     await onMetadataChanged?.();
   };
@@ -916,7 +1001,7 @@ const SeriesModal = ({
                 <Group spacing="xs" mb={8}>
                   <Loader size="xs" />
                   <Text size="xs" color="dimmed">
-                    Loading series details and episodes...
+                    Loading stored series details and episodes...
                   </Text>
                 </Group>
               )}
@@ -929,7 +1014,19 @@ const SeriesModal = ({
 
               <Group gap="xs" mt="md">
                 <Title order={4}>Sources ({providers.length})</Title>
-                {(loadingProviders || loadingDetails) && <Loader size="xs" />}
+                {loadingProviders && <Loader size="xs" />}
+                {selectedProvider && (
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={refreshSelectedProviderEpisodes}
+                    disabled={
+                      detailRefreshStatus === 'pending' || startingDetailRefresh
+                    }
+                  >
+                    Refresh provider episodes
+                  </Button>
+                )}
               </Group>
               {providers.length > 0 ? (
                 <VODSourceList
@@ -939,7 +1036,7 @@ const SeriesModal = ({
                     activeProviderDetails?.source_metadata
                   }
                   contentType="series"
-                  disabled={loadingProviders || loadingDetails}
+                  disabled={loadingProviders}
                   onSelect={onChangeSelectedProvider}
                   onEdit={allowSourceEditing ? setEditingProvider : undefined}
                   profileCandidates={profileCandidates}
@@ -958,6 +1055,24 @@ const SeriesModal = ({
                 Episodes
                 {seriesEpisodes.length > 0 && <> ({seriesEpisodes.length})</>}
               </Title>
+              {selectedProvider && detailRefreshStatus === 'pending' && (
+                <Text size="xs" c="dimmed">
+                  Provider episodes are updating in the background. Stored
+                  episodes remain available.
+                </Text>
+              )}
+              {selectedProvider && detailRefreshStatus === 'failed' && (
+                <Text size="xs" c="red">
+                  The provider did not return episode details. You can retry
+                  without blocking this window.
+                </Text>
+              )}
+              {selectedProvider && detailRefreshStatus === 'unavailable' && (
+                <Text size="xs" c="red">
+                  Provider episodes are temporarily unavailable. Stored episodes
+                  remain available.
+                </Text>
+              )}
 
               {!selectedProvider ? (
                 <Text color="dimmed" align="center" py="xl">
@@ -1113,6 +1228,10 @@ const SeriesModal = ({
                     </TabsPanel>
                   ))}
                 </Tabs>
+              ) : detailRefreshStatus === 'pending' ? (
+                <Text color="dimmed" align="center" py="xl">
+                  Episodes are loading in the background.
+                </Text>
               ) : (
                 <Text color="dimmed" align="center" py="xl">
                   No episodes found for this series.

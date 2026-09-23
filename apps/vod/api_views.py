@@ -65,9 +65,10 @@ from core.image_proxy import RawImageContentNegotiationMixin
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from drf_spectacular.types import OpenApiTypes
 from .tasks import (
-    refresh_series_episodes,
     movie_provider_refresh_keys,
     refresh_movie_provider_info_in_background,
+    series_provider_refresh_keys,
+    refresh_series_provider_info_in_background,
 )
 from .utils import (
     get_series_display_name,
@@ -4773,6 +4774,43 @@ class EpisodeViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelView
         return vod_image_action(self, request, 'episode')
 
 
+def _queue_series_provider_refresh(relation, *, force_refresh=False, refresh_interval_hours=24):
+    """Queue only stale/missing series details, once per concrete relation."""
+    lock_key, status_key = series_provider_refresh_keys(relation.id)
+    try:
+        previous = cache.get(status_key)
+        if previous == 'pending' and cache.get(lock_key):
+            return 'pending'
+        if previous == 'failed' and not force_refresh:
+            return 'failed'
+
+        props = relation.custom_properties or {}
+        last_refreshed = relation.last_episode_refresh
+        fresh = (
+            props.get('episodes_fetched')
+            and props.get('detailed_fetched')
+            and last_refreshed is not None
+            and timezone.now() - last_refreshed <= timedelta(hours=refresh_interval_hours)
+        )
+        if fresh and not force_refresh:
+            return 'completed'
+
+        if cache.add(lock_key, True, timeout=3600):
+            cache.set(status_key, 'pending', timeout=3600)
+            try:
+                refresh_series_provider_info_in_background.delay(relation.id)
+            except Exception:
+                logger.exception('Could not queue provider info for series relation %s', relation.id)
+                cache.set(status_key, 'failed', timeout=3600)
+                cache.delete(lock_key)
+                return 'failed'
+            return 'pending'
+        return cache.get(status_key) or 'pending'
+    except Exception:
+        logger.exception('Could not check provider info state for series relation %s', relation.id)
+        return 'unavailable'
+
+
 class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Series management"""
     queryset = Series.objects.all()
@@ -4897,9 +4935,9 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
             500: OpenApiResponse(description='Failed to fetch series information'),
         },
     )
-    @action(detail=True, methods=['get'], url_path='provider-info')
+    @action(detail=True, methods=['get', 'post'], url_path='provider-info')
     def series_info(self, request, pk=None):
-        """Get detailed series information, refreshing from provider if needed"""
+        """Return stored episodes immediately and refresh stale details in a worker."""
         logger.debug(f"SeriesViewSet.series_info called for series ID: {pk}")
         series = self.get_object()
         logger.debug(f"Retrieved series: {series.name} (ID: {series.id})")
@@ -4936,37 +4974,18 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
             )
 
         try:
-            # Check if we should refresh data (optional force refresh parameter)
-            force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
-            refresh_interval_hours = int(request.query_params.get("refresh_interval", 24))  # Default to 24 hours
-
-            now = timezone.now()
-            last_refreshed = relation.last_episode_refresh
-
-            # Check if detailed data has been fetched
-            custom_props = relation.custom_properties or {}
-            episodes_fetched = custom_props.get('episodes_fetched', False)
-            detailed_fetched = custom_props.get('detailed_fetched', False)
-
-            # Force refresh if episodes have never been fetched or if forced
-            if not episodes_fetched or not detailed_fetched or force_refresh:
-                force_refresh = True
-                logger.debug(f"Series {series.id} needs detailed/episode refresh, forcing refresh")
-            elif last_refreshed is None or (now - last_refreshed) > timedelta(hours=refresh_interval_hours):
-                force_refresh = True
-                logger.debug(f"Series {series.id} refresh interval exceeded or never refreshed, forcing refresh")
-
-            if force_refresh:
-                logger.debug(f"Refreshing series {series.id} data from provider")
-                # Use existing refresh logic with external_series_id
-                from .tasks import refresh_series_episodes
-                account = relation.m3u_account
-                if account and account.is_active:
-                    refresh_series_episodes(account, series, relation.external_series_id)
-                    series.refresh_from_db()  # Reload from database after refresh
-                    relation.refresh_from_db()  # Reload relation too
-
-            # Return the database data (which should now be fresh)
+            force_refresh = (
+                request.method == 'POST'
+                or request.query_params.get('force_refresh', 'false').lower() == 'true'
+            )
+            refresh_interval_hours = max(
+                1, int(request.query_params.get('refresh_interval', 24))
+            )
+            refresh_status = _queue_series_provider_refresh(
+                relation,
+                force_refresh=force_refresh,
+                refresh_interval_hours=refresh_interval_hours,
+            )
             custom_props = relation.custom_properties or {}
             series_props = series.custom_properties or {}
             series_artwork = prefer_relation_artwork(
@@ -5009,18 +5028,16 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
                 request.query_params.get('include_episodes', 'true').lower()
                 == 'true'
             )
-            episode_relations = []
-            if custom_props.get('episodes_fetched', False):
-                episode_relations = list(
-                    M3UEpisodeRelation.objects.filter(
-                        series_relation=relation,
-                        m3u_account__is_active=True,
-                    ).select_related('episode').order_by(
-                        'episode__season_number',
-                        'episode__episode_number',
-                        'id',
-                    )
+            episode_relations = list(
+                M3UEpisodeRelation.objects.filter(
+                    series_relation=relation,
+                    m3u_account__is_active=True,
+                ).select_related('episode').order_by(
+                    'episode__season_number',
+                    'episode__episode_number',
+                    'id',
                 )
+            )
             source_metadata = merge_episode_provider_video_metadata(
                 effective_relation_metadata(relation),
                 episode_relations,
@@ -5057,11 +5074,12 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
                 },
                 'episodes_fetched': custom_props.get('episodes_fetched', False),
                 'detailed_fetched': custom_props.get('detailed_fetched', False),
+                'detail_refresh_status': refresh_status,
                 'source_metadata': source_metadata,
             }
 
-            # Always include episodes for series info if they've been fetched
-            if include_episodes and custom_props.get('episodes_fetched', False):
+            # Already stored relation episodes remain visible during refresh.
+            if include_episodes:
                 logger.debug(f"Including episodes for series {series.id}")
                 episodes_by_season = {}
                 episode_image_parts = vod_image_url_parts(request, 'episode')
@@ -5141,10 +5159,6 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
 
                 response_data['episodes'] = episodes_by_season
                 logger.debug(f"Added {len(episodes_by_season)} seasons of episodes to response")
-            elif include_episodes:
-                # Episodes not yet fetched, include empty episodes list
-                response_data['episodes'] = {}
-
             logger.debug(f"Returning series info response for series {series.id}")
             # Coerce through the serializer so runtime JSON types match OpenAPI.
             return Response(SeriesProviderInfoSerializer(response_data).data)

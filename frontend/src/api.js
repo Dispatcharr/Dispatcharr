@@ -4270,6 +4270,19 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve series info', e);
+      throw e;
+    }
+  }
+
+  static async refreshSeriesProviderInfo(seriesId, relationId) {
+    try {
+      return await request(
+        `${host}/api/vod/series/${seriesId}/provider-info/?relation_id=${relationId}`,
+        { method: 'POST', cache: 'no-store' }
+      );
+    } catch (e) {
+      errorNotification('Failed to refresh series provider info', e);
+      throw e;
     }
   }
 

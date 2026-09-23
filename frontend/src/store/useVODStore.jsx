@@ -3,6 +3,7 @@ import api from '../api';
 
 let accessPolicyFetchSequence = 0;
 const pendingMovieProviderInfo = new Map();
+const pendingSeriesProviderInfo = new Map();
 
 const ACTIVE_PROFILE_BUILD_STATUSES = new Set(['pending', 'building']);
 const TERMINAL_PROFILE_BUILD_STATUSES = new Set([
@@ -293,6 +294,9 @@ const getSeriesDetails = (response, seriesId) => {
     m3u_account: response.m3u_account || '',
     youtube_trailer: response.custom_properties?.youtube_trailer || '',
     source_metadata: response.source_metadata || null,
+    episodes_fetched: Boolean(response.episodes_fetched),
+    detailed_fetched: Boolean(response.detailed_fetched),
+    detail_refresh_status: response.detail_refresh_status || '',
   };
 };
 
@@ -669,7 +673,19 @@ const useVODStore = create((set, get) => ({
   fetchSeriesInfo: async (seriesId, relationId = null) => {
     set({ loading: true, error: null });
     try {
-      const response = await api.getSeriesInfo(seriesId, relationId);
+      const key = `${seriesId}:${relationId || ''}`;
+      if (!pendingSeriesProviderInfo.has(key)) {
+        const request = api.getSeriesInfo(seriesId, relationId);
+        pendingSeriesProviderInfo.set(key, request);
+        request
+          .finally(() => {
+            if (pendingSeriesProviderInfo.get(key) === request) {
+              pendingSeriesProviderInfo.delete(key);
+            }
+          })
+          .catch(() => {});
+      }
+      const response = await pendingSeriesProviderInfo.get(key);
 
       // Transform the response data to match our expected format
       const seriesInfo = getSeriesDetails(response, seriesId);

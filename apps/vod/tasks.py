@@ -3697,13 +3697,17 @@ def parse_date(date_string):
 
 # Episode processing and other advanced features
 
-def refresh_series_episodes(account, series, external_series_id, episodes_data=None):
+def refresh_series_episodes(
+    account, series, external_series_id, episodes_data=None, bounded=False,
+    series_relation=None,
+):
     """Refresh episodes for a series - only called on-demand"""
     try:
-        series_relation = M3USeriesRelation.objects.filter(
-            m3u_account=account,
-            external_series_id=external_series_id,
-        ).first()
+        if series_relation is None:
+            series_relation = M3USeriesRelation.objects.filter(
+                m3u_account=account,
+                external_series_id=external_series_id,
+            ).first()
         detailed_series_info = None
         if not episodes_data:
             # Fetch detailed series info including episodes
@@ -3711,9 +3715,12 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 account.server_url,
                 account.username,
                 account.password,
-                account.get_user_agent_string()
+                account.get_user_agent_string(),
+                **({'request_timeout': (10, 30), 'max_retries': 0} if bounded else {}),
             ) as client:
                 series_info = client.get_series_info(external_series_id)
+                if bounded and not series_info:
+                    return
                 if series_info:
                     # Update series with detailed info
                     info = series_info.get('info', {})
@@ -3783,6 +3790,47 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
 
     except Exception as e:
         logger.error(f"Error refreshing episodes for series {series.name}: {str(e)}")
+
+
+def series_provider_refresh_keys(relation_id):
+    return (
+        f'vod:series-provider-refresh:lock:{relation_id}',
+        f'vod:series-provider-refresh:status:{relation_id}',
+    )
+
+
+@shared_task
+def refresh_series_provider_info_in_background(relation_id):
+    """Refresh one series relation without blocking the detail response."""
+    from django.core.cache import cache
+
+    lock_key, status_key = series_provider_refresh_keys(relation_id)
+    try:
+        relation = M3USeriesRelation.objects.select_related(
+            'm3u_account', 'series'
+        ).get(id=relation_id, m3u_account__is_active=True)
+        last_refreshed = relation.last_episode_refresh
+        refresh_series_episodes(
+            relation.m3u_account,
+            relation.series,
+            relation.external_series_id,
+            bounded=True,
+            series_relation=relation,
+        )
+        relation.refresh_from_db()
+        props = relation.custom_properties or {}
+        completed = (
+            props.get('episodes_fetched')
+            and props.get('detailed_fetched')
+            and relation.last_episode_refresh
+            and relation.last_episode_refresh != last_refreshed
+        )
+        cache.set(status_key, 'completed' if completed else 'failed', timeout=3600)
+    except Exception:
+        logger.exception('Could not refresh series provider relation %s', relation_id)
+        cache.set(status_key, 'failed', timeout=3600)
+    finally:
+        cache.delete(lock_key)
 
 
 def batch_process_episodes(account, series, episodes_data, scan_start_time=None, series_relation=None):

@@ -1576,6 +1576,7 @@ class SeriesProviderInfoSerializer(serializers.Serializer):
     m3u_account = VODProviderAccountSerializer()
     episodes_fetched = serializers.BooleanField()
     detailed_fetched = serializers.BooleanField()
+    detail_refresh_status = serializers.CharField()
     tmdb = serializers.JSONField(required=False)
     canonical = serializers.JSONField(required=False)
     source_metadata = serializers.JSONField(required=False, allow_null=True)

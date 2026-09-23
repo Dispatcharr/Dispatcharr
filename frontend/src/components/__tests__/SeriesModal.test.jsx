@@ -11,6 +11,7 @@ import useVODStore from '../../store/useVODStore';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
 import { copyToClipboard } from '../../utils';
+import API from '../../api';
 
 // Mock stores
 vi.mock('../../store/auth', () => ({
@@ -306,6 +307,54 @@ describe('SeriesModal', () => {
     );
 
     copyToClipboard.mockResolvedValue(undefined);
+  });
+
+  it('shows stored sources while missing episodes load in the background', async () => {
+    mockVODStore.fetchSeriesInfo.mockResolvedValue({
+      ...mockDetailedSeries,
+      episodesList: [],
+      detail_refresh_status: 'pending',
+    });
+
+    render(<SeriesModal series={mockSeries} opened onClose={vi.fn()} />);
+
+    expect(
+      await screen.findByText(
+        /Provider episodes are updating in the background/
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText('Sources (2)')).toBeInTheDocument();
+    expect(
+      screen.getByText('Episodes are loading in the background.')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Refresh provider episodes' })
+    ).toBeDisabled();
+  });
+
+  it('retries a failed provider lookup without hiding stored episodes', async () => {
+    const refresh = vi
+      .spyOn(API, 'refreshSeriesProviderInfo')
+      .mockResolvedValue({
+        detail_refresh_status: 'pending',
+      });
+    mockVODStore.fetchSeriesInfo.mockResolvedValue({
+      ...mockDetailedSeries,
+      detail_refresh_status: 'failed',
+    });
+
+    render(<SeriesModal series={mockSeries} opened onClose={vi.fn()} />);
+    expect(
+      await screen.findByText(/provider did not return episode details/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText('Pilot')).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Refresh provider episodes' })
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith(1, 1));
+    expect(screen.getByText('Pilot')).toBeInTheDocument();
+    refresh.mockRestore();
   });
 
   it('does not reload providers when the same series is passed as a new object', async () => {
@@ -626,7 +675,9 @@ describe('SeriesModal', () => {
         expect(mockVODStore.fetchSeriesInfo).toHaveBeenCalledWith(1, 2)
       );
       expect(screen.getByText('Stable canonical series')).toBeInTheDocument();
-      expect(screen.queryByText('Different provider series')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Different provider series')
+      ).not.toBeInTheDocument();
     });
 
     it('should show loader while fetching providers', () => {
