@@ -112,6 +112,43 @@ class DvrQuotaEnforcementTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_joining_existing_recording_exempt_from_quota(self):
+        """Joining someone else's already-scheduled recording costs the
+        joiner zero extra storage, so it must not be blocked by their own
+        quota -- only actually creating a new Recording should be."""
+        owner = self._user()
+        start = timezone.now() + timedelta(hours=3)
+        end = start + timedelta(hours=1)
+        existing = Recording.objects.create(
+            channel=self.channel,
+            start_time=start,
+            end_time=end,
+            custom_properties={"status": "scheduled"},
+        )
+        RecordingRequest.objects.create(recording=existing, user=owner, is_owner=True)
+
+        over_quota_user = self._user(quota_mb=1)
+        self._owned_recording(over_quota_user, bytes_written=10 * _MB)
+
+        client = APIClient()
+        client.force_authenticate(user=over_quota_user)
+        response = client.post(
+            "/api/channels/recordings/",
+            {
+                "channel": self.channel.id,
+                "start_time": start.isoformat(),
+                "end_time": end.isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["id"], existing.id)
+        self.assertTrue(
+            RecordingRequest.objects.filter(
+                recording=existing, user=over_quota_user
+            ).exists()
+        )
+
     def test_create_allowed_when_under_quota(self):
         user = self._user(quota_mb=1000)
         self._owned_recording(user, bytes_written=100 * _MB)

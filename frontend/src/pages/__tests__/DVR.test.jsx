@@ -84,6 +84,12 @@ vi.mock('@mantine/core', () => ({
   Group: ({ children }) => <div data-testid="group">{children}</div>,
   Stack: ({ children }) => <div data-testid="stack">{children}</div>,
   Divider: () => <hr data-testid="divider" />,
+  Progress: ({ value }) => <div data-testid="progress" data-value={value} />,
+  Tooltip: ({ children, label }) => (
+    <div data-testid="tooltip" aria-label={label}>
+      {children}
+    </div>
+  ),
   useMantineTheme: () => ({
     tailwind: {
       green: { 5: '#22c55e' },
@@ -299,6 +305,53 @@ describe('DVRPage', () => {
       });
 
       expect(screen.getByText('No upcoming recordings.')).toBeInTheDocument();
+    });
+
+    it('does not show a quota indicator for admins', async () => {
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.queryByText('DVR quota')).not.toBeInTheDocument();
+    });
+
+    it('shows a quota indicator for a request-tier user with a quota set', async () => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          user: {
+            id: 2,
+            user_level: USER_LEVELS.STANDARD,
+            custom_properties: { dvr_access: 'request', dvr_quota_mb: 500 },
+          },
+        };
+        return selector ? selector(state) : state;
+      });
+
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.getByText('DVR quota')).toBeInTheDocument();
+      expect(screen.getByText('0/500 MB')).toBeInTheDocument();
+    });
+
+    it('does not show a quota indicator for a request-tier user with no quota set', async () => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          user: {
+            id: 2,
+            user_level: USER_LEVELS.STANDARD,
+            custom_properties: { dvr_access: 'request' },
+          },
+        };
+        return selector ? selector(state) : state;
+      });
+
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.queryByText('DVR quota')).not.toBeInTheDocument();
     });
   });
 
