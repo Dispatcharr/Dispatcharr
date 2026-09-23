@@ -3579,11 +3579,24 @@ class RecordingViewSet(viewsets.ModelViewSet):
         root. Informational only (not a security boundary, so any DVR
         viewer can see it) -- gives users context for why they're being
         blocked/evicted beyond just their own per-user quota, since the
-        server can run out of room even for unlimited-quota users."""
+        server can run out of room even for unlimited-quota users.
+
+        The storage root itself may not exist yet (e.g. a fresh install
+        that has never recorded anything, or a test environment) -- walk
+        up to the nearest existing ancestor, which lives on the same
+        filesystem/mount and so reports the same disk stats.
+        """
         import shutil
 
+        path = os.path.normpath(RECORDINGS_STORAGE_ROOT)
+        while path and not os.path.exists(path):
+            parent = os.path.dirname(path)
+            if parent == path:
+                break
+            path = parent
+
         try:
-            usage = shutil.disk_usage(RECORDINGS_STORAGE_ROOT)
+            usage = shutil.disk_usage(path)
         except OSError as e:
             return Response({"detail": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response({
