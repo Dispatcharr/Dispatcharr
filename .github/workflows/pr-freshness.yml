@@ -1,3 +1,5 @@
+name: "PR: Freshness"
+
 on:
   schedule:
     - cron: '0 16 */2 * *'
