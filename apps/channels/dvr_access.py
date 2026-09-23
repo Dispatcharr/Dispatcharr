@@ -69,7 +69,7 @@ def is_dvr_view_enabled(*, user=None):
 
 
 def recordings_queryset_for_user(queryset, user):
-    """Scope *queryset* of Recording rows to channels *user* may access.
+    """Scope *queryset* of Recording rows to what *user* may see.
 
     Admins see every recording. Everyone else, DVR managers included, is
     limited to recordings on channels within their ``user_level``, the

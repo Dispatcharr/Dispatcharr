@@ -636,6 +636,20 @@ export const WebsocketProvider = ({ children }) => {
               scheduleRecordingFetch();
               break;
 
+            case 'recording_quota_evicted': {
+              const authUser = useAuthStore.getState().user;
+              if (authUser && parsedEvent.data.user_id === authUser.id) {
+                const count = parsedEvent.data.evicted?.length || 0;
+                notifications.show({
+                  title: 'DVR quota reached',
+                  message: `Freed up space by removing ${count} old recording${count === 1 ? '' : 's'} you own.`,
+                  color: 'yellow',
+                });
+              }
+              scheduleRecordingFetch();
+              break;
+            }
+
             case 'epg_fetch_error':
               notifications.show({
                 title: 'EPG Source Error',
