@@ -63,11 +63,15 @@ def normalize_server_url(url):
 class Client:
     """Xtream Codes API Client with robust error handling"""
 
-    def __init__(self, server_url, username, password, user_agent=None):
+    def __init__(
+        self, server_url, username, password, user_agent=None,
+        request_timeout=60, max_retries=3,
+    ):
         self.server_url = self._normalize_url(server_url)
         self.username = username
         self.password = password
         self.user_agent = user_agent
+        self.request_timeout = request_timeout
 
         # Fix: Properly handle all possible user_agent input types
         if user_agent:
@@ -89,7 +93,7 @@ class Client:
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=1,
             pool_maxsize=2,
-            max_retries=3,
+            max_retries=max_retries,
             pool_block=False
         )
         self.session.mount('http://', adapter)
@@ -114,7 +118,9 @@ class Client:
                 _safe_params_for_log(params),
             )
 
-            response = self.session.get(url, params=params, timeout=60)
+            response = self.session.get(
+                url, params=params, timeout=self.request_timeout
+            )
             response.raise_for_status()
 
             # Check if response is empty

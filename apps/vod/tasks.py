@@ -4735,7 +4735,9 @@ def build_series_list_props(
 
 
 @shared_task
-def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
+def refresh_movie_advanced_data(
+    m3u_movie_relation_id, force_refresh=False, bounded=False
+):
     """
     Fetch advanced movie data from provider and update Movie and M3UMovieRelation.
 
@@ -4758,7 +4760,8 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
             server_url=account.server_url,
             username=account.username,
             password=account.password,
-            user_agent=account.get_user_agent_string()
+            user_agent=account.get_user_agent_string(),
+            **({'request_timeout': (10, 30), 'max_retries': 0} if bounded else {}),
         ) as client:
             vod_info = client.get_vod_info(relation.stream_id)
             if vod_info and 'info' in vod_info:
@@ -4956,3 +4959,39 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
     except Exception as e:
         logger.error(f"Error refreshing advanced movie data for relation {m3u_movie_relation_id}: {str(e)}")
         return f"Error: {str(e)}"
+
+
+def movie_provider_refresh_keys(relation_id):
+    return (
+        f'vod:movie-provider-refresh:lock:{relation_id}',
+        f'vod:movie-provider-refresh:status:{relation_id}',
+    )
+
+
+@shared_task
+def refresh_movie_provider_info_in_background(relation_id, force_refresh=False):
+    """Keep a slow provider request out of the HTTP response for the inspector."""
+    from django.core.cache import cache
+
+    lock_key, status_key = movie_provider_refresh_keys(relation_id)
+    try:
+        result = refresh_movie_advanced_data(
+            relation_id, force_refresh=force_refresh, bounded=True
+        )
+        relation = M3UMovieRelation.objects.filter(id=relation_id).only('custom_properties').first()
+        state = (
+            'completed'
+            if (
+                relation
+                and (relation.custom_properties or {}).get('detailed_fetched')
+                and not str(result).startswith('Error:')
+            )
+            else 'failed'
+        )
+        cache.set(status_key, state, timeout=3600)
+        return result
+    except Exception:
+        cache.set(status_key, 'failed', timeout=3600)
+        raise
+    finally:
+        cache.delete(lock_key)

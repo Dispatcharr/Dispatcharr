@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import api from '../api';
 
 let accessPolicyFetchSequence = 0;
+const pendingMovieProviderInfo = new Map();
 
 const ACTIVE_PROFILE_BUILD_STATUSES = new Set(['pending', 'building']);
 const TERMINAL_PROFILE_BUILD_STATUSES = new Set([
@@ -260,6 +261,8 @@ const getMovieDetailsWithProvider = (response, movieId) => {
     video: response.video || {},
     audio: response.audio || {},
     source_metadata: response.source_metadata || null,
+    detail_fetched: Boolean(response.detail_fetched),
+    detail_refresh_status: response.detail_refresh_status || '',
   };
 };
 
@@ -437,7 +440,19 @@ const useVODStore = create((set, get) => ({
   fetchMovieDetailsFromProvider: async (movieId, relationId = null) => {
     set({ loading: true, error: null });
     try {
-      const response = await api.getMovieProviderInfo(movieId, relationId);
+      const key = `${movieId}:${relationId || ''}`;
+      if (!pendingMovieProviderInfo.has(key)) {
+        const request = api.getMovieProviderInfo(movieId, relationId);
+        pendingMovieProviderInfo.set(key, request);
+        request
+          .finally(() => {
+            if (pendingMovieProviderInfo.get(key) === request) {
+              pendingMovieProviderInfo.delete(key);
+            }
+          })
+          .catch(() => {});
+      }
+      const response = await pendingMovieProviderInfo.get(key);
 
       // Transform the response data to match our expected format
       const movieDetails = getMovieDetailsWithProvider(response, movieId);

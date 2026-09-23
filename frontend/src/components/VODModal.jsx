@@ -165,7 +165,8 @@ const VODModal = ({
   const [changingMetadataLock, setChangingMetadataLock] = useState(false);
   const [dataView, setDataView] = useState('primary');
   const [loadingProviders, setLoadingProviders] = useState(false);
-  const [loadingSourceDetails, setLoadingSourceDetails] = useState(false);
+  const [detailRefreshStatus, setDetailRefreshStatus] = useState('');
+  const [startingDetailRefresh, setStartingDetailRefresh] = useState(false);
   const providersRequestIdRef = useRef(0);
   const detailsRequestIdRef = useRef(0);
   const profilePreferenceAppliedRef = useRef('');
@@ -183,6 +184,10 @@ const VODModal = ({
     if (opened && vod?.id) {
       const providersRequestId = ++providersRequestIdRef.current;
       const detailsRequestId = ++detailsRequestIdRef.current;
+      setDetailedVOD(null);
+      setSelectedProvider(null);
+      setSelectedProviderDetails(null);
+      setDetailRefreshStatus('');
       setLoadingProviders(true);
       setLoadingDetails(true);
       fetchMovieProviders(vod.id)
@@ -217,6 +222,7 @@ const VODModal = ({
           setDetailedVOD(details);
           setSelectedProviderDetails(details);
           setSelectedProviderDetailsId(providerId);
+          setDetailRefreshStatus(details.detail_refresh_status || '');
           if (providerId && details.source_metadata) {
             setProviders((current) =>
               current.map((provider) =>
@@ -269,7 +275,8 @@ const VODModal = ({
       setEditingCanonical(false);
       setDataView('primary');
       setLoadingProviders(false);
-      setLoadingSourceDetails(false);
+      setDetailRefreshStatus('');
+      setStartingDetailRefresh(false);
     }
   }, [opened]);
 
@@ -290,15 +297,16 @@ const VODModal = ({
     setSelectedProvider(provider);
     setSelectedProviderDetails(null);
     setSelectedProviderDetailsId(null);
+    setDetailRefreshStatus('');
     const requestId = ++detailsRequestIdRef.current;
     setLoadingDetails(false);
-    setLoadingSourceDetails(true);
     fetchMovieDetailsFromProvider(vod.id, provider.id)
       .then((details) => {
         if (detailsRequestIdRef.current !== requestId) return;
         setDetailedVOD((current) => current || details);
         setSelectedProviderDetails(details);
         setSelectedProviderDetailsId(provider.id);
+        setDetailRefreshStatus(details.detail_refresh_status || '');
         if (details.source_metadata) {
           setProviders((current) =>
             current.map((candidate) =>
@@ -309,11 +317,7 @@ const VODModal = ({
           );
         }
       })
-      .catch(() => {})
-      .finally(() => {
-        if (detailsRequestIdRef.current === requestId)
-          setLoadingSourceDetails(false);
-      });
+      .catch(() => {});
   }, [
     fetchMovieDetailsFromProvider,
     opened,
@@ -332,15 +336,16 @@ const VODModal = ({
     setSelectedProvider(provider);
     setSelectedProviderDetails(null);
     setSelectedProviderDetailsId(null);
+    setDetailRefreshStatus('');
     const requestId = ++detailsRequestIdRef.current;
     setLoadingDetails(false);
-    setLoadingSourceDetails(true);
     fetchMovieDetailsFromProvider(vod.id, provider.id)
       .then((details) => {
         if (detailsRequestIdRef.current !== requestId) return;
         setDetailedVOD((current) => current || details);
         setSelectedProviderDetails(details);
         setSelectedProviderDetailsId(provider.id);
+        setDetailRefreshStatus(details.detail_refresh_status || '');
         if (details.source_metadata) {
           setProviders((current) =>
             current.map((candidate) =>
@@ -351,12 +356,75 @@ const VODModal = ({
           );
         }
       })
-      .catch(() => {})
-      .finally(() => {
-        if (detailsRequestIdRef.current === requestId) {
-          setLoadingSourceDetails(false);
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    if (
+      !opened ||
+      !vod?.id ||
+      !selectedProvider?.id ||
+      detailRefreshStatus !== 'pending'
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let polling = false;
+    const relationId = selectedProvider.id;
+    const interval = window.setInterval(async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const details = await fetchMovieDetailsFromProvider(vod.id, relationId);
+        if (cancelled) return;
+        setDetailRefreshStatus(details.detail_refresh_status || '');
+        setDetailedVOD(details);
+        setSelectedProviderDetails(details);
+        setSelectedProviderDetailsId(relationId);
+        if (details.source_metadata) {
+          setProviders((current) =>
+            current.map((provider) =>
+              String(provider.id) === String(relationId)
+                ? { ...provider, source_metadata: details.source_metadata }
+                : provider
+            )
+          );
         }
-      });
+      } catch {
+        if (!cancelled) setDetailRefreshStatus('unavailable');
+      } finally {
+        polling = false;
+      }
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    detailRefreshStatus,
+    fetchMovieDetailsFromProvider,
+    opened,
+    selectedProvider?.id,
+    vod?.id,
+  ]);
+
+  const refreshSelectedProviderDetails = async () => {
+    if (!selectedProvider?.id || startingDetailRefresh) return;
+    const requestId = detailsRequestIdRef.current;
+    const relationId = selectedProvider.id;
+    setStartingDetailRefresh(true);
+    try {
+      const response = await API.refreshMovieProviderInfo(vod.id, relationId);
+      if (detailsRequestIdRef.current === requestId) {
+        setDetailRefreshStatus(response.detail_refresh_status || 'pending');
+      }
+    } catch {
+      if (detailsRequestIdRef.current === requestId) {
+        setDetailRefreshStatus('unavailable');
+      }
+    } finally {
+      setStartingDetailRefresh(false);
+    }
   };
 
   const playProvider = (provider) => {
@@ -415,6 +483,7 @@ const VODModal = ({
       setDetailedVOD(details);
       setSelectedProviderDetails(details);
       setSelectedProviderDetailsId(selectedProvider?.id || null);
+      setDetailRefreshStatus(details.detail_refresh_status || '');
     }
     await onMetadataChanged?.();
   };
@@ -721,10 +790,38 @@ const VODModal = ({
 
               <Group gap="xs">
                 <Title order={4}>Sources ({providers.length})</Title>
-                {(loadingProviders || loadingSourceDetails) && (
-                  <Loader size="xs" />
+                {loadingProviders && <Loader size="xs" />}
+                {selectedProvider && (
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={refreshSelectedProviderDetails}
+                    disabled={
+                      detailRefreshStatus === 'pending' || startingDetailRefresh
+                    }
+                  >
+                    Refresh provider details
+                  </Button>
                 )}
               </Group>
+              {selectedProvider && detailRefreshStatus === 'pending' && (
+                <Text size="xs" c="dimmed">
+                  Provider details are loading in the background. Cached source
+                  data remains available.
+                </Text>
+              )}
+              {selectedProvider && detailRefreshStatus === 'failed' && (
+                <Text size="xs" c="red">
+                  The provider did not return details. You can retry without
+                  blocking this window.
+                </Text>
+              )}
+              {selectedProvider && detailRefreshStatus === 'unavailable' && (
+                <Text size="xs" c="red">
+                  Provider details are temporarily unavailable. Cached source
+                  data remains available.
+                </Text>
+              )}
               {providers.length > 0 ? (
                 <VODSourceList
                   providers={providers}

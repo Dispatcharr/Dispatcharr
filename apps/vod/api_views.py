@@ -10,7 +10,8 @@ from rest_framework.exceptions import (
 )
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import connection, transaction
-from django.db.models import Count, Prefetch, Q, Sum
+from django.core.cache import cache
+from django.db.models import Count, F, Prefetch, Q, Sum
 from django.db.models.expressions import RawSQL
 from django.db.models.fields.json import KeyTextTransform
 from django.utils.dateparse import parse_date, parse_datetime
@@ -63,7 +64,11 @@ from .image_proxy import (
 from core.image_proxy import RawImageContentNegotiationMixin
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from drf_spectacular.types import OpenApiTypes
-from .tasks import refresh_series_episodes, refresh_movie_advanced_data
+from .tasks import (
+    refresh_series_episodes,
+    movie_provider_refresh_keys,
+    refresh_movie_provider_info_in_background,
+)
 from .utils import (
     get_series_display_name,
     is_vod_movies_enabled,
@@ -4392,6 +4397,34 @@ class MovieFilter(django_filters.FilterSet):
         return queryset.filter(m3u_relations__category__name=category_name)
 
 
+def _queue_movie_provider_refresh(relation, *, force_refresh=False):
+    """Deduplicate provider lookups and return their non-blocking state."""
+    lock_key, status_key = movie_provider_refresh_keys(relation.id)
+    try:
+        previous = cache.get(status_key)
+        if previous == 'pending' and cache.get(lock_key):
+            return 'pending'
+        if previous == 'failed' and not force_refresh:
+            return 'failed'
+        if (relation.custom_properties or {}).get('detailed_fetched') and not force_refresh:
+            return 'completed'
+        if cache.add(lock_key, True, timeout=3600):
+            cache.set(status_key, 'pending', timeout=3600)
+            try:
+                refresh_movie_provider_info_in_background.delay(
+                    relation.id, force_refresh=force_refresh
+                )
+            except Exception:
+                logger.exception('Could not queue provider info for movie relation %s', relation.id)
+                cache.set(status_key, 'failed', timeout=3600)
+                cache.delete(lock_key)
+                return 'failed'
+        return cache.get(status_key) or 'pending'
+    except Exception:
+        logger.exception('Could not check provider info state for movie relation %s', relation.id)
+        return 'unavailable'
+
+
 class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Movie content"""
     queryset = Movie.objects.all()
@@ -4482,9 +4515,9 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
             404: OpenApiResponse(description='Relation not found or not active'),
         },
     )
-    @action(detail=True, methods=['get'], url_path='provider-info')
+    @action(detail=True, methods=['get', 'post'], url_path='provider-info')
     def provider_info(self, request, pk=None):
-        """Get provider details, fetching them once unless refresh is forced."""
+        """Return cached provider details immediately; refresh in a worker."""
         movie = self.get_object()
 
         relation_id = request.query_params.get('relation_id')
@@ -4518,18 +4551,16 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
-        detailed_fetched = (relation.custom_properties or {}).get('detailed_fetched', False)
-        needs_refresh = force_refresh or not detailed_fetched
-
-        if needs_refresh:
-            # Trigger advanced data refresh
-            logger.debug(f"Refreshing advanced data for movie {movie.id} (relation ID: {relation.id})")
-            refresh_movie_advanced_data(relation.id, force_refresh=force_refresh)
-
-            # Refresh objects from database after task completion
-            movie.refresh_from_db()
+        force_refresh = (
+            request.method == 'POST'
+            or request.query_params.get('force_refresh', 'false').lower() == 'true'
+        )
+        refresh_status = _queue_movie_provider_refresh(
+            relation, force_refresh=force_refresh
+        )
+        if refresh_status == 'completed' and not (relation.custom_properties or {}).get('detailed_fetched'):
             relation.refresh_from_db()
+            movie.refresh_from_db()
 
         # Use refreshed data from database
         custom_props = relation.custom_properties or {}
@@ -4636,6 +4667,8 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
             'category_id': str(movie_data.get('category_id', '') or ''),
             'added': movie_data.get('added', '') or '',
             'source_metadata': effective_relation_metadata(relation),
+            'detail_refresh_status': refresh_status,
+            'detail_fetched': bool(custom_props.get('detailed_fetched')),
             'm3u_account': {
                 'id': relation.m3u_account.id,
                 'name': relation.m3u_account.name,

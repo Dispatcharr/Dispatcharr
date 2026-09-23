@@ -10,6 +10,7 @@ import VODModal from '../VODModal';
 import useVODStore from '../../store/useVODStore';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
+import API from '../../api';
 
 // Mock stores
 vi.mock('../../store/useVODStore');
@@ -185,6 +186,53 @@ describe('VODModal', () => {
   it('should not render when vod is null', () => {
     render(<VODModal vod={null} opened={true} onClose={mockOnClose} />);
     expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
+  });
+
+  it('keeps cached sources available when provider details are loading', async () => {
+    mockFetchMovieDetailsFromProvider.mockResolvedValue({
+      ...mockVOD,
+      detail_fetched: false,
+      detail_refresh_status: 'pending',
+    });
+
+    render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
+
+    expect(
+      await screen.findByText(/Provider details are loading in the background/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Sources (1)' })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Refresh provider details' })
+    ).toBeDisabled();
+  });
+
+  it('allows retrying a failed provider lookup without blocking the source list', async () => {
+    const refresh = vi
+      .spyOn(API, 'refreshMovieProviderInfo')
+      .mockResolvedValue({
+        detail_refresh_status: 'pending',
+      });
+    mockFetchMovieDetailsFromProvider.mockResolvedValue({
+      ...mockVOD,
+      detail_fetched: false,
+      detail_refresh_status: 'failed',
+    });
+
+    render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
+    expect(
+      await screen.findByText(/provider did not return details/i)
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Refresh provider details' })
+    );
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith(1, 1));
+    expect(
+      screen.getByRole('heading', { name: 'Sources (1)' })
+    ).toBeInTheDocument();
+    refresh.mockRestore();
   });
 
   it('should render modal when opened with vod', () => {
@@ -413,7 +461,9 @@ describe('VODModal', () => {
 
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
-    expect(await screen.findByText('Stable canonical title')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Stable canonical title')
+    ).toBeInTheDocument();
     const secondRow = screen.getByText('Second source').closest('tr');
     fireEvent.click(secondRow);
 

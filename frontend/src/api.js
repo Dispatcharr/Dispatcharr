@@ -4210,6 +4210,19 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve movie provider info', e);
+      throw e;
+    }
+  }
+
+  static async refreshMovieProviderInfo(movieId, relationId) {
+    try {
+      return await request(
+        `${host}/api/vod/movies/${movieId}/provider-info/?relation_id=${relationId}`,
+        { method: 'POST', cache: 'no-store' }
+      );
+    } catch (e) {
+      errorNotification('Failed to refresh movie provider info', e);
+      throw e;
     }
   }
 
