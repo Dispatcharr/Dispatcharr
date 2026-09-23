@@ -54,6 +54,7 @@ vi.mock('lucide-react', () => ({
   DatabaseZap: () => <div data-testid="database-zap-icon" />,
   Pencil: () => <div data-testid="pencil-icon" />,
   LockKeyhole: () => <div data-testid="lock-keyhole-icon" />,
+  LockKeyholeOpen: () => <div data-testid="lock-keyhole-open-icon" />,
   Search: () => <div data-testid="search-icon" />,
   Save: () => <div data-testid="save-icon" />,
 }));

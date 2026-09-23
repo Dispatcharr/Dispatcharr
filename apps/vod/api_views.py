@@ -2366,6 +2366,8 @@ class VODMetadataViewSet(viewsets.ViewSet):
             ).strip()[:255]
             selection_filters["metadata_status"] = metadata_status
 
+        self._reject_locked_selection(request, "requesting TMDB data")
+
         from .tasks import enqueue_tmdb_enrichment
 
         state = VODMetadataState.objects.filter(pk=1).first()
@@ -2380,9 +2382,8 @@ class VODMetadataViewSet(viewsets.ViewSet):
 
         result = enqueue_tmdb_enrichment(
             trigger_reason="Manual TMDB metadata refresh",
-            # An explicit manual request is the escape hatch for titles that
-            # were already processed and locked. Automatic refreshes continue
-            # to respect the enrichment signature.
+            # The lock check above protects curated titles. Force means an
+            # explicitly selected, unlocked title may still be checked again.
             force=True,
             search_missing=True,
             movie_ids=None if select_all else movie_ids,
@@ -2456,6 +2457,24 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 queryset = queryset.exclude(pk__in=excluded[content_type])
             querysets.append((model, queryset))
         return querysets
+
+    def _reject_locked_selection(self, request, action_label):
+        locked_count = sum(
+            queryset.exclude(tmdb_enrichment_signature="").count()
+            for _model, queryset in self._lock_selection_querysets(request)
+        )
+        if not locked_count:
+            return
+        noun = "title is" if locked_count == 1 else "titles are"
+        raise DRFValidationError(
+            {
+                "detail": (
+                    f"{locked_count} selected {noun} locked. Unlock "
+                    f"{'it' if locked_count == 1 else 'them'} before "
+                    f"{action_label}."
+                )
+            }
+        )
 
     @action(detail=False, methods=["post"], url_path="unlock")
     def unlock(self, request):
@@ -2583,6 +2602,8 @@ class VODMetadataViewSet(viewsets.ViewSet):
                     {"selections": "Invalid content type."}
                 )
             target.append(content_id)
+
+        self._reject_locked_selection(request, "resetting metadata")
 
         if mode in {"tmdb", "all"}:
             if not CoreSettings.get_tmdb_api_token():
@@ -2792,6 +2813,9 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 "match_method": str(
                     content.get("preview_match_method") or ""
                 ),
+                "metadata_auto_locked": bool(
+                    content.get("tmdb_enrichment_signature")
+                ),
             }
 
         if requested_items is not None and not select_all:
@@ -2824,6 +2848,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 content_rows = list(queryset.values(
                     "id", "name", "display_name", "clean_title", "year",
                     "tmdb_status", "tmdb_match_id", "tmdb_id",
+                    "tmdb_enrichment_signature",
                     "preview_tmdb_status", "preview_tmdb_id",
                     "preview_candidate_count", "preview_match_method",
                 ))
@@ -2855,12 +2880,18 @@ class VODMetadataViewSet(viewsets.ViewSet):
                         group_rule=content.get("_group_rule"),
                     )
                 rows.append(preview_row(content, content_type, before, after))
+            locked_count = sum(
+                1
+                for content in content_by_key.values()
+                if content.get("tmdb_enrichment_signature")
+            )
             return Response(
                 {
                     "results": rows,
                     "total": len(rows),
                     "page": 1,
                     "page_size": len(rows) or page_size,
+                    "locked_count": locked_count,
                 }
             )
 
@@ -2887,6 +2918,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
             )
 
         querysets = []
+        locked_count = 0
         for model, content_type, relation_name in (
             (Movie, "movie", "m3u_relations"),
             (Series, "series", "m3u_relations"),
@@ -2911,6 +2943,9 @@ class VODMetadataViewSet(viewsets.ViewSet):
                     Q(name__icontains=search) | Q(display_name__icontains=search)
                 )
             queryset = queryset.order_by("id")
+            locked_count += queryset.exclude(
+                tmdb_enrichment_signature=""
+            ).count()
             querysets.append((content_type, queryset, queryset.count()))
 
         total = sum(queryset_count for _, _, queryset_count in querysets)
@@ -2923,6 +2958,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
             page_rows = list(with_tmdb_preview_fields(queryset).values(
                 "id", "name", "display_name", "clean_title", "year",
                 "tmdb_status", "tmdb_match_id", "tmdb_id",
+                "tmdb_enrichment_signature",
                 "preview_tmdb_status", "preview_tmdb_id",
                 "preview_candidate_count", "preview_match_method",
             )[offset : offset + remaining])
@@ -2960,6 +2996,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 "total": total,
                 "page": page,
                 "page_size": page_size,
+                "locked_count": locked_count,
             }
         )
 
@@ -3009,6 +3046,8 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 {"selections": "Choose between 1 and 500 canonical titles."}
             )
 
+        self._reject_locked_selection(request, "applying title cleanup")
+
         def ids_by_type(rows):
             result = {"movie": set(), "series": set()}
             for row in rows:
@@ -3031,7 +3070,6 @@ class VODMetadataViewSet(viewsets.ViewSet):
         changed = {"movie": [], "series": []}
         output_changed = {"movie": [], "series": []}
         processed_count = 0
-        locked_skipped = 0
         for model, content_type in (
             (Movie, "movie"),
             (Series, "series"),
@@ -3044,10 +3082,6 @@ class VODMetadataViewSet(viewsets.ViewSet):
                 queryset = queryset.exclude(pk__in=excluded[content_type])
             else:
                 queryset = queryset.filter(pk__in=selected[content_type])
-            locked_skipped += queryset.exclude(
-                tmdb_enrichment_signature=""
-            ).count()
-            queryset = queryset.filter(tmdb_enrichment_signature="")
             content_ids = list(queryset.values_list("id", flat=True))
             for offset in range(0, len(content_ids), 500):
                 contents = list(model.objects.filter(
@@ -3108,7 +3142,7 @@ class VODMetadataViewSet(viewsets.ViewSet):
         return Response({
             "updated": changed_count,
             "processed": processed_count,
-            "locked_skipped": locked_skipped,
+            "locked_skipped": 0,
             "profile_update": "outdated" if affected_profiles else "not_required",
             "profiles_affected": affected_profiles,
         })

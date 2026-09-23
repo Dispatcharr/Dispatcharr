@@ -1235,7 +1235,7 @@ class VODMetadataAPITests(TestCase):
         self.assertIn("selections", response.data)
 
     @patch("apps.vod.tasks.enqueue_tmdb_enrichment")
-    def test_manual_enrichment_forces_selected_locked_titles(self, enqueue):
+    def test_manual_enrichment_forces_explicit_unlocked_selection(self, enqueue):
         CoreSettings.set_vod_metadata_settings(
             api_token="stored-secret",
             languages=["en-US"],
@@ -1282,6 +1282,35 @@ class VODMetadataAPITests(TestCase):
             exclude_movie_ids=[9],
             exclude_series_ids=[],
         )
+
+    @patch("apps.vod.tasks.enqueue_tmdb_enrichment")
+    def test_manual_enrichment_rejects_a_locked_title(self, enqueue):
+        CoreSettings.set_vod_metadata_settings(
+            api_token="stored-secret",
+            languages=["en-US"],
+            auto_enrich=False,
+            match_missing=False,
+        )
+        movie = Movie.objects.create(
+            name="Protected title",
+            tmdb_enrichment_signature="locked",
+        )
+        request = self.factory.post(
+            "/api/vod/metadata/refresh/",
+            {
+                "selections": [
+                    {"id": movie.id, "content_type": "movie"}
+                ]
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.admin)
+
+        response = VODMetadataViewSet.as_view({"post": "refresh"})(request)
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("1 selected title is locked", response.data["detail"])
+        enqueue.assert_not_called()
 
     def test_api_key_only_update_preserves_library_metadata_preferences(self):
         CoreSettings.set_vod_metadata_settings(
@@ -1333,6 +1362,7 @@ class VODMetadataAPITests(TestCase):
             year=2005,
             tmdb_status="ambiguous",
             tmdb_metadata={"status": "ambiguous", "candidate_count": 2},
+            tmdb_enrichment_signature="reviewed",
         )
         request = self.factory.post(
             "/api/vod/metadata/title-preview/",
@@ -1378,6 +1408,13 @@ class VODMetadataAPITests(TestCase):
         self.assertEqual(response.data["results"][0]["tmdb_status"], "ambiguous")
         self.assertEqual(response.data["results"][0]["candidate_count"], 2)
         self.assertEqual(response.data["results"][0]["tmdb_id"], "")
+        self.assertTrue(
+            response.data["results"][0]["metadata_auto_locked"]
+        )
+        self.assertFalse(
+            response.data["results"][1]["metadata_auto_locked"]
+        )
+        self.assertEqual(response.data["locked_count"], 1)
 
     def test_title_preview_paginates_all_titles_without_tmdb_id(self):
         account = M3UAccount.objects.create(
@@ -1395,6 +1432,9 @@ class VODMetadataAPITests(TestCase):
                 movie=movie,
                 stream_id=f"movie-{index}",
             )
+        Movie.objects.filter(pk=movies[0].pk).update(
+            tmdb_enrichment_signature="reviewed"
+        )
         matched = Movie.objects.create(name="Matched", tmdb_match_id="123")
         M3UMovieRelation.objects.create(
             m3u_account=account,
@@ -1420,6 +1460,7 @@ class VODMetadataAPITests(TestCase):
         self.assertEqual(response.data["page"], 2)
         self.assertEqual(len(response.data["results"]), 1)
         self.assertNotEqual(response.data["results"][0]["before"], "Matched")
+        self.assertEqual(response.data["locked_count"], 1)
 
     def test_title_preview_search_requires_text(self):
         request = self.factory.post(
@@ -1471,7 +1512,7 @@ class VODMetadataAPITests(TestCase):
         self.assertEqual(response.data["updated"], 1)
         self.assertEqual(response.data["processed"], 1)
 
-    def test_title_cleanup_skips_a_locked_canonical(self):
+    def test_title_cleanup_rejects_a_locked_canonical(self):
         movie = Movie.objects.create(
             name="NF - Locked Movie",
             clean_title="Previously reviewed",
@@ -1491,12 +1532,11 @@ class VODMetadataAPITests(TestCase):
             {"post": "apply_title_cleanup"}
         )(request)
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         movie.refresh_from_db()
         self.assertEqual(movie.clean_title, "Previously reviewed")
         self.assertEqual(movie.tmdb_enrichment_signature, "processed")
-        self.assertEqual(response.data["processed"], 0)
-        self.assertEqual(response.data["locked_skipped"], 1)
+        self.assertIn("1 selected title is locked", response.data["detail"])
 
     def test_provider_cleanup_locks_only_unprocessed_canonicals(self):
         CoreSettings.set_vod_metadata_settings(
@@ -1545,7 +1585,7 @@ class VODMetadataAPITests(TestCase):
             tmdb_metadata={"id": "123", "status": "matched"},
             tmdb_status="matched",
             tmdb_enriched_at=timezone.now(),
-            tmdb_enrichment_signature="old-signature",
+            tmdb_enrichment_signature="",
         )
         enqueue.return_value = {"queued": True, "task_id": "task", "status": "queued"}
         request = self.factory.post(
@@ -1576,6 +1616,40 @@ class VODMetadataAPITests(TestCase):
             movie_ids=[movie.id],
             series_ids=[],
         )
+
+    @patch("apps.vod.tasks.enqueue_tmdb_enrichment")
+    def test_reset_rejects_a_locked_title(self, enqueue):
+        CoreSettings.set_vod_metadata_settings(
+            api_token="stored-secret",
+            languages=["en-US"],
+            auto_enrich=False,
+            match_missing=False,
+        )
+        movie = Movie.objects.create(
+            name="Protected provider title",
+            display_name="Protected custom title",
+            tmdb_enrichment_signature="locked",
+        )
+        request = self.factory.post(
+            "/api/vod/metadata/reset/",
+            {
+                "mode": "provider",
+                "selections": [
+                    {"id": movie.id, "content_type": "movie"}
+                ],
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.admin)
+
+        response = VODMetadataViewSet.as_view({"post": "reset"})(request)
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("1 selected title is locked", response.data["detail"])
+        movie.refresh_from_db()
+        self.assertEqual(movie.display_name, "Protected custom title")
+        self.assertEqual(movie.tmdb_enrichment_signature, "locked")
+        enqueue.assert_not_called()
 
     def test_provider_reset_rebuilds_canonical_fields_from_stored_sources(self):
         account = M3UAccount.objects.create(

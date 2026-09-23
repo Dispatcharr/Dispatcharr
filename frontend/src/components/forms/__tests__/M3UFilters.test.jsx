@@ -257,5 +257,8 @@ describe('M3UFilters', () => {
     expect(
       screen.getByText('1 matching streams from 12 candidates')
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('columnheader', { name: 'URL' })
+    ).not.toBeInTheDocument();
   });
 });

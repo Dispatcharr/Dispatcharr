@@ -247,6 +247,46 @@ describe('M3UGroupRules', () => {
     );
   });
 
+  it('rejects a catch-all rule before another active rule', async () => {
+    API.getM3UGroupRules.mockResolvedValue([
+      {
+        id: 5,
+        scope: 'live',
+        match_field: 'group_name',
+        match_mode: 'any',
+        regex_pattern: 'DE|.*',
+        exclude_regex_pattern: '',
+        action: 'enable',
+        case_sensitive: false,
+        enabled: true,
+        order: 0,
+        metadata_defaults: {},
+      },
+      {
+        id: 6,
+        scope: 'live',
+        match_field: 'group_name',
+        match_mode: 'any',
+        regex_pattern: '.*',
+        exclude_regex_pattern: '',
+        action: 'disable',
+        case_sensitive: false,
+        enabled: true,
+        order: 1,
+        metadata_defaults: {},
+      },
+    ]);
+    render(<M3UGroupRules accountId={49} scope="live" />);
+
+    await screen.findByDisplayValue('DE|.*');
+    fireEvent.click(screen.getAllByLabelText('Save rule')[0]);
+
+    expect(API.updateM3UGroupRule).not.toHaveBeenCalled();
+    expect(
+      screen.getAllByLabelText('Include regular expression')[0]
+    ).toHaveAttribute('aria-invalid', 'true');
+  });
+
   it('persists drag-and-drop ordering without numeric order inputs', async () => {
     API.getM3UGroupRules.mockResolvedValue([
       {

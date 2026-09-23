@@ -16,6 +16,7 @@ import useWarningsStore from '../store/warnings';
  * @param {string} props.actionKey - Unique key for this type of action (used for suppression)
  * @param {Function} props.onSuppressChange - Called when "don't show again" option changes
  * @param {string} [props.size='md'] - Size of the modal
+ * @param {string} [props.confirmColor='red'] - Confirm button color
  * @param {boolean} [props.loading=false] - Whether the confirm button should show loading state
  * @param {boolean} [props.showDeleteFileOption=false] - Show "also delete files" checkbox
  * @param {string} [props.deleteFileLabel] - Label for delete-files checkbox
@@ -33,6 +34,7 @@ const ConfirmationDialog = ({
   actionKey,
   onSuppressChange,
   size = 'md',
+  confirmColor = 'red',
   zIndex = 1000,
   showDeleteFileOption = false,
   deleteFileLabel = 'Also delete files from disk',
@@ -142,7 +144,7 @@ const ConfirmationDialog = ({
           {cancelLabel}
         </Button>
         <Button
-          color="red"
+          color={confirmColor}
           onClick={handleConfirm}
           loading={loading}
           disabled={loading}

@@ -23,10 +23,12 @@ import {
   TextInput,
   Tooltip,
 } from '@mantine/core';
-import { Eye, LockKeyhole } from 'lucide-react';
+import { Eye, LockKeyhole, LockKeyholeOpen } from 'lucide-react';
 import API from '../api';
+import useWarningsStore from '../store/warnings';
 import { showNotification } from '../utils/notificationUtils';
 import { showVODProfileRebuildNotice } from '../utils/vodProfileUpdates.js';
+import ConfirmationDialog from './ConfirmationDialog.jsx';
 import VODMetadataSettingsForm from './forms/settings/VODMetadataSettingsForm.jsx';
 
 const SeriesModal = React.lazy(() => import('./SeriesModal.jsx'));
@@ -69,6 +71,8 @@ const normalizeYearRules = (rules) =>
     .filter((rule) => rule.value);
 
 const PREVIEW_PAGE_SIZE = 50;
+const TMDB_CONFIRMATION_KEY = 'vod-selected-tmdb-refresh';
+const RESET_CONFIRMATION_KEY = 'vod-selected-provider-reset';
 
 const tmdbResult = (row) => {
   const status = String(row?.tmdb_status || '');
@@ -130,11 +134,15 @@ const VODMetadataModal = ({
   const [titleRuleError, setTitleRuleError] = useState('');
   const [applyingSelection, setApplyingSelection] = useState(false);
   const [selectionRunState, setSelectionRunState] = useState(null);
+  const [selectionLockedCount, setSelectionLockedCount] = useState(null);
   const [confirmationAction, setConfirmationAction] = useState('');
   const [detailContent, setDetailContent] = useState(null);
   const ruleSaveSequence = useRef(0);
   const yearRuleSaveSequence = useRef(0);
   const selectionRunSequence = useRef(0);
+  const isWarningSuppressed = useWarningsStore(
+    (state) => state.isWarningSuppressed
+  );
 
   const hydrateStatus = useCallback((status) => {
     setMetadataStatus(status);
@@ -148,6 +156,7 @@ const VODMetadataModal = ({
     setPreviewMode('');
     setPreviewPage(1);
     setPreviewTotal(0);
+    setSelectionLockedCount(null);
     setTitleRuleError('');
   }, []);
 
@@ -178,6 +187,7 @@ const VODMetadataModal = ({
     if (!opened) {
       selectionRunSequence.current += 1;
       setSelectionRunState(null);
+      setSelectionLockedCount(null);
       setDetailContent(null);
     }
   }, [opened]);
@@ -315,13 +325,20 @@ const VODMetadataModal = ({
                 page_size: PREVIEW_PAGE_SIZE,
               }
       );
-      setTitlePreview(response.results || []);
+      const responseRows = response.results || [];
+      setTitlePreview(responseRows);
+      setSelectionLockedCount(
+        Number.isFinite(Number(response.locked_count))
+          ? Number(response.locked_count)
+          : responseRows.filter((row) => row.metadata_auto_locked).length
+      );
       setPreviewMode(mode);
       setPreviewPage(response.page || page);
-      setPreviewTotal(response.total ?? (response.results || []).length);
+      setPreviewTotal(response.total ?? responseRows.length);
     } catch (error) {
       setTitlePreview([]);
       setPreviewTotal(0);
+      setSelectionLockedCount(null);
       setTitleRuleError(
         error?.body?.title_rules ||
           error?.body?.year_rules ||
@@ -454,12 +471,51 @@ const VODMetadataModal = ({
         await previewTitleRules(titleRules, '');
       }
     } catch (error) {
-      setTitleRuleError(
-        error?.body?.detail || error?.message || 'The selected action failed.'
-      );
+      const message =
+        error?.body?.detail || error?.message || 'The selected action failed.';
+      showNotification({
+        title: /\blocked\b/i.test(message)
+          ? 'Selected titles are locked'
+          : 'Selected action failed',
+        message,
+        color: 'red',
+      });
     } finally {
       setApplyingSelection(false);
     }
+  };
+
+  const requestSelectionAction = (action) => {
+    if (selectionLockedCount === null) {
+      showNotification({
+        title: 'Checking selected titles',
+        message: 'Wait until the selected titles have finished loading.',
+        color: 'yellow',
+      });
+      return;
+    }
+    if (selectionLockedCount > 0) {
+      const plural = selectionLockedCount !== 1;
+      showNotification({
+        title: `Selected ${plural ? 'titles are' : 'title is'} locked`,
+        message: `${selectionLockedCount} selected ${plural ? 'titles are' : 'title is'} locked. Unlock ${plural ? 'them' : 'it'} before continuing.`,
+        color: 'red',
+      });
+      return;
+    }
+    if (action === 'cleanup') {
+      void runSelectionAction(action);
+      return;
+    }
+    const actionKey =
+      action === 'reset-provider'
+        ? RESET_CONFIRMATION_KEY
+        : TMDB_CONFIRMATION_KEY;
+    if (isWarningSuppressed(actionKey)) {
+      void runSelectionAction(action);
+      return;
+    }
+    setConfirmationAction(action);
   };
 
   const confirmSelectionAction = async () => {
@@ -480,6 +536,7 @@ const VODMetadataModal = ({
               <Table.Tr>
                 <Table.Th>Provider title</Table.Th>
                 <Table.Th>Clean title</Table.Th>
+                <Table.Th w={90}>Year</Table.Th>
                 {selectionContext && <Table.Th>TMDB result</Table.Th>}
                 <Table.Th w={72} ta="center">
                   Details
@@ -495,6 +552,7 @@ const VODMetadataModal = ({
                       {row.after || '—'}
                     </Text>
                   </Table.Td>
+                  <Table.Td>{row.year || '—'}</Table.Td>
                   {selectionContext && (
                     <Table.Td>
                       <Text size="xs" c={tmdbResult(row).color} fw={600}>
@@ -503,21 +561,49 @@ const VODMetadataModal = ({
                     </Table.Td>
                   )}
                   <Table.Td ta="center">
-                    <ActionIcon
-                      variant="subtle"
-                      aria-label={`Open details for ${row.after || row.before || 'title'}`}
-                      onClick={() =>
-                        setDetailContent({
-                          id: row.id,
-                          name: row.after || row.before || '',
-                          year: row.year || null,
-                          contentType: row.content_type,
-                          content_type: row.content_type,
-                        })
-                      }
-                    >
-                      <Eye size={16} />
-                    </ActionIcon>
+                    <Group gap={2} justify="center" wrap="nowrap">
+                      <Tooltip
+                        label={
+                          row.metadata_auto_locked
+                            ? 'Automatic metadata matching is locked'
+                            : 'Automatic metadata matching is unlocked'
+                        }
+                        withArrow
+                      >
+                        <span
+                          aria-label={
+                            row.metadata_auto_locked
+                              ? 'Metadata locked'
+                              : 'Metadata unlocked'
+                          }
+                          style={{ display: 'inline-flex' }}
+                        >
+                          {row.metadata_auto_locked ? (
+                            <LockKeyhole size={15} />
+                          ) : (
+                            <LockKeyholeOpen size={15} />
+                          )}
+                        </span>
+                      </Tooltip>
+                      <ActionIcon
+                        variant="subtle"
+                        aria-label={`Open details for ${row.after || row.before || 'title'}`}
+                        onClick={() =>
+                          setDetailContent({
+                            id: row.id,
+                            name: row.after || row.before || '',
+                            year: row.year || null,
+                            contentType: row.content_type,
+                            content_type: row.content_type,
+                            metadata_auto_locked: Boolean(
+                              row.metadata_auto_locked
+                            ),
+                          })
+                        }
+                      >
+                        <Eye size={16} />
+                      </ActionIcon>
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               ))}
@@ -646,6 +732,8 @@ const VODMetadataModal = ({
   const selectionRunActive = ['queued', 'running'].includes(
     selectionRunState?.status
   );
+  const selectionActionsDisabled =
+    selectionRunActive || previewingTitles || selectionLockedCount === null;
 
   const selectionContent = (
     <Stack gap="md">
@@ -665,7 +753,7 @@ const VODMetadataModal = ({
               variant="default"
               leftSection={<LockKeyhole size={14} />}
               loading={applyingSelection}
-              disabled={selectionRunActive}
+              disabled={selectionActionsDisabled}
               onClick={() => runSelectionAction('toggle-lock')}
             >
               Lock / Unlock
@@ -675,16 +763,16 @@ const VODMetadataModal = ({
             size="xs"
             variant="default"
             loading={applyingSelection}
-            disabled={selectionRunActive}
-            onClick={() => runSelectionAction('cleanup')}
+            disabled={selectionActionsDisabled}
+            onClick={() => requestSelectionAction('cleanup')}
           >
             Apply cleanup
           </Button>
           <Button
             size="xs"
             loading={applyingSelection}
-            disabled={selectionRunActive}
-            onClick={() => setConfirmationAction('enrich')}
+            disabled={selectionActionsDisabled}
+            onClick={() => requestSelectionAction('enrich')}
           >
             Get TMDB data
           </Button>
@@ -693,13 +781,13 @@ const VODMetadataModal = ({
             color="red"
             variant="light"
             loading={applyingSelection}
-            disabled={selectionContext?.select_all || selectionRunActive}
+            disabled={selectionContext?.select_all || selectionActionsDisabled}
             title={
               selectionContext?.select_all
                 ? 'Select individual titles to reset provider metadata.'
                 : undefined
             }
-            onClick={() => setConfirmationAction('reset-provider')}
+            onClick={() => requestSelectionAction('reset-provider')}
           >
             Reset to provider
           </Button>
@@ -839,7 +927,7 @@ const VODMetadataModal = ({
       >
         {content}
       </Modal>
-      <Modal
+      <ConfirmationDialog
         opened={Boolean(confirmationAction)}
         onClose={() => setConfirmationAction('')}
         title={
@@ -847,32 +935,26 @@ const VODMetadataModal = ({
             ? 'Reset canonical metadata to provider data?'
             : 'Request TMDB data for the selected titles?'
         }
-        centered
         size="md"
-      >
-        <Stack>
-          <Text size="sm">
-            {confirmationAction === 'reset-provider'
-              ? 'TMDB enrichment and manual canonical values will be removed. The canonical records will be rebuilt from the stored provider sources.'
-              : 'An existing TMDB ID is loaded directly. Titles without a TMDB ID are searched by their clean title and only one unambiguous result is accepted. Missing or ambiguous results remain marked for manual review.'}
-          </Text>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setConfirmationAction('')}>
-              Cancel
-            </Button>
-            <Button
-              color={
-                confirmationAction === 'reset-provider' ? 'red' : undefined
-              }
-              onClick={confirmSelectionAction}
-            >
-              {confirmationAction === 'reset-provider'
-                ? 'Reset to provider'
-                : 'Get TMDB data'}
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        message={
+          confirmationAction === 'reset-provider'
+            ? 'TMDB enrichment and manual canonical values will be removed. The canonical records will be rebuilt from the stored provider sources.'
+            : 'An existing TMDB ID is loaded directly. Titles without a TMDB ID are searched by their clean title and only one unambiguous result is accepted. Missing or ambiguous results remain marked for manual review.'
+        }
+        confirmLabel={
+          confirmationAction === 'reset-provider'
+            ? 'Reset to provider'
+            : 'Get TMDB data'
+        }
+        actionKey={
+          confirmationAction === 'reset-provider'
+            ? RESET_CONFIRMATION_KEY
+            : TMDB_CONFIRMATION_KEY
+        }
+        confirmColor={confirmationAction === 'reset-provider' ? 'red' : 'blue'}
+        loading={applyingSelection}
+        onConfirm={confirmSelectionAction}
+      />
       {detailModal}
     </>
   );

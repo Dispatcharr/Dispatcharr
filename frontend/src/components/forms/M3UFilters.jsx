@@ -533,7 +533,6 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
                 <TableTr>
                   <TableTh>Name</TableTh>
                   <TableTh>Group</TableTh>
-                  <TableTh>URL</TableTh>
                   <TableTh w={100}>Result</TableTh>
                 </TableTr>
               </TableThead>
@@ -542,11 +541,6 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
                   <TableTr key={row.id}>
                     <TableTd>{row.name}</TableTd>
                     <TableTd>{row.group || '—'}</TableTd>
-                    <TableTd>
-                      <Text size="xs" lineClamp={1} title={row.url}>
-                        {row.url}
-                      </Text>
-                    </TableTd>
                     <TableTd>{row.result}</TableTd>
                   </TableTr>
                 ))}

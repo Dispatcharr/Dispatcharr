@@ -162,7 +162,7 @@ const VODModal = ({
     useState(null);
   const [editingProvider, setEditingProvider] = useState(null);
   const [editingCanonical, setEditingCanonical] = useState(false);
-  const [unlockingMetadata, setUnlockingMetadata] = useState(false);
+  const [changingMetadataLock, setChangingMetadataLock] = useState(false);
   const [dataView, setDataView] = useState('primary');
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [loadingSourceDetails, setLoadingSourceDetails] = useState(false);
@@ -419,26 +419,30 @@ const VODModal = ({
     await onMetadataChanged?.();
   };
 
-  const unlockMetadata = async () => {
-    setUnlockingMetadata(true);
+  const changeMetadataLock = async (lock) => {
+    setChangingMetadataLock(true);
     try {
-      await API.unlockVODMetadata([
-        { id: vod.id, content_type: 'movie' },
-      ]);
+      const selection = [{ id: vod.id, content_type: 'movie' }];
+      if (lock) await API.lockVODMetadata(selection);
+      else await API.unlockVODMetadata(selection);
       await reloadAfterEnrichment();
       showNotification({
-        title: 'Automatic metadata matching unlocked',
-        message: 'This title can be processed by automatic cleanup and TMDB matching again.',
+        title: lock
+          ? 'Automatic metadata matching locked'
+          : 'Automatic metadata matching unlocked',
+        message: lock
+          ? 'Automatic cleanup, TMDB matching, and metadata resets cannot overwrite this title until it is unlocked.'
+          : 'This title can be processed by automatic cleanup and TMDB matching again.',
         color: 'green',
       });
     } catch (error) {
       showNotification({
-        title: 'Metadata matching could not be unlocked',
+        title: `Metadata matching could not be ${lock ? 'locked' : 'unlocked'}`,
         message: error?.body?.detail || error?.message || 'Please retry.',
         color: 'red',
       });
     } finally {
-      setUnlockingMetadata(false);
+      setChangingMetadataLock(false);
     }
   };
 
@@ -620,8 +624,9 @@ const VODModal = ({
                     onClick={() => setEditingCanonical(true)}
                     loading={loadingDetails}
                     locked={metadataAutoLocked}
-                    unlocking={unlockingMetadata}
-                    onUnlock={unlockMetadata}
+                    changingLock={changingMetadataLock}
+                    onUnlock={() => changeMetadataLock(false)}
+                    onLock={() => changeMetadataLock(true)}
                   />
                 ) : (
                   <Box />

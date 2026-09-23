@@ -165,16 +165,35 @@ const M3UGroupRules = ({
     const errors = {};
     const identities = new Map();
 
-    candidateRules.forEach((rule) => {
+    candidateRules.forEach((rule, index) => {
       const pattern = rule.regex_pattern || '';
       if (!pattern.trim()) {
         errors[rule.id] = 'Enter a regular expression.';
         return;
       }
+      let compiledPattern;
       try {
-        new RegExp(pattern);
+        compiledPattern = new RegExp(pattern);
       } catch (error) {
         errors[rule.id] = `Invalid regular expression: ${error.message}`;
+        return;
+      }
+
+      const laterRuleCanRun = candidateRules.slice(index + 1).some((later) => {
+        if (later.enabled === false) return false;
+        if (!profileMode) return true;
+        return (
+          String(later.m3u_account_id || '') ===
+          String(rule.m3u_account_id || '')
+        );
+      });
+      if (
+        rule.enabled !== false &&
+        compiledPattern.test('') &&
+        laterRuleCanRun
+      ) {
+        errors[rule.id] =
+          'This expression matches every group, so later active rules can never run. Move it to the last active position. To match the literal separator in DE|, use ^DE\\|.';
         return;
       }
 
