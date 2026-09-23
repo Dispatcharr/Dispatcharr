@@ -1,3 +1,5 @@
+name: "Issue: Triage"
+
 on:
   issues:
     types: [labeled]
