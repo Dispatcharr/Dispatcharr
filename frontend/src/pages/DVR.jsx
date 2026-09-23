@@ -161,6 +161,25 @@ const DVRPage = () => {
     };
   }, []);
 
+  // Server-wide DVR storage disk space -- informational for anyone who can
+  // see this page; the server can run out of room even for a user with no
+  // per-user quota, so this is independent of quotaInfo below.
+  const [diskUsage, setDiskUsage] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const usage = await API.getDvrDiskUsage();
+        if (!cancelled) setDiskUsage(usage || null);
+      } catch (e) {
+        console.warn('Failed to fetch DVR disk usage', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Re-render every second so time-based bucketing updates without a refresh
   const [now, setNow] = useState(userNow());
   useEffect(() => {
@@ -182,24 +201,49 @@ const DVRPage = () => {
     return buildChannelOptions(channelsById, inProgress, upcoming, completed);
   }, [channelsById, inProgress, upcoming, completed]);
 
-  // Quota usage, request-tier only (manage/admin have no quota concept --
-  // they can already act on everything). Recordings here are already
-  // scoped server-side to just this user's own (see recordings_queryset_for_user),
-  // so a client-side sum is accurate without a dedicated endpoint. In-progress
-  // recordings haven't finished writing yet, so their contribution is an
-  // underestimate until they complete -- consistent with how the backend
-  // itself only knows a recording's real size once it's done.
+  // Per-user quota usage, request-tier only (manage/admin have no quota
+  // concept -- they can already act on everything). Recordings here are
+  // already scoped server-side to just this user's own (see
+  // recordings_queryset_for_user), so a client-side sum is accurate
+  // without a dedicated endpoint. In-progress recordings haven't finished
+  // writing yet, so their contribution is an underestimate until they
+  // complete -- consistent with how the backend itself only knows a
+  // recording's real size once it's done. Shown even with no quota set
+  // (quotaMb null) so a user can still see how much they're using.
   const quotaInfo = useMemo(() => {
     if (!canRequest || canManage) return null;
-    const quotaMb = Number(authUser?.custom_properties?.dvr_quota_mb) || 0;
-    if (quotaMb <= 0) return null;
+    const quotaMbRaw = Number(authUser?.custom_properties?.dvr_quota_mb) || 0;
+    const quotaMb = quotaMbRaw > 0 ? quotaMbRaw : null;
     const usedBytes = recordings.reduce(
       (sum, rec) => sum + (Number(rec.custom_properties?.bytes_written) || 0),
       0
     );
     const usedMb = usedBytes / (1024 * 1024);
-    return { quotaMb, usedMb, percent: Math.min(100, (usedMb / quotaMb) * 100) };
+    return {
+      quotaMb,
+      usedMb,
+      percent: quotaMb ? Math.min(100, (usedMb / quotaMb) * 100) : null,
+    };
   }, [canRequest, canManage, authUser, recordings]);
+
+  // Server-wide free disk space for the DVR storage root. Only shown to
+  // admins/managers (who can already see/manage everything) or request-tier
+  // users with no personal quota set -- a user who DOES have a quota is
+  // capped well below server-wide free space, so showing it to them would
+  // be misleading ("I have room" when their own quota says otherwise).
+  // null while loading/unavailable or not applicable to this user.
+  const diskUsageInfo = useMemo(() => {
+    if (!diskUsage) return null;
+    if (!canManage && !(quotaInfo && !quotaInfo.quotaMb)) return null;
+    const toGb = (bytes) => Number(bytes) / (1024 * 1024 * 1024);
+    const totalGb = toGb(diskUsage.total_bytes);
+    const freeGb = toGb(diskUsage.free_bytes);
+    return {
+      freeGb,
+      totalGb,
+      percentUsed: totalGb ? Math.min(100, ((totalGb - freeGb) / totalGb) * 100) : 0,
+    };
+  }, [diskUsage, canManage, quotaInfo]);
 
   // Filtered buckets
   const hasActiveFilters =
@@ -342,29 +386,76 @@ const DVRPage = () => {
           </Button>
         )}
 
-        {quotaInfo && (
-          <Tooltip
-            label={`${quotaInfo.usedMb.toFixed(1)} MB used of ${quotaInfo.quotaMb} MB. Scheduling a new recording is blocked at/over quota; your oldest finished recording is automatically removed if a recording's final size pushes you over.`}
-            multiline
-            w={280}
-          >
-            <Group gap={6} wrap="nowrap" miw={160}>
-              <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
-                DVR quota
-              </Text>
-              <Progress
-                value={quotaInfo.percent}
-                color={quotaInfo.percent >= 100 ? 'red' : quotaInfo.percent >= 80 ? 'yellow' : 'teal'}
-                w={80}
-                size="sm"
-              />
-              <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
-                {quotaInfo.usedMb.toFixed(0)}/{quotaInfo.quotaMb} MB
-              </Text>
-            </Group>
-          </Tooltip>
-        )}
       </Flex>
+
+      {(quotaInfo || diskUsageInfo) && (
+        <Stack gap={4} mb={12}>
+          {quotaInfo && (
+            <Tooltip
+              label={
+                quotaInfo.quotaMb
+                  ? `${quotaInfo.usedMb.toFixed(1)} MB used of ${quotaInfo.quotaMb} MB. Scheduling a new recording is blocked at/over quota; your oldest finished recording is automatically removed if a recording's final size pushes you over.`
+                  : `${quotaInfo.usedMb.toFixed(1)} MB used. No per-user quota is set for your account -- you're only limited by the server's remaining disk space (see "Server storage" below).`
+              }
+              multiline
+              w={280}
+            >
+              <Group gap={6} wrap="nowrap" miw={160} w="fit-content">
+                <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                  DVR quota
+                </Text>
+                {quotaInfo.quotaMb ? (
+                  <>
+                    <Progress
+                      value={quotaInfo.percent}
+                      color={quotaInfo.percent >= 100 ? 'red' : quotaInfo.percent >= 80 ? 'yellow' : 'teal'}
+                      w={80}
+                      size="sm"
+                    />
+                    <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                      {quotaInfo.usedMb.toFixed(0)}/{quotaInfo.quotaMb} MB
+                    </Text>
+                  </>
+                ) : (
+                  <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                    {quotaInfo.usedMb.toFixed(0)} MB used (unlimited)
+                  </Text>
+                )}
+              </Group>
+            </Tooltip>
+          )}
+
+          {diskUsageInfo && (
+            <Tooltip
+              label={`${diskUsageInfo.freeGb.toFixed(1)} GB free of ${diskUsageInfo.totalGb.toFixed(1)} GB on the server's DVR storage. This is shared by every user's recordings, independent of any per-user quota.`}
+              multiline
+              w={280}
+            >
+              <Group gap={6} wrap="nowrap" miw={170} w="fit-content">
+                <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                  Server storage
+                </Text>
+                <Progress
+                  value={diskUsageInfo.percentUsed}
+                  color={
+                    diskUsageInfo.percentUsed >= 95
+                      ? 'red'
+                      : diskUsageInfo.percentUsed >= 85
+                        ? 'yellow'
+                        : 'teal'
+                  }
+                  w={80}
+                  size="sm"
+                />
+                <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                  {diskUsageInfo.freeGb.toFixed(0)} GB free
+                </Text>
+              </Group>
+            </Tooltip>
+          )}
+        </Stack>
+      )}
+
       <Stack gap="lg">
         <div>
           <Group gap="xs" align="center" mb={8}>

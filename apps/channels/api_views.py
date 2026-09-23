@@ -3399,7 +3399,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
         # classes run; _user_can_play_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
-        if self.action in ('list', 'retrieve'):
+        if self.action in ('list', 'retrieve', 'disk_usage'):
             return [IsDVRViewer()]
         if self.action in ('create', 'destroy'):
             # Object-level ownership (request-tier users may only act on
@@ -3572,6 +3572,25 @@ class RecordingViewSet(viewsets.ModelViewSet):
         return recordings_queryset_for_user(
             Recording.objects.filter(pk=recording.pk), user
         ).exists()
+
+    @action(detail=False, methods=["get"], url_path="disk-usage")
+    def disk_usage(self, request):
+        """Free/used/total bytes on the filesystem backing the DVR storage
+        root. Informational only (not a security boundary, so any DVR
+        viewer can see it) -- gives users context for why they're being
+        blocked/evicted beyond just their own per-user quota, since the
+        server can run out of room even for unlimited-quota users."""
+        import shutil
+
+        try:
+            usage = shutil.disk_usage(RECORDINGS_STORAGE_ROOT)
+        except OSError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+        })
 
     @action(detail=True, methods=["post"], url_path="comskip")
     def comskip(self, request, pk=None):

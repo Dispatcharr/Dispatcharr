@@ -226,3 +226,35 @@ class DvrQuotaEnforcementTests(TestCase):
 
         self.assertEqual(evicted, [])
         self.assertTrue(Recording.objects.filter(pk=rec.id).exists())
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class DvrDiskUsageApiTests(TestCase):
+    def _user(self, *, user_level=User.UserLevel.STANDARD, dvr_access=None):
+        custom_properties = {}
+        if dvr_access is not None:
+            custom_properties["dvr_access"] = dvr_access
+        return User.objects.create_user(
+            username=f"dvr-disk-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=user_level,
+            custom_properties=custom_properties,
+        )
+
+    def test_view_tier_can_see_disk_usage(self):
+        user = self._user(dvr_access="view")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get("/api/channels/recordings/disk-usage/")
+        self.assertEqual(response.status_code, 200)
+        for key in ("total_bytes", "used_bytes", "free_bytes"):
+            self.assertIn(key, response.data)
+            self.assertIsInstance(response.data[key], int)
+            self.assertGreaterEqual(response.data[key], 0)
+
+    def test_none_tier_cannot_see_disk_usage(self):
+        user = self._user(dvr_access="none")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get("/api/channels/recordings/disk-usage/")
+        self.assertEqual(response.status_code, 403)
