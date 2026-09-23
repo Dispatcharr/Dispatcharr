@@ -97,6 +97,9 @@ class DvrRecordingOwnershipApiTests(TestCase):
                 recording=recording, user=user, is_owner=True
             ).exists()
         )
+        # The create() response itself must reflect the just-created
+        # ownership, not the stale pre-attribution serialization.
+        self.assertEqual(response.data["owner"], {"id": user.id, "username": user.username})
 
     def test_request_tier_cannot_schedule_for_invisible_channel(self):
         user = self._user(dvr_access=DVR_ACCESS_REQUEST, user_level=User.UserLevel.STANDARD)

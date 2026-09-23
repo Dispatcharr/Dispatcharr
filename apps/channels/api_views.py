@@ -3488,20 +3488,16 @@ class RecordingViewSet(viewsets.ModelViewSet):
                     {"detail": "You do not have access to this channel."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-            if user_dvr_quota_exceeded(user):
-                return Response(
-                    {
-                        "detail": "You are at your DVR storage quota. Delete an "
-                        "existing recording to free up space before scheduling "
-                        "a new one."
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
 
         duplicate = self._find_duplicate_recording(
             channel_id, request.data.get("start_time"), request.data.get("end_time")
         )
         if duplicate is not None:
+            # Joining an existing recording someone else already scheduled
+            # costs the joining user zero extra storage -- they don't own
+            # new bytes, just add a "want" -- so this is exempt from the
+            # quota check below, which only applies to actually creating a
+            # new Recording.
             RecordingRequest.objects.get_or_create(
                 recording=duplicate,
                 user=user,
@@ -3509,6 +3505,16 @@ class RecordingViewSet(viewsets.ModelViewSet):
             )
             serializer = self.get_serializer(duplicate)
             return Response(serializer.data, status=status.HTTP_200_OK)
+
+        if request_tier_only and user_dvr_quota_exceeded(user):
+            return Response(
+                {
+                    "detail": "You are at your DVR storage quota. Delete an "
+                    "existing recording to free up space before scheduling "
+                    "a new one."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         response = super().create(request, *args, **kwargs)
         if response.status_code == status.HTTP_201_CREATED:
@@ -3519,6 +3525,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
                     user=user,
                     defaults={"is_owner": True},
                 )
+                # super().create()'s response body was serialized before the
+                # RecordingRequest above existed, so it always showed
+                # owner: null -- re-serialize now so the response reflects
+                # the actual state a follow-up GET would return.
+                recording = Recording.objects.get(pk=recording_id)
+                response.data = self.get_serializer(recording).data
         return response
 
     def _user_owns_recording(self, user, recording):

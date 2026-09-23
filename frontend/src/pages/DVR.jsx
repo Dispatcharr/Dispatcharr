@@ -6,12 +6,14 @@ import {
   Badge,
   Flex,
   Group,
+  Progress,
   Select,
   SimpleGrid,
   Stack,
   Text,
   TextInput,
   Title,
+  Tooltip,
   useMantineTheme,
 } from '@mantine/core';
 import { Search, SquarePlus, X } from 'lucide-react';
@@ -180,6 +182,25 @@ const DVRPage = () => {
     return buildChannelOptions(channelsById, inProgress, upcoming, completed);
   }, [channelsById, inProgress, upcoming, completed]);
 
+  // Quota usage, request-tier only (manage/admin have no quota concept --
+  // they can already act on everything). Recordings here are already
+  // scoped server-side to just this user's own (see recordings_queryset_for_user),
+  // so a client-side sum is accurate without a dedicated endpoint. In-progress
+  // recordings haven't finished writing yet, so their contribution is an
+  // underestimate until they complete -- consistent with how the backend
+  // itself only knows a recording's real size once it's done.
+  const quotaInfo = useMemo(() => {
+    if (!canRequest || canManage) return null;
+    const quotaMb = Number(authUser?.custom_properties?.dvr_quota_mb) || 0;
+    if (quotaMb <= 0) return null;
+    const usedBytes = recordings.reduce(
+      (sum, rec) => sum + (Number(rec.custom_properties?.bytes_written) || 0),
+      0
+    );
+    const usedMb = usedBytes / (1024 * 1024);
+    return { quotaMb, usedMb, percent: Math.min(100, (usedMb / quotaMb) * 100) };
+  }, [canRequest, canManage, authUser, recordings]);
+
   // Filtered buckets
   const hasActiveFilters =
     searchQuery !== '' || selectedChannelId !== null || selectedStatus !== null;
@@ -319,6 +340,29 @@ const DVRPage = () => {
           <Button variant="subtle" onClick={clearFilters} size="sm">
             Clear Filters
           </Button>
+        )}
+
+        {quotaInfo && (
+          <Tooltip
+            label={`${quotaInfo.usedMb.toFixed(1)} MB used of ${quotaInfo.quotaMb} MB. Scheduling a new recording is blocked at/over quota; your oldest finished recording is automatically removed if a recording's final size pushes you over.`}
+            multiline
+            w={280}
+          >
+            <Group gap={6} wrap="nowrap" miw={160}>
+              <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                DVR quota
+              </Text>
+              <Progress
+                value={quotaInfo.percent}
+                color={quotaInfo.percent >= 100 ? 'red' : quotaInfo.percent >= 80 ? 'yellow' : 'teal'}
+                w={80}
+                size="sm"
+              />
+              <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                {quotaInfo.usedMb.toFixed(0)}/{quotaInfo.quotaMb} MB
+              </Text>
+            </Group>
+          </Tooltip>
         )}
       </Flex>
       <Stack gap="lg">
