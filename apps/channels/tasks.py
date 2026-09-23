@@ -2923,6 +2923,35 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             label=f"DVR recording {recording_id}: metadata save",
         )
 
+        # A recording's real size is only known once it's finished, so quota
+        # eviction happens here rather than at schedule time (which only
+        # blocks -- see RecordingViewSet.create).
+        try:
+            owner = recording_obj.owner
+            if owner is not None:
+                from apps.channels.dvr_quota import (
+                    evict_oldest_owned_recordings_until_under_quota,
+                )
+
+                evicted = evict_oldest_owned_recordings_until_under_quota(owner)
+                if evicted:
+                    logger.info(
+                        f"DVR quota eviction for user {owner.id}: {evicted}"
+                    )
+                    try:
+                        from core.utils import send_websocket_update
+
+                        send_websocket_update('updates', 'update', {
+                            "success": True,
+                            "type": "recording_quota_evicted",
+                            "user_id": owner.id,
+                            "evicted": evicted,
+                        })
+                    except Exception:
+                        pass
+        except Exception as ex:
+            logger.warning(f"DVR quota eviction check failed for recording {recording_id}: {ex}")
+
         # Notify frontends so the UI refreshes immediately (e.g. "Stopped" → "Completed")
         try:
             async_to_sync(channel_layer.group_send)(

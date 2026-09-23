@@ -71,11 +71,19 @@ def is_dvr_view_enabled(*, user=None):
 
 
 def recordings_queryset_for_user(queryset, user):
-    """Scope *queryset* of Recording rows to channels *user* may access.
+    """Scope *queryset* of Recording rows to what *user* may see.
 
-    Managers and admins see the full catalog. View-only users are limited
-    to recordings whose source channel is within their ``user_level`` and,
-    when they have channel profiles, enabled in one of those profiles.
+    Managers and admins see the full catalog. Everyone else is limited to
+    recordings whose source channel is within their ``user_level`` and, when
+    they have channel profiles, enabled in one of those profiles.
+
+    Request-tier users are further scoped to only their own recordings (a
+    RecordingRequest row for them) -- they can schedule/own recordings, so
+    "their own" is meaningful for them, and this is what makes per-user DVR
+    privacy real rather than everyone with request access seeing everyone
+    else's requests. View-only users (who can never own anything, since they
+    can't schedule) keep the existing shared-library behavior: everything on
+    channels they can access, same as before this tier existed.
     """
     if user is None or not getattr(user, "is_authenticated", False):
         return queryset.none()
@@ -95,5 +103,11 @@ def recordings_queryset_for_user(queryset, user):
         filters["channel__channelprofilemembership__channel_profile__in"] = (
             user.channel_profiles.all()
         )
-        return queryset.filter(**filters).distinct()
-    return queryset.filter(**filters)
+        queryset = queryset.filter(**filters).distinct()
+    else:
+        queryset = queryset.filter(**filters)
+
+    if get_dvr_access(user=user) == DVR_ACCESS_REQUEST:
+        queryset = queryset.filter(requests__user=user).distinct()
+
+    return queryset

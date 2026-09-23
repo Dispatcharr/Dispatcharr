@@ -32,6 +32,7 @@ from apps.channels.dvr_access import (
     is_dvr_view_enabled,
     recordings_queryset_for_user,
 )
+from apps.channels.dvr_quota import user_dvr_quota_exceeded
 
 from core.models import CoreSettings
 from core.utils import (
@@ -3478,10 +3479,22 @@ class RecordingViewSet(viewsets.ModelViewSet):
         """
         user = request.user
         channel_id = request.data.get("channel")
-        if is_dvr_request_enabled(user=user) and not is_dvr_manage_enabled(user=user):
+        request_tier_only = is_dvr_request_enabled(user=user) and not is_dvr_manage_enabled(
+            user=user
+        )
+        if request_tier_only:
             if not channel_id or not self._channel_visible_to_user(channel_id, user):
                 return Response(
                     {"detail": "You do not have access to this channel."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if user_dvr_quota_exceeded(user):
+                return Response(
+                    {
+                        "detail": "You are at your DVR storage quota. Delete an "
+                        "existing recording to free up space before scheduling "
+                        "a new one."
+                    },
                     status=status.HTTP_403_FORBIDDEN,
                 )
 

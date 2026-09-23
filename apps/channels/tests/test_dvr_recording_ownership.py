@@ -146,7 +146,11 @@ class DvrRecordingOwnershipApiTests(TestCase):
         other = self._user(dvr_access=DVR_ACCESS_REQUEST)
         self.client.force_authenticate(user=other)
         response = self.client.delete(f"/api/channels/recordings/{recording_id}/")
-        self.assertEqual(response.status_code, 403)
+        # Request-tier visibility (see test_dvr_recording_visibility.py) scopes
+        # the queryset to recordings this user owns, so a recording they don't
+        # own 404s before the destroy()-level ownership check ever runs --
+        # this also avoids leaking that the recording exists at all.
+        self.assertEqual(response.status_code, 404)
         self.assertTrue(Recording.objects.filter(pk=recording_id).exists())
 
     def test_owner_delete_with_other_wanter_reassigns_instead_of_deleting(self):

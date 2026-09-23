@@ -427,6 +427,18 @@ const User = ({ user = null, isOpen, onClose }) => {
                     key={form.key('dvr_access')}
                   />
                 )}
+                {form.getValues().user_level != USER_LEVELS.STREAMER &&
+                  [DVR_ACCESS.REQUEST, DVR_ACCESS.MANAGE].includes(
+                    form.getValues().dvr_access
+                  ) && (
+                    <NumberInput
+                      label="DVR Storage Quota (MB)"
+                      description="Caps how much disk space this user's own recordings may use. Blocks scheduling a new recording once at/over quota, and automatically frees the oldest finished recordings they own if a recording's final size pushes them over. 0 or blank = unlimited."
+                      min={0}
+                      {...form.getInputProps('dvr_quota_mb')}
+                      key={form.key('dvr_quota_mb')}
+                    />
+                  )}
               </Stack>
             </TabsPanel>
           )}
