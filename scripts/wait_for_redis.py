@@ -1,13 +1,24 @@
 #!/usr/bin/env python
 """
 Helper script to wait for Redis to be available before starting the application.
+
+This runs before Django (CI bootstrap, container entrypoint, uWSGI exec-pre).
+It imports only core.redis_connection, which does not load the app.
 """
 
 import os
 import sys
+import time
 import logging
 
-from core.utils import RedisClient
+# Executing this file directly puts scripts/ on sys.path, not the repo root.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from redis.exceptions import ConnectionError, TimeoutError
+
+from core.redis_connection import RedisUrlError, client_from_env
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -35,19 +46,39 @@ def _flush_non_celery_keys(client):
 
 
 def wait_for_redis(max_retries=30, retry_interval=2):
-    """Wait for Redis to become available, using universal environment variables as resolved by Django settings"""
+    """Wait for Redis, using REDIS_URL when set and host/port/db otherwise."""
+    redis_client = None
+    location = None
+    retry_count = 0
 
-    redis_cls = RedisClient()
-    redis_client = redis_cls.get_test_client(max_retries = max_retries, retry_interval = retry_interval)
+    while retry_count < max_retries:
+        try:
+            redis_client, location = client_from_env()
+            redis_client.ping()
+            break
+        except RedisUrlError:
+            logger.error("Ill-formatted REDIS_URL: Unable to parse connection string parameters")
+            return False
+        except (ConnectionError, TimeoutError) as exc:
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"Failed to connect to Redis after {max_retries} attempts: {exc}")
+                return False
+            logger.warning(
+                f"Redis connection failed. Retrying in {retry_interval}s... ({retry_count}/{max_retries})"
+            )
+            time.sleep(retry_interval)
+        except Exception as exc:
+            logger.error(f"Unexpected error connecting to Redis: {exc}")
+            return False
 
     if redis_client is None:
-
-        logger.error("❌ Redis turned out unavailable, see stacktrace")
+        logger.error("Redis turned out unavailable")
         return False
 
     # Clear stale state on startup. In AIO mode, every service restarts
     # together so a full flush is safe. In modular mode, Celery has its
-    # own lifecycle — preserve its broker/result keys and only wipe
+    # own lifecycle: preserve its broker/result keys and only wipe
     # application state (stream locks, proxy metadata, etc.).
     if os.environ.get('DISPATCHARR_ENV') == 'modular':
         _flush_non_celery_keys(redis_client)
@@ -56,12 +87,10 @@ def wait_for_redis(max_retries=30, retry_interval=2):
         redis_client.flushdb()
         logger.info("Flushed Redis database")
 
-    logger.info(f"✅ Redis at {redis_cls.get_net_location()} is now available!")
+    logger.info(f"Redis at {location} is now available!")
     return True
 
 
 if __name__ == "__main__":
-
-    os.environ["DJANGO_SETTINGS_MODULE"] = "dispatcharr"
 
     sys.exit(0) if wait_for_redis() else sys.exit(1)

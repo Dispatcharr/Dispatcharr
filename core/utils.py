@@ -7,12 +7,11 @@ import threading
 from pathlib import Path
 import re
 
-from urllib.parse import urlsplit, parse_qsl, urlencode
 from random import uniform
 
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
-from redis.connection import BlockingConnectionPool
+from core.redis_connection import RedisUrlError, build_redis_client
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
@@ -179,53 +178,23 @@ class RedisClient:
             # TLS params from settings (empty dict when TLS is disabled)
             ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
 
-            sockargs = {"socket_timeout" : socket_timeout,
-                        "socket_connect_timeout" : socket_connect_timeout,
-                        "socket_keepalive" : socket_keepalive}
-
-            redis_kwargs = {"max_connections" : max_connections,
-                            "timeout" : pool_timeout }
-
-            # List of defaults which may not be overridden via REDIS_URL
-            immutable_kwargs = (*sockargs.keys(), "health_check_interval", "retry_on_timeout", "decode_responses")
-
-            # If REDIS_URL is set to a non-empty value, use from_url and ignore
-            # REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] envvars. A blank REDIS_URL=
-            # (common in docker-compose/template files that list every var with an
-            # empty default) is treated the same as REDIS_URL being unset.
-            url = None
-            if redis_url:
-
-                connstring = urlsplit(redis_url, allow_fragments = False)
-
-                # Pop the connection string arguments which would otherwise override our defaults (see https://redis.readthedocs.io/en/stable/connections.html - "In the case of conflicting arguments, querystring arguments always win.")
-                try:
-
-                    connargs = dict(parse_qsl(connstring.query, strict_parsing = True))
-                    for k in immutable_kwargs:
-                        connargs.pop(k, None)
-
-                except ValueError:
-
-                    logger.error("Ill-formatted REDIS_URL: Unable to parse connection string parameters")
-                    return None
-
-                connargs = urlencode(connargs)
-
-                # Rebuilds the connection string manually, since urlunsplit(urlsplit(...)) is not necessarily idempotent
-                url = f"{connstring.scheme}://{connstring.netloc}{connstring.path}{'?' + connargs if connargs else ''}"
-
-                if connstring.scheme == "unix":
-                    sockargs.pop("socket_keepalive", None)
-
-                redis_kwargs |= sockargs
-
-            # If REDIS_URL turns out unset, collect REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] as kwargs to redis.Redis
-            else:
-
-                redis_kwargs |= {"host" : redis_host, "port" : redis_port, "db" : redis_db,
-                                 "username" : redis_user,
-                                 "password" : redis_password} | ssl_params | sockargs
+            client_kwargs = dict(
+                redis_url=redis_url,
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                username=redis_user,
+                password=redis_password,
+                ssl_params=ssl_params,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=socket_connect_timeout,
+                socket_keepalive=socket_keepalive,
+                health_check_interval=health_check_interval,
+                retry_on_timeout=retry_on_timeout,
+                max_connections=max_connections,
+                pool_timeout=pool_timeout,
+                decode_responses=decode_responses,
+            )
 
         except Exception as e:
             _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
@@ -235,18 +204,8 @@ class RedisClient:
         retry_count = 0
         while retry_count < max_retries:
             try:
-                pool_kwargs = dict(
-                    decode_responses=decode_responses,
-                    health_check_interval=health_check_interval,
-                    retry_on_timeout=retry_on_timeout,
-                )
-                if url:
-                    pool = BlockingConnectionPool.from_url(url, **redis_kwargs, **pool_kwargs)
-                else:
-                    pool = BlockingConnectionPool(**redis_kwargs, **pool_kwargs)
-
-                # Create Redis client with our defaults, ensuring REDIS_URL does not override said defaults
-                client = redis.Redis(connection_pool = pool)
+                # A blank REDIS_URL is treated as unset inside build_redis_client.
+                client, location = build_redis_client(**client_kwargs)
 
                 # Validate connection with ping
                 client.ping()
@@ -285,11 +244,14 @@ class RedisClient:
                         else:
                             logger.error(f"Redis configuration error: {e}")
 
-                conninfo = client.get_connection_kwargs()
-                cls._netloc = conninfo.get("path", f"{conninfo.get("host",'')}:{conninfo.get("port",'')}")
+                cls._netloc = location
                 logger.info(f"Connected to Redis at {cls._netloc}")
 
                 return client
+
+            except RedisUrlError:
+                logger.error("Ill-formatted REDIS_URL: Unable to parse connection string parameters")
+                return None
 
             except (ConnectionError, TimeoutError) as e:
                 retry_count += 1
