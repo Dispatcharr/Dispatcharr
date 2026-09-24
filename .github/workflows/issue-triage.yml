@@ -1,0 +1,40 @@
+name: "Issue: Triage"
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: issue-triage-${{ github.event.label.name == 'Triage' && github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    if: github.event.label.name == 'Triage'
+    concurrency:
+      group: issue-triage-global
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - uses: Dispatcharr/repo-bot/actions/issue-triage@feat/issue-triage
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          bot-login: dispatcharr-issues-bot[bot]
+          provider: openai
+          provider-key: ${{ secrets.OPENROUTER_API_KEY }}
+          provider-base-url: https://openrouter.ai/api/v1
+          provider-model: ${{ vars.TRIAGE_MODEL }}
+          # context-repository: Dispatcharr/Dispatcharr
+          context-branch: dev
+          context-files: README.md,CHANGELOG.md,pyproject.toml
+          max-context-bytes: 8000
+          max-context-total-bytes: 24000
+          max-related-issues: 5
+          # allow-retriage: true
+          dry-run: true

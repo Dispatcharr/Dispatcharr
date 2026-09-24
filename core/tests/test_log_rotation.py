@@ -34,5 +34,5 @@ class SystemSettingsCoercionTests(TestCase):
             inst, {"value": {"log_max_mb": "abc", "log_keep": 999}}
         )
         inst.refresh_from_db()
-        self.assertEqual(inst.value["log_max_mb"], 10)  # garbage -> default
+        self.assertEqual(inst.value["log_max_mb"], 5)  # garbage -> default
         self.assertEqual(inst.value["log_keep"], 50)  # above max -> clamped

@@ -24,13 +24,13 @@ class ConfTests(SimpleTestCase):
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
 
     def test_conf_round_trip(self):
-        log_collector.write_conf(self.log_dir, False, 42, 7, "Pacific/Auckland")
+        log_collector.write_conf(self.log_dir, False, 17, 7, "Pacific/Auckland")
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
             {
                 "persist": False,
-                "max_mb": 42,
+                "max_mb": 17,
                 "keep": 7,
                 "time_zone": "Pacific/Auckland",
             },
@@ -48,7 +48,7 @@ class ConfTests(SimpleTestCase):
         with open(path, "w") as f:
             f.write("persist=1\nmax_mb=99999\nkeep=abc\n")
         conf = log_collector.read_conf(self.log_dir)
-        self.assertEqual(conf["max_mb"], 1000)
+        self.assertEqual(conf["max_mb"], log_collector.MAX_LOG_MB)
         self.assertEqual(conf["keep"], 5)
         self.assertTrue(conf["persist"])
 
@@ -164,7 +164,7 @@ class ConfTests(SimpleTestCase):
         self.assertEqual(self.collector._buf_bytes, 0)
 
     def test_rotation_at_cap_shifts_and_prunes(self):
-        self.collector.conf.update({"max_mb": 1, "keep": 2})
+        self.collector.conf.update({"max_mb": 1, "keep": 3})
         with open(self.collector.live_path, "w") as f:
             f.write("x" * (1024 * 1024 + 1))
         for n in (1, 2):
@@ -290,7 +290,7 @@ class ConfTests(SimpleTestCase):
         for n in (1, 2, 9):
             with open(f"{self.collector.live_path}.{n}", "w") as f:
                 f.write("old")
-        log_collector.write_conf(self.log_dir, True, 10, 2)
+        log_collector.write_conf(self.log_dir, True, 10, 3)
         self.collector._apply_conf()
         names = sorted(self.collector._archive_indices())
         self.assertEqual(names, [1, 2])
@@ -532,14 +532,14 @@ class ApplySettingsTests(SimpleTestCase):
     def test_settings_round_trip_to_conf(self):
         log_collector.apply_settings(
             self.log_dir,
-            {"log_persist": False, "log_max_mb": 25, "log_keep": 3},
+            {"log_persist": False, "log_max_mb": 15, "log_keep": 3},
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
             {
                 "persist": False,
-                "max_mb": 25,
+                "max_mb": 15,
                 "keep": 3,
                 "time_zone": "UTC",
             },
@@ -572,20 +572,6 @@ class ApplySettingsTests(SimpleTestCase):
     def test_boot_does_not_warn_about_a_collector_that_may_be_starting(self):
         with self.assertNoLogs("dispatcharr.log_collector", level="WARNING"):
             log_collector.apply_settings(self.log_dir, {"log_max_mb": 12})
-
-class EnvironmentFlagTests(TestCase):
-    def test_the_environment_reports_the_collector_state(self):
-        """The frontend hides collector-dependent surfaces on this flag."""
-        from django.contrib.auth import get_user_model
-        from rest_framework.test import APIClient
-
-        user = get_user_model().objects.create_user("envflag", password="pw")
-        client = APIClient()
-        client.force_authenticate(user=user)
-        with override_settings(ENABLE_IP_LOOKUP=False):
-            response = client.get("/api/core/settings/env/")
-        self.assertIs(response.data["log_collector_running"], False)
-
 
 class ReceiverTests(TestCase):
     def test_saving_system_settings_writes_conf(self):

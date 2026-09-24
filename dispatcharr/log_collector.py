@@ -31,10 +31,23 @@ def _role_suffix():
 
 
 _SUFFIX = _role_suffix()
-LIVE_NAME = f"dispatcharr.log{_SUFFIX}"
+BASE_NAME = "dispatcharr.log"
+LIVE_NAME = f"{BASE_NAME}{_SUFFIX}"
 # Shared: one settings save configures every collector on this log directory.
 CONF_NAME = "collector.conf"
 PID_NAME = f"collector{_SUFFIX}.pid"
+
+# Live file, optional role suffix, optional rotation index. Used by the log
+# browser so a rename here cannot silently empty the page, and a near-prefix
+# name in the same directory cannot be served.
+_LOG_FAMILY_RE = re.compile(
+    rf"^{re.escape(BASE_NAME)}(-[A-Za-z0-9]{{1,16}})?(\.\d+)?$"
+)
+
+
+def is_log_family_name(name):
+    """Whether *name* is a collector live or rotated log file."""
+    return bool(_LOG_FAMILY_RE.fullmatch(name))
 
 _FLUSH_INTERVAL_SECONDS = 0.25
 _BATCH_BYTES = 128 * 1024
@@ -44,10 +57,15 @@ _MAX_RECORD_BYTES = 16 * 1024
 
 _TRUNCATED = b" ... [log_collector truncated this record at %d bytes]\n" % _MAX_RECORD_BYTES
 
+DEFAULT_LOG_MB = 5
+MAX_LOG_MB = 20
+DEFAULT_LOG_KEEP = 5
+MAX_LOG_KEEP = 50
+
 _DEFAULT_CONF = {
     "persist": True,
-    "max_mb": 10,
-    "keep": 5,
+    "max_mb": DEFAULT_LOG_MB,
+    "keep": DEFAULT_LOG_KEEP,
     "time_zone": "",
 }
 
@@ -201,8 +219,8 @@ def apply_settings(log_dir, values, warn_if_absent=False):
     write_conf(
         log_dir,
         values.get("log_persist", True) is not False,
-        values.get("log_max_mb", 10) or 10,
-        values.get("log_keep", 5) or 5,
+        values.get("log_max_mb", DEFAULT_LOG_MB) or DEFAULT_LOG_MB,
+        values.get("log_keep", DEFAULT_LOG_KEEP) or DEFAULT_LOG_KEEP,
         values.get("time_zone") or "UTC",
     )
     if warn_if_absent and not collector_running(log_dir):
@@ -252,9 +270,9 @@ def read_conf(log_dir):
     except OSError:
         return conf
     conf["persist"] = str(conf["persist"]).strip() not in ("0", "false", "")
-    for key, cap in (("max_mb", 1000), ("keep", 50)):
+    for key, lo, cap in (("max_mb", 1, MAX_LOG_MB), ("keep", 2, MAX_LOG_KEEP)):
         try:
-            conf[key] = min(max(int(conf[key]), 1), cap)
+            conf[key] = min(max(int(conf[key]), lo), cap)
         except (TypeError, ValueError):
             conf[key] = _DEFAULT_CONF[key]
     return conf
@@ -671,7 +689,7 @@ class Collector:
         self._close_fd()
         try:
             for n in sorted(self._archive_indices(), reverse=True):
-                if n >= self.conf["keep"]:
+                if n + 1 >= self.conf["keep"]:
                     os.remove(f"{self.live_path}.{n}")
                 else:
                     os.replace(f"{self.live_path}.{n}", f"{self.live_path}.{n + 1}")
@@ -686,7 +704,7 @@ class Collector:
         # must converge without waiting for a size-cap rotation.
         try:
             for n in self._archive_indices():
-                if n > self.conf["keep"]:
+                if n >= self.conf["keep"]:
                     os.remove(f"{self.live_path}.{n}")
         except OSError:
             pass

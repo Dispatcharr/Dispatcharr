@@ -2722,6 +2722,23 @@ class SDPosterProxyErrorHandlingTests(TestCase):
 
     @patch('requests.get')
     @patch('requests.post')
+    def test_poster_serves_image_for_image_accept_header(self, mock_post, mock_get):
+        """Native image loaders send Accept: image/*; that must not 406."""
+        mock_post.return_value = self._auth_ok()
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
+
+        resp = self.client.get(self.url, HTTP_ACCEPT='image/*')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'image/jpeg')
+        self.assertEqual(resp.content, b'\xff\xd8\xffjpeg-bytes')
+
+    @patch('requests.get')
+    @patch('requests.post')
     def test_poster_accepts_slash_less_url(self, mock_post, mock_get):
         """Clients that strip trailing slashes still get the image, not a redirect."""
         mock_post.return_value = self._auth_ok()

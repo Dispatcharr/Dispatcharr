@@ -15,6 +15,10 @@ services:
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=info
+      # Port nginx listens on (default 9191). Must match the container port in
+      # ports: above (e.g. DISPATCHARR_PORT=8080 with "8080:8080").
+      #- DISPATCHARR_PORT=9191
+
       # Redis idle-client timeout in seconds, and per-process redis-py /
       # django-redis pool cap (Optional, defaults: 300 / 50)
       #- REDIS_IDLE_TIMEOUT=300
