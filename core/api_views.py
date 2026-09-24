@@ -415,11 +415,11 @@ def environment(request):
             "ip_lookup_env_disabled": ip_lookup_env_disabled,
             "ip_lookup_pending": ip_lookup_pending,
             "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
-            "redis_tls": {
-                "enabled": getattr(django_settings, "REDIS_SSL", False),
-                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
-                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
-            },
+            "redis_tls": getattr(
+                django_settings,
+                "REDIS_TLS_STATUS",
+                {"enabled": False, "verify": False, "mtls": False},
+            ),
             "postgres_tls": {
                 "enabled": postgres_ssl,
                 "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,
