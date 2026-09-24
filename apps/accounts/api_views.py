@@ -61,10 +61,19 @@ def _setup_forbidden_response(client_ip):
 
 
 def _resolve_proxy_auth_user(identity):
-    """Match a proxy-asserted identity by username, then by unambiguous email."""
-    user = User.objects.filter(username__iexact=identity).first()
-    if user is not None:
-        return user
+    """Match a proxy-asserted identity by username, then by unambiguous email.
+
+    Case-insensitive matches must be unique. With case-distinct accounts
+    ("Admin" and "admin") an iexact lookup could otherwise return either one,
+    so only an exact username or a single case-insensitive match resolves.
+    """
+    exact = User.objects.filter(username=identity).first()
+    if exact is not None:
+        return exact
+
+    matches = list(User.objects.filter(username__iexact=identity)[:2])
+    if matches:
+        return matches[0] if len(matches) == 1 else None
 
     if "@" in identity:
         matches = list(User.objects.filter(email__iexact=identity)[:2])

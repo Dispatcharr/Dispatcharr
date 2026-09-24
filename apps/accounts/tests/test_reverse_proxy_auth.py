@@ -133,6 +133,31 @@ class ReverseProxyAuthTests(TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_case_distinct_usernames_match_nobody(self):
+        self._configure()
+        User.objects.create_user(
+            username="ProxyUser",
+            password="unused-password",
+            user_level=10,
+        )
+        response = self._post(**{"HTTP_X_FORWARDED_USER": "PROXYUSER"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_exact_username_wins_over_a_case_variant(self):
+        self._configure()
+        User.objects.create_user(
+            username="ProxyUser",
+            password="unused-password",
+            user_level=10,
+        )
+        access = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"}).json()["access"]
+
+        authed = APIClient()
+        authed.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+        self.assertEqual(
+            authed.get("/api/accounts/users/me/").json()["username"], "proxyuser"
+        )
+
     def test_only_the_configured_header_is_read(self):
         self._configure(header="X-Auth-Request-User")
         response = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"})
