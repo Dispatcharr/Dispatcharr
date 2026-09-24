@@ -11,7 +11,7 @@ from drf_spectacular.types import OpenApiTypes
 import json
 import secrets
 from .permissions import IsAdmin, Authenticated
-from .throttling import LoginRateThrottle
+from .throttling import LoginRateThrottle, enforce_login_rate_limit
 from dispatcharr.utils import (
     SETUP_ALLOWED_IP_ENV,
     get_client_ip,
@@ -279,6 +279,22 @@ class AuthViewSet(viewsets.ViewSet):
                 {"detail": "Reverse proxy authentication unavailable."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+
+        # Shares the `login` budget with password and admin sign-in. Checked
+        # here rather than as a view throttle so the web UI's availability
+        # probe, which returns above without minting anything, does not spend
+        # login attempts the user needs for the password form.
+        throttled = enforce_login_rate_limit(request)
+        if throttled is not None:
+            logger.info(f"Proxy login throttled: identity={identity} ip={client_ip}")
+            response = Response(
+                {"detail": "Too many login attempts. Try again later."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+            retry_after = throttled.get("Retry-After")
+            if retry_after:
+                response["Retry-After"] = retry_after
+            return response
 
         user = _resolve_proxy_auth_user(identity)
         if user is None or not user.is_active:

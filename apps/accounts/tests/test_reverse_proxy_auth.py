@@ -12,6 +12,7 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
+from rest_framework.settings import api_settings
 from rest_framework.test import APIClient
 
 from core.models import CoreSettings, REVERSE_PROXY_AUTH_KEY
@@ -157,6 +158,25 @@ class ReverseProxyAuthTests(TestCase):
         self.assertEqual(
             authed.get("/api/accounts/users/me/").json()["username"], "proxyuser"
         )
+
+    def test_repeated_sign_ins_share_the_login_throttle(self):
+        self._configure()
+        allowed = int(api_settings.DEFAULT_THROTTLE_RATES["login"].split("/")[0])
+        for _ in range(allowed):
+            response = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"})
+            self.assertEqual(response.status_code, 200)
+
+        response = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"})
+        self.assertEqual(response.status_code, 429)
+
+    def test_availability_probes_do_not_spend_the_login_budget(self):
+        """The web UI probes this endpoint on load; that must not lock out login."""
+        self._configure()
+        for _ in range(5):
+            self.assertEqual(self._post().status_code, 401)
+
+        response = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"})
+        self.assertEqual(response.status_code, 200)
 
     def test_only_the_configured_header_is_read(self):
         self._configure(header="X-Auth-Request-User")
