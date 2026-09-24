@@ -25,11 +25,17 @@ LOCAL_NETWORK_CIDRS = [
 
 SETUP_ALLOWED_IP_ENV = "DISPATCHARR_SETUP_ALLOWED_IP"
 TRUSTED_PROXIES_ENV = "DISPATCHARR_TRUSTED_PROXIES"
+PROXY_AUTH_TRUSTED_PROXIES_ENV = "DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES"
 
 # Parsed trusted-proxy networks. Rebuilt when the config key changes.
 # Config key is "__default_local__", "__none__", or the raw env string.
 _trusted_proxies_key = None
 _trusted_proxies_networks = ()
+
+# Parsed proxy-auth networks, keyed on the raw env string. There is no default:
+# an unset env means no peer may assert an identity header.
+_proxy_auth_proxies_key = None
+_proxy_auth_proxies_networks = ()
 
 # Sentinel values for DISPATCHARR_TRUSTED_PROXIES when explicitly disabling
 # header trust (env unset still means default local CIDRs).
@@ -67,6 +73,17 @@ def _normalize_ip(value):
     return ip.ipv4_mapped if getattr(ip, "ipv4_mapped", None) else ip
 
 
+def _parse_networks(entries, env_name):
+    """Parse IP/CIDR strings into networks, logging and skipping invalid ones."""
+    networks = []
+    for part in entries:
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logger.warning("Invalid %s entry %r; ignoring", env_name, part)
+    return tuple(networks)
+
+
 def _trusted_proxy_networks():
     """Return networks whose peers may set X-Real-IP / X-Forwarded-For.
 
@@ -92,15 +109,35 @@ def _trusted_proxy_networks():
     if key == _trusted_proxies_key:
         return _trusted_proxies_networks
 
-    networks = []
-    for part in source:
-        try:
-            networks.append(ipaddress.ip_network(part, strict=False))
-        except ValueError:
-            logger.warning("Invalid %s entry %r; ignoring", TRUSTED_PROXIES_ENV, part)
     _trusted_proxies_key = key
-    _trusted_proxies_networks = tuple(networks)
+    _trusted_proxies_networks = _parse_networks(source, TRUSTED_PROXIES_ENV)
     return _trusted_proxies_networks
+
+
+def _proxy_auth_trusted_networks():
+    """Return the peers allowed to assert a reverse-proxy identity header.
+
+    Unlike _trusted_proxy_networks this has no default. Relabelling a request's
+    client IP and signing that request in as a user are different grants, so
+    proxy auth needs its own allowlist: DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES
+    must name the authenticating proxy, and unset means no peer qualifies.
+    """
+    global _proxy_auth_proxies_key, _proxy_auth_proxies_networks
+
+    raw = os.environ.get(PROXY_AUTH_TRUSTED_PROXIES_ENV, "").strip()
+    if raw == _proxy_auth_proxies_key:
+        return _proxy_auth_proxies_networks
+
+    if raw.lower() in _TRUSTED_PROXIES_NONE:
+        source = []
+    else:
+        source = [p.strip() for p in raw.split(",") if p.strip()]
+
+    _proxy_auth_proxies_key = raw
+    _proxy_auth_proxies_networks = _parse_networks(
+        source, PROXY_AUTH_TRUSTED_PROXIES_ENV
+    )
+    return _proxy_auth_proxies_networks
 
 
 def _ip_in_trusted(ip):
@@ -152,8 +189,9 @@ def proxy_auth_identity(request):
     """Username or email asserted for this request by a trusted reverse proxy.
 
     Returns None unless reverse proxy auth is enabled with a valid header name
-    and the connecting peer is a trusted proxy: the header is client-suppliable,
-    so honoring it from an untrusted peer would let anyone sign in as any user.
+    and the connecting peer is listed in DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES:
+    the header is client-suppliable, so honoring it from any other peer would
+    let anyone who can reach the port sign in as any user.
     """
     config = CoreSettings.get_reverse_proxy_auth_settings()
     if not config.get("enabled"):
@@ -163,14 +201,24 @@ def proxy_auth_identity(request):
     if not validate_proxy_auth_header(header):
         return None
 
+    networks = _proxy_auth_trusted_networks()
+    if not networks:
+        logger.warning(
+            "Reverse proxy auth is enabled but %s is unset; ignoring %s. List "
+            "the authenticating proxy's IP or CIDR there to turn the feature on.",
+            PROXY_AUTH_TRUSTED_PROXIES_ENV,
+            header,
+        )
+        return None
+
     peer = _normalize_ip(request.META.get("REMOTE_ADDR") or "")
-    if not _ip_in_trusted(peer):
+    if peer is None or not any(peer in network for network in networks):
         logger.warning(
             "Ignoring %s from untrusted peer %s; add it to %s to enable "
             "reverse proxy auth from that host",
             header,
             peer,
-            TRUSTED_PROXIES_ENV,
+            PROXY_AUTH_TRUSTED_PROXIES_ENV,
         )
         return None
 
