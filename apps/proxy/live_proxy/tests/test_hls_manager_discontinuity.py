@@ -16,6 +16,8 @@ class _TrackingSegmenter:
 
     def __init__(self, *args, **kwargs):
         self.events = []
+        self.target_duration = kwargs.get("target_duration")
+        self.max_segment_duration = kwargs.get("max_segment_duration")
 
     def flag_discontinuity(self):
         self.events.append("cut")
@@ -165,6 +167,8 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
             mgr._segmenter_loop()
 
         self.assertEqual(constructed[0].events, [("feed", chunk)])
+        self.assertAlmostEqual(constructed[0].target_duration, 3.9, places=3)
+        self.assertAlmostEqual(constructed[0].max_segment_duration, 6.45, places=3)
 
     def test_heartbeat_does_not_refresh_playlist_state(self):
         """

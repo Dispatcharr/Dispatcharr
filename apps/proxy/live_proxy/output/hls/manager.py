@@ -44,12 +44,15 @@ DEFAULT_SEGMENT_DURATION = 4
 # TTL). The advertised playlist window tracks whatever is still in Redis
 # (minus a segment about to expire), not this fixed count.
 DEFAULT_WINDOW_SIZE = 10
+# Accept a keyframe this far before the configured cut length. A GOP
+# aimed at 4s that lands a picture or two early (3.9s at 25 fps) then
+# closes cleanly instead of skipping that keyframe and force-cutting.
+_EARLY_KEYFRAME_SLACK = 0.1
 # RFC 8216 4.3.3.1: EXTINF rounded to the nearest integer must be
-# <= TARGETDURATION. A keyframe up to just under target+0.5s still
-# rounds to the frozen tag, so the force-cut waits through that window.
-# The tenth of a second keeps the frame that crosses the ceiling from
-# rounding up.
-_FORCE_CUT_SLACK = 0.4
+# <= TARGETDURATION. The force-cut fires on the first picture at or
+# after this slack past the frozen tag. 0.45s leaves one 25 fps picture
+# (0.04s) under the 0.5s line: 6.45 + 0.04 = 6.49 still rounds to 6.
+_FORCE_CUT_SLACK = 0.45
 
 # Demand self-check. HLS clients are pull-based: there is no long-lived
 # response whose teardown reports the disconnect, so the manager itself
@@ -205,7 +208,7 @@ class HLSOutputManager:
     def _segmenter_loop(self):
         """Read TS chunks from Redis and feed them through the segmenter."""
         segmenter = TSSegmenter(
-            target_duration=self.segment_duration,
+            target_duration=max(0.0, float(self.segment_duration) - _EARLY_KEYFRAME_SLACK),
             max_segment_duration=float(self.adv_target) + _FORCE_CUT_SLACK,
         )
         if self._window:

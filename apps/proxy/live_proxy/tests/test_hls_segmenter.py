@@ -252,31 +252,49 @@ class SegmenterTests(unittest.TestCase):
     def test_late_keyframe_under_rounding_limit_is_not_force_cut(self):
         # TARGETDURATION 6: EXTINF under 6.5 still rounds to 6. A keyframe
         # in that window must close the segment; a P-frame before the
-        # ceiling must not.
+        # ceiling must not. 6.474 is the picture that previously missed
+        # a 6.4 ceiling by one frame.
         seg = TSSegmenter(
-            target_duration=4.0,
-            max_segment_duration=6.4,
+            target_duration=3.9,
+            max_segment_duration=6.45,
             startup_keyframe_cuts=0,
         )
         seg.feed(make_pat())
         seg.feed(make_pmt())
         seg.feed(make_video_pes(0.0, keyframe=True))
-        self.assertEqual(seg.feed(make_video_pes(6.07, keyframe=False)), [])
-        out = seg.feed(make_video_pes(6.2, keyframe=True))
+        self.assertEqual(seg.feed(make_video_pes(6.423, keyframe=False)), [])
+        out = seg.feed(make_video_pes(6.474, keyframe=True))
         self.assertEqual(len(out), 1)
-        self.assertAlmostEqual(out[0].duration, 6.2, places=2)
+        self.assertAlmostEqual(out[0].duration, 6.474, places=3)
         self.assertEqual(round(out[0].duration), 6)
+
+    def test_keyframe_just_under_four_seconds_closes_segment(self):
+        # Production passes the cut length minus 0.1s, so a keyframe at
+        # 3.9s closes and one a picture earlier does not.
+        seg = TSSegmenter(
+            target_duration=3.9,
+            max_segment_duration=6.45,
+            startup_keyframe_cuts=0,
+        )
+        seg.feed(make_pat())
+        seg.feed(make_pmt())
+        seg.feed(make_video_pes(0.0, keyframe=True))
+        self.assertEqual(seg.feed(make_video_pes(3.8, keyframe=True)), [])
+        out = seg.feed(make_video_pes(3.9, keyframe=True))
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out[0].duration, 3.9, places=2)
 
     def test_force_cut_stays_under_half_second_past_target(self):
         seg = TSSegmenter(
-            target_duration=4.0,
-            max_segment_duration=6.4,
+            target_duration=3.9,
+            max_segment_duration=6.45,
             startup_keyframe_cuts=0,
         )
         seg.feed(make_pat())
         seg.feed(make_pmt())
         seg.feed(make_video_pes(0.0, keyframe=True))
-        out = seg.feed(make_video_pes(6.4, keyframe=False))
+        self.assertEqual(seg.feed(make_video_pes(6.44, keyframe=False)), [])
+        out = seg.feed(make_video_pes(6.45, keyframe=False))
         self.assertEqual(len(out), 1)
         self.assertLess(out[0].duration, 6.5)
         self.assertEqual(round(out[0].duration), 6)
@@ -286,20 +304,20 @@ class SegmenterTests(unittest.TestCase):
         # that is under the 4s minimum. The segment after that keyframe
         # waits for the normal target again.
         seg = TSSegmenter(
-            target_duration=4.0,
-            max_segment_duration=6.4,
+            target_duration=3.9,
+            max_segment_duration=6.45,
             startup_keyframe_cuts=0,
         )
         seg.feed(make_pat())
         seg.feed(make_pmt())
         seg.feed(make_video_pes(0.0, keyframe=True))
-        forced = seg.feed(make_video_pes(6.4, keyframe=False))
+        forced = seg.feed(make_video_pes(6.45, keyframe=False))
         self.assertEqual(len(forced), 1)
-        early = seg.feed(make_video_pes(6.9, keyframe=True))
+        early = seg.feed(make_video_pes(6.95, keyframe=True))
         self.assertEqual(len(early), 1)
         self.assertAlmostEqual(early[0].duration, 0.5, places=2)
-        self.assertEqual(seg.feed(make_video_pes(8.9, keyframe=True)), [])
-        normal = seg.feed(make_video_pes(10.9, keyframe=True))
+        self.assertEqual(seg.feed(make_video_pes(8.95, keyframe=True)), [])
+        normal = seg.feed(make_video_pes(10.95, keyframe=True))
         self.assertEqual(len(normal), 1)
         self.assertAlmostEqual(normal[0].duration, 4.0, places=2)
 
