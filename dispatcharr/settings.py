@@ -2,7 +2,7 @@ import os
 import ssl
 from pathlib import Path
 from datetime import timedelta
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit
 from django.core.exceptions import ImproperlyConfigured
 
 from dispatcharr.db.process_label import db_application_name, uses_geventpool_database_backend
@@ -65,7 +65,27 @@ if REDIS_URL:
             "Set REDIS_SSL=true and configure the TLS certificate settings."
         )
 
-# Reusable dict of SSL kwargs for redis.Redis() constructors
+def redis_tls_status_from_url(redis_url):
+    """TLS flags for a REDIS_URL, matching what redis-py will connect with.
+
+    When REDIS_URL is set, discrete REDIS_SSL_* variables are not applied to
+    the client. Status follows the URL scheme and query: ssl_cert_reqs,
+    ssl_certfile, and ssl_keyfile. A rediss:// URL with no ssl_cert_reqs
+    verifies the server certificate (redis-py default).
+    """
+    parts = urlsplit(redis_url)
+    if parts.scheme != "rediss":
+        return {"enabled": False, "verify": False, "mtls": False}
+
+    query = dict(parse_qsl(parts.query, keep_blank_values=False))
+    cert_reqs = query.get("ssl_cert_reqs", "required").strip().lower()
+    verify = cert_reqs not in ("none", "cert_none")
+    mtls = bool(query.get("ssl_certfile") and query.get("ssl_keyfile"))
+    return {"enabled": True, "verify": verify, "mtls": mtls}
+
+
+# Reusable dict of SSL kwargs for redis.Redis() constructors.
+# Skipped when REDIS_URL is set: the URL carries scheme and cert query params.
 REDIS_SSL_PARAMS = {}
 if REDIS_SSL and not REDIS_URL:
     _validate_tls_cert_paths([
@@ -83,8 +103,20 @@ if REDIS_SSL and not REDIS_URL:
     if REDIS_SSL_KEY:
         REDIS_SSL_PARAMS["ssl_keyfile"] = REDIS_SSL_KEY
 
-    _mtls = "enabled" if REDIS_SSL_CERT and REDIS_SSL_KEY else "disabled"
-    _verify = "on" if REDIS_SSL_VERIFY else "off"
+if REDIS_URL:
+    REDIS_TLS_STATUS = redis_tls_status_from_url(REDIS_URL)
+elif REDIS_SSL:
+    REDIS_TLS_STATUS = {
+        "enabled": True,
+        "verify": REDIS_SSL_VERIFY,
+        "mtls": bool(REDIS_SSL_CERT and REDIS_SSL_KEY),
+    }
+else:
+    REDIS_TLS_STATUS = {"enabled": False, "verify": False, "mtls": False}
+
+if REDIS_TLS_STATUS["enabled"]:
+    _verify = "on" if REDIS_TLS_STATUS["verify"] else "off"
+    _mtls = "enabled" if REDIS_TLS_STATUS["mtls"] else "disabled"
     startup_log(f"Redis TLS: enabled (verify={_verify}, mTLS={_mtls})")
 else:
     startup_log("Redis TLS: disabled")
@@ -367,7 +399,29 @@ STATICFILES_DIRS = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-_default_redis_url = REDIS_URL.replace("unix://", "redis+socket://").replace("db=", "virtual_host=") if REDIS_URL else f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+def celery_broker_url_from_redis_url(redis_url):
+    """Convert a REDIS_URL into a Celery/Kombu-compatible broker URL.
+
+    Kombu's redis transport understands redis:// and rediss:// URLs as-is
+    (db from the URL path), so those pass through unchanged. Unix sockets
+    need Celery's own redis+socket:// convention with a virtual_host= query
+    key instead of db= (Kombu's own
+    URL parser raises a TypeError if both a path-derived virtual_host and a
+    virtual_host= query key are present, so only the unix db key is renamed
+    and only when the scheme is exactly "unix").
+    """
+    parts = urlsplit(redis_url)
+    if parts.scheme != "unix":
+        return redis_url
+
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if "db" in query:
+        query["virtual_host"] = query.pop("db")
+    new_query = urlencode(query)
+    return f"redis+socket://{parts.netloc}{parts.path}{'?' + new_query if new_query else ''}"
+
+
+_default_redis_url = celery_broker_url_from_redis_url(REDIS_URL) if REDIS_URL else f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 # Celery/Kombu require SSL parameters in the URL query string because
 # internal URL parsing can overwrite the CELERY_BROKER_USE_SSL dict.
 if REDIS_SSL and not REDIS_URL:

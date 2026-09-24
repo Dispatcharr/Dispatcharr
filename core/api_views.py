@@ -419,11 +419,11 @@ def environment(request):
             "log_collector_running": collector_running(
                 getattr(django_settings, "LOG_FILE_DIR", None)
             ),
-            "redis_tls": {
-                "enabled": getattr(django_settings, "REDIS_SSL", False),
-                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
-                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
-            },
+            "redis_tls": getattr(
+                django_settings,
+                "REDIS_TLS_STATUS",
+                {"enabled": False, "verify": False, "mtls": False},
+            ),
             "postgres_tls": {
                 "enabled": postgres_ssl,
                 "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,

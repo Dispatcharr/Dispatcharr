@@ -86,3 +86,21 @@ class RedisConnectionStringsTests(SimpleTestCase):
             client = RedisClient().get_test_client(max_retries = 1)
             total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs
             self.assertTrue(EXPECTED_KWARGS_HOSTPORT.items() <= total_kwargs.items())
+
+    @patch("core.utils.redis.commands.core.CoreCommands.ping")
+    def test_blank_redis_url_falls_back_to_hostport(self, mock_ping):
+
+        """ An empty REDIS_URL= (e.g. a blank compose/template default) must not be
+        treated as "REDIS_URL is set"; it should fall back to REDIS_[HOST|PORT|DB]
+        instead of being handed to from_url() as an unparsable connection string. """
+
+        mock_ping.return_value = True
+
+        EXPECTED_KWARGS_HOSTPORT = COMMON_TEST_KWARGS | UNIVERSAL_KWARGS | COMMON_SOCKET_KWARGS
+
+        with patch.dict(os.environ, {"REDIS_URL": ""}, clear=False):
+
+            client = RedisClient().get_test_client(max_retries = 1)
+            self.assertIsNotNone(client)
+            total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs
+            self.assertTrue(EXPECTED_KWARGS_HOSTPORT.items() <= total_kwargs.items())

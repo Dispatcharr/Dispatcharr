@@ -152,84 +152,98 @@ class RedisClient:
     _buffer = None
     _pubsub_client = None
     _netloc = None
+    _lock = threading.Lock()
 
     @classmethod
     def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1, max_retry_interval=None, no_socket_timeout=False, disable_persistence=True, exponential_backoff=True, backoff_jitter=False):
+        # Connection settings do not change between retries. Read them once so the
+        # retry handlers can always see ssl_params, including when setup itself fails.
+        ssl_params = {}
+        try:
+            redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+            redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+            redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+            redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', None))
+            redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', None))
+            redis_url = os.environ.get("REDIS_URL", getattr(settings, 'REDIS_URL', ''))
+
+            # Use standardized settings, consistent with the defaults from settings.py
+            socket_timeout = None if no_socket_timeout else getattr(settings, 'REDIS_SOCKET_TIMEOUT', 60)
+            socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
+            health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 15)
+            socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
+            retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+            max_connections = int(getattr(settings, 'REDIS_MAX_CONNECTIONS', 50))
+            pool_timeout = float(getattr(settings, 'REDIS_POOL_TIMEOUT', 20))
+
+            # TLS params from settings (empty dict when TLS is disabled)
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
+            sockargs = {"socket_timeout" : socket_timeout,
+                        "socket_connect_timeout" : socket_connect_timeout,
+                        "socket_keepalive" : socket_keepalive}
+
+            redis_kwargs = {"max_connections" : max_connections,
+                            "timeout" : pool_timeout }
+
+            # List of defaults which may not be overridden via REDIS_URL
+            immutable_kwargs = (*sockargs.keys(), "health_check_interval", "retry_on_timeout", "decode_responses")
+
+            # If REDIS_URL is set to a non-empty value, use from_url and ignore
+            # REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] envvars. A blank REDIS_URL=
+            # (common in docker-compose/template files that list every var with an
+            # empty default) is treated the same as REDIS_URL being unset.
+            url = None
+            if redis_url:
+
+                connstring = urlsplit(redis_url, allow_fragments = False)
+
+                # Pop the connection string arguments which would otherwise override our defaults (see https://redis.readthedocs.io/en/stable/connections.html - "In the case of conflicting arguments, querystring arguments always win.")
+                try:
+
+                    connargs = dict(parse_qsl(connstring.query, strict_parsing = True))
+                    for k in immutable_kwargs:
+                        connargs.pop(k, None)
+
+                except ValueError:
+
+                    logger.error("Ill-formatted REDIS_URL: Unable to parse connection string parameters")
+                    return None
+
+                connargs = urlencode(connargs)
+
+                # Rebuilds the connection string manually, since urlunsplit(urlsplit(...)) is not necessarily idempotent
+                url = f"{connstring.scheme}://{connstring.netloc}{connstring.path}{'?' + connargs if connargs else ''}"
+
+                if connstring.scheme == "unix":
+                    sockargs.pop("socket_keepalive", None)
+
+                redis_kwargs |= sockargs
+
+            # If REDIS_URL turns out unset, collect REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] as kwargs to redis.Redis
+            else:
+
+                redis_kwargs |= {"host" : redis_host, "port" : redis_port, "db" : redis_db,
+                                 "username" : redis_user,
+                                 "password" : redis_password} | ssl_params | sockargs
+
+        except Exception as e:
+            _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
+            logger.error(f"Unexpected error connecting to Redis: {e}{_tls_hint}")
+            return None
+
         retry_count = 0
         while retry_count < max_retries:
             try:
-                redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', None))
-                redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', None))
-                redis_url = os.environ.get("REDIS_URL", getattr(settings, 'REDIS_URL', ''))
-
-                # Use standardized settings, consistent with the defaults from settings.py
-                socket_timeout = None if no_socket_timeout else getattr(settings, 'REDIS_SOCKET_TIMEOUT', 60)
-                socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 15)
-                socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-                max_connections = int(getattr(settings, 'REDIS_MAX_CONNECTIONS', 50))
-                pool_timeout = float(getattr(settings, 'REDIS_POOL_TIMEOUT', 20))
-
-                # TLS params from settings (empty dict when TLS is disabled)
-                ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-
-                sockargs = {"socket_timeout" : socket_timeout, 
-                            "socket_connect_timeout" : socket_connect_timeout,
-                            "socket_keepalive" : socket_keepalive}
-
-                redis_kwargs = {"max_connections" : max_connections,
-                                "timeout" : pool_timeout }
-
-                # List of defaults which may not be overridden via REDIS_URL
-                immutable_kwargs = (*sockargs.keys(), "health_check_interval", "retry_on_timeout", "decode_responses")
-
-                # If REDIS_URL is set, use from_url and ignore REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] envvars
-                if "REDIS_URL" in os.environ:
-
-                    connstring = urlsplit(redis_url, allow_fragments = False)
-
-                    # Pop the connection string arguments which would otherwise override our defaults (see https://redis.readthedocs.io/en/stable/connections.html - "In the case of conflicting arguments, querystring arguments always win.")
-                    try:
-
-                        connargs = dict(parse_qsl(connstring.query, strict_parsing = True))
-                        for k in immutable_kwargs:
-                            connargs.pop(k, None)
-
-                    except ValueError:
-
-                        logging.error("Ill-formatted REDIS_URL: Unable to parse connection string parameters")
-                        return None
-
-                    connargs = urlencode(connargs)
-
-                    # Rebuilds the connection string manually, since urlunsplit(urlsplit(...)) is not necessarily idempotent
-                    url = f"{connstring.scheme}://{connstring.netloc}{connstring.path}{'?' + connargs if connargs else ''}"
-
-                    if connstring.scheme == "unix":
-                        sockargs.pop("socket_keepalive", None)
-
-                    redis_kwargs |= sockargs
-
-                    pool = BlockingConnectionPool.from_url(url, **redis_kwargs,
-                                                           decode_responses = decode_responses,
-                                                           health_check_interval = health_check_interval,
-                                                           retry_on_timeout = retry_on_timeout)
-
-                # If REDIS_URL turns out unset, collect REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] as kwargs to redis.Redis
+                pool_kwargs = dict(
+                    decode_responses=decode_responses,
+                    health_check_interval=health_check_interval,
+                    retry_on_timeout=retry_on_timeout,
+                )
+                if url:
+                    pool = BlockingConnectionPool.from_url(url, **redis_kwargs, **pool_kwargs)
                 else:
-
-                    redis_kwargs |= {"host" : redis_host, "port" : redis_port, "db" : redis_db,
-                                     "username" : redis_user,
-                                     "password" : redis_password} | ssl_params | sockargs
-
-                    pool = BlockingConnectionPool(**redis_kwargs,
-                                                  decode_responses = decode_responses,
-                                                  health_check_interval = health_check_interval,
-                                                  retry_on_timeout = retry_on_timeout)
+                    pool = BlockingConnectionPool(**redis_kwargs, **pool_kwargs)
 
                 # Create Redis client with our defaults, ensuring REDIS_URL does not override said defaults
                 client = redis.Redis(connection_pool = pool)
@@ -266,8 +280,8 @@ class RedisClient:
                             try:
                                 client.config_set('maxmemory', '768mb')
                                 logger.warning("Applied emergency Redis memory increase to 768MB")
-                            except:
-                                pass
+                            except Exception:
+                                logger.debug("Emergency Redis maxmemory increase failed", exc_info=True)
                         else:
                             logger.error(f"Redis configuration error: {e}")
 
@@ -296,36 +310,62 @@ class RedisClient:
                     time.sleep(wait_time)
 
             except Exception as e:
-                _tls_hint = ""
-                try:
-                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
-                except NameError:
-                    pass
+                _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
                 logger.error(f"Unexpected error connecting to Redis: {e}{_tls_hint}")
                 return None
 
         return None
 
     @classmethod
+    def _get_cached(cls, attr, **kwargs):
+        """Return the cached client for attr, creating it once under _lock."""
+        client = getattr(cls, attr)
+        if client is None:
+            with cls._lock:
+                client = getattr(cls, attr)
+                if client is None:
+                    client = cls._init_client(**kwargs)
+                    # A failed connect stays None so the next caller can retry.
+                    if client is not None:
+                        setattr(cls, attr, client)
+        return client
+
+    @classmethod
     def get_client(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = True):
         """Get Redis client optimized for non-binary data (decoded responses)"""
-        if cls._client is None:
-            cls._client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval=max_retry_interval, disable_persistence=disable_persistence)
-        return cls._client
+        return cls._get_cached(
+            "_client",
+            decode_responses=True,
+            max_retries=max_retries,
+            retry_interval=retry_interval,
+            max_retry_interval=max_retry_interval,
+            disable_persistence=disable_persistence,
+        )
 
     @classmethod
     def get_buffer(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = True):
         """Get Redis client optimized for binary data (no decoding)"""
-        if cls._buffer is None:
-            cls._buffer = cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval=max_retry_interval, disable_persistence=disable_persistence)
-        return cls._buffer
+        return cls._get_cached(
+            "_buffer",
+            decode_responses=False,
+            max_retries=max_retries,
+            retry_interval=retry_interval,
+            max_retry_interval=max_retry_interval,
+            disable_persistence=disable_persistence,
+        )
 
     @classmethod
     def get_pubsub_client(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = False):
         """Get Redis client optimized for PubSub operations (no socket timeout)"""
-        if cls._pubsub_client is None:
-            cls._pubsub_client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval=max_retry_interval, no_socket_timeout=True, disable_persistence=disable_persistence)
-        return cls._pubsub_client
+        return cls._get_cached(
+            "_pubsub_client",
+            decode_responses=True,
+            max_retries=max_retries,
+            retry_interval=retry_interval,
+            max_retry_interval=max_retry_interval,
+            no_socket_timeout=True,
+            disable_persistence=disable_persistence,
+        )
 
     @classmethod
     def get_test_client(cls, max_retries = 30, retry_interval = 2, max_retry_interval = None, decode_responses = False, disable_persistence = False):
