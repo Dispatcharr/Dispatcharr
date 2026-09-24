@@ -1599,13 +1599,20 @@ def _dvr_build_ffmpeg_cmd(
     hls_seg_pattern,
     hls_start_number,
     user_agent=None,
+    subtitle_sidecar_path=None,
 ):
-    """Build the FFmpeg command for DVR HLS segment recording."""
+    """Build the FFmpeg command for DVR HLS segment recording.
+
+    ``subtitle_sidecar_path``, when given, adds a second output carrying
+    only the subtitle PID as a plain copy into mpegts - the HLS output
+    above is untouched. Only set when the channel's stream metadata has
+    already confirmed a subtitle stream is present.
+    """
     from core.utils import dispatcharr_dvr_user_agent
 
     if not user_agent:
         user_agent = dispatcharr_dvr_user_agent(recording_id)
-    return [
+    cmd = [
         "ffmpeg", "-y",
         "-reconnect", "1",
         "-reconnect_streamed", "1",
@@ -1618,8 +1625,8 @@ def _dvr_build_ffmpeg_cmd(
         "-err_detect", "ignore_err",
         "-i", stream_url,
         # Keep every video and audio stream (multi-audio, etc.). Do not map
-        # subtitle/data PIDs: the HLS muxer cannot copy DVB-sub and will fail
-        # the recording.
+        # subtitle/data PIDs into the HLS output: the HLS muxer cannot copy
+        # DVB-sub and will fail the recording.
         "-map", "0:v?",
         "-map", "0:a?",
         "-c", "copy",
@@ -1634,6 +1641,14 @@ def _dvr_build_ffmpeg_cmd(
         "-hls_segment_filename", hls_seg_pattern,
         hls_m3u8,
     ]
+    if subtitle_sidecar_path:
+        cmd += [
+            "-map", "0:s?",
+            "-c:s", "copy",
+            "-f", "mpegts",
+            subtitle_sidecar_path,
+        ]
+    return cmd
 
 
 # Shared ceiling for HLS finalize
@@ -1723,6 +1738,79 @@ def _dvr_run_ffmpeg_with_budget(cmd, log_label, step_label, deadline):
             f"{_DVR_HLS_REMUX_TIMEOUT_SECONDS}s remux budget"
         )
         return None
+
+
+def _dvr_subtitle_sidecar_path(hls_dir, attempt):
+    """Per-attempt path so a failover never appends to a stale sidecar."""
+    return os.path.join(hls_dir, f"subs_attempt_{attempt}.ts")
+
+
+def _dvr_sidecar_fold_in_eligible(subtitle_codec, ffmpeg_retry_count, resumed_with_segments):
+    """A sidecar only aligns with the final MKV for a clean single-attempt
+    recording. A later in-task ffmpeg retry restarts its own timestamps, and
+    so does a resume onto a pre-existing HLS dir after a server restart -
+    either way the sidecar covers only part of the timeline."""
+    return bool(subtitle_codec) and ffmpeg_retry_count == 0 and not resumed_with_segments
+
+
+def _dvr_fold_subtitle_sidecar_into_mkv(
+    sidecar_path, subtitle_codec, output_path, log_label, deadline, run_cmd=None
+):
+    """Fold a per-attempt subtitle sidecar into the finished MKV, then remove it."""
+    run_cmd = run_cmd or _dvr_run_ffmpeg_with_budget
+    srt_path = f"{sidecar_path}.srt"
+    try:
+        if not _dvr_output_nonempty(sidecar_path):
+            return False
+
+        if subtitle_codec == "dvb_subtitle":
+            mux_input = sidecar_path
+        elif subtitle_codec == "dvb_teletext":
+            cc_result = run_cmd(
+                ["ccextractor", "-teletext", "-out=srt", sidecar_path, "-o", srt_path],
+                log_label, "ccextractor teletext decode", deadline,
+            )
+            if not (
+                cc_result is not None
+                and cc_result.returncode == 0
+                and _dvr_output_nonempty(srt_path)
+            ):
+                return False
+            mux_input = srt_path
+        else:
+            return False
+
+        tmp_output = f"{output_path}.with_subs.tmp"
+        mux_result = run_cmd(
+            [
+                "ffmpeg", "-y",
+                "-i", output_path,
+                "-i", mux_input,
+                "-map", "0",
+                "-map", "1:s",
+                "-c", "copy",
+                "-f", "matroska",
+                tmp_output,
+            ],
+            log_label, "fold subtitle sidecar into MKV", deadline,
+        )
+        if (
+            mux_result is not None
+            and mux_result.returncode == 0
+            and _dvr_output_nonempty(tmp_output)
+        ):
+            os.replace(tmp_output, output_path)
+            return True
+
+        _dvr_remove_empty_or_partial_output(tmp_output)
+        return False
+    finally:
+        for _p in (sidecar_path, srt_path):
+            try:
+                if os.path.exists(_p):
+                    os.remove(_p)
+            except OSError:
+                pass
 
 
 def _dvr_remux_hls_to_mkv(m3u8_path, output_path, log_label, recording_id):
@@ -2014,6 +2102,17 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     channel = Channel.objects.get(id=channel_id)
 
+    _dvr_subtitle_codec = None
+    _dvr_resumed_with_segments = False
+    try:
+        _primary_stream = channel.streams.all().order_by("channelstream__order").first()
+        if _primary_stream:
+            _dvr_subtitle_codec = (_primary_stream.stream_stats or {}).get("subtitle_codec")
+    except Exception as _sub_detect_e:
+        logger.debug(
+            f"DVR recording {recording_id}: subtitle detection skipped: {_sub_detect_e}"
+        )
+
     start_time = datetime.fromisoformat(start_time_str)
     end_time = datetime.fromisoformat(end_time_str)
 
@@ -2105,6 +2204,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 )
             except OSError:
                 _seg_count = 0
+            _dvr_resumed_with_segments = _seg_count > 0
             logger.info(
                 f"run_recording {recording_id}: resuming into existing HLS dir "
                 f"{hls_dir} ({_seg_count} segment(s)), final={final_path}"
@@ -2311,6 +2411,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
             hls_start_number = _dvr_hls_start_number(hls_dir, hls_m3u8)
             ffmpeg_user_agent = _dvr_ffmpeg_user_agent(channel, recording_id)
+            _subtitle_sidecar_path = (
+                _dvr_subtitle_sidecar_path(hls_dir, _ffmpeg_retry_count)
+                if _dvr_subtitle_codec else None
+            )
             ffmpeg_cmd = _dvr_build_ffmpeg_cmd(
                 stream_url,
                 recording_id,
@@ -2318,6 +2422,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 hls_seg_pattern,
                 hls_start_number,
                 user_agent=ffmpeg_user_agent,
+                subtitle_sidecar_path=_subtitle_sidecar_path,
             )
 
             logger.info(
@@ -2745,6 +2850,32 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         f"\u2014 {os.path.basename(final_path)} "
                         f"({os.path.getsize(final_path):,} bytes)"
                     )
+
+                # Only a single-attempt recording gets its sidecar folded in -
+                # a later attempt restarts its own timestamps, so alignment
+                # across attempts isn't attempted. A resume onto a pre-existing
+                # HLS dir (server restart, not an in-task ffmpeg retry) is the
+                # same case: its sidecar only covers the post-resume portion.
+                if hls_dir:
+                    try:
+                        if _dvr_sidecar_fold_in_eligible(
+                            _dvr_subtitle_codec, _ffmpeg_retry_count, _dvr_resumed_with_segments,
+                        ):
+                            _sidecar = _dvr_subtitle_sidecar_path(hls_dir, 0)
+                            _subs_deadline = time.monotonic() + _DVR_HLS_REMUX_TIMEOUT_SECONDS
+                            if _dvr_fold_subtitle_sidecar_into_mkv(
+                                _sidecar, _dvr_subtitle_codec, final_path,
+                                _log_label, _subs_deadline,
+                            ):
+                                logger.info(f"{_log_label}: subtitle sidecar folded into MKV")
+                        else:
+                            for _n in range(_ffmpeg_retry_count + 1):
+                                _stale = _dvr_subtitle_sidecar_path(hls_dir, _n)
+                                if os.path.exists(_stale):
+                                    os.remove(_stale)
+                    except Exception as _subs_e:
+                        logger.warning(f"{_log_label}: subtitle sidecar step failed (non-fatal): {_subs_e}")
+
                 # Update DB so *new* client requests go to /file/ (the final MKV)
                 # rather than the soon-to-be-removed /hls/ endpoint.  Important:
                 # we do NOT clear _hls_dir here, active viewers still in the
