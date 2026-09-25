@@ -1213,6 +1213,71 @@ class Recording(models.Model):
     def __str__(self):
         return f"{self.channel.name} - {self.start_time} to {self.end_time}"
 
+    @property
+    def owner_request(self):
+        """The RecordingRequest row currently marked as owner, if any."""
+        return self.requests.filter(is_owner=True).select_related("user").first()
+
+    @property
+    def owner(self):
+        req = self.owner_request
+        return req.user if req else None
+
+    def promote_next_owner(self):
+        """Promote the oldest non-owner request to owner and return it.
+
+        Used when the current owner's request is removed (e.g. they deleted
+        their own recording) but other users still want it, so the recording
+        survives under new ownership instead of being deleted.
+        """
+        next_request = (
+            self.requests.exclude(is_owner=True).order_by("created_at").first()
+        )
+        if next_request:
+            next_request.is_owner = True
+            next_request.save(update_fields=["is_owner"])
+        return next_request
+
+
+class RecordingRequest(models.Model):
+    """One user's interest in a Recording, and whether they currently own it.
+
+    A Recording has at most one owning request at a time (enforced by the
+    partial unique constraint below). Deleting the owner's request while
+    other requests remain promotes the next-oldest one (see
+    Recording.promote_next_owner) rather than deleting the Recording -- this
+    is what lets a shared recording survive its original requester dropping
+    it. A Recording with zero requests (scheduled before this model existed,
+    or created directly by an admin action that skipped attribution) has no
+    owner and is only deletable by an admin/DVR manager.
+    """
+
+    recording = models.ForeignKey(
+        Recording, on_delete=models.CASCADE, related_name="requests"
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="dvr_recording_requests"
+    )
+    is_owner = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["recording", "user"],
+                name="unique_recording_request_per_user",
+            ),
+            models.UniqueConstraint(
+                fields=["recording"],
+                condition=models.Q(is_owner=True),
+                name="unique_owner_per_recording",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.user} -> recording {self.recording_id} (owner={self.is_owner})"
+
 
 class RecurringRecordingRule(models.Model):
     """Rule describing a recurring manual DVR schedule."""

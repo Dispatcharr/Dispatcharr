@@ -3122,6 +3122,13 @@ export default class API {
     }
   }
 
+  // No errorNotification here -- this backs an optional informational
+  // widget (DVR page disk-space indicator), not a user-initiated action,
+  // so a fetch failure shouldn't surface a toast. Callers decide silently.
+  static async getDvrDiskUsage() {
+    return await request(`${host}/api/channels/recordings/disk-usage/`);
+  }
+
   static async createRecording(values) {
     try {
       const response = await request(`${host}/api/channels/recordings/`, {

@@ -416,16 +416,29 @@ const User = ({ user = null, isOpen, onClose }) => {
                 {form.getValues().user_level != USER_LEVELS.STREAMER && (
                   <Select
                     label="DVR Access"
-                    description="None: no DVR page or playback. View: watch recordings for channels they can access (default). Manage: create, delete, and manage recordings and rules like an admin for DVR endpoints."
+                    description="None: no DVR page or playback. View: watch recordings for channels they can access (default). Request: also schedule and delete recordings they own themselves. Manage: create, delete, and manage all recordings and rules like an admin for DVR endpoints."
                     data={[
                       { value: DVR_ACCESS.NONE, label: 'None' },
                       { value: DVR_ACCESS.VIEW, label: 'View' },
+                      { value: DVR_ACCESS.REQUEST, label: 'Request' },
                       { value: DVR_ACCESS.MANAGE, label: 'Manage' },
                     ]}
                     {...form.getInputProps('dvr_access')}
                     key={form.key('dvr_access')}
                   />
                 )}
+                {form.getValues().user_level != USER_LEVELS.STREAMER &&
+                  [DVR_ACCESS.REQUEST, DVR_ACCESS.MANAGE].includes(
+                    form.getValues().dvr_access
+                  ) && (
+                    <NumberInput
+                      label="DVR Storage Quota (MB)"
+                      description="Caps how much disk space this user's own recordings may use. Blocks scheduling a new recording once at/over quota, and automatically frees the oldest finished recordings they own if a recording's final size pushes them over. 0 or blank = unlimited."
+                      min={0}
+                      {...form.getInputProps('dvr_quota_mb')}
+                      key={form.key('dvr_quota_mb')}
+                    />
+                  )}
               </Stack>
             </TabsPanel>
           )}

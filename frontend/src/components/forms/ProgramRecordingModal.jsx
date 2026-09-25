@@ -17,6 +17,7 @@ export default function ProgramRecordingModal({
   onRecordSeriesAll,
   onRecordSeriesNew,
   onExistingRuleModeChange,
+  allowSeries = true,
 }) {
   const [editorOpen, setEditorOpen] = useState(false);
 
@@ -76,35 +77,39 @@ export default function ProgramRecordingModal({
           Just this one
         </Button>
 
-        <Button
-          variant="light"
-          onClick={() => {
-            onRecordSeriesAll();
-            onClose();
-          }}
-        >
-          Every episode
-        </Button>
+        {allowSeries && (
+          <>
+            <Button
+              variant="light"
+              onClick={() => {
+                onRecordSeriesAll();
+                onClose();
+              }}
+            >
+              Every episode
+            </Button>
 
-        <Button
-          variant="light"
-          onClick={() => {
-            onRecordSeriesNew();
-            onClose();
-          }}
-        >
-          New episodes only
-        </Button>
+            <Button
+              variant="light"
+              onClick={() => {
+                onRecordSeriesNew();
+                onClose();
+              }}
+            >
+              New episodes only
+            </Button>
 
-        <Anchor
-          component="button"
-          type="button"
-          size="xs"
-          ta="center"
-          onClick={() => setEditorOpen(true)}
-        >
-          Customize rule...
-        </Anchor>
+            <Anchor
+              component="button"
+              type="button"
+              size="xs"
+              ta="center"
+              onClick={() => setEditorOpen(true)}
+            >
+              Customize rule...
+            </Anchor>
+          </>
+        )}
 
         {recording && (
           <>
@@ -115,46 +120,50 @@ export default function ProgramRecordingModal({
             >
               Remove this recording
             </Button>
-            <Button color="red" variant="light" onClick={handleRemoveSeries}>
-              Remove this series (scheduled)
-            </Button>
+            {allowSeries && (
+              <Button color="red" variant="light" onClick={handleRemoveSeries}>
+                Remove this series (scheduled)
+              </Button>
+            )}
           </>
         )}
 
-        {existingRuleMode && (
+        {allowSeries && existingRuleMode && (
           <Button color="red" variant="subtle" onClick={handleRemoveSeriesRule}>
             Remove series rule ({existingRuleMode})
           </Button>
         )}
       </Flex>
 
-      <SeriesRuleEditorModal
-        opened={editorOpen}
-        onClose={() => setEditorOpen(false)}
-        initialRule={
-          existingRule
-            ? {
-                ...existingRule,
-                ...(epgSourceId &&
-                (existingRule.epg_source_id == null ||
-                  existingRule.epg_source_id === '')
-                  ? { epg_source_id: epgSourceId }
-                  : {}),
-              }
-            : program
+      {allowSeries && (
+        <SeriesRuleEditorModal
+          opened={editorOpen}
+          onClose={() => setEditorOpen(false)}
+          initialRule={
+            existingRule
               ? {
-                  tvg_id: program.tvg_id,
-                  title: program.title,
-                  title_mode: 'exact',
-                  mode: 'all',
-                  ...(epgSourceId ? { epg_source_id: epgSourceId } : {}),
+                  ...existingRule,
+                  ...(epgSourceId &&
+                  (existingRule.epg_source_id == null ||
+                    existingRule.epg_source_id === '')
+                    ? { epg_source_id: epgSourceId }
+                    : {}),
                 }
-              : null
-        }
-        onSaved={() => {
-          onClose();
-        }}
-      />
+              : program
+                ? {
+                    tvg_id: program.tvg_id,
+                    title: program.title,
+                    title_mode: 'exact',
+                    mode: 'all',
+                    ...(epgSourceId ? { epg_source_id: epgSourceId } : {}),
+                  }
+                : null
+          }
+          onSaved={() => {
+            onClose();
+          }}
+        />
+      )}
     </Modal>
   );
 }

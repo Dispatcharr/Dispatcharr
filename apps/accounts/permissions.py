@@ -50,6 +50,23 @@ class IsDVRViewer(Authenticated):
         return is_dvr_view_enabled(user=request.user)
 
 
+class IsAdminOrDVRRequester(Authenticated):
+    """Admin or a standard user with ``dvr_access`` of ``request`` or ``manage``.
+
+    Grants access to schedule/delete recordings the user owns themselves,
+    without the full DVR-manage rights (settings, recurring rules, other
+    users' recordings). Object-level ownership is enforced separately by the
+    view, not by this class.
+    """
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        from apps.channels.dvr_access import is_dvr_request_enabled
+
+        return is_dvr_request_enabled(user=request.user)
+
+
 class IsOwnerOfObject(Authenticated):
     def has_object_permission(self, request, view, obj):
         if not super().has_permission(request, view):
