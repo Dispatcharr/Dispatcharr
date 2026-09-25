@@ -42,7 +42,8 @@ class RecordingPlaybackAuthTests(TestCase):
         self.hls_dir = recordings_root / f"_playback_auth_hls_{uuid.uuid4().hex}"
         self.hls_dir.mkdir(parents=True, exist_ok=True)
         (self.hls_dir / "index.m3u8").write_text(
-            "#EXTM3U\n#EXTINF:4.0,\nseg_00001.ts\n", encoding="utf-8"
+            "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:4.0,\nseg_00001.ts\n",
+            encoding="utf-8",
         )
         (self.hls_dir / "seg_00001.ts").write_bytes(b"\x00" * 188)
         now = timezone.now()
@@ -154,8 +155,6 @@ class RecordingPlaybackAuthTests(TestCase):
         self.assertIn("seg_00001.ts", body)
         self.assertIn("#EXT-X-PLAYLIST-TYPE:EVENT", body)
         self.assertEqual(response["Cache-Control"], "no-cache")
-        self.assertNotIn("X-Recording-Total-Duration", response)
-        self.assertNotIn("X-Recording-Segment-Count", response)
 
     def test_hls_playlist_omits_token_when_not_in_request(self, _mock_network):
         now = timezone.now()

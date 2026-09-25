@@ -3604,24 +3604,13 @@ class RecordingViewSet(viewsets.ModelViewSet):
             )
             auth_suffix = _recording_auth_query_suffix(request)
             lines = []
-            has_playlist_type = False
             with open(requested) as _f:
                 for line in _f:
                     stripped = line.strip()
-                    if stripped.startswith("#EXT-X-PLAYLIST-TYPE:"):
-                        has_playlist_type = True
-
                     if stripped and not stripped.startswith("#"):
                         lines.append(f"{base_url}{stripped}{auth_suffix}\n")
                     else:
                         lines.append(line)
-
-            if not has_playlist_type:
-                insert_idx = 0
-                for i, l in enumerate(lines):
-                    if l.startswith("#EXT-X-VERSION") or l.startswith("#EXTM3U"):
-                        insert_idx = i + 1
-                lines.insert(insert_idx, "#EXT-X-PLAYLIST-TYPE:EVENT\n")
 
             resp = HttpResponse("".join(lines), content_type="application/x-mpegURL")
             resp["Cache-Control"] = "no-cache"
