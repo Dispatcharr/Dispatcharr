@@ -3633,6 +3633,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 lines.insert(insert_idx, "#EXT-X-PLAYLIST-TYPE:EVENT\n")
 
             resp = HttpResponse("".join(lines), content_type="application/x-mpegURL")
+            resp["Cache-Control"] = "no-cache"
             if total_duration > 0:
                 resp["X-Recording-Total-Duration"] = f"{total_duration:.2f}"
             if segment_count > 0:
