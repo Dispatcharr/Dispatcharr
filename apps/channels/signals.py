@@ -432,3 +432,14 @@ def update_channel_catchup_fields(sender, instance, **kwargs):
         is_catchup=catchup_qs.exists(),
         catchup_days=max_days or 0,
     )
+
+
+@receiver([post_save, post_delete], sender=ChannelStream)
+def update_channel_radio_flag(sender, instance, **kwargs):
+    """Roll up the radio flag from active streams (UI path; import uses SQL rollup)."""
+    channel = instance.channel
+    radio_qs = channel.streams.filter(
+        is_radio=True,
+        m3u_account__is_active=True,
+    )
+    Channel.objects.filter(pk=channel.pk).update(is_radio=radio_qs.exists())

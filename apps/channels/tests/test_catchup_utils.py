@@ -156,3 +156,83 @@ class CatchupRollupActiveAccountTests(TestCase):
         channel.refresh_from_db()
         self.assertFalse(channel.is_catchup)
         self.assertEqual(channel.catchup_days, 0)
+
+
+class RadioRollupActiveAccountTests(TestCase):
+    """Denormalized radio flag ignores disabled M3U accounts, same shape as catch-up."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.active = M3UAccount.objects.create(
+            name="radio-active",
+            server_url="http://example.test",
+            account_type="XC",
+            is_active=True,
+        )
+        cls.inactive = M3UAccount.objects.create(
+            name="radio-inactive",
+            server_url="http://example.test",
+            account_type="XC",
+            is_active=False,
+        )
+
+    def test_channelstream_signal_sets_radio_from_active_stream(self):
+        channel = Channel.objects.create(name="radio-only")
+        stream = Stream.objects.create(
+            name="radio-stream",
+            url="http://example.test/radio",
+            m3u_account=self.active,
+            is_radio=True,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_radio)
+
+    def test_channelstream_signal_ignores_inactive_radio_stream(self):
+        channel = Channel.objects.create(name="inactive-radio-only")
+        stream = Stream.objects.create(
+            name="inactive-radio",
+            url="http://example.test/inactive-radio",
+            m3u_account=self.inactive,
+            is_radio=True,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+
+        channel.refresh_from_db()
+        self.assertFalse(channel.is_radio)
+
+    def test_rollup_ignores_inactive_radio_stream(self):
+        from apps.m3u.tasks import rollup_channel_radio_flag
+
+        channel = Channel.objects.create(name="rollup-inactive-radio-only")
+        stream = Stream.objects.create(
+            name="rollup-inactive-radio",
+            url="http://example.test/rollup-inactive-radio",
+            m3u_account=self.inactive,
+            is_radio=True,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+        Channel.objects.filter(pk=channel.pk).update(is_radio=True)
+
+        rollup_channel_radio_flag(self.inactive.id)
+
+        channel.refresh_from_db()
+        self.assertFalse(channel.is_radio)
+
+    def test_rollup_sets_radio_from_active_stream(self):
+        from apps.m3u.tasks import rollup_channel_radio_flag
+
+        channel = Channel.objects.create(name="rollup-active-radio")
+        stream = Stream.objects.create(
+            name="rollup-active-radio-stream",
+            url="http://example.test/rollup-active-radio",
+            m3u_account=self.active,
+            is_radio=True,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+
+        rollup_channel_radio_flag(self.active.id)
+
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_radio)
