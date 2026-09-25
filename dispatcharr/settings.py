@@ -1,4 +1,5 @@
 import os
+import warnings
 import ssl
 from pathlib import Path
 from datetime import timedelta
@@ -606,6 +607,13 @@ DISPATCHARR_DISPLAY_TZ = (
 
 # Loggers can fire during app loading, before dictConfig runs.
 configure_early_logging(LOG_LEVEL)
+
+# Startup hooks read the database deliberately (scheduler sync, live proxy start).
+warnings.filterwarnings(
+    "ignore",
+    message="Accessing the database during app initialization",
+    category=RuntimeWarning,
+)
 
 # Add this to your existing LOGGING configuration or create one if it doesn't exist
 LOGGING = {
