@@ -92,7 +92,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </button>
   ),
-  Checkbox: ({ label, checked, onChange }) => (
+  Checkbox: ({ label, checked, onChange, disabled }) => (
     <div>
       <label htmlFor="checkbox-is-active">{label}</label>
       <input
@@ -100,6 +100,7 @@ vi.mock('@mantine/core', () => ({
         data-testid="checkbox-is-active"
         type="checkbox"
         checked={checked ?? false}
+        disabled={disabled}
         onChange={(e) =>
           onChange({ currentTarget: { checked: e.target.checked } })
         }
@@ -510,6 +511,24 @@ describe('StreamProfile', () => {
         />
       );
       expect(screen.getByTestId('textarea-parameters')).toBeDisabled();
+    });
+
+    it('disables Is Active when profile is locked', () => {
+      render(
+        <StreamProfile
+          {...defaultProps({ profile: makeProfile({ locked: true }) })}
+        />
+      );
+      expect(screen.getByTestId('checkbox-is-active')).toBeDisabled();
+    });
+
+    it('leaves User-Agent editable when profile is locked', () => {
+      render(
+        <StreamProfile
+          {...defaultProps({ profile: makeProfile({ locked: true }) })}
+        />
+      );
+      expect(screen.getByTestId('select-user-agent')).not.toBeDisabled();
     });
 
     it('does not disable inputs when profile is not locked', () => {
