@@ -109,9 +109,17 @@ class Series(models.Model):
     genre = models.CharField(max_length=255, blank=True, null=True)
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='series')
 
-    # Metadata IDs for deduplication - these should be globally unique when present
-    tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
-    imdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="IMDB ID for metadata")
+    # Metadata IDs for deduplication - unique per language when present
+    tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
+    imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
+    # '' rather than NULL so untagged rows collide in the unique constraints
+    language = models.CharField(
+        max_length=2,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
+    )
 
     # Additional metadata and properties
     custom_properties = models.JSONField(blank=True, null=True, help_text='Additional metadata and properties for the series')
@@ -123,12 +131,23 @@ class Series(models.Model):
         verbose_name = 'Series'
         verbose_name_plural = 'Series'
         ordering = ['name']
-        # Only enforce name+year uniqueness when no external IDs are present
+        # Identity is (external ID, language), falling back to
+        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['name', 'year'],
+                fields=['tmdb_id', 'language'],
+                condition=models.Q(tmdb_id__isnull=False),
+                name='unique_series_tmdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['imdb_id', 'language'],
+                condition=models.Q(imdb_id__isnull=False),
+                name='unique_series_imdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['name', 'year', 'language'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_series_name_year_no_external_id'
+                name='unique_series_name_year_language_no_external_id'
             ),
         ]
 
@@ -148,9 +167,17 @@ class Movie(models.Model):
     duration_secs = models.IntegerField(blank=True, null=True, help_text="Duration in seconds")
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='movie')
 
-    # Metadata IDs for deduplication - these should be globally unique when present
-    tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
-    imdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="IMDB ID for metadata")
+    # Metadata IDs for deduplication - unique per language when present
+    tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
+    imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
+    # '' rather than NULL so untagged rows collide in the unique constraints
+    language = models.CharField(
+        max_length=2,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
+    )
 
     is_adult = models.BooleanField(
         default=False,
@@ -168,12 +195,23 @@ class Movie(models.Model):
         verbose_name = 'Movie'
         verbose_name_plural = 'Movies'
         ordering = ['name']
-        # Only enforce name+year uniqueness when no external IDs are present
+        # Identity is (external ID, language), falling back to
+        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['name', 'year'],
+                fields=['tmdb_id', 'language'],
+                condition=models.Q(tmdb_id__isnull=False),
+                name='unique_movie_tmdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['imdb_id', 'language'],
+                condition=models.Q(imdb_id__isnull=False),
+                name='unique_movie_imdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['name', 'year', 'language'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_movie_name_year_no_external_id'
+                name='unique_movie_name_year_language_no_external_id'
             ),
         ]
 
