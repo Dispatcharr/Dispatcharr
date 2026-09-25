@@ -1,7 +1,31 @@
 from django.db import migrations
 
+_FFMPEG_PARAMETERS = (
+    '-fflags +genpts+discardcorrupt '
+    '-user_agent {userAgent} '
+    '-i {streamUrl} '
+    '-map 0 '
+    '-c copy '
+    '-mpegts_flags +pat_pmt_at_frames+resend_headers+initial_discontinuity '
+    '-f mpegts pipe:1'
+)
 
-def add_subtitle_copy(apps, schema_editor):
+_PREVIOUS_FFMPEG_PARAMETERS = (
+    '-user_agent {userAgent} -i {streamUrl} -c copy -f mpegts pipe:1'
+)
+
+_STREAMLINK_PARAMETERS = (
+    '--http-header User-Agent={userAgent} '
+    '--ffmpeg-fout mpegts '
+    '--stdout {streamUrl} best'
+)
+
+_PREVIOUS_STREAMLINK_PARAMETERS = (
+    '{streamUrl} --http-header User-Agent={userAgent} best --stdout'
+)
+
+
+def update_default_profiles(apps, schema_editor):
     OutputProfile = apps.get_model('core', 'OutputProfile')
     OutputProfile.objects.filter(
         name='Media Server (AC3 Audio)', locked=True,
@@ -43,8 +67,16 @@ def add_subtitle_copy(apps, schema_editor):
         ),
     )
 
+    StreamProfile = apps.get_model('core', 'StreamProfile')
+    StreamProfile.objects.filter(name='ffmpeg', locked=True).update(
+        parameters=_FFMPEG_PARAMETERS
+    )
+    StreamProfile.objects.filter(name='streamlink', locked=True).update(
+        parameters=_STREAMLINK_PARAMETERS
+    )
 
-def remove_subtitle_copy(apps, schema_editor):
+
+def revert_default_profiles(apps, schema_editor):
     OutputProfile = apps.get_model('core', 'OutputProfile')
     OutputProfile.objects.filter(
         name='Media Server (AC3 Audio)', locked=True,
@@ -82,6 +114,14 @@ def remove_subtitle_copy(apps, schema_editor):
             '-mpegts_flags +pat_pmt_at_frames+resend_headers+initial_discontinuity '
             '-f mpegts pipe:1'
         ),
+    )
+
+    StreamProfile = apps.get_model('core', 'StreamProfile')
+    StreamProfile.objects.filter(name='ffmpeg', locked=True).update(
+        parameters=_PREVIOUS_FFMPEG_PARAMETERS
+    )
+    StreamProfile.objects.filter(name='streamlink', locked=True).update(
+        parameters=_PREVIOUS_STREAMLINK_PARAMETERS
     )
 
 
@@ -92,8 +132,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(
-            add_subtitle_copy,
-            remove_subtitle_copy,
-        ),
+        migrations.RunPython(update_default_profiles, revert_default_profiles),
     ]
