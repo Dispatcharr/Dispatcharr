@@ -119,8 +119,6 @@ if REDIS_TLS_STATUS["enabled"]:
     _verify = "on" if REDIS_TLS_STATUS["verify"] else "off"
     _mtls = "enabled" if REDIS_TLS_STATUS["mtls"] else "disabled"
     startup_log(f"Redis TLS: enabled (verify={_verify}, mTLS={_mtls})")
-else:
-    startup_log("Redis TLS: disabled")
 
 ENABLE_IP_LOOKUP = os.environ.get("DISPATCHARR_ENABLE_IP_LOOKUP", "true").lower() == "true"
 
@@ -347,8 +345,6 @@ else:
 
         _mtls = "enabled" if POSTGRES_SSL_CERT and POSTGRES_SSL_KEY else "disabled"
         startup_log(f"PostgreSQL TLS: enabled (sslmode={POSTGRES_SSL_MODE}, mTLS={_mtls})")
-    else:
-        startup_log("PostgreSQL TLS: disabled")
 
 AUTH_PASSWORD_VALIDATORS = [
     {
