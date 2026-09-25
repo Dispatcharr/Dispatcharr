@@ -221,13 +221,13 @@ class StreamManager:
             return None
         return max(0.0, cooldown_until - time.time())
 
-    def _try_next_stream_with_cooldown(self):
+    def _try_next_stream_with_cooldown(self, reason=None):
         """Try next stream; if a wrap cooldown was armed, wait here then retry once.
 
         Only call from the stream manager run loop. Do not call from the stderr
         reader / buffering-timeout path, which must stay non-blocking.
         """
-        if self._try_next_stream():
+        if self._try_next_stream(reason=reason):
             return True
 
         remaining = self._rotation_cooldown_remaining()
@@ -247,7 +247,7 @@ class StreamManager:
         if self.current_stream_id != stream_before:
             return True
 
-        return self._try_next_stream()
+        return self._try_next_stream(reason=reason)
 
     def _wait_for_existing_processes_to_close(self, timeout=5.0):
         """Wait for existing processes/connections to fully close before establishing new ones"""
@@ -475,7 +475,7 @@ class StreamManager:
                     logger.info(f"Health monitor requested stream switch for channel {self.channel_id}")
                     self.needs_stream_switch = False
 
-                    if self._try_next_stream_with_cooldown():
+                    if self._try_next_stream_with_cooldown(reason='health_monitor'):
                         logger.info(f"Health-requested stream switch successful for channel {self.channel_id}")
                         stream_switch_attempts += 1
                         self._clear_connection_failure_history()
@@ -536,6 +536,7 @@ class StreamManager:
                                         'channel_reconnect',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
+                                        stream_id=self.current_stream_id,
                                         attempt=attempt,
                                         max_attempts=self.max_retries
                                     )
@@ -593,6 +594,7 @@ class StreamManager:
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
+                                    stream_id=self.current_stream_id,
                                     error_type='connection_failed',
                                     url=self.url[:100] if self.url else None,
                                     attempts=self.max_retries
@@ -623,6 +625,7 @@ class StreamManager:
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
+                                    stream_id=self.current_stream_id,
                                     error_type='connection_exception',
                                     error_message=str(e)[:200],
                                     url=self.url[:100] if self.url else None,
@@ -645,7 +648,7 @@ class StreamManager:
                     logger.info(f"URL {self.url} failed after {self.retry_count} attempts, trying next stream for channel: {self.channel_id}")
 
                     # Try to switch to next stream (wait out wrap cooldown in this thread)
-                    switch_result = self._try_next_stream_with_cooldown()
+                    switch_result = self._try_next_stream_with_cooldown(reason='max_retries_exceeded')
                     if switch_result:
                         # Successfully switched to a new stream, continue with the new URL
                         stream_switch_attempts += 1
@@ -1182,8 +1185,10 @@ class StreamManager:
                         if buffering_duration > self.buffering_timeout:
                             # Buffering timeout reached, log error and try next stream
                             logger.error(f"Buffering timeout reached for channel {self.channel_id} after {buffering_duration:.1f} seconds")
+                            # Remember which stream stalled before switching away from it
+                            failed_stream_id = self.current_stream_id
                             # Send next stream request
-                            if self._try_next_stream():
+                            if self._try_next_stream(reason='buffering_timeout'):
                                 logger.info(f"Switched to next stream for channel {self.channel_id} after buffering timeout")
                                 # Reset buffering state
                                 self.buffering = False
@@ -1205,6 +1210,8 @@ class StreamManager:
                                         'channel_failover',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
+                                        previous_stream_id=failed_stream_id,
+                                        stream_id=self.current_stream_id,
                                         reason='buffering_timeout',
                                         duration=buffering_duration
                                     )
@@ -1224,6 +1231,7 @@ class StreamManager:
                             'channel_buffering',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,
+                            stream_id=self.current_stream_id,
                             speed=ffmpeg_speed
                         )
                     except Exception as e:
@@ -1463,8 +1471,12 @@ class StreamManager:
             except Exception as e:
                 logger.debug(f"Error flushing final bitrate to DB for channel {self.channel_id}: {e}")
 
-    def update_url(self, new_url, stream_id=None, m3u_profile_id=None):
-        """Update stream URL and reconnect with proper cleanup for both HTTP and transcode sessions"""
+    def update_url(self, new_url, stream_id=None, m3u_profile_id=None, reason=None):
+        """Update stream URL and reconnect with proper cleanup for both HTTP and transcode sessions.
+
+        reason (buffering_timeout, max_retries_exceeded, health_monitor or manual)
+        is recorded on the stream_switch system event.
+        """
         if new_url == self.url:
             logger.info(f"URL unchanged: {new_url}")
             return False
@@ -1526,6 +1538,7 @@ class StreamManager:
             self._bitrate_warmup_samples = 10
 
             # Update stream ID if provided
+            previous_stream_id = self.current_stream_id
             if stream_id:
                 old_stream_id = self.current_stream_id
                 self.current_stream_id = stream_id
@@ -1550,8 +1563,10 @@ class StreamManager:
                     'stream_switch',
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,
+                    previous_stream_id=previous_stream_id,
+                    stream_id=stream_id,
+                    reason=reason,
                     new_url=new_url[:100] if new_url else None,
-                    stream_id=stream_id
                 )
             except Exception as e:
                 logger.error(f"Could not log stream switch event: {e}")
@@ -1682,6 +1697,7 @@ class StreamManager:
                             'channel_reconnect',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,
+                            stream_id=self.current_stream_id,
                             reason='health_monitor'
                         )
                     except Exception as e:
@@ -2018,10 +2034,14 @@ class StreamManager:
             logger.error(f"Error in buffer check for channel {self.channel_id}: {e}")
             return False
 
-    def _try_next_stream(self):
+    def _try_next_stream(self, reason=None):
         """
         Try to switch to the next available stream for this channel.
         Will iterate through multiple alternate streams if needed to find one with a different URL.
+
+        Args:
+            reason: Why the switch is happening; recorded on the stream_switch
+                system event.
 
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
@@ -2131,7 +2151,7 @@ class StreamManager:
                 logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id}")
 
                 # Just update the URL, don't stop the channel or release resources
-                switch_result = self.update_url(new_url, stream_id, profile_id)
+                switch_result = self.update_url(new_url, stream_id, profile_id, reason=reason)
                 if not switch_result:
                     logger.error(f"Failed to update URL for stream ID {stream_id} for channel {self.channel_id}")
                     continue  # Try next stream
