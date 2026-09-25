@@ -245,7 +245,7 @@ class RedisClient:
                             logger.error(f"Redis configuration error: {e}")
 
                 cls._netloc = location
-                logger.info(f"Connected to Redis at {cls._netloc}")
+                logger.debug(f"Connected to Redis at {cls._netloc}")
 
                 return client
 
@@ -347,7 +347,7 @@ def acquire_task_lock(task_name, id):
     lock_acquired = redis_client.set(lock_id, "locked", ex=300, nx=True)
 
     if not lock_acquired:
-        logger.warning(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
+        logger.info(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
 
     return lock_acquired
 
