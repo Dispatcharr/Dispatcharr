@@ -2,6 +2,7 @@
 
 import logging
 import gzip
+from collections import defaultdict
 import html.entities
 import lzma
 import os
@@ -30,6 +31,7 @@ from channels.layers import get_channel_layer
 from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
 from apps.epg.utils import (
     _ONSCREEN_RE,
+    epg_retention_cutoffs,
     extract_season_episode_from_description,
     fill_original_air_date_if_missing,
     send_epg_update,
@@ -1916,13 +1918,31 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # Swap old programmes for the newly parsed ones atomically. If the insert
             # fails (including a poisoned-connection blip), the transaction rolls back
             # and the previous guide data for this channel is left untouched.
+            #
+            # Only the window this parse actually covers gets replaced (the feed's
+            # own start/end), plus anything old enough that no catchup_days could
+            # reach it any more. A programme still inside someone's catchup window
+            # but absent from this particular pull (upstream feeds are usually a
+            # rolling day or two, not the full catchup depth) is left alone instead
+            # of being wiped, which is what let guide history survive past "now".
             with transaction.atomic():
-                deleted_count = ProgramData.objects.filter(epg=epg).delete()[0]
                 if programs_to_create:
+                    cutoff = epg_retention_cutoffs([epg.id]).get(epg.id)
+                    feed_start = min(p.start_time for p in programs_to_create)
+                    feed_end = max(p.end_time for p in programs_to_create)
+                    deleted_count = ProgramData.objects.filter(epg=epg).filter(
+                        Q(start_time__lt=feed_end, end_time__gt=feed_start)
+                        | Q(end_time__lt=cutoff)
+                    ).delete()[0]
                     for i in range(0, len(programs_to_create), _EPG_SWAP_BATCH_SIZE):
                         ProgramData.objects.bulk_create(
                             programs_to_create[i:i + _EPG_SWAP_BATCH_SIZE]
                         )
+                else:
+                    # An empty parse is far more likely a transient upstream/parse
+                    # failure than a channel that genuinely has zero programmes.
+                    # Do nothing rather than wipe a working guide on a hiccup.
+                    deleted_count = 0
             logger.debug(
                 f"Replaced {deleted_count} program(s) with {len(programs_to_create)} "
                 f"for {epg.tvg_id}"
@@ -2104,21 +2124,63 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
     Atomically replace mapped programme rows with staged data.
     Must be called inside transaction.atomic().
 
+    Per epg_id, only the window its own staged rows actually cover gets
+    deleted, plus anything old enough that no catchup_days could reach it any
+    more (see epg_retention_cutoffs). An epg_id with nothing staged this cycle
+    keeps its existing rows untouched entirely, same reasoning as the
+    single-channel path: an empty result usually means an upstream/parse
+    hiccup, not an empty guide. mapped_epg_ids is used defensively to ignore
+    any staged row for an epg_id that isn't actually mapped to a channel.
+
     Staged rows are moved in batches (DELETE ... RETURNING + INSERT) so Postgres
     does not need to materialize the entire catalogue in one statement.
     """
+    if not _epg_program_staging_supported():
+        raise RuntimeError('_swap_staged_epg_programs requires PostgreSQL staging support')
+
     with connection.cursor() as cursor:
         cursor.execute("SET LOCAL statement_timeout = '10min'")
 
-    deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT epg_id, MIN(start_time), MAX(end_time) "
+            f"FROM {_EPG_PROGRAM_STAGING_TABLE} GROUP BY epg_id"
+        )
+        staged_ranges = [row for row in cursor.fetchall() if row[0] in set(mapped_epg_ids)]
+
+    cutoffs = epg_retention_cutoffs(row[0] for row in staged_ranges)
+
+    program_table = ProgramData._meta.db_table
+    deleted_count = 0
+    range_batch_size = 1000
+    for i in range(0, len(staged_ranges), range_batch_size):
+        chunk = staged_ranges[i:i + range_batch_size]
+        values_sql = ", ".join(["(%s, %s, %s, %s)"] * len(chunk))
+        params = []
+        for epg_id, feed_start, feed_end in chunk:
+            params.extend([epg_id, feed_start, feed_end, cutoffs[epg_id]])
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH ranges (epg_id, feed_start, feed_end, cutoff) AS (
+                    VALUES {values_sql}
+                )
+                DELETE FROM {program_table} pd
+                USING ranges r
+                WHERE pd.epg_id = r.epg_id
+                  AND (
+                    (pd.start_time < r.feed_end AND pd.end_time > r.feed_start)
+                    OR pd.end_time < r.cutoff
+                  )
+                """,
+                params,
+            )
+            deleted_count += cursor.rowcount
+
     logger.debug(f"Deleted {deleted_count} existing programs")
 
     _delete_orphaned_epg_programs(epg_source)
 
-    if not _epg_program_staging_supported():
-        raise RuntimeError('_swap_staged_epg_programs requires PostgreSQL staging support')
-
-    program_table = ProgramData._meta.db_table
     total_inserted = 0
     while True:
         with connection.cursor() as cursor:
@@ -2155,9 +2217,32 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
 
 
 def _swap_parsed_epg_programs(mapped_epg_ids, epg_source, programs_to_create, batch_size=_EPG_SWAP_BATCH_SIZE):
-    """SQLite/dev fallback: atomic delete + bulk insert from an in-memory batch list."""
+    """
+    SQLite/dev fallback: atomic scoped delete + bulk insert from an in-memory batch list.
+
+    Per epg_id, only the window this batch actually covers gets replaced, plus
+    anything old enough that no catchup_days could reach it any more (see
+    epg_retention_cutoffs). An epg_id with no rows in this batch is left
+    entirely untouched, same reasoning as the single-channel path: an empty
+    result usually means an upstream/parse hiccup, not an empty guide.
+    """
     with transaction.atomic():
-        deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+        by_epg = defaultdict(list)
+        for program in programs_to_create:
+            by_epg[program.epg_id].append(program)
+
+        cutoffs = epg_retention_cutoffs(by_epg.keys())
+        delete_q = None
+        for epg_id, epg_programs in by_epg.items():
+            feed_start = min(p.start_time for p in epg_programs)
+            feed_end = max(p.end_time for p in epg_programs)
+            clause = Q(epg_id=epg_id) & (
+                Q(start_time__lt=feed_end, end_time__gt=feed_start)
+                | Q(end_time__lt=cutoffs[epg_id])
+            )
+            delete_q = clause if delete_q is None else delete_q | clause
+
+        deleted_count = ProgramData.objects.filter(delete_q).delete()[0] if delete_q else 0
         _delete_orphaned_epg_programs(epg_source)
         for i in range(0, len(programs_to_create), batch_size):
             ProgramData.objects.bulk_create(programs_to_create[i:i + batch_size])
