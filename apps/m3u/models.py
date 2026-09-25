@@ -100,8 +100,30 @@ class M3UAccount(models.Model):
         default=0,
         help_text="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content.",
     )
+    hash_key = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text=(
+            "Comma-separated fields used to generate this account's stream "
+            "hash (e.g. 'name,url'). Leave blank to use the global "
+            "'M3U Hash Key' setting."
+        ),
+    )
     def __str__(self):
         return self.name
+
+    def get_effective_hash_keys(self):
+        """Return the list of hash key fields to use for this account's streams.
+
+        Uses this account's own ``hash_key`` override when set; otherwise
+        falls back to the global ``m3u_hash_key`` CoreSettings value.
+        """
+        if self.hash_key:
+            keys = [key for key in self.hash_key.split(",") if key]
+            if keys:
+                return keys
+        return CoreSettings.get_m3u_hash_key().split(",")
 
     def clean(self):
         if self.max_streams < 0:
