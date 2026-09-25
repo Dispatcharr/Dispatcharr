@@ -22,7 +22,12 @@ import {
 } from '../../utils/forms/M3uGroupFilterUtils.js';
 import { detectGroupReservationOverlaps } from '../../utils/forms/GroupSyncUtils';
 
-const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
+const M3UGroupFilter = ({
+  playlist = null,
+  isOpen,
+  onClose,
+  isInitialSetup = false,
+}) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
 
@@ -90,7 +95,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
           auto_enable_new_groups_live: autoEnableNewGroupsLive,
           auto_enable_new_groups_vod: autoEnableNewGroupsVod,
           auto_enable_new_groups_series: autoEnableNewGroupsSeries,
-        }
+        },
+        isInitialSetup
       );
 
       showNotification({

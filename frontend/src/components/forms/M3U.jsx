@@ -60,8 +60,12 @@ const M3U = ({
   const [expDate, setExpDate] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
+  const [initialGroupSetup, setInitialGroupSetup] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
+  const [vodScheduleType, setVodScheduleType] = useState('interval');
+  const [vodEnabled, setVodEnabled] = useState(false);
+  const [vodRefreshAfterLive, setVodRefreshAfterLive] = useState(true);
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
   const [hasHashKeyOverride, setHasHashKeyOverride] = useState(false);
   const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
@@ -90,6 +94,9 @@ const M3U = ({
       max_streams: 0,
       refresh_interval: 24,
       cron_expression: '',
+      vod_refresh_interval: 0,
+      vod_cron_expression: '',
+      vod_refresh_after_live: true,
       account_type: 'XC',
       create_epg: false,
       username: '',
@@ -108,6 +115,7 @@ const M3U = ({
 
   useEffect(() => {
     if (m3uAccount) {
+      setInitialGroupSetup(false);
       setPlaylist(m3uAccount);
       form.setValues({
         name: m3uAccount.name,
@@ -120,6 +128,9 @@ const M3U = ({
         is_active: m3uAccount.is_active,
         refresh_interval: m3uAccount.refresh_interval,
         cron_expression: m3uAccount.cron_expression || '',
+        vod_refresh_interval: m3uAccount.vod_refresh_interval ?? 0,
+        vod_cron_expression: m3uAccount.vod_cron_expression || '',
+        vod_refresh_after_live: m3uAccount.vod_refresh_after_live !== false,
         account_type: m3uAccount.account_type,
         username: m3uAccount.username ?? '',
         password: '',
@@ -151,10 +162,19 @@ const M3U = ({
           ? 'cron'
           : 'interval'
       );
+      setVodScheduleType(
+        m3uAccount.vod_cron_expression?.trim() ? 'cron' : 'interval'
+      );
+      setVodEnabled(Boolean(m3uAccount.enable_vod));
+      setVodRefreshAfterLive(m3uAccount.vod_refresh_after_live !== false);
     } else {
+      setInitialGroupSetup(false);
       setPlaylist(null);
       form.reset();
       setScheduleType('interval');
+      setVodScheduleType('interval');
+      setVodEnabled(false);
+      setVodRefreshAfterLive(true);
       setExpDate(null);
       setHasHashKeyOverride(false);
     }
@@ -199,6 +219,7 @@ const M3U = ({
     }
 
     setPlaylist(updatedPlaylist);
+    setInitialGroupSetup(true);
     setGroupFilterModalOpen(true);
   };
 
@@ -222,6 +243,7 @@ const M3U = ({
     form.reset();
     setFile(null);
     setPlaylist(null);
+    setInitialGroupSetup(false);
     onClose();
   };
 
@@ -231,6 +253,7 @@ const M3U = ({
     form.reset();
     setFile(null);
     setPlaylist(null);
+    setInitialGroupSetup(false);
     onClose();
   };
 
@@ -444,10 +467,10 @@ const M3U = ({
                 onCronChange={(expr) =>
                   form.setFieldValue('cron_expression', expr)
                 }
-                intervalLabel="Refresh Interval (hours)"
+                intervalLabel="Live TV refresh interval (hours)"
                 intervalDescription={
                   <>
-                    How often to automatically refresh M3U data
+                    How often to automatically refresh Live TV data
                     <br />
                     (0 to disable automatic refreshes)
                   </>
@@ -478,12 +501,45 @@ const M3U = ({
                       id="enable_vod"
                       name="enable_vod"
                       description="Scan and import VOD content (movies/series) from this Xtream account"
-                      key={form.key('enable_vod')}
-                      {...form.getInputProps('enable_vod', {
-                        type: 'checkbox',
-                      })}
+                      checked={vodEnabled}
+                      onChange={(event) => {
+                        const enabled = event.currentTarget.checked;
+                        setVodEnabled(enabled);
+                        form.setFieldValue('enable_vod', enabled);
+                      }}
                     />
                   </Group>
+
+                  {vodEnabled && (
+                    <Stack gap="xs" mt="sm">
+                      <Switch
+                        label="Separate VOD refresh schedule"
+                        description="Otherwise VOD refreshes after a successful scheduled Live TV refresh."
+                        checked={!vodRefreshAfterLive}
+                        onChange={(event) => {
+                          const afterLive = !event.currentTarget.checked;
+                          setVodRefreshAfterLive(afterLive);
+                          form.setFieldValue('vod_refresh_after_live', afterLive);
+                        }}
+                      />
+                      {!vodRefreshAfterLive && (
+                        <ScheduleInput
+                          scheduleType={vodScheduleType}
+                          onScheduleTypeChange={setVodScheduleType}
+                          intervalValue={form.getValues().vod_refresh_interval}
+                          onIntervalChange={(value) =>
+                            form.setFieldValue('vod_refresh_interval', value)
+                          }
+                          cronValue={form.getValues().vod_cron_expression}
+                          onCronChange={(value) =>
+                            form.setFieldValue('vod_cron_expression', value)
+                          }
+                          intervalLabel="VOD refresh interval (hours)"
+                          intervalDescription="Use 0 to disable automatic VOD refreshes."
+                        />
+                      )}
+                    </Stack>
+                  )}
 
                   {!m3uAccount && (
                     <Group justify="space-between">
@@ -583,6 +639,7 @@ const M3U = ({
           <M3UGroupFilter
             isOpen={groupFilterModalOpen}
             playlist={playlist}
+            isInitialSetup={initialGroupSetup}
             onClose={closeGroupFilter}
           />
           <M3UFilters

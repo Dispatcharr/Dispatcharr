@@ -41,6 +41,8 @@ vi.mock('../../../utils/tables/M3UsTableUtils.js', () => ({
     s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown'
   ),
   refreshPlaylist: vi.fn().mockResolvedValue(undefined),
+  refreshLivePlaylist: vi.fn().mockResolvedValue(undefined),
+  refreshVODContent: vi.fn().mockResolvedValue(undefined),
   updatePlaylist: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -185,6 +187,7 @@ vi.mock('lucide-react', () => ({
   // Icons used by M3UsTable
   Filter: () => <svg data-testid="icon-filter" />,
   RefreshCcw: () => <svg data-testid="icon-refresh" />,
+  Film: () => <svg data-testid="icon-film" />,
   RotateCcw: () => <svg data-testid="icon-rotate-ccw" />,
   Square: () => <svg data-testid="icon-square" />,
   SquareCheck: () => <svg data-testid="icon-square-check" />,
@@ -302,6 +305,8 @@ describe('M3UTable', () => {
     capturedTableOptions = null;
     vi.mocked(M3UsTableUtils.deletePlaylist).mockResolvedValue(undefined);
     vi.mocked(M3UsTableUtils.refreshPlaylist).mockResolvedValue(undefined);
+    vi.mocked(M3UsTableUtils.refreshLivePlaylist).mockResolvedValue(undefined);
+    vi.mocked(M3UsTableUtils.refreshVODContent).mockResolvedValue(undefined);
     vi.mocked(M3UsTableUtils.updatePlaylist).mockResolvedValue(undefined);
     vi.mocked(M3UsTableUtils.getPlaylistAutoCreatedChannelsCount).mockResolvedValue({
       count: 0,
@@ -482,7 +487,7 @@ describe('M3UTable', () => {
       );
     });
 
-    it('calls refreshPlaylist with the playlist id', async () => {
+    it('calls the Live-only refresh with the playlist id', async () => {
       const playlist = makePlaylist({ id: 1 });
       setupMocks({ playlists: [playlist] });
       render(<M3UTable />);
@@ -494,12 +499,12 @@ describe('M3UTable', () => {
       fireEvent.click(getByTestId('icon-refresh').closest('button'));
 
       await waitFor(() =>
-        expect(M3UsTableUtils.refreshPlaylist).toHaveBeenCalledWith(1)
+        expect(M3UsTableUtils.refreshLivePlaylist).toHaveBeenCalledWith(1)
       );
     });
 
-    it('sets error progress when refreshPlaylist rejects', async () => {
-      vi.mocked(M3UsTableUtils.refreshPlaylist).mockRejectedValue(new Error('fail'));
+    it('sets error progress when the Live refresh rejects', async () => {
+      vi.mocked(M3UsTableUtils.refreshLivePlaylist).mockRejectedValue(new Error('fail'));
       const playlist = makePlaylist({ id: 1 });
       const { mockSetRefreshProgress } = setupMocks({ playlists: [playlist] });
       render(<M3UTable />);
@@ -516,6 +521,23 @@ describe('M3UTable', () => {
           expect.objectContaining({ action: 'error', status: 'error' })
         )
       );
+    });
+
+    it('offers an independent VOD action for enabled XC accounts', async () => {
+      const playlist = makePlaylist({ account_type: 'XC', enable_vod: true });
+      setupMocks({ playlists: [playlist] });
+      render(<M3UTable />);
+
+      const { row, cell } = makeRowCtx(playlist);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-film').closest('button'));
+
+      await waitFor(() =>
+        expect(M3UsTableUtils.refreshVODContent).toHaveBeenCalledWith(1)
+      );
+      expect(M3UsTableUtils.refreshLivePlaylist).not.toHaveBeenCalled();
     });
 
     it('disables the refresh button when playlist is inactive', () => {

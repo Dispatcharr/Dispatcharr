@@ -3516,7 +3516,7 @@ def refresh_account_info(profile_id):
         return error_msg
 @plugin_callable_task
 @shared_task(time_limit=3600, soft_time_limit=3500)
-def refresh_single_m3u_account(account_id):
+def refresh_single_m3u_account(account_id, include_vod=None):
     """Splits M3U processing into chunks and dispatches them as parallel tasks."""
     if not acquire_task_lock("refresh_single_m3u_account", account_id):
         return f"Task already running for account_id={account_id}."
@@ -3530,7 +3530,7 @@ def refresh_single_m3u_account(account_id):
     _release_task_db_connection()
 
     try:
-        return _refresh_single_m3u_account_impl(account_id)
+        return _refresh_single_m3u_account_impl(account_id, include_vod=include_vod)
     except Exception as e:
         logger.error(
             f"refresh_single_m3u_account failed for account {account_id}: {e}",
@@ -3560,7 +3560,7 @@ def refresh_single_m3u_account(account_id):
         release_task_lock("refresh_single_m3u_account", account_id)
 
 
-def _refresh_single_m3u_account_impl(account_id):
+def _refresh_single_m3u_account_impl(account_id, include_vod=None):
     """Implementation of M3U account refresh with guaranteed memory cleanup."""
     # Record start time
     refresh_start_timestamp = timezone.now()  # For the cleanup function
@@ -4071,7 +4071,8 @@ def _refresh_single_m3u_account_impl(account_id):
         gc.collect()
 
         # Trigger VOD refresh if enabled and account is XtreamCodes type
-        if vod_enabled and account.account_type == M3UAccount.Types.XC:
+        should_refresh_vod = should_refresh_vod_after_live(account, include_vod)
+        if vod_enabled and account.account_type == M3UAccount.Types.XC and should_refresh_vod:
             logger.info(f"VOD is enabled for account {account_id}, triggering VOD refresh")
             try:
                 from apps.vod.tasks import refresh_vod_content
@@ -4114,6 +4115,11 @@ def _refresh_single_m3u_account_impl(account_id):
             pass
 
     return f"Dispatched jobs complete."
+
+
+def should_refresh_vod_after_live(account, include_vod=None):
+    """Resolve an optional one-off override against the account's schedule mode."""
+    return bool(account.vod_refresh_after_live if include_vod is None else include_vod)
 
 
 def send_m3u_update(account_id, action, progress, **kwargs):
