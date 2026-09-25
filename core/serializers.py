@@ -2,6 +2,7 @@
 import json
 import ipaddress
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from dispatcharr.log_collector import (
@@ -35,6 +36,14 @@ class UserAgentSerializer(serializers.ModelSerializer):
         ]
 
 
+def _update_profile(serializer, instance, validated_data):
+    """Save a profile and turn a locked-profile rejection into a 400."""
+    try:
+        return serializers.ModelSerializer.update(serializer, instance, validated_data)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(exc.messages)
+
+
 class StreamProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = StreamProfile
@@ -48,11 +57,17 @@ class StreamProfileSerializer(serializers.ModelSerializer):
             "locked",
         ]
 
+    def update(self, instance, validated_data):
+        return _update_profile(self, instance, validated_data)
+
 
 class OutputProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = OutputProfile
         fields = ["id", "name", "command", "parameters", "is_active", "locked"]
+
+    def update(self, instance, validated_data):
+        return _update_profile(self, instance, validated_data)
 
 
 class CoreSettingsSerializer(serializers.ModelSerializer):
