@@ -10,6 +10,7 @@ export const uploadComskipIni = async (file) => {
 
 export const getDvrSettingsFormInitialValues = () => {
   return {
+    storage_root: '',
     tv_template: '',
     movie_template: '',
     tv_fallback_template: '',

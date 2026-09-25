@@ -258,6 +258,14 @@ const DvrSettingsForm = React.memo(({ active }) => {
           name="post_offset_minutes"
         />
         <TextInput
+          label="Storage Path"
+          description="Absolute path inside the container where new recordings are written and served from. Leave blank to use the default (/data/recordings). Changing this only affects recordings made after the change -- existing recordings stay exactly where they are and remain playable."
+          placeholder="/data/recordings"
+          {...form.getInputProps('storage_root')}
+          id="storage_root"
+          name="storage_root"
+        />
+        <TextInput
           label="TV Path Template"
           description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone. Use format specifiers like {season:02d} or {start_month:02d}. Relative paths are under your library dir."
           placeholder="TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"

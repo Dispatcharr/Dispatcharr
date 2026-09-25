@@ -1363,8 +1363,11 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     directories unambiguously.
     """
     from core.models import CoreSettings
-    # Root for DVR recordings: fixed to /data/recordings inside the container
-    library_root = '/data/recordings'
+    # Root for DVR recordings: DEFAULT_DVR_STORAGE_ROOT unless an admin has
+    # opted into a custom path (CoreSettings.get_dvr_storage_root) -- see
+    # that accessor's docstring for why this never affects recordings
+    # already on disk under a previously-active root.
+    library_root = CoreSettings.get_dvr_storage_root()
 
     (
         is_movie,

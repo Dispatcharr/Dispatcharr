@@ -45,6 +45,7 @@ const GROUP_CONFIG = {
   dvr_settings: {
     name: 'DVR Settings',
     fields: {
+      storage_root: { type: 'raw', default: '' },
       tv_template: { type: 'raw', default: '' },
       movie_template: { type: 'raw', default: '' },
       tv_fallback_dir: { type: 'raw', default: '' },
