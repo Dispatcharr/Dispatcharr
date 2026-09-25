@@ -5,6 +5,8 @@ import io
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 from datetime import timezone
@@ -14,7 +16,7 @@ from zoneinfo import ZoneInfo
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import CoreSettings, SYSTEM_SETTINGS_KEY
-from dispatcharr import log_collector
+from dispatcharr import log_collector, log_redaction
 from dispatcharr.log_collector import Collector
 
 
@@ -86,6 +88,29 @@ class ConfTests(SimpleTestCase):
     def test_missing_conf_gives_defaults(self):
         self.assertEqual(log_collector.read_conf(self.log_dir), log_collector._DEFAULT_CONF)
 
+class RedactionImportTests(SimpleTestCase):
+    def test_redaction_module_needs_no_django(self):
+        """The collector runs with no settings, so its masking must load bare."""
+        script = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('lr', sys.argv[1])\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "assert not [n for n in sys.modules if n.split('.')[0] == 'django'], "
+            "sorted(sys.modules)\n"
+            "print(module.redact_text('GET /live/portaluser/portalpass/1.ts'))\n"
+        )
+        # -I keeps PYTHONPATH and the cwd off sys.path: nothing but the file.
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", script, log_redaction.__file__],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/live/[username]/[password]/1.ts", result.stdout)
+
+
+class CollectorTests(SimpleTestCase):
     def setUp(self):
         self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
@@ -200,6 +225,12 @@ class ConfTests(SimpleTestCase):
         done.join(timeout=5.0)
         self.assertFalse(done.is_alive())
 
+    def test_masking_keeps_an_open_chunk_open(self):
+        self.assertEqual(
+            self.collector._filter(b"GET /live/joe/s3cret/1.ts"),
+            b"GET /live/[username]/[password]/1.ts",
+        )
+
     def test_both_sinks_get_the_same_bytes(self):
         self.feed(b"one line\n")
         self.collector._drain()
@@ -250,6 +281,14 @@ class ConfTests(SimpleTestCase):
         forwarded = self.read_forward()
         self.assertGreater(len(forwarded), 60000)
         self.assertNotIn("truncated this record at", forwarded)
+
+    def test_a_record_masked_under_the_cap_is_filed_whole(self):
+        record = b"x" * 16300 + b" password=" + b"A" * 200
+        self.feed(record + b"\n")
+        self.collector._drain()
+        filed = self.read_log()
+        self.assertIn("password=[password]", filed)
+        self.assertNotIn("truncated this record at", filed)
 
     def test_the_cap_never_cuts_through_a_codepoint(self):
         # The tail is served as charset=utf-8, so a cut mid-sequence malforms the file.
