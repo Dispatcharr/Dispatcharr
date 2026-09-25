@@ -1419,7 +1419,7 @@ def xc_get_series(request, user, category_id=None):
         append({
             "num": num,
             "name": row['series__name'],
-            "series_id": row['id'],
+            "series_id": row['series__id'],
             "cover": _xc_cover_or_logo(
                 request,
                 'series',
@@ -1467,13 +1467,20 @@ def xc_get_series_info(request, user, series_id):
         raise Http404()
 
     # Users with VOD access get series from all active M3U accounts
-    filters = {"id": series_id, "m3u_account__is_active": True}
+    filters = {"series_id": series_id, "m3u_account__is_active": True}
 
     try:
-        series_relation = M3USeriesRelation.objects.select_related('series', 'series__logo').get(**filters)
-        series = series_relation.series
-    except M3USeriesRelation.DoesNotExist:
+        series_relation = (
+            M3USeriesRelation.objects.select_related('series', 'series__logo')
+            .filter(**filters)
+            .order_by('-m3u_account__priority', 'id')
+            .first()
+        )
+    except (ValueError, TypeError):
         raise Http404()
+    if not series_relation:
+        raise Http404()
+    series = series_relation.series
 
     # Check if we need to refresh detailed info (similar to vod api_views pattern)
     try:

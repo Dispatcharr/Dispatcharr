@@ -28,6 +28,7 @@ from apps.channels.utils import coerce_channel_profile_ids
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
+from apps.vod.language import validate_category_custom_properties
 
 from .serializers import (
     M3UAccountSerializer,
@@ -486,6 +487,20 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         category_settings = request.data.get("category_settings", [])
 
         try:
+            validated_category_props = {}
+            for setting in category_settings:
+                try:
+                    validated_category_props[setting.get("id")] = (
+                        validate_category_custom_properties(
+                            setting.get("custom_properties")
+                        )
+                    )
+                except ValueError as e:
+                    return Response(
+                        {"error": f"Category {setting.get('id')}: {e}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             for setting in group_settings:
                 start = setting.get("auto_sync_channel_start")
                 end = setting.get("auto_sync_channel_end")
@@ -546,14 +561,27 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         ],
                     )
 
+                category_ids = [
+                    setting["id"] for setting in category_settings if setting.get("id")
+                ]
+                existing_category_props = {
+                    rel.category_id: rel.custom_properties or {}
+                    for rel in M3UVODCategoryRelation.objects.filter(
+                        m3u_account=account, category_id__in=category_ids
+                    )
+                }
+
                 category_objects = [
                     M3UVODCategoryRelation(
                         category_id=setting["id"],
                         m3u_account=account,
                         enabled=setting.get("enabled", True),
-                        custom_properties=ensure_custom_properties_dict(
-                            setting.get("custom_properties")
-                        ),
+                        # Merged so a partial update (e.g. only `quality`) keeps
+                        # the category's language, which keys its VOD identity
+                        custom_properties={
+                            **existing_category_props.get(setting["id"], {}),
+                            **validated_category_props.get(setting["id"], {}),
+                        },
                     )
                     for setting in category_settings
                     if setting.get("id")
