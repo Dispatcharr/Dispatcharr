@@ -141,6 +141,14 @@ HBAEOF
             # won't exist and next startup will re-run the full chown.
             write_ownership_sentinel
             echo "Ownership migration complete."
+        elif [ "$(stat -c '%u:%g' "$POSTGRES_DIR")" != "$PUID:$PGID" ]; then
+            # The reconciliation above never inspects $POSTGRES_DIR itself;
+            # PostgreSQL refuses to start unless its user owns that directory.
+            echo "Fixing ownership for $POSTGRES_DIR (non-recursive)"
+            if ! chown "$PUID:$PGID" "$POSTGRES_DIR"; then
+                echo "ERROR: Cannot update ownership of $POSTGRES_DIR to $PUID:$PGID"
+                exit 1
+            fi
         fi
 
         # --- 2. Authentication guarantee (unconditional) ---
