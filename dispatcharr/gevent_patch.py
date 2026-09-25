@@ -35,9 +35,5 @@ if not monkey.is_module_patched("socket"):
         stream=sys.stderr,
     )
     monkey.patch_all()
-else:
-    startup_log(
-        "gevent stdlib monkey-patching already active.", source=__name__
-    )
 
 

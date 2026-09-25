@@ -245,7 +245,7 @@ class RedisClient:
                             logger.error(f"Redis configuration error: {e}")
 
                 cls._netloc = location
-                logger.info(f"Connected to Redis at {cls._netloc}")
+                logger.debug(f"Connected to Redis at {cls._netloc}")
 
                 return client
 
