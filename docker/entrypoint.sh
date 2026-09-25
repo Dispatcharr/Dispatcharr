@@ -299,7 +299,11 @@ LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
 archive_previous_log "$LOG_FILE_DIR"
 # Non-recursive: an operator-set DISPATCHARR_LOG_DIR could point at a data
 # tree (e.g. /data/db). Tolerant: root_squash mounts must not block boot.
-chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log \
+# Include config/ so the web collector (app user) can write collector.pid after
+# celery created that directory as root on a shared volume.
+mkdir -p "$LOG_FILE_DIR/config" 2>/dev/null || true
+chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/config \
+    "$LOG_FILE_DIR"/dispatcharr.log \
     "$LOG_FILE_DIR"/dispatcharr.log.[0-9]* 2>/dev/null || true
 exec 3>&1
 exec > >({ supervise_log_collector \

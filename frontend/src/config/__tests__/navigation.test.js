@@ -162,13 +162,14 @@ describe('navigation config', () => {
       expect(resultIds).not.toContain('dvr');
     });
 
-    it('drops the Logs entry when no log collector is running', () => {
+    it('drops the Logs entry when log persistence is off', () => {
       const paths = (access) =>
         getOrderedNavItems(null, true, [], access)
           .find((item) => item.id === 'system')
           .paths.map((entry) => entry.path);
-      expect(paths({ logCollectorRunning: false })).not.toContain('/logs');
+      expect(paths({ logPersist: false })).not.toContain('/logs');
       expect(paths({})).toContain('/logs');
+      expect(paths({ logPersist: true })).toContain('/logs');
     });
 
     it('includes dvr for non-admin users when canViewDvr is true', () => {

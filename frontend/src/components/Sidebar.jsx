@@ -192,6 +192,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const channelIds = useChannelsStore((s) => s.channelIds);
   const environment = useSettingsStore((s) => s.environment);
+  const logPersist =
+    useSettingsStore((s) => s.settings?.system_settings?.value?.log_persist) !==
+    false;
   const appVersion = useSettingsStore((s) => s.version);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
@@ -209,12 +212,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
-  const logCollectorRunning = environment.log_collector_running;
   const navItems = useMemo(() => {
     const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds, {
       canViewDvr: userCanViewDvr,
       canViewVod: userCanViewVod,
-      logCollectorRunning,
+      logPersist,
     });
     return ordered.filter((item) => !hiddenNav.includes(item.id));
   }, [
@@ -224,7 +226,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     userCanViewDvr,
     userCanViewVod,
     channelIds,
-    logCollectorRunning,
+    logPersist,
   ]);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
