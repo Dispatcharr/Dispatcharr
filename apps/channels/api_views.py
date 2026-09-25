@@ -3605,20 +3605,11 @@ class RecordingViewSet(viewsets.ModelViewSet):
             auth_suffix = _recording_auth_query_suffix(request)
             lines = []
             has_playlist_type = False
-            total_duration = 0.0
-            segment_count = 0
             with open(requested) as _f:
                 for line in _f:
                     stripped = line.strip()
                     if stripped.startswith("#EXT-X-PLAYLIST-TYPE:"):
                         has_playlist_type = True
-                    elif stripped.startswith("#EXTINF:"):
-                        try:
-                            inf_val = stripped.split(":", 1)[1].split(",", 1)[0].strip()
-                            total_duration += float(inf_val)
-                            segment_count += 1
-                        except (ValueError, IndexError):
-                            pass
 
                     if stripped and not stripped.startswith("#"):
                         lines.append(f"{base_url}{stripped}{auth_suffix}\n")
@@ -3634,10 +3625,6 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
             resp = HttpResponse("".join(lines), content_type="application/x-mpegURL")
             resp["Cache-Control"] = "no-cache"
-            if total_duration > 0:
-                resp["X-Recording-Total-Duration"] = f"{total_duration:.2f}"
-            if segment_count > 0:
-                resp["X-Recording-Segment-Count"] = str(segment_count)
             return resp
 
         if seg_path.endswith(".ts"):

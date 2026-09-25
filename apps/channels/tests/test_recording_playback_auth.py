@@ -153,9 +153,9 @@ class RecordingPlaybackAuthTests(TestCase):
         self.assertIn("token=", body)
         self.assertIn("seg_00001.ts", body)
         self.assertIn("#EXT-X-PLAYLIST-TYPE:EVENT", body)
-        self.assertEqual(response["X-Recording-Total-Duration"], "4.00")
-        self.assertEqual(response["X-Recording-Segment-Count"], "1")
         self.assertEqual(response["Cache-Control"], "no-cache")
+        self.assertNotIn("X-Recording-Total-Duration", response)
+        self.assertNotIn("X-Recording-Segment-Count", response)
 
     def test_hls_playlist_omits_token_when_not_in_request(self, _mock_network):
         now = timezone.now()
