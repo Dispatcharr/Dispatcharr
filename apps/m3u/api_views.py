@@ -54,7 +54,8 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for M3U accounts"""
 
     queryset = M3UAccount.objects.select_related(
-        "refresh_task__crontab", "refresh_task__interval"
+        "refresh_task__crontab", "refresh_task__interval",
+        "vod_refresh_task__crontab", "vod_refresh_task__interval",
     ).prefetch_related("channel_group", "profiles", "filters")
     serializer_class = M3UAccountSerializer
 
@@ -756,9 +757,30 @@ class RefreshSingleM3UAPIView(APIView):
 
     @extend_schema(
         description="Triggers a refresh of a single M3U account",
+        parameters=[
+            OpenApiParameter(
+                name="include_vod",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Override the account's VOD-after-Live setting; false refreshes Live TV only.",
+            ),
+        ],
     )
     def post(self, request, account_id, format=None):
-        refresh_single_m3u_account.delay(account_id)
+        include_vod = request.query_params.get("include_vod")
+        if include_vod is not None:
+            normalized = str(include_vod).strip().lower()
+            if normalized not in {"true", "false", "1", "0"}:
+                return Response(
+                    {"error": "include_vod must be true or false"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            refresh_single_m3u_account.delay(
+                account_id, include_vod=normalized in {"true", "1"}
+            )
+        else:
+            refresh_single_m3u_account.delay(account_id)
         return Response(
             {
                 "success": True,

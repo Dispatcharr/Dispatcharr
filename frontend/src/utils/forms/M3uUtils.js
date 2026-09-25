@@ -19,8 +19,11 @@ export const getPlaylist = async (newPlaylist) => {
   return await API.getPlaylist(newPlaylist.id);
 };
 
-export const refreshPlaylist = async (playlist) => {
-  return await API.refreshPlaylist(playlist.id);
+export const refreshPlaylist = async (playlist, includeVod) => {
+  if (includeVod === undefined) {
+    return await API.refreshPlaylist(playlist.id);
+  }
+  return await API.refreshPlaylist(playlist.id, includeVod);
 };
 
 /**
@@ -65,6 +68,15 @@ export const prepareSubmitValues = (values, expDate) => {
     prepared.refresh_interval = 0;
   } else {
     prepared.cron_expression = '';
+  }
+
+  const hasVodCron =
+    prepared.vod_cron_expression &&
+    prepared.vod_cron_expression.trim() !== '';
+  if (hasVodCron) {
+    prepared.vod_refresh_interval = 0;
+  } else {
+    prepared.vod_cron_expression = '';
   }
 
   if (prepared.account_type == 'XC' && prepared.password == '') {

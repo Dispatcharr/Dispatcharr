@@ -4,6 +4,8 @@ import { formatDuration } from '../dateTimeUtils.js';
 import { formatSpeed } from '../networkUtils.js';
 
 export const refreshPlaylist = (id) => API.refreshPlaylist(id);
+export const refreshLivePlaylist = (id) => API.refreshLivePlaylist(id);
+export const refreshVODContent = (id) => API.refreshVODContent(id);
 
 export const getPlaylistAutoCreatedChannelsCount = (id) =>
   API.getPlaylistAutoCreatedChannelsCount(id);
@@ -139,4 +141,3 @@ export const getStatusContent = (data) => {
         : { type: 'simple', label: `${data.action || 'Processing'}...` };
   }
 };
-

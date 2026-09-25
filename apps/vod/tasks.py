@@ -7,6 +7,7 @@ from django.db.models.functions import Coalesce, Lower
 from apps.m3u.models import M3UAccount
 from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
+from core.utils import TaskLockRenewer, acquire_task_lock, release_task_lock, ensure_custom_properties_dict
 from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
@@ -93,8 +94,23 @@ def lookup_by_name_year(model, name_year_language_keys):
     return found
 
 
-@shared_task
-def refresh_vod_content(account_id):
+@shared_task(bind=True, max_retries=120, default_retry_delay=30)
+def refresh_vod_content(self, account_id):
+    """Serialize VOD and Live imports for the same account."""
+    lock_name = "refresh_single_m3u_account"
+    if not acquire_task_lock(lock_name, account_id):
+        raise self.retry(countdown=30)
+
+    lock_renewer = TaskLockRenewer(lock_name, account_id)
+    lock_renewer.start()
+    try:
+        return _refresh_vod_content_impl(account_id)
+    finally:
+        lock_renewer.stop()
+        release_task_lock(lock_name, account_id)
+
+
+def _refresh_vod_content_impl(account_id):
     """Refresh VOD content for an M3U account with batch processing for improved performance"""
     # Import here to avoid circular import
     from apps.m3u.tasks import send_m3u_update
@@ -105,6 +121,10 @@ def refresh_vod_content(account_id):
         if account.account_type != M3UAccount.Types.XC:
             logger.warning(f"VOD refresh called for non-XC account {account_id}")
             return "VOD refresh only available for XtreamCodes accounts"
+
+        if not ensure_custom_properties_dict(account.custom_properties).get("enable_vod", False):
+            logger.info(f"Skipping queued VOD refresh for account {account_id}: VOD scanning is disabled")
+            return "VOD refresh skipped: VOD scanning is disabled"
 
         logger.info(f"Starting batch VOD refresh for account {account.name}")
         start_time = timezone.now()

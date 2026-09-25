@@ -368,7 +368,25 @@ describe('M3UGroupFilter', () => {
             auto_enable_new_groups_live: true,
             auto_enable_new_groups_vod: true,
             auto_enable_new_groups_series: true,
-          })
+          }),
+          false
+        );
+      });
+    });
+
+    it('marks only the initial group save for a combined first refresh', async () => {
+      setupStores();
+      render(<M3UGroupFilter {...defaultProps({ isInitialSetup: true })} />);
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => {
+        expect(M3uGroupFilterUtils.saveAndRefreshPlaylist).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 1 }),
+          expect.any(Array),
+          expect.any(Array),
+          expect.any(Array),
+          expect.any(Object),
+          true
         );
       });
     });

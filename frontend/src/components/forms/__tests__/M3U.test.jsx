@@ -60,8 +60,11 @@ vi.mock('../M3UProfiles', () => ({
 }));
 
 vi.mock('../M3UGroupFilter', () => ({
-  default: ({ onChange }) => (
-    <div data-testid="m3u-group-filter">
+  default: ({ onChange, isInitialSetup }) => (
+    <div
+      data-testid="m3u-group-filter"
+      data-initial-setup={String(isInitialSetup)}
+    >
       <button onClick={() => onChange?.([])}>M3UGroupFilter</button>
     </div>
   ),
@@ -730,6 +733,20 @@ describe('M3U', () => {
       });
     });
 
+    it('marks the new account group save as the initial refresh', async () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      fillRequiredFields();
+      fireEvent.click(screen.getByRole('button', { name: /add|create|save/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('m3u-group-filter')).toHaveAttribute(
+          'data-initial-setup',
+          'true'
+        );
+      });
+    });
+
     it('calls prepareSubmitValues before addPlaylist', async () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
@@ -816,6 +833,21 @@ describe('M3U', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       expect(screen.getByTestId('schedule-input')).toBeInTheDocument();
+    });
+
+    it('shows an independent VOD schedule only when enabled', () => {
+      setupStores();
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ enable_vod: true }),
+          })}
+        />
+      );
+
+      expect(screen.getAllByTestId('schedule-input')).toHaveLength(1);
+      fireEvent.click(screen.getByRole('switch', { name: 'Separate VOD refresh schedule' }));
+      expect(screen.getAllByTestId('schedule-input')).toHaveLength(2);
     });
   });
 
