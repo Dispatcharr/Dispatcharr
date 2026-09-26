@@ -22,7 +22,7 @@ jobs:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
-      - uses: Dispatcharr/repo-bot/actions/issue-triage@feat/issue-triage
+      - uses: Dispatcharr/repo-bot/actions/issue-triage@v1
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           bot-login: dispatcharr-issues-bot[bot]
@@ -37,4 +37,4 @@ jobs:
           max-context-total-bytes: 24000
           max-related-issues: 5
           # allow-retriage: true
-          dry-run: true
+          dry-run: false
