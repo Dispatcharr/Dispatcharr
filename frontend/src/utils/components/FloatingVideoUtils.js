@@ -2,12 +2,18 @@ export const PLAYER_PREFS_KEY = 'dispatcharr-player-prefs';
 
 /**
  * Build a live-stream preview URL that always forces mpegts output (required
- * for mpegts.js) and optionally appends the browser-local web player output
- * profile preference.
+ * for mpegts.js), forces Redirect-mode channels through the normal ffmpeg
+ * stream-profile pipeline instead of a raw provider redirect (avoids the
+ * browser-side mixed-content/CORS block, and works regardless of the
+ * provider's source container), and optionally appends the browser-local
+ * web player output profile preference.
  */
 export const buildLiveStreamUrl = (path) => {
   const prefs = getPlayerPrefs();
-  const params = new URLSearchParams({ output_format: 'mpegts' });
+  const params = new URLSearchParams({
+    output_format: 'mpegts',
+    force_profile: '1',
+  });
   const profileId = prefs.webPlayerOutputProfileId;
   if (profileId) params.set('output_profile', String(profileId));
   return `${path}?${params.toString()}`;

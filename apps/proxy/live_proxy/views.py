@@ -3,6 +3,7 @@ import time
 import random
 import re
 import pathlib
+import subprocess
 from django.db import close_old_connections
 from django.http import (
     StreamingHttpResponse,
@@ -21,7 +22,7 @@ from dispatcharr.utils import get_client_ip, network_access_allowed
 from .redis_keys import RedisKeys
 from apps.channels.models import Channel
 from apps.accounts.models import User
-from core.models import CoreSettings, PROXY_PROFILE_NAME
+from core.models import CoreSettings, PROXY_PROFILE_NAME, StreamProfile
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -44,6 +45,43 @@ import gevent
 from apps.proxy.utils import check_user_stream_limits
 
 logger = get_logger()
+
+
+def _is_admin_user(user):
+    """True for staff/elevated users, used to gate the force_profile parameter."""
+    return bool(user) and (
+        getattr(user, 'is_staff', False) or getattr(user, 'user_level', 0) >= 10
+    )
+
+
+def _is_force_profile_requested(request, user, client_id):
+    """Resolve the force_profile=1 request parameter (admin-only).
+
+    Redirect-mode channels normally hand the client a straight 302 to the
+    provider URL. force_profile=1, sent by an admin (e.g. the in-browser
+    preview player), asks this one request to instead run the provider URL
+    through a private, request-scoped ffmpeg process (see
+    _open_ffmpeg_preview_stream()/_ffmpeg_preview_stream_body(), used from
+    _redirect_response()) so it always comes back as MPEG-TS -- avoiding the
+    browser-side mixed-content/CORS block on a raw provider redirect, and
+    generically handling whatever container the provider actually uses (not
+    just MPEG-TS, unlike a raw byte relay).
+
+    Deliberately scoped to this one request/process only, never touching the
+    shared channel/worker state (ChannelService.initialize_channel() is never
+    called for this path): a Redirect-mode channel has no persistent worker
+    in normal operation, and giving it one just for an admin preview would
+    leave real viewers (redirect clients, external players) attaching to
+    that leftover worker instead of getting redirected as usual.
+    """
+    if request.GET.get('force_profile') != '1':
+        return False
+    if not _is_admin_user(user):
+        logger.warning(
+            f"[{client_id}] force_profile requested by non-admin user; ignoring"
+        )
+        return False
+    return True
 
 
 def _channel_stopping_response():
@@ -174,14 +212,18 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
     try:
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
+
+        # Generate a unique client ID
+        client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+
+        force_profile_active = _is_force_profile_requested(request, user, client_id)
+
         allowed_m3u_profiles = None
         if user and channel.get_stream_profile().is_redirect():
             from apps.m3u.utils import get_allowed_m3u_profiles
 
             allowed_m3u_profiles = get_allowed_m3u_profiles(user)
 
-        # Generate a unique client ID
-        client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
         client_ip = get_client_ip(request)
         logger.info(f"[{client_id}] Requested stream for channel {channel_id}")
 
@@ -324,7 +366,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             error_reason,
                             resolved_stream_id,
                         ) = generate_stream_url(
-                            channel_id, user, allowed_m3u_profiles
+                            channel_id, user, allowed_m3u_profiles,
                         )
 
                         if stream_url is not None:
@@ -376,7 +418,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             error_reason,
                             resolved_stream_id,
                         ) = generate_stream_url(
-                            channel_id, user, allowed_m3u_profiles
+                            channel_id, user, allowed_m3u_profiles,
                         )
                         if stream_url is not None:
                             logger.info(
@@ -427,8 +469,85 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     if stream_profile.is_redirect():
                         from apps.proxy.config import TSConfig
 
+                        def _open_ffmpeg_preview_stream(url, user_agent=None):
+                            """Spawn a private, request-scoped ffmpeg process that
+                            remuxes whatever container the provider serves into
+                            MPEG-TS, for admin in-browser preview (force_profile=1)
+                            on a Redirect-mode channel.
+
+                            Deliberately never touches the shared channel/worker
+                            machinery (ChannelService.initialize_channel() et al):
+                            a Redirect-mode channel has no persistent worker in
+                            normal operation, and giving it one just for this one
+                            admin preview would leave real viewers (redirect
+                            clients, external players) attaching to that leftover
+                            worker instead of getting redirected as usual -- which
+                            is exactly the regression this design avoids.
+                            """
+                            ffmpeg_profile = StreamProfile.objects.get(
+                                name='ffmpeg', locked=True
+                            )
+                            cmd = ffmpeg_profile.build_command(
+                                url, user_agent or '', channel_id=channel.id
+                            )
+                            return subprocess.Popen(
+                                cmd,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL,
+                                bufsize=0,
+                            )
+
+                        def _ffmpeg_preview_stream_body(process):
+                            """Yield ffmpeg's stdout, always tearing the process
+                            down on client disconnect/generator close so a closed
+                            preview tab can't leak an orphaned ffmpeg process.
+                            """
+                            try:
+                                while True:
+                                    chunk = process.stdout.read(188 * 64)
+                                    if not chunk:
+                                        break
+                                    yield chunk
+                            finally:
+                                try:
+                                    process.stdout.close()
+                                except Exception:
+                                    pass
+                                process.terminate()
+                                try:
+                                    process.wait(timeout=5)
+                                except Exception:
+                                    process.kill()
+
                         def _redirect_response(url):
-                            """Hand the client the provider URL (HTTP or non-HTTP)."""
+                            """Hand the client the provider URL (HTTP or non-HTTP).
+
+                            An admin client (e.g. the in-browser preview player)
+                            that sent force_profile=1 (see
+                            _is_force_profile_requested(), resolved before we
+                            ever reach this branch) gets that same URL run
+                            through a private ffmpeg process instead -- avoiding
+                            the browser-side mixed-content/CORS block on a raw
+                            redirect, and generically handling whatever container
+                            the provider actually uses (not just MPEG-TS, unlike
+                            a raw byte relay). Everyone else (real viewers,
+                            external players) gets the plain redirect, unchanged.
+                            """
+                            if (
+                                force_profile_active
+                                and url.startswith(("http://", "https://"))
+                            ):
+                                logger.info(
+                                    f"[{client_id}] Admin force_profile preview: "
+                                    f"running {url} through ffmpeg"
+                                )
+                                process = _open_ffmpeg_preview_stream(
+                                    url, user_agent=stream_user_agent
+                                )
+                                return StreamingHttpResponse(
+                                    _ffmpeg_preview_stream_body(process),
+                                    content_type='video/mp2t',
+                                )
                             if url.startswith(("rtsp://", "rtp://", "udp://")):
                                 logger.info(
                                     f"[{client_id}] Using manual redirect for non-HTTP protocol"
