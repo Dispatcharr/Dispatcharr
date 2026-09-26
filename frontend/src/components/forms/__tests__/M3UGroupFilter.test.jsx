@@ -416,6 +416,45 @@ describe('M3UGroupFilter', () => {
       });
     });
 
+    it('explains that VOD follows the initial Live TV refresh', async () => {
+      setupStores();
+      render(<M3UGroupFilter {...defaultProps({ isInitialSetup: true })} />);
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Live TV Refresh Started',
+            message: expect.stringContaining(
+              'VOD will be queued in the background after Live TV completes'
+            ),
+          })
+        );
+      });
+    });
+
+    it('does not promise a VOD refresh when the account has VOD disabled', async () => {
+      setupStores();
+      render(
+        <M3UGroupFilter
+          {...defaultProps({
+            playlist: makePlaylist({ enable_vod: false }),
+            isInitialSetup: true,
+          })}
+        />
+      );
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Live TV Refresh Started',
+            message: expect.not.stringContaining('VOD'),
+          })
+        );
+      });
+    });
+
     it('does not call onClose when saveAndRefreshPlaylist throws', async () => {
       vi.mocked(M3uGroupFilterUtils.saveAndRefreshPlaylist).mockRejectedValue(
         new Error('save failed')

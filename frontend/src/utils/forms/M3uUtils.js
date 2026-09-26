@@ -71,8 +71,7 @@ export const prepareSubmitValues = (values, expDate) => {
   }
 
   const hasVodCron =
-    prepared.vod_cron_expression &&
-    prepared.vod_cron_expression.trim() !== '';
+    prepared.vod_cron_expression && prepared.vod_cron_expression.trim() !== '';
   if (hasVodCron) {
     prepared.vod_refresh_interval = 0;
   } else {

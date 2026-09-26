@@ -4,10 +4,12 @@ import {
   fireEvent,
   waitFor,
   act,
+  within,
 } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import M3U from '../M3U';
 import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
+import classes from '../M3U.module.css';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/userAgents', () => ({ default: vi.fn() }));
@@ -79,12 +81,13 @@ vi.mock('../M3UFilters', () => ({
 }));
 
 vi.mock('../ScheduleInput', () => ({
-  default: ({ onChange, value }) => (
+  default: ({ intervalLabel, intervalValue, onIntervalChange }) => (
     <div data-testid="schedule-input">
       <input
         data-testid="schedule-value"
-        value={value || ''}
-        onChange={(e) => onChange?.(e.target.value)}
+        aria-label={intervalLabel}
+        value={intervalValue ?? ''}
+        onChange={(e) => onIntervalChange?.(Number(e.target.value))}
       />
     </div>
   ),
@@ -330,7 +333,11 @@ vi.mock('@mantine/core', () => ({
       {error && <span data-testid={`error-${label}`}>{error}</span>}
     </div>
   ),
-  Stack: ({ children }) => <div>{children}</div>,
+  SimpleGrid: ({ children, cols }) => (
+    <div data-testid="account-columns" data-cols={JSON.stringify(cols)}>{children}</div>
+  ),
+  Stack: ({ children, role, className, 'aria-label': label }) => <div role={role} className={className} aria-label={label}>{children}</div>,
+  Text: ({ children }) => <span>{children}</span>,
   Switch: ({ label, checked, onChange, disabled }) => (
     <label>
       <input
@@ -848,6 +855,120 @@ describe('M3U', () => {
       expect(screen.getAllByTestId('schedule-input')).toHaveLength(1);
       fireEvent.click(screen.getByRole('switch', { name: 'Separate VOD refresh schedule' }));
       expect(screen.getAllByTestId('schedule-input')).toHaveLength(2);
+    });
+  });
+
+  describe('separate Live TV and VOD columns', () => {
+    it('applies responsive separators to all four settings columns', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      for (const name of ['Account settings', 'Connection settings', 'Live TV settings', 'VOD settings']) {
+        expect(screen.getByRole('group', { name })).toHaveClass(classes.column);
+      }
+    });
+
+    it('uses four responsive columns and keeps the refresh controls in their own groups', () => {
+      setupStores();
+      render(<M3U {...defaultProps({
+        m3uAccount: makeM3uAccount({ enable_vod: true, vod_refresh_after_live: false }),
+      })} />);
+
+      expect(screen.getByTestId('modal')).toHaveAttribute('data-size', '1280');
+      expect(screen.getByTestId('account-columns')).toHaveAttribute(
+        'data-cols', JSON.stringify({ base: 1, sm: 2, md: 4 })
+      );
+      const live = within(screen.getByRole('group', { name: 'Live TV settings' }));
+      const vod = within(screen.getByRole('group', { name: 'VOD settings' }));
+      expect(live.getByLabelText('Live TV refresh interval (hours)')).toBeInTheDocument();
+      expect(live.getByRole('spinbutton', { name: 'Client refresh cooldown (minutes)' })).toBeInTheDocument();
+      expect(live.getByRole('spinbutton', { name: 'Stale Stream Retention (days)' })).toBeInTheDocument();
+      expect(live.queryByRole('spinbutton', { name: 'VOD Priority' })).not.toBeInTheDocument();
+      expect(vod.getByLabelText('VOD refresh interval (hours)')).toBeInTheDocument();
+      expect(vod.getByRole('spinbutton', { name: 'VOD Priority' })).toBeInTheDocument();
+      expect(vod.getByRole('switch', { name: 'Enable VOD Scanning' })).toBeInTheDocument();
+      expect(vod.queryByLabelText('Live TV refresh interval (hours)')).not.toBeInTheDocument();
+    });
+
+    it('keeps Create EPG in the Live TV column when creating an XC account', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      const live = within(screen.getByRole('group', { name: 'Live TV settings' }));
+      const vod = within(screen.getByRole('group', { name: 'VOD settings' }));
+      expect(live.getByRole('switch', { name: 'Create EPG' })).toBeInTheDocument();
+      expect(vod.queryByRole('switch', { name: 'Create EPG' })).not.toBeInTheDocument();
+    });
+
+    it('uses three columns without VOD controls for a standard M3U account', () => {
+      setupStores();
+      render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount({ account_type: 'STD' }) })} />);
+      expect(screen.getByTestId('modal')).toHaveAttribute('data-size', '960');
+      expect(screen.getByTestId('account-columns')).toHaveAttribute(
+        'data-cols', JSON.stringify({ base: 1, sm: 2, md: 3 })
+      );
+      expect(screen.queryByRole('group', { name: 'VOD settings' })).not.toBeInTheDocument();
+    });
+
+    it('updates the column layout immediately when the account type changes', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      fireEvent.change(screen.getByRole('combobox', { name: 'Account Type' }), {
+        target: { value: 'STD' },
+      });
+      expect(screen.queryByRole('group', { name: 'VOD settings' })).not.toBeInTheDocument();
+      expect(screen.getByTestId('modal')).toHaveAttribute('data-size', '960');
+      fireEvent.change(screen.getByRole('combobox', { name: 'Account Type' }), {
+        target: { value: 'XC' },
+      });
+      expect(screen.getByRole('group', { name: 'VOD settings' })).toBeInTheDocument();
+      expect(screen.getByTestId('modal')).toHaveAttribute('data-size', '1280');
+    });
+
+    it('defaults new account client refresh cooldowns to thirty minutes', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      expect(screen.getByLabelText('Client refresh cooldown (minutes)')).toHaveValue(30);
+    });
+
+    it('uses thirty minutes when an existing account response omits the cooldown', () => {
+      setupStores();
+      render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount() })} />);
+      expect(screen.getByLabelText('Client refresh cooldown (minutes)')).toHaveValue(30);
+    });
+
+    it.each([0, 45, 55])('preserves an existing client refresh cooldown of %s minutes', (minutes) => {
+      setupStores();
+      render(<M3U {...defaultProps({
+        m3uAccount: makeM3uAccount({ xc_live_refresh_min_age_minutes: minutes }),
+      })} />);
+      expect(screen.getByLabelText('Client refresh cooldown (minutes)')).toHaveValue(minutes);
+    });
+
+    it('preserves the independent Live TV and VOD values when saving the new layout', async () => {
+      setupStores();
+      const account = makeM3uAccount({
+        enable_vod: true,
+        vod_refresh_after_live: false,
+        refresh_interval: 6,
+        vod_refresh_interval: 24,
+        xc_live_refresh_min_age_minutes: 55,
+        priority: 30,
+      });
+      render(<M3U {...defaultProps({ m3uAccount: account })} />);
+      fireEvent.change(screen.getByLabelText('Live TV refresh interval (hours)'), { target: { value: '8' } });
+      fireEvent.change(screen.getByLabelText('VOD refresh interval (hours)'), { target: { value: '48' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(M3uUtils.updatePlaylist).toHaveBeenCalledWith(
+        account,
+        expect.objectContaining({
+          refresh_interval: 8,
+          vod_refresh_interval: 48,
+          vod_refresh_after_live: false,
+          enable_vod: true,
+          xc_live_refresh_min_age_minutes: 55,
+          priority: 30,
+        }),
+        null
+      ));
     });
   });
 
