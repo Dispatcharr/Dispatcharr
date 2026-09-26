@@ -1629,6 +1629,7 @@ def _dvr_build_ffmpeg_cmd(
         "-f", "hls",
         "-hls_time", "4",
         "-hls_list_size", "0",
+        "-hls_playlist_type", "event",
         "-hls_flags", "append_list+omit_endlist+independent_segments",
         "-start_number", str(hls_start_number),
         "-hls_segment_filename", hls_seg_pattern,

@@ -3611,7 +3611,10 @@ class RecordingViewSet(viewsets.ModelViewSet):
                         lines.append(f"{base_url}{stripped}{auth_suffix}\n")
                     else:
                         lines.append(line)
-            return HttpResponse("".join(lines), content_type="application/x-mpegURL")
+
+            resp = HttpResponse("".join(lines), content_type="application/x-mpegURL")
+            resp["Cache-Control"] = "no-cache"
+            return resp
 
         if seg_path.endswith(".ts"):
             # Refresh the viewer heartbeat in Redis so the Celery task knows an
