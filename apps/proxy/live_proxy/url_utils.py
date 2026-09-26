@@ -598,8 +598,16 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
 
         # If HEAD not supported, server will return 405 or other error
         if head_request_success and (200 <= head_response.status_code < 300):
-            # HEAD request successful
-            return True, url, head_response.status_code, "Valid (HEAD request)"
+            # HEAD request successful. requests already followed the full
+            # redirect chain (allow_redirects=True) using this session's
+            # user agent, so head_response.url is the actual final URL the
+            # provider served from -- not necessarily the same as the URL
+            # we were asked to validate. Handing the caller that resolved
+            # URL (instead of echoing back the original one) is what lets
+            # a client that can't itself follow multi-hop provider/CDN
+            # redirects (e.g. some external IPTV players in Redirect mode)
+            # still land on a working single-hop URL.
+            return True, head_response.url, head_response.status_code, "Valid (HEAD request)"
 
         # Try a GET request with stream=True to avoid downloading all content
         get_response = session.get(
@@ -665,8 +673,10 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         # Clean up connection
         get_response.close()
 
-        # If we have content, consider it valid even with unrecognized content type
-        return is_valid, url, get_response.status_code, message
+        # If we have content, consider it valid even with unrecognized content type.
+        # As above, get_response.url is the fully-resolved URL after following
+        # the whole redirect chain, not just the one we were asked to validate.
+        return is_valid, get_response.url, get_response.status_code, message
 
     except requests.exceptions.Timeout:
         return False, url, 0, "Timeout connecting to stream"
