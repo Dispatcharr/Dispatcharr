@@ -138,6 +138,8 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
         mock_batch_create,
     ):
         account, category, relation = self._setup_xc_account_with_movie_category()
+        mock_refresh_movies.return_value = 1
+        mock_refresh_series.return_value = 0
         mock_client = MagicMock()
         mock_client.get_vod_categories.return_value = [
             {"category_id": "1", "category_name": "NETFLIX MOVIES"},
@@ -156,6 +158,9 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
         mock_refresh_movies.assert_called_once()
         mock_refresh_series.assert_called_once()
         mock_cleanup.assert_called_once()
+        account.refresh_from_db()
+        self.assertEqual(account.custom_properties["vod_catalog_counts"]["movies"]["provider_total"], 1)
+        self.assertIn("vod_seconds", account.custom_properties["refresh_timings"])
         self.assertTrue(
             M3UVODCategoryRelation.objects.filter(pk=relation.pk, enabled=True).exists()
         )

@@ -5,20 +5,20 @@ import useServerGroupsStore from '../../store/serverGroups';
 import usePlaylistsStore from '../../store/playlists';
 import M3UProfiles from './M3UProfiles';
 import {
-  Box,
   Button,
   Divider,
   FileInput,
   Flex,
-  Group,
   LoadingOverlay,
   Modal,
   MultiSelect,
   NumberInput,
   PasswordInput,
   Select,
+  SimpleGrid,
   Stack,
   Switch,
+  Text,
   TextInput,
 } from '@mantine/core';
 import M3UGroupFilter from './M3UGroupFilter';
@@ -42,6 +42,7 @@ import {
 import { M3U_HASH_KEY_OPTIONS } from '../../utils/m3uHashKey.js';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
 import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
+import classes from './M3U.module.css';
 
 const M3U = ({
   m3uAccount = null,
@@ -66,6 +67,7 @@ const M3U = ({
   const [vodScheduleType, setVodScheduleType] = useState('interval');
   const [vodEnabled, setVodEnabled] = useState(false);
   const [vodRefreshAfterLive, setVodRefreshAfterLive] = useState(true);
+  const [accountType, setAccountType] = useState('XC');
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
   const [hasHashKeyOverride, setHasHashKeyOverride] = useState(false);
   const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
@@ -118,6 +120,7 @@ const M3U = ({
     if (m3uAccount) {
       setInitialGroupSetup(false);
       setPlaylist(m3uAccount);
+      setAccountType(m3uAccount.account_type);
       form.setValues({
         name: m3uAccount.name,
         server_url: m3uAccount.server_url,
@@ -173,6 +176,7 @@ const M3U = ({
     } else {
       setInitialGroupSetup(false);
       setPlaylist(null);
+      setAccountType('XC');
       form.reset();
       setScheduleType('interval');
       setVodScheduleType('interval');
@@ -277,7 +281,7 @@ const M3U = ({
   return (
     <>
       <Modal
-        size={960}
+        size={accountType === 'XC' ? 1280 : 960}
         opened={isOpen}
         onClose={close}
         title="M3U Account"
@@ -290,8 +294,19 @@ const M3U = ({
         <LoadingOverlay visible={form.submitting} overlayBlur={2} />
 
         <form onSubmit={form.onSubmit(onSubmit)}>
-          <Group align="flex-start" gap="md" wrap="nowrap">
-            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
+          <SimpleGrid
+            cols={{ base: 1, sm: 2, md: accountType === 'XC' ? 4 : 3 }}
+            spacing="xl"
+            verticalSpacing="xl"
+          >
+            <Stack
+              gap="xs"
+              style={{ minWidth: 0 }}
+              role="group"
+              aria-label="Account settings"
+              className={classes.column}
+            >
+              <Text fw={600}>Account</Text>
               <TextInput
                 id="name"
                 name="name"
@@ -324,9 +339,13 @@ const M3U = ({
                 ]}
                 key={form.key('account_type')}
                 {...form.getInputProps('account_type')}
+                onChange={(value) => {
+                  form.setFieldValue('account_type', value);
+                  setAccountType(value);
+                }}
               />
 
-              {form.getValues().account_type == 'XC' && (
+              {accountType === 'XC' && (
                 <>
                   <TextInput
                     id="username"
@@ -345,7 +364,7 @@ const M3U = ({
                 </>
               )}
 
-              {form.getValues().account_type != 'XC' && (
+              {accountType !== 'XC' && (
                 <>
                   <FileInput
                     id="file"
@@ -375,9 +394,14 @@ const M3U = ({
               )}
             </Stack>
 
-            <Divider size="sm" orientation="vertical" />
-
-            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
+            <Stack
+              gap="xs"
+              style={{ minWidth: 0 }}
+              role="group"
+              aria-label="Connection settings"
+              className={classes.column}
+            >
+              <Text fw={600}>Connection</Text>
               <NumberInput
                 id="max_streams"
                 name="max_streams"
@@ -456,9 +480,14 @@ const M3U = ({
               />
             </Stack>
 
-            <Divider size="sm" orientation="vertical" />
-
-            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
+            <Stack
+              gap="xs"
+              style={{ minWidth: 0 }}
+              role="group"
+              aria-label="Live TV settings"
+              className={classes.column}
+            >
+              <Text fw={600}>Live TV</Text>
               <ScheduleInput
                 scheduleType={scheduleType}
                 onScheduleTypeChange={setScheduleType}
@@ -479,7 +508,7 @@ const M3U = ({
                   </>
                 }
               />
-              {form.getValues().account_type === 'XC' && (
+              {accountType === 'XC' && (
                 <NumberInput
                   min={0}
                   max={10080}
@@ -497,82 +526,81 @@ const M3U = ({
                 description="Streams not seen for this many days will be removed"
                 {...form.getInputProps('stale_stream_days')}
               />
-
-              {form.getValues().account_type == 'XC' && (
-                <Box>
-                  <NumberInput
-                    min={0}
-                    max={999}
-                    label="VOD Priority"
-                    description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
-                    {...form.getInputProps('priority')}
-                    key={form.key('priority')}
-                  />
-
-                  <Group justify="space-between">
-                    <Box>Enable VOD Scanning</Box>
-                    <Switch
-                      id="enable_vod"
-                      name="enable_vod"
-                      description="Scan and import VOD content (movies/series) from this Xtream account"
-                      checked={vodEnabled}
-                      onChange={(event) => {
-                        const enabled = event.currentTarget.checked;
-                        setVodEnabled(enabled);
-                        form.setFieldValue('enable_vod', enabled);
-                      }}
-                    />
-                  </Group>
-
-                  {vodEnabled && (
-                    <Stack gap="xs" mt="sm">
-                      <Switch
-                        label="Separate VOD refresh schedule"
-                        description="Otherwise VOD refreshes after a successful scheduled Live TV refresh."
-                        checked={!vodRefreshAfterLive}
-                        onChange={(event) => {
-                          const afterLive = !event.currentTarget.checked;
-                          setVodRefreshAfterLive(afterLive);
-                          form.setFieldValue('vod_refresh_after_live', afterLive);
-                        }}
-                      />
-                      {!vodRefreshAfterLive && (
-                        <ScheduleInput
-                          scheduleType={vodScheduleType}
-                          onScheduleTypeChange={setVodScheduleType}
-                          intervalValue={form.getValues().vod_refresh_interval}
-                          onIntervalChange={(value) =>
-                            form.setFieldValue('vod_refresh_interval', value)
-                          }
-                          cronValue={form.getValues().vod_cron_expression}
-                          onCronChange={(value) =>
-                            form.setFieldValue('vod_cron_expression', value)
-                          }
-                          intervalLabel="VOD refresh interval (hours)"
-                          intervalDescription="Use 0 to disable automatic VOD refreshes."
-                        />
-                      )}
-                    </Stack>
-                  )}
-
-                  {!m3uAccount && (
-                    <Group justify="space-between">
-                      <Box>Create EPG</Box>
-                      <Switch
-                        id="create_epg"
-                        name="create_epg"
-                        description="Automatically create matching EPG source for this Xtream account"
-                        key={form.key('create_epg')}
-                        {...form.getInputProps('create_epg', {
-                          type: 'checkbox',
-                        })}
-                      />
-                    </Group>
-                  )}
-                </Box>
+              {accountType === 'XC' && !m3uAccount && (
+                <Switch
+                  id="create_epg"
+                  name="create_epg"
+                  label="Create EPG"
+                  description="Automatically create matching EPG source for this Xtream account"
+                  key={form.key('create_epg')}
+                  {...form.getInputProps('create_epg', { type: 'checkbox' })}
+                />
               )}
             </Stack>
-          </Group>
+
+            {accountType === 'XC' && (
+              <Stack
+                gap="xs"
+                style={{ minWidth: 0 }}
+                role="group"
+                aria-label="VOD settings"
+                className={classes.column}
+              >
+                <Text fw={600}>VOD</Text>
+                <Switch
+                  id="enable_vod"
+                  name="enable_vod"
+                  label="Enable VOD Scanning"
+                  description="Scan and import VOD content (movies/series) from this Xtream account"
+                  checked={vodEnabled}
+                  onChange={(event) => {
+                    const enabled = event.currentTarget.checked;
+                    setVodEnabled(enabled);
+                    form.setFieldValue('enable_vod', enabled);
+                  }}
+                />
+                <NumberInput
+                  min={0}
+                  max={999}
+                  label="VOD Priority"
+                  description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
+                  {...form.getInputProps('priority')}
+                  key={form.key('priority')}
+                />
+
+                {vodEnabled && (
+                  <Stack gap="xs" mt="sm">
+                    <Switch
+                      label="Separate VOD refresh schedule"
+                      description="Otherwise VOD refreshes after a successful scheduled Live TV refresh."
+                      checked={!vodRefreshAfterLive}
+                      onChange={(event) => {
+                        const afterLive = !event.currentTarget.checked;
+                        setVodRefreshAfterLive(afterLive);
+                        form.setFieldValue('vod_refresh_after_live', afterLive);
+                      }}
+                    />
+                    {!vodRefreshAfterLive && (
+                      <ScheduleInput
+                        scheduleType={vodScheduleType}
+                        onScheduleTypeChange={setVodScheduleType}
+                        intervalValue={form.getValues().vod_refresh_interval}
+                        onIntervalChange={(value) =>
+                          form.setFieldValue('vod_refresh_interval', value)
+                        }
+                        cronValue={form.getValues().vod_cron_expression}
+                        onCronChange={(value) =>
+                          form.setFieldValue('vod_cron_expression', value)
+                        }
+                        intervalLabel="VOD refresh interval (hours)"
+                        intervalDescription="Use 0 to disable automatic VOD refreshes."
+                      />
+                    )}
+                  </Stack>
+                )}
+              </Stack>
+            )}
+          </SimpleGrid>
 
           <Divider my="md" />
 

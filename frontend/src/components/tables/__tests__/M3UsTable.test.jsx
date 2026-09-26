@@ -791,6 +791,171 @@ describe('M3UTable', () => {
 
   // ── Column: Status ─────────────────────────────────────────────────────────
 
+  describe('Refresh summaries', () => {
+    it('shows provider and imported counts separately for Live, Movies and Series', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        custom_properties: {
+          live_catalog_counts: { provider_total: 120, selected_total: 80 },
+          vod_catalog_counts: {
+            movies: { provider_total: 30, selected_total: 20 },
+            series: { provider_total: 10, selected_total: 9 },
+          },
+        },
+      });
+      const { getByText } = render(getCol('name').cell({
+        cell: { getValue: () => playlist.name },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: 120 / 80')).toBeInTheDocument();
+      expect(getByText('Movies: 30 / 20')).toBeInTheDocument();
+      expect(getByText('Series: 10 / 9')).toBeInTheDocument();
+    });
+
+    it('marks counts as unavailable until the first successful refresh', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({ account_type: 'XC' });
+      const { getByText } = render(getCol('name').cell({
+        cell: { getValue: () => playlist.name },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: — / —')).toBeInTheDocument();
+      expect(getByText('Movies: — / —')).toBeInTheDocument();
+    });
+
+    it('shows the last successful Live and VOD durations independently', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        custom_properties: { refresh_timings: { live_seconds: 72, vod_seconds: 3661 } },
+      });
+      const { getByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => playlist.last_message },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: 1m 12s')).toBeInTheDocument();
+      expect(getByText('VOD: 1h 1m')).toBeInTheDocument();
+    });
+
+    it('replaces the verbose completion message with separate refresh durations', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        enable_vod: true,
+        last_message: 'Processing completed in 4.9 seconds. Streams: 500 created.',
+        custom_properties: { refresh_timings: { live_seconds: 4.9, vod_seconds: 80.72 } },
+      });
+      const { getByText, queryByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => playlist.last_message },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: 4.9s')).toBeInTheDocument();
+      expect(getByText('VOD: 1m 21s')).toBeInTheDocument();
+      expect(queryByText(/Processing completed|Streams: 500/)).not.toBeInTheDocument();
+    });
+
+    it('shows an unknown VOD duration instead of using the Live TV duration', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        enable_vod: true,
+        custom_properties: { refresh_timings: { live_seconds: 0 } },
+      });
+      const { getByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => playlist.last_message },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: 0s')).toBeInTheDocument();
+      expect(getByText('VOD: —')).toBeInTheDocument();
+    });
+
+    it('does not show a VOD duration for standard M3U accounts', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        account_type: 'STD',
+        custom_properties: { refresh_timings: { live_seconds: 12 } },
+      });
+      const { getByText, queryByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => playlist.last_message },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: 12s')).toBeInTheDocument();
+      expect(queryByText(/^VOD:/)).not.toBeInTheDocument();
+    });
+
+    it('keeps errors visible alongside the last successful refresh durations', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        status: 'error',
+        last_message: 'Provider unavailable',
+        custom_properties: { refresh_timings: { live_seconds: 12 } },
+      });
+      const { getByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => playlist.last_message },
+        row: { original: playlist },
+      }));
+      expect(getByText('Provider unavailable')).toBeInTheDocument();
+      expect(getByText('Live TV: 12s')).toBeInTheDocument();
+    });
+
+    it('also removes the old Processing wording before structured metrics exist', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist();
+      const { getByText, queryByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => 'Processing completed in 4.9 seconds. Streams: 500 created.' },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV refresh completed. Streams: 500 created.')).toBeInTheDocument();
+      expect(queryByText(/Processing completed/)).not.toBeInTheDocument();
+    });
+
+    it.each([
+      [{ status: 'ok', channels_failed: 2 }, 'Auto-sync: 2 channel(s) failed'],
+      [{ status: 'error', error: 'Channel update failed' }, 'Auto-sync failed: Channel update failed'],
+    ])('keeps auto-sync warnings visible after a successful refresh', (autoSync, warning) => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        status: 'success',
+        last_message: 'VOD refresh completed in 20 seconds',
+        custom_properties: {
+          refresh_timings: { live_seconds: 12 },
+          live_auto_sync_result: autoSync,
+        },
+      });
+      const { getByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => playlist.last_message },
+        row: { original: playlist },
+      }));
+      expect(getByText(warning)).toBeInTheDocument();
+      expect(getByText('Live TV: 12s')).toBeInTheDocument();
+    });
+
+    it.each(['3 updated, 2 failed.', '2 failed.'])('preserves legacy auto-sync warnings (%s) until a new Live refresh', (summary) => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        status: 'success',
+        last_message: `Live TV refresh completed. Auto-sync: ${summary}`,
+        custom_properties: { refresh_timings: { live_seconds: 12 } },
+      });
+      const { getByText } = render(getCol('last_message').cell({
+        cell: { getValue: () => playlist.last_message },
+        row: { original: playlist },
+      }));
+      expect(getByText(`Auto-sync: ${summary}`)).toBeInTheDocument();
+    });
+  });
+
   describe('Status column', () => {
     it('returns null when status value is empty', () => {
       setupMocks();
@@ -949,9 +1114,12 @@ describe('M3UTable', () => {
       setupMocks();
       render(<M3UTable />);
       const { getByText } = render(
-        getCol('updated_at').cell({ cell: { getValue: () => null } })
+        getCol('updated_at').cell({
+          cell: { getValue: () => null },
+          row: { original: makePlaylist({ updated_at: null }) },
+        })
       );
-      expect(getByText('Never')).toBeInTheDocument();
+      expect(getByText('Live TV: Never')).toBeInTheDocument();
     });
 
     it('renders the formatted date string when updated_at is present', () => {
@@ -959,9 +1127,46 @@ describe('M3UTable', () => {
       setupMocks();
       render(<M3UTable />);
       const { getByText } = render(
-        getCol('updated_at').cell({ cell: { getValue: () => '2024-01-01T12:00:00Z' } })
+        getCol('updated_at').cell({
+          cell: { getValue: () => '2024-01-01T12:00:00Z' },
+          row: { original: makePlaylist() },
+        })
       );
-      expect(getByText('formatted:2024-01-01T12:00:00Z')).toBeInTheDocument();
+      expect(getByText('Live TV: formatted:2024-01-01T12:00:00Z')).toBeInTheDocument();
+    });
+
+    it('shows separate successful Live TV and VOD timestamps instead of the shared updated_at', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        enable_vod: true,
+        custom_properties: {
+          refresh_timings: {
+            live_completed_at: '2026-10-13T10:00:04Z',
+            vod_completed_at: '2026-10-13T01:01:20Z',
+          },
+        },
+      });
+      const { getByText, queryByText } = render(getCol('updated_at').cell({
+        cell: { getValue: () => playlist.updated_at },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: formatted:2026-10-13T10:00:04Z')).toBeInTheDocument();
+      expect(getByText('VOD: formatted:2026-10-13T01:01:20Z')).toBeInTheDocument();
+      expect(queryByText(/formatted:2024-01-01/)).not.toBeInTheDocument();
+    });
+
+    it('does not reuse the Live TV timestamp when VOD has never refreshed', () => {
+      setupMocks();
+      render(<M3UTable />);
+      const playlist = makePlaylist({ account_type: 'XC', enable_vod: true });
+      const { getByText } = render(getCol('updated_at').cell({
+        cell: { getValue: () => playlist.updated_at },
+        row: { original: playlist },
+      }));
+      expect(getByText('Live TV: formatted:2024-01-01T12:00:00Z')).toBeInTheDocument();
+      expect(getByText('VOD: Never')).toBeInTheDocument();
     });
   });
 

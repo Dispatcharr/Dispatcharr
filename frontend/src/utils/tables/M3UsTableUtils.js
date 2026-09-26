@@ -103,6 +103,9 @@ export const getStatusContent = (data) => {
     case 'initializing':
       return { type: 'initializing' };
 
+    case 'vod_refresh':
+      return { type: 'simple', label: 'Refreshing VOD...' };
+
     case 'downloading':
       if (data.progress === 0) return { type: 'simple', label: 'Downloading...' };
       return {
