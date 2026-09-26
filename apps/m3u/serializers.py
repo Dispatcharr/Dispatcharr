@@ -195,6 +195,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "locked",
             "channel_groups",
             "refresh_interval",
+            "xc_live_refresh_min_age_minutes",
             "cron_expression",
             "vod_refresh_interval",
             "vod_cron_expression",

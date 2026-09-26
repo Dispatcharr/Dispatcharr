@@ -14,6 +14,11 @@ VALID_NAV_ITEM_IDS = {
 }
 MAX_CUSTOM_PROPS_SIZE = 102400  # 100KB limit
 SAFE_CREDENTIAL_RE = re.compile(r"^[A-Za-z0-9._@-]+$")
+RETIRED_CLIENT_REFRESH_PROPERTIES = (
+    "xc_live_refresh_request_interval_minutes",
+    "xc_live_refresh_wait_for_completion",
+    "xc_live_refresh_wait_timeout_seconds",
+)
 
 
 def validate_nav_array(value, field_name):
@@ -107,6 +112,15 @@ class UserSerializer(serializers.ModelSerializer):
         if 'hiddenNav' in value:
             validate_nav_array(value['hiddenNav'], 'hiddenNav')
 
+        if "xc_live_refresh_on_request" in value and not isinstance(
+            value["xc_live_refresh_on_request"], bool
+        ):
+            raise serializers.ValidationError("xc_live_refresh_on_request must be a boolean")
+
+        value = value.copy()
+        for key in RETIRED_CLIENT_REFRESH_PROPERTIES:
+            value.pop(key, None)
+
         xc_password = value.get("xc_password")
 
         if xc_password and not SAFE_CREDENTIAL_RE.fullmatch(xc_password):
@@ -154,6 +168,8 @@ class UserSerializer(serializers.ModelSerializer):
                     merged.pop(k, None)
                 else:
                     merged[k] = v
+            for key in RETIRED_CLIENT_REFRESH_PROPERTIES:
+                merged.pop(key, None)
             # Scrub stale nav IDs so the DB self-heals on next save
             for nav_field in ('navOrder', 'hiddenNav'):
                 if nav_field in merged and isinstance(merged[nav_field], list):

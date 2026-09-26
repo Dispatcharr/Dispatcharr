@@ -1,9 +1,63 @@
 from django.test import TestCase
 
+from apps.accounts.models import User
 from apps.accounts.serializers import UserSerializer
 
 
 class UserSerializerValidationTests(TestCase):
+    def test_client_refresh_permission_is_saved_without_retired_wait_settings(self):
+        serializer = UserSerializer(data={
+            "username": "wait-user",
+            "password": "testpassword123",
+            "custom_properties": {
+                "xc_live_refresh_on_request": True,
+                "xc_live_refresh_wait_for_completion": True,
+                "xc_live_refresh_wait_timeout_seconds": 20,
+            },
+        })
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        user = serializer.save()
+        self.assertTrue(user.custom_properties["xc_live_refresh_on_request"])
+        self.assertNotIn("xc_live_refresh_wait_for_completion", user.custom_properties)
+        self.assertNotIn("xc_live_refresh_wait_timeout_seconds", user.custom_properties)
+        self.assertNotIn("xc_live_refresh_request_interval_minutes", user.custom_properties)
+
+    def test_client_refresh_permission_requires_a_boolean(self):
+        serializer = UserSerializer(data={
+            "username": "wait-user", "password": "testpassword123",
+            "custom_properties": {"xc_live_refresh_on_request": "true"},
+        })
+        self.assertFalse(serializer.is_valid())
+
+    def test_retired_wait_settings_are_removed_on_update(self):
+        user = User.objects.create_user(username="wait-user", custom_properties={
+            "xc_live_refresh_on_request": True,
+            "xc_live_refresh_wait_for_completion": True,
+            "xc_live_refresh_wait_timeout_seconds": 60,
+            "unrelated": "preserved",
+        })
+        serializer = UserSerializer(user, data={"custom_properties": {}}, partial=True)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        saved = serializer.save()
+        self.assertEqual(saved.custom_properties, {
+            "xc_live_refresh_on_request": True,
+            "unrelated": "preserved",
+        })
+
+    def test_retired_refresh_interval_is_ignored_on_create(self):
+        serializer = UserSerializer(data={
+            "username": "client-user",
+            "password": "testpassword123",
+            "custom_properties": {
+                "xc_live_refresh_on_request": True,
+                "xc_live_refresh_request_interval_minutes": 55,
+            },
+        })
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        user = serializer.save()
+        self.assertTrue(user.custom_properties["xc_live_refresh_on_request"])
+        self.assertNotIn("xc_live_refresh_request_interval_minutes", user.custom_properties)
+
     def test_username_validation_allows_supported_characters(self):
         serializer = UserSerializer(
             data={

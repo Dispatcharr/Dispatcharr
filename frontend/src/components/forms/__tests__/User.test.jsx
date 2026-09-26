@@ -150,9 +150,10 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Stack: ({ children }) => <div>{children}</div>,
-  Switch: ({ label }) => (
+  Switch: ({ label, description }) => (
     <div>
       <label>{label}</label>
+      {description && <span>{description}</span>}
       <input type="checkbox" />
     </div>
   ),
@@ -1090,6 +1091,43 @@ describe('User', () => {
       render(<User isOpen={true} onClose={vi.fn()} />);
       expect(mockForm.reset).toHaveBeenCalled();
     });
+  });
+
+  it('shows only the refresh permission with a fixed 15-second wait', () => {
+    setupMocks({ authUser: makeAdminUser() });
+    render(
+      <User isOpen={true} onClose={vi.fn()} user={makeRegularUser({ id: 2 })} />
+    );
+    expect(
+      screen.getByText('Allow XC client to trigger Live TV refresh')
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Wait for a fresh XC Live catalog')
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Maximum wait for a fresh catalog (seconds)')
+    ).not.toBeInTheDocument();
+    expect(mockForm.getInputProps).not.toHaveBeenCalledWith(
+      'xc_live_refresh_wait_timeout_seconds'
+    );
+    expect(screen.getByText(/Wait up to 15 seconds total/)).toBeInTheDocument();
+    expect(
+      screen.queryByText('User request interval (minutes)')
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not expose the client refresh permission to a non-admin', () => {
+    setupMocks({ authUser: makeRegularUser() });
+    render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+    expect(
+      screen.queryByText('Allow XC client to trigger Live TV refresh')
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Wait for a fresh XC Live catalog')
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Maximum wait for a fresh catalog (seconds)')
+    ).not.toBeInTheDocument();
   });
 
   // ── XC password generation ───────────────────────────────────────────────────

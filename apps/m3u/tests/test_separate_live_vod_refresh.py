@@ -32,6 +32,12 @@ class SeparateVODScheduleTests(TestCase):
         self.assertTrue(self.account.vod_refresh_after_live)
         self.assertFalse(self.account.vod_refresh_task.enabled)
 
+    def test_new_cooldown_default_and_explicit_value_survive_unrelated_save(self):
+        self.assertEqual(self.account.xc_live_refresh_min_age_minutes, 30)
+        self.update_account(xc_live_refresh_min_age_minutes=55)
+        self.update_account(name="renamed-xc")
+        self.assertEqual(self.account.xc_live_refresh_min_age_minutes, 55)
+
     def test_separate_vod_cron_does_not_change_live_schedule(self):
         live_task_id = self.account.refresh_task_id
         self.update_account(
