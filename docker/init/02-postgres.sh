@@ -142,12 +142,27 @@ HBAEOF
             write_ownership_sentinel
             echo "Ownership migration complete."
         elif [ "$(stat -c '%u:%g' "$POSTGRES_DIR")" != "$PUID:$PGID" ]; then
-            # The reconciliation above never inspects $POSTGRES_DIR itself;
-            # PostgreSQL refuses to start unless its user owns that directory.
+            # The reconciliation above never inspects $POSTGRES_DIR itself.
+            # PostgreSQL requires the directory owner UID to match the server
+            # user. It allows mode 0700 or 0750 and does not require the group
+            # to match, so a group-only change the filesystem rejects is a
+            # warning. A UID that cannot be corrected is fatal.
             echo "Fixing ownership for $POSTGRES_DIR (non-recursive)"
-            if ! chown "$PUID:$PGID" "$POSTGRES_DIR"; then
-                echo "ERROR: Cannot update ownership of $POSTGRES_DIR to $PUID:$PGID"
-                exit 1
+            if ! chown "$PUID:$PGID" "$POSTGRES_DIR" 2>/dev/null; then
+                if [ "$(stat -c '%u' "$POSTGRES_DIR")" = "$PUID" ]; then
+                    echo "WARNING: Could not update group of $POSTGRES_DIR to $PGID. Owner UID is already $PUID, which is all PostgreSQL requires; continuing."
+                elif chown "$PUID" "$POSTGRES_DIR" 2>/dev/null; then
+                    echo "WARNING: Could not set group of $POSTGRES_DIR to $PGID. Owner UID corrected to $PUID, which is all PostgreSQL requires; continuing."
+                else
+                    echo "ERROR: Cannot update ownership of $POSTGRES_DIR to $PUID:$PGID"
+                    exit 1
+                fi
+            fi
+            # 0700 and 0750 are the only modes PostgreSQL accepts. Leave an
+            # already-valid mode alone; tighten anything else to 0700.
+            _dir_mode=$(stat -c '%a' "$POSTGRES_DIR")
+            if [ "$_dir_mode" != "700" ] && [ "$_dir_mode" != "750" ]; then
+                chmod 700 "$POSTGRES_DIR" 2>/dev/null || echo "WARNING: Could not set permissions on $POSTGRES_DIR to 700 (currently $_dir_mode)."
             fi
         fi
 

@@ -1,7 +1,10 @@
 #!/bin/bash
 #
 # Integration tests for PostgreSQL data directory ownership reconciliation
-# in docker/init/02-postgres.sh (issue #1453).
+# in docker/init/02-postgres.sh. Covers the case where the top-level data
+# directory's owner drifts from PUID:PGID while everything inside it stays
+# correctly owned, which PostgreSQL rejects even though the earlier
+# sentinel-based checks see nothing wrong.
 #
 # Prerequisites: Docker; ghcr.io/dispatcharr/dispatcharr:base-dev pulled;
 # ~3-5 minutes for a full run.
