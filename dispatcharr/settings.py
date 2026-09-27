@@ -2,7 +2,7 @@ import os
 import ssl
 from pathlib import Path
 from datetime import timedelta
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit
 from django.core.exceptions import ImproperlyConfigured
 
 from dispatcharr.db.process_label import db_application_name, uses_geventpool_database_backend
@@ -30,6 +30,7 @@ REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_DB = os.environ.get("REDIS_DB", "0")
 REDIS_USER = os.environ.get("REDIS_USER", "")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+REDIS_URL = os.environ.get("REDIS_URL", '')
 # Cap Redis TCP sockets per process-local pool. Under gevent, redis-py's default
 # unbounded ConnectionPool grows one ESTABLISHED fd per concurrent waiter.
 # BlockingConnectionPool waits instead of raising when the cap is reached.
@@ -52,9 +53,41 @@ REDIS_SSL_CA_CERT = os.environ.get("REDIS_SSL_CA_CERT", "")
 REDIS_SSL_CERT = os.environ.get("REDIS_SSL_CERT", "")
 REDIS_SSL_KEY = os.environ.get("REDIS_SSL_KEY", "")
 
-# Reusable dict of SSL kwargs for redis.Redis() constructors
+if REDIS_URL:
+    if REDIS_SSL and not REDIS_URL.startswith("rediss://"):
+        raise ImproperlyConfigured(
+            "REDIS_SSL is enabled but REDIS_URL uses redis:// (plaintext). "
+            "Change the URL scheme to rediss:// or remove the REDIS_URL override."
+        )
+    if not REDIS_SSL and REDIS_URL.startswith("rediss://"):
+        raise ImproperlyConfigured(
+            "REDIS_URL uses rediss:// (TLS) but REDIS_SSL is not enabled. "
+            "Set REDIS_SSL=true and configure the TLS certificate settings."
+        )
+
+def redis_tls_status_from_url(redis_url):
+    """TLS flags for a REDIS_URL, matching what redis-py will connect with.
+
+    When REDIS_URL is set, discrete REDIS_SSL_* variables are not applied to
+    the client. Status follows the URL scheme and query: ssl_cert_reqs,
+    ssl_certfile, and ssl_keyfile. A rediss:// URL with no ssl_cert_reqs
+    verifies the server certificate (redis-py default).
+    """
+    parts = urlsplit(redis_url)
+    if parts.scheme != "rediss":
+        return {"enabled": False, "verify": False, "mtls": False}
+
+    query = dict(parse_qsl(parts.query, keep_blank_values=False))
+    cert_reqs = query.get("ssl_cert_reqs", "required").strip().lower()
+    verify = cert_reqs not in ("none", "cert_none")
+    mtls = bool(query.get("ssl_certfile") and query.get("ssl_keyfile"))
+    return {"enabled": True, "verify": verify, "mtls": mtls}
+
+
+# Reusable dict of SSL kwargs for redis.Redis() constructors.
+# Skipped when REDIS_URL is set: the URL carries scheme and cert query params.
 REDIS_SSL_PARAMS = {}
-if REDIS_SSL:
+if REDIS_SSL and not REDIS_URL:
     _validate_tls_cert_paths([
         ("REDIS_SSL_CA_CERT", REDIS_SSL_CA_CERT),
         ("REDIS_SSL_CERT", REDIS_SSL_CERT),
@@ -70,8 +103,20 @@ if REDIS_SSL:
     if REDIS_SSL_KEY:
         REDIS_SSL_PARAMS["ssl_keyfile"] = REDIS_SSL_KEY
 
-    _mtls = "enabled" if REDIS_SSL_CERT and REDIS_SSL_KEY else "disabled"
-    _verify = "on" if REDIS_SSL_VERIFY else "off"
+if REDIS_URL:
+    REDIS_TLS_STATUS = redis_tls_status_from_url(REDIS_URL)
+elif REDIS_SSL:
+    REDIS_TLS_STATUS = {
+        "enabled": True,
+        "verify": REDIS_SSL_VERIFY,
+        "mtls": bool(REDIS_SSL_CERT and REDIS_SSL_KEY),
+    }
+else:
+    REDIS_TLS_STATUS = {"enabled": False, "verify": False, "mtls": False}
+
+if REDIS_TLS_STATUS["enabled"]:
+    _verify = "on" if REDIS_TLS_STATUS["verify"] else "off"
+    _mtls = "enabled" if REDIS_TLS_STATUS["mtls"] else "disabled"
     startup_log(f"Redis TLS: enabled (verify={_verify}, mTLS={_mtls})")
 else:
     startup_log("Redis TLS: disabled")
@@ -79,10 +124,7 @@ else:
 ENABLE_IP_LOOKUP = os.environ.get("DISPATCHARR_ENABLE_IP_LOOKUP", "true").lower() == "true"
 
 # Set DEBUG to True for development, False for production
-if os.environ.get("DISPATCHARR_DEBUG", "False").lower() == "true":
-    DEBUG = True
-else:
-    DEBUG = False
+DEBUG = os.environ.get("DISPATCHARR_DEBUG", "False").lower() == "true"
 
 ALLOWED_HOSTS = ["*"]
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -190,11 +232,11 @@ if REDIS_PASSWORD:
 else:
     _redis_auth = ""
 
-_channels_redis_url = f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+_channels_redis_url = REDIS_URL if REDIS_URL else f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 # channels_redis accepts either a URL string or a dict with "address" + kwargs.
 # When TLS is enabled, pass SSL params alongside the URL so the connection pool
 # uses the correct CA cert and verification settings.
-if REDIS_SSL:
+if REDIS_SSL and not REDIS_URL:
     # Filter out "ssl" key — the rediss:// scheme already enables SSL.
     # Passing ssl=True as a kwarg to aioredis from_url causes an error.
     _channels_ssl = {k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"}
@@ -215,7 +257,7 @@ _django_redis_pool_kwargs = {
     "max_connections": REDIS_MAX_CONNECTIONS,
     "timeout": REDIS_POOL_TIMEOUT,
 }
-if REDIS_SSL:
+if REDIS_SSL and not REDIS_URL:
     # rediss:// in the URL already enables SSL; pass cert paths and verify
     # settings separately via CONNECTION_POOL_KWARGS.
     _django_redis_pool_kwargs.update(
@@ -357,10 +399,32 @@ STATICFILES_DIRS = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-_default_redis_url = f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+def celery_broker_url_from_redis_url(redis_url):
+    """Convert a REDIS_URL into a Celery/Kombu-compatible broker URL.
+
+    Kombu's redis transport understands redis:// and rediss:// URLs as-is
+    (db from the URL path), so those pass through unchanged. Unix sockets
+    need Celery's own redis+socket:// convention with a virtual_host= query
+    key instead of db= (Kombu's own
+    URL parser raises a TypeError if both a path-derived virtual_host and a
+    virtual_host= query key are present, so only the unix db key is renamed
+    and only when the scheme is exactly "unix").
+    """
+    parts = urlsplit(redis_url)
+    if parts.scheme != "unix":
+        return redis_url
+
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if "db" in query:
+        query["virtual_host"] = query.pop("db")
+    new_query = urlencode(query)
+    return f"redis+socket://{parts.netloc}{parts.path}{'?' + new_query if new_query else ''}"
+
+
+_default_redis_url = celery_broker_url_from_redis_url(REDIS_URL) if REDIS_URL else f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 # Celery/Kombu require SSL parameters in the URL query string because
 # internal URL parsing can overwrite the CELERY_BROKER_USE_SSL dict.
-if REDIS_SSL:
+if REDIS_SSL and not REDIS_URL:
     _celery_ssl_params = [
         f"ssl_cert_reqs={'CERT_REQUIRED' if REDIS_SSL_VERIFY else 'CERT_NONE'}",
     ]
@@ -399,7 +463,7 @@ for _url_var, _url_val in [
 # Celery TLS configuration — required in addition to the rediss:// URL scheme.
 # Uses the same cert params as REDIS_SSL_PARAMS, minus the "ssl" key that
 # redis-py needs but Celery/Kombu does not.
-if REDIS_SSL:
+if REDIS_SSL and not REDIS_URL:
     CELERY_BROKER_USE_SSL = {k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"}
     CELERY_RESULT_BACKEND_USE_SSL = CELERY_BROKER_USE_SSL
 
@@ -484,19 +548,6 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,  # Optional: Whether to blacklist refresh tokens
 }
 
-# Redis connection settings — _default_redis_url uses rediss:// when REDIS_SSL is enabled
-REDIS_URL = os.environ.get("REDIS_URL", _default_redis_url)
-if os.environ.get("REDIS_URL") is not None:
-    if REDIS_SSL and not REDIS_URL.startswith("rediss://"):
-        raise ImproperlyConfigured(
-            "REDIS_SSL is enabled but REDIS_URL uses redis:// (plaintext). "
-            "Change the URL scheme to rediss:// or remove the REDIS_URL override."
-        )
-    if not REDIS_SSL and REDIS_URL.startswith("rediss://"):
-        raise ImproperlyConfigured(
-            "REDIS_URL uses rediss:// (TLS) but REDIS_SSL is not enabled. "
-            "Set REDIS_SSL=true and configure the TLS certificate settings."
-        )
 REDIS_SOCKET_TIMEOUT = 60  # Socket timeout in seconds
 REDIS_SOCKET_CONNECT_TIMEOUT = 5  # Connection timeout in seconds
 REDIS_HEALTH_CHECK_INTERVAL = 15  # Health check every 15 seconds
