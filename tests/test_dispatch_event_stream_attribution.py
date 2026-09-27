@@ -24,7 +24,7 @@ def _stream(stream_id, name):
 
 
 class DispatchEventSystemAttributionTests(SimpleTestCase):
-    def _dispatch(self, event_type, redis_stream_id=None, **details):
+    def _dispatch(self, event_type, redis_stream_id=None, channel_missing=False, **details):
         channel = MagicMock()
         channel.id = 42
         channel.name = "BBC News"
@@ -50,12 +50,18 @@ class DispatchEventSystemAttributionTests(SimpleTestCase):
         ) as trigger, patch(
             "django.db.close_old_connections"
         ):
-            channel_objects.get.return_value = channel
+            if channel_missing:
+                channel_objects.get.side_effect = LookupError("no channel")
+            else:
+                channel_objects.get.return_value = channel
             stream_objects.get.side_effect = get_stream
+            self.stream_objects = stream_objects
 
             from core.utils import dispatch_event_system
 
-            dispatch_event_system(event_type, channel_id=CHANNEL_UUID, **details)
+            dispatch_event_system(
+                event_type, channel_id=CHANNEL_UUID, channel_name="Fallback Name", **details
+            )
 
         trigger.assert_called_once()
         name, payload = trigger.call_args[0]
@@ -93,3 +99,33 @@ class DispatchEventSystemAttributionTests(SimpleTestCase):
 
         self.assertEqual(payload["stream_id"], 1234)
         self.assertEqual(payload["stream_name"], "Feed A")
+
+    def test_zero_speed_survives_empty_key_cleanup(self):
+        payload = self._dispatch("channel_buffering", stream_id=5678, speed=0.0, reason=None, note="")
+
+        self.assertIn("speed", payload)
+        self.assertEqual(payload["speed"], 0.0)
+        self.assertNotIn("reason", payload)
+        self.assertNotIn("note", payload)
+
+    def test_previous_stream_details_pass_through_without_lookup(self):
+        payload = self._dispatch(
+            "channel_failover",
+            previous_stream_id=1234,
+            previous_stream_name="Feed A",
+            previous_provider_name="Old Provider",
+            stream_id=5678,
+            reason="buffering_timeout",
+        )
+
+        self.assertEqual(payload["previous_stream_id"], 1234)
+        self.assertEqual(payload["previous_stream_name"], "Feed A")
+        self.assertEqual(payload["previous_provider_name"], "Old Provider")
+        # Only the new stream is resolved; the previous one arrives in the details.
+        self.stream_objects.get.assert_called_once_with(id=5678)
+
+    def test_channel_id_reported_when_channel_row_is_missing(self):
+        payload = self._dispatch("channel_stop", channel_missing=True)
+
+        self.assertEqual(payload["channel_id"], str(CHANNEL_UUID))
+        self.assertEqual(payload["channel_name"], "Fallback Name")

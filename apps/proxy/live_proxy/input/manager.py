@@ -1187,8 +1187,9 @@ class StreamManager:
                             logger.error(f"Buffering timeout reached for channel {self.channel_id} after {buffering_duration:.1f} seconds")
                             # Remember which stream stalled before switching away from it
                             failed_stream_id = self.current_stream_id
+                            previous_stream = {}
                             # Send next stream request
-                            if self._try_next_stream(reason='buffering_timeout'):
+                            if self._try_next_stream(reason='buffering_timeout', previous_stream_info=previous_stream):
                                 logger.info(f"Switched to next stream for channel {self.channel_id} after buffering timeout")
                                 # Reset buffering state
                                 self.buffering = False
@@ -1211,6 +1212,8 @@ class StreamManager:
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
                                         previous_stream_id=failed_stream_id,
+                                        previous_stream_name=previous_stream.get('stream_name'),
+                                        previous_provider_name=previous_stream.get('provider_name'),
                                         stream_id=self.current_stream_id,
                                         reason='buffering_timeout',
                                         duration=buffering_duration
@@ -1219,6 +1222,18 @@ class StreamManager:
                                     logger.error(f"Could not log failover event: {e}")
                             else:
                                 logger.error(f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout")
+
+                                # No stream_switch/channel_failover will follow; record the stall against its stream
+                                try:
+                                    log_system_event(
+                                        'channel_error',
+                                        channel_id=self.channel_id,
+                                        channel_name=self.channel_name,
+                                        stream_id=failed_stream_id,
+                                        error_type='buffering_timeout'
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Could not log buffering timeout error event: {e}")
                 else:
                     # Buffering just started, set the flag and start timer
                     self.buffering = True
@@ -1471,15 +1486,30 @@ class StreamManager:
             except Exception as e:
                 logger.debug(f"Error flushing final bitrate to DB for channel {self.channel_id}: {e}")
 
-    def update_url(self, new_url, stream_id=None, m3u_profile_id=None, reason=None):
+    def update_url(self, new_url, stream_id=None, m3u_profile_id=None, reason=None,
+                   previous_stream_name=None, previous_provider_name=None):
         """Update stream URL and reconnect with proper cleanup for both HTTP and transcode sessions.
 
         reason (buffering_timeout, max_retries_exceeded, health_monitor or manual)
-        is recorded on the stream_switch system event.
+        is recorded on the stream_switch system event. previous_stream_name and
+        previous_provider_name describe the stream being left; failover passes
+        them from the alternate-stream lookup, while manual switches fall back
+        to the stream_name still held in the channel metadata hash.
         """
         if new_url == self.url:
             logger.info(f"URL unchanged: {new_url}")
             return False
+
+        if previous_stream_name is None and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+            try:
+                previous_stream_name = self._decode_redis_value(
+                    self.buffer.redis_client.hget(
+                        RedisKeys.channel_metadata(self.channel_id),
+                        ChannelMetadataField.STREAM_NAME,
+                    )
+                )
+            except Exception:
+                previous_stream_name = None
 
         logger.info(f"Switching stream URL from {self.url} to {new_url} for channel {self.channel_id}")
 
@@ -1564,6 +1594,8 @@ class StreamManager:
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,
                     previous_stream_id=previous_stream_id,
+                    previous_stream_name=previous_stream_name,
+                    previous_provider_name=previous_provider_name,
                     stream_id=stream_id,
                     reason=reason,
                     new_url=new_url[:100] if new_url else None,
@@ -2034,23 +2066,29 @@ class StreamManager:
             logger.error(f"Error in buffer check for channel {self.channel_id}: {e}")
             return False
 
-    def _try_next_stream(self, reason=None):
+    def _try_next_stream(self, reason=None, previous_stream_info=None):
         """
         Try to switch to the next available stream for this channel.
         Will iterate through multiple alternate streams if needed to find one with a different URL.
 
         Args:
             reason: Why the switch is happening; recorded on the stream_switch
-                system event.
+                system event and in the channel metadata hash.
+            previous_stream_info: Optional dict that receives the outgoing
+                stream's stream_name and provider_name for event attribution.
 
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
         """
+        if previous_stream_info is None:
+            previous_stream_info = {}
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")
 
             # Get alternate streams excluding the current one
-            alternate_streams = get_alternate_streams(self.channel_id, self.current_stream_id)
+            alternate_streams = get_alternate_streams(
+                self.channel_id, self.current_stream_id, current_stream_info=previous_stream_info
+            )
             logger.info(f"Found {len(alternate_streams)} potential alternate streams for channel {self.channel_id}")
 
             # Filter out streams we've already tried
@@ -2151,7 +2189,11 @@ class StreamManager:
                 logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id}")
 
                 # Just update the URL, don't stop the channel or release resources
-                switch_result = self.update_url(new_url, stream_id, profile_id, reason=reason)
+                switch_result = self.update_url(
+                    new_url, stream_id, profile_id, reason=reason,
+                    previous_stream_name=previous_stream_info.get('stream_name'),
+                    previous_provider_name=previous_stream_info.get('provider_name'),
+                )
                 if not switch_result:
                     logger.error(f"Failed to update URL for stream ID {stream_id} for channel {self.channel_id}")
                     continue  # Try next stream
@@ -2166,15 +2208,19 @@ class StreamManager:
                 # Update stream metadata in Redis - use the profile_id we got from get_alternate_streams
                 if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                    self.buffer.redis_client.hset(metadata_key, mapping={
+                    metadata_update = {
                         ChannelMetadataField.URL: new_url,
                         ChannelMetadataField.USER_AGENT: new_user_agent,
                         ChannelMetadataField.STREAM_PROFILE: stream_info['stream_profile'],
                         ChannelMetadataField.M3U_PROFILE: str(profile_id),  # Use the profile_id from get_alternate_streams
                         ChannelMetadataField.STREAM_ID: str(stream_id),
                         ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded"
-                    })
+                        ChannelMetadataField.STREAM_SWITCH_REASON: reason
+                    }
+                    # Keep the hash's stream_name current so the next switch attributes correctly
+                    if stream_info.get('stream_name'):
+                        metadata_update[ChannelMetadataField.STREAM_NAME] = stream_info['stream_name']
+                    self.buffer.redis_client.hset(metadata_key, mapping=metadata_update)
 
                     # Log the switch
                     logger.info(f"Stream metadata updated for channel {self.channel_id} to stream ID {stream_id} with M3U profile {profile_id}")

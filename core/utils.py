@@ -794,11 +794,9 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         payload = dict(details)
 
-        # Always identify the channel so consumers can correlate events
-        payload["channel_id"] = str(channel_id) if channel_id else None
-
         channel_obj = None
         if channel_id:
+            payload["channel_id"] = str(channel_id)
             try:
                 channel_obj = Channel.objects.get(uuid=channel_id)
                 payload["channel_name"] = channel_obj.name
@@ -856,9 +854,9 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         payload["profile_used"] = profile_used
 
-        # remove empty keys
+        # remove empty keys (keep falsy values such as speed=0.0)
         for k in list(payload.keys()):
-            if not payload[k]:
+            if payload[k] is None or payload[k] == "":
                 del payload[k]
 
         trigger_event(event_type, payload)
