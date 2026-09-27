@@ -49,6 +49,31 @@ PROXY_PROFILE_NAME = "Proxy"
 REDIRECT_PROFILE_NAME = "Redirect"
 
 
+def _enforce_locked_profile(instance, allowed_fields):
+    """Reject edits to a locked profile, except the named fields.
+
+    QuerySet.update() does not call save(), so migrations can still refresh
+    seeded commands. API writes and instance.save() go through this check.
+    """
+    if not instance.pk:
+        return
+    orig = type(instance).objects.get(pk=instance.pk)
+    if not orig.locked:
+        return
+    for field in instance._meta.fields:
+        field_name = field.name
+        orig_value = getattr(orig, field_name)
+        new_value = getattr(instance, field_name)
+        if isinstance(orig_value, models.Model):
+            orig_value = orig_value.pk
+        if isinstance(new_value, models.Model):
+            new_value = new_value.pk
+        if field_name not in allowed_fields and orig_value != new_value:
+            raise ValidationError(
+                f"Cannot modify {field_name} on a protected profile."
+            )
+
+
 class StreamProfile(models.Model):
     name = models.CharField(max_length=255, help_text="Name of the stream profile")
     command = models.CharField(
@@ -78,28 +103,8 @@ class StreamProfile(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        if self.pk:  # Only check existing records
-            orig = StreamProfile.objects.get(pk=self.pk)
-            if orig.locked:
-                allowed_fields = {"user_agent_id"}  # Only allow this field to change
-                for field in self._meta.fields:
-                    field_name = field.name
-
-                    # Convert user_agent to user_agent_id for comparison
-                    orig_value = getattr(orig, field_name)
-                    new_value = getattr(self, field_name)
-
-                    # Ensure that ForeignKey fields compare their ID values
-                    if isinstance(orig_value, models.Model):
-                        orig_value = orig_value.pk
-                    if isinstance(new_value, models.Model):
-                        new_value = new_value.pk
-
-                    if field_name not in allowed_fields and orig_value != new_value:
-                        raise ValidationError(
-                            f"Cannot modify {field_name} on a protected profile."
-                        )
-
+        # user_agent is the profile's request header, not the stream command.
+        _enforce_locked_profile(self, {"user_agent"})
         super().save(*args, **kwargs)
 
     @classmethod
@@ -107,7 +112,7 @@ class StreamProfile(models.Model):
         instance = cls.objects.get(pk=pk)
 
         if instance.locked:
-            allowed_fields = {"user_agent_id"}  # Only allow updating this field
+            allowed_fields = {"user_agent", "user_agent_id"}
 
             for field_name, new_value in kwargs.items():
                 if field_name not in allowed_fields:
@@ -192,6 +197,10 @@ class OutputProfile(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        _enforce_locked_profile(self, set())
+        super().save(*args, **kwargs)
 
     def build_command(self):
         """Return the full command as a list suitable for subprocess.Popen."""

@@ -5,6 +5,7 @@ import logging
 from django.conf import settings as django_settings
 from django.db import models
 from rest_framework import viewsets, status
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -62,7 +63,17 @@ class UserAgentViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
 
-class StreamProfileViewSet(viewsets.ModelViewSet):
+class LockedProfileViewSet(viewsets.ModelViewSet):
+    """ModelViewSet that refuses to delete a locked profile."""
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.locked:
+            raise DRFValidationError("This profile is locked and cannot be deleted.")
+        return super().destroy(request, *args, **kwargs)
+
+
+class StreamProfileViewSet(LockedProfileViewSet):
     """
     API endpoint that allows stream profiles to be viewed, created, edited, or deleted.
     """
@@ -77,7 +88,7 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
 
-class OutputProfileViewSet(viewsets.ModelViewSet):
+class OutputProfileViewSet(LockedProfileViewSet):
     """
     API endpoint that allows output profiles to be viewed, created, edited, or deleted.
     """
@@ -415,11 +426,11 @@ def environment(request):
             "ip_lookup_env_disabled": ip_lookup_env_disabled,
             "ip_lookup_pending": ip_lookup_pending,
             "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
-            "redis_tls": {
-                "enabled": getattr(django_settings, "REDIS_SSL", False),
-                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
-                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
-            },
+            "redis_tls": getattr(
+                django_settings,
+                "REDIS_TLS_STATUS",
+                {"enabled": False, "verify": False, "mtls": False},
+            ),
             "postgres_tls": {
                 "enabled": postgres_ssl,
                 "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,

@@ -1,3 +1,5 @@
+name: "Issue: Template Check"
+
 on:
   issues:
     types: [opened, reopened]
