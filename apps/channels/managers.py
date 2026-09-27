@@ -23,6 +23,7 @@ OVERRIDABLE_FIELDS = (
     "tvc_guide_stationid",
     "epg_data_id",
     "stream_profile_id",
+    "is_radio",
 )
 
 

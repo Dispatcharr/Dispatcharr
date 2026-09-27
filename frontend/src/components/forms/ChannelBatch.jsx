@@ -124,6 +124,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       stream_profile_id: '-1',
       user_level: '-1',
       is_adult: '-1',
+      is_radio: '-1',
       hidden_from_output: '-1',
       clear_overrides: '-1',
     },
@@ -166,6 +167,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       getMatureContentChange(values.is_adult),
       getEpgChange(selectedDummyEpgId, epgs),
     ];
+    if (values.is_radio && values.is_radio !== '-1') {
+      lines.push(`• Radio: ${values.is_radio === 'true' ? 'Yes' : 'No'}`);
+    }
     if (values.hidden_from_output && values.hidden_from_output !== '-1') {
       lines.push(
         `• Hidden: ${values.hidden_from_output === 'true' ? 'Yes' : 'No'}`
@@ -859,6 +863,19 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                     };
                   })
                 )}
+              />
+
+              <Select
+                size="xs"
+                label="Radio"
+                description="Classify as Radio instead of TV in M3U/XC output. Auto-synced channels get an override."
+                {...form.getInputProps('is_radio')}
+                key={form.key('is_radio')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'true', label: 'Yes' },
+                  { value: 'false', label: 'No' },
+                ]}
               />
 
               <Select
