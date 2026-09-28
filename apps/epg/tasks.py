@@ -2,6 +2,7 @@
 
 import logging
 import gzip
+from collections import defaultdict
 import html.entities
 import lzma
 import os
@@ -30,6 +31,8 @@ from channels.layers import get_channel_layer
 from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
 from apps.epg.utils import (
     _ONSCREEN_RE,
+    epg_first_start,
+    epg_retention_cutoffs,
     extract_season_episode_from_description,
     fill_original_air_date_if_missing,
     send_epg_update,
@@ -1916,13 +1919,50 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # Swap old programmes for the newly parsed ones atomically. If the insert
             # fails (including a poisoned-connection blip), the transaction rolls back
             # and the previous guide data for this channel is left untouched.
+            #
+            # Stored programmes that ended at or before the new pull's first start
+            # are history the pull doesn't cover, so they stay until the retention
+            # cutoff. Anything ending after first_start runs into the new data and
+            # is replaced by it.
             with transaction.atomic():
-                deleted_count = ProgramData.objects.filter(epg=epg).delete()[0]
                 if programs_to_create:
+                    cutoff = epg_retention_cutoffs([epg.id])[epg.id]
+                    # Programmes in the pull that already ended before the cutoff
+                    # would only be pruned again on the next refresh.
+                    programs_to_create = [
+                        p for p in programs_to_create if p.end_time >= cutoff
+                    ]
+                    first_start = epg_first_start(
+                        (p.start_time for p in programs_to_create), cutoff
+                    )
+                    delete_q = Q(end_time__lt=cutoff)
+                    if first_start is not None:
+                        delete_q |= Q(end_time__gt=first_start)
+                    deleted_count = ProgramData.objects.filter(epg=epg).filter(
+                        delete_q
+                    ).delete()[0]
+                    # The programme spanning the cutoff ends before first_start,
+                    # so its stored copy is kept; don't add it a second time.
+                    kept_starts = set(
+                        ProgramData.objects.filter(
+                            epg=epg, start_time__lt=cutoff, end_time__gte=cutoff
+                        ).values_list('start_time', flat=True)
+                    )
+                    programs_to_create = [
+                        p for p in programs_to_create
+                        if p.start_time >= cutoff or p.start_time not in kept_starts
+                    ]
                     for i in range(0, len(programs_to_create), _EPG_SWAP_BATCH_SIZE):
                         ProgramData.objects.bulk_create(
                             programs_to_create[i:i + _EPG_SWAP_BATCH_SIZE]
                         )
+                else:
+                    # An empty parse is far more likely a transient upstream/parse
+                    # failure than a channel that genuinely has zero programmes.
+                    # Do nothing rather than wipe a working guide on a hiccup.
+                    # That includes the cutoff prune: rows past catchup_days stay
+                    # until this channel shows up in a later pull.
+                    deleted_count = 0
             logger.debug(
                 f"Replaced {deleted_count} program(s) with {len(programs_to_create)} "
                 f"for {epg.tvg_id}"
@@ -2104,21 +2144,94 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
     Atomically replace mapped programme rows with staged data.
     Must be called inside transaction.atomic().
 
+    Per staged epg_id, stored rows are deleted when they ended before the
+    retention cutoff or end after the first staged start (see
+    epg_first_start). An epg_id with nothing staged this cycle keeps its rows
+    untouched, same as the single-channel path: an empty result usually means
+    an upstream/parse hiccup, not an empty guide. Such an epg_id also skips
+    the cutoff prune until it shows up in a later pull. mapped_epg_ids is used
+    defensively to ignore staged rows for an epg_id that isn't mapped.
+
     Staged rows are moved in batches (DELETE ... RETURNING + INSERT) so Postgres
     does not need to materialize the entire catalogue in one statement.
     """
+    if not _epg_program_staging_supported():
+        raise RuntimeError('_swap_staged_epg_programs requires PostgreSQL staging support')
+
     with connection.cursor() as cursor:
         cursor.execute("SET LOCAL statement_timeout = '10min'")
 
-    deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT DISTINCT epg_id FROM {_EPG_PROGRAM_STAGING_TABLE}")
+        mapped = set(mapped_epg_ids)
+        staged_epg_ids = [row[0] for row in cursor.fetchall() if row[0] in mapped]
+
+    cutoffs = epg_retention_cutoffs(staged_epg_ids)
+
+    # Same rule as epg_first_start, in SQL: first_start is the earliest staged
+    # start at or after the cutoff (among rows ending at or after it), and
+    # NULL when there is none.
+    program_table = ProgramData._meta.db_table
+    deleted_count = 0
+    range_batch_size = 1000
+    for i in range(0, len(staged_epg_ids), range_batch_size):
+        chunk = staged_epg_ids[i:i + range_batch_size]
+        values_sql = ", ".join(["(%s, %s)"] * len(chunk))
+        params = []
+        for epg_id in chunk:
+            params.extend([epg_id, cutoffs[epg_id]])
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH cutoffs (epg_id, cutoff) AS (
+                    VALUES {values_sql}
+                ),
+                firsts AS (
+                    SELECT c.epg_id, c.cutoff, MIN(s.start_time) AS first_start
+                    FROM cutoffs c
+                    LEFT JOIN {_EPG_PROGRAM_STAGING_TABLE} s
+                      ON s.epg_id = c.epg_id
+                     AND s.start_time >= c.cutoff
+                     AND s.end_time >= c.cutoff
+                    GROUP BY c.epg_id, c.cutoff
+                )
+                DELETE FROM {program_table} pd
+                USING firsts f
+                WHERE pd.epg_id = f.epg_id
+                  AND (pd.end_time < f.cutoff OR pd.end_time > f.first_start)
+                """,
+                params,
+            )
+            deleted_count += cursor.rowcount
+            # Staged programmes that ended before the cutoff are not inserted,
+            # nor a programme spanning the cutoff whose stored copy was kept
+            # (see the single-channel path).
+            cursor.execute(
+                f"""
+                WITH cutoffs (epg_id, cutoff) AS (
+                    VALUES {values_sql}
+                )
+                DELETE FROM {_EPG_PROGRAM_STAGING_TABLE} s
+                USING cutoffs c
+                WHERE s.epg_id = c.epg_id
+                  AND (
+                    s.end_time < c.cutoff
+                    OR (
+                      s.start_time < c.cutoff
+                      AND EXISTS (
+                        SELECT 1 FROM {program_table} pd
+                        WHERE pd.epg_id = s.epg_id AND pd.start_time = s.start_time
+                      )
+                    )
+                  )
+                """,
+                params,
+            )
+
     logger.debug(f"Deleted {deleted_count} existing programs")
 
     _delete_orphaned_epg_programs(epg_source)
 
-    if not _epg_program_staging_supported():
-        raise RuntimeError('_swap_staged_epg_programs requires PostgreSQL staging support')
-
-    program_table = ProgramData._meta.db_table
     total_inserted = 0
     while True:
         with connection.cursor() as cursor:
@@ -2155,9 +2268,50 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
 
 
 def _swap_parsed_epg_programs(mapped_epg_ids, epg_source, programs_to_create, batch_size=_EPG_SWAP_BATCH_SIZE):
-    """SQLite/dev fallback: atomic delete + bulk insert from an in-memory batch list."""
+    """
+    SQLite/dev fallback: atomic scoped delete + bulk insert from an in-memory batch list.
+
+    Same rule as _swap_staged_epg_programs: per epg_id in this batch, stored
+    rows are deleted when they ended before the retention cutoff or end after
+    the batch's first start (see epg_first_start). An epg_id with no rows in
+    this batch is left untouched.
+    """
     with transaction.atomic():
-        deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+        by_epg = defaultdict(list)
+        for program in programs_to_create:
+            by_epg[program.epg_id].append(program)
+
+        cutoffs = epg_retention_cutoffs(by_epg.keys())
+        delete_q = None
+        for epg_id, epg_programs in by_epg.items():
+            cutoff = cutoffs[epg_id]
+            kept = (p.start_time for p in epg_programs if p.end_time >= cutoff)
+            first_start = epg_first_start(kept, cutoff)
+            rows_q = Q(end_time__lt=cutoff)
+            if first_start is not None:
+                rows_q |= Q(end_time__gt=first_start)
+            clause = Q(epg_id=epg_id) & rows_q
+            delete_q = clause if delete_q is None else delete_q | clause
+
+        # Same filters as the single-channel path.
+        programs_to_create = [
+            p for p in programs_to_create if p.end_time >= cutoffs[p.epg_id]
+        ]
+
+        deleted_count = ProgramData.objects.filter(delete_q).delete()[0] if delete_q else 0
+        if cutoffs:
+            kept_starts = {
+                (epg_id, start)
+                for epg_id, start in ProgramData.objects.filter(
+                    epg_id__in=list(cutoffs), start_time__lt=max(cutoffs.values())
+                ).values_list('epg_id', 'start_time')
+                if start < cutoffs[epg_id]
+            }
+            programs_to_create = [
+                p for p in programs_to_create
+                if p.start_time >= cutoffs[p.epg_id]
+                or (p.epg_id, p.start_time) not in kept_starts
+            ]
         _delete_orphaned_epg_programs(epg_source)
         for i in range(0, len(programs_to_create), batch_size):
             ProgramData.objects.bulk_create(programs_to_create[i:i + batch_size])
