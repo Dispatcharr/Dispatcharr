@@ -458,7 +458,7 @@ class ChannelService:
                 logger.info(f"Channel {channel_id} already using URL {new_url}, refreshing metadata only")
             else:
                 # Update the stream
-                success = manager.update_url(new_url, stream_id, m3u_profile_id)
+                success = manager.update_url(new_url, stream_id, m3u_profile_id, reason='manual')
                 logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
 
             if success:

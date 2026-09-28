@@ -241,7 +241,7 @@ class ProxyServer:
                                                 logger.info(f"Channel {channel_id} already using requested URL, refreshing metadata only")
                                                 success = True
                                             else:
-                                                success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id)
+                                                success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id, reason='manual')
 
                                             if success:
                                                 stream_manager.reset_failover_rotation_state()

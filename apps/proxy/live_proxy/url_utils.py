@@ -427,6 +427,7 @@ def get_alternate_streams(
     channel_id: str,
     current_stream_id: Optional[int] = None,
     allowed_m3u_profiles=None,
+    current_stream_info: Optional[dict] = None,
 ) -> List[dict]:
     """
     Get alternative streams for a channel when the current stream fails.
@@ -434,6 +435,9 @@ def get_alternate_streams(
     Args:
         channel_id: The UUID of the channel
         current_stream_id: The currently failing stream ID to exclude
+        current_stream_info: Optional dict that receives the excluded stream's
+            stream_name and provider_name (its M3U account name), so callers can
+            attribute failover events without another query
 
     Returns:
         List[dict]: List of stream information dictionaries with stream_id and profile_id
@@ -468,6 +472,11 @@ def get_alternate_streams(
             # Skip the current failing stream
             if current_stream_id and stream.id == current_stream_id:
                 logger.debug(f"Skipping current stream ID {current_stream_id}")
+                if current_stream_info is not None:
+                    current_stream_info['stream_name'] = stream.name
+                    current_stream_info['provider_name'] = (
+                        stream.m3u_account.name if stream.m3u_account else None
+                    )
                 continue
 
             # Find compatible profiles for this stream with connection checking
