@@ -2,7 +2,7 @@ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidd
 import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
-from apps.channels.utils import format_channel_number, is_catchup_enabled
+from apps.channels.utils import MAX_AUTO_PREV_DAYS, format_channel_number, is_catchup_enabled
 from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
@@ -65,13 +65,24 @@ def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
 
     When ``allowed_m3u_profiles`` is set, walk streams in channel order and use
     the first stream whose M3U account has an allowed profile, applying that
-    profile's credential/URL transform. Returns ``None`` when no stream is
-    usable (caller should omit the channel).
+    profile's credential/URL transform. Returns ``(None, False, 0)`` when no
+    stream is usable (caller should omit the channel).
 
     When unrestricted (``allowed_m3u_profiles is None``), keep historical
     behavior: the first stream's stored URL, or ``None`` if missing.
+
+    Returns ``(url, is_catchup, catchup_days)`` for the stream whose URL was
+    used, since the channel rollup may describe a different stream. Catch-up
+    is only reported for XC accounts, whose URLs have the /live/ form that
+    catchup="xc" rewrites.
     """
+    from apps.m3u.models import M3UAccount
     from apps.proxy.live_proxy.url_utils import _resolve_live_stream_url
+
+    def _catchup(stream, account):
+        if stream.is_catchup and account and account.account_type == M3UAccount.Types.XC:
+            return True, stream.catchup_days or 0
+        return False, 0
 
     streams = list(streams)
     if allowed_m3u_profiles is not None:
@@ -85,13 +96,13 @@ def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
                 continue
             url = _resolve_live_stream_url(stream, account, profile)
             if url:
-                return url
-        return None
+                return (url, *_catchup(stream, account))
+        return None, False, 0
 
     stream = streams[0] if streams else None
     if stream and stream.url:
-        return stream.url
-    return None
+        return (stream.url, *_catchup(stream, stream.m3u_account))
+    return None, False, 0
 
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
@@ -317,13 +328,20 @@ def generate_m3u(request, profile_name=None, user=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
+    # Catch-up is advertised only where the player can reach a timeshift
+    # endpoint: the XC playlist and direct provider URLs. The plain proxy URL
+    # has no catch-up entry point.
+    catchup_allowed = is_catchup_enabled(user=user)
+
     # Start building M3U content
     channel_count = 0
     for channel in channels:
         direct_provider_url = None
+        direct_stream_is_catchup = False
+        direct_stream_catchup_days = 0
         if use_direct_urls:
-            direct_provider_url = _direct_m3u_provider_url(
-                channel.streams.all(), allowed_m3u_profiles
+            direct_provider_url, direct_stream_is_catchup, direct_stream_catchup_days = (
+                _direct_m3u_provider_url(channel.streams.all(), allowed_m3u_profiles)
             )
             # Allowlisted users only get channels they can actually open with a
             # permitted provider profile. Unrestricted direct keeps the old
@@ -374,9 +392,42 @@ def generate_m3u(request, profile_name=None, user=None):
                 f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
+        # Tag only the URL that is emitted below: a direct provider URL
+        # carries that stream's own archive, /live/ carries the channel
+        # rollup (same as tv_archive in the XC API), and the proxy fallback
+        # carries none.
+        catchup_attrs = ""
+        if catchup_allowed:
+            catchup_days = 0
+            if use_direct_urls:
+                if direct_provider_url and direct_stream_is_catchup:
+                    catchup_days = direct_stream_catchup_days
+            elif is_xc_request and channel.is_catchup:
+                catchup_days = channel.catchup_days or 0
+            catchup_days = min(catchup_days, MAX_AUTO_PREV_DAYS)
+            if catchup_days > 0 and use_direct_urls:
+                catchup_attrs = f'catchup="xc" catchup-days="{catchup_days}" '
+            elif catchup_days > 0:
+                # Players fill {Y}/{H}/... (and catchup="xc") with their own
+                # local time, but the timeshift endpoints expect UTC. {utc} is
+                # the programme start as epoch seconds, which is always UTC.
+                # Named utc= because players that ignore placeholders (e.g.
+                # IPTVnator) set ?utc=<epoch> on the source URL themselves.
+                catchup_query = urlencode(
+                    {"username": xc_username, "password": xc_password, "stream": channel.id}
+                )
+                catchup_source = (
+                    f"{_base_url}/streaming/timeshift.php?{catchup_query}"
+                    "&utc={utc}&duration={duration:60}"
+                )
+                catchup_attrs = (
+                    f'catchup="default" catchup-days="{catchup_days}" '
+                    f'catchup-source="{catchup_source}" '
+                )
+
         extinf_line = (
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
-            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
+            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}{catchup_attrs}group-title="{group_title}",{effective_name}\n'
         )
 
         # Determine the stream URL based on request type
