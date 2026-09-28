@@ -1,13 +1,17 @@
 export const PLAYER_PREFS_KEY = 'dispatcharr-player-prefs';
 
 /**
- * Build a live-stream preview URL that always forces mpegts output (required
- * for mpegts.js) and optionally appends the browser-local web player output
- * profile preference.
+ * Build a live-stream preview URL: forces mpegts output (required for
+ * mpegts.js) and force_profile=1 (skip the redirect and join/start the
+ * channel's normal worker instead, so preview only -- honored server-side
+ * for Standard/Admin users, ignored for XC requests and Streamer accounts).
  */
 export const buildLiveStreamUrl = (path) => {
   const prefs = getPlayerPrefs();
-  const params = new URLSearchParams({ output_format: 'mpegts' });
+  const params = new URLSearchParams({
+    output_format: 'mpegts',
+    force_profile: '1',
+  });
   const profileId = prefs.webPlayerOutputProfileId;
   if (profileId) params.set('output_profile', String(profileId));
   return `${path}?${params.toString()}`;

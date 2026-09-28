@@ -75,11 +75,18 @@ def generate_stream_url(
     channel_id: str,
     user=None,
     allowed_m3u_profiles=None,
+    override_stream_profile_id=None,
 ) -> Tuple[
     Optional[str], Optional[str], bool, Optional[int], bool, Optional[str], Optional[int]
 ]:
     """
     Generate the appropriate stream URL for a channel or stream based on its profile settings.
+
+    override_stream_profile_id: force a Redirect-mode channel's stream to be
+    resolved as if its profile were the given (Proxy) profile id instead of its
+    saved Redirect profile -- also passes requester=None to channel.get_stream()
+    so the redirect no-slot-reservation branch is bypassed and a connection
+    slot is reserved like any other Proxy-style channel start.
 
     Returns:
         Tuple: (stream_url, user_agent, transcode_flag, profile_id, slot_reserved,
@@ -141,9 +148,12 @@ def generate_stream_url(
         # Handle channel preview (existing logic)
         channel = channel_or_stream
 
-        # Get stream and profile for this channel
+        # Get stream and profile for this channel. An override request passes
+        # requester=None so channel.get_stream() reserves a connection slot like
+        # a normal Proxy-style start, instead of taking the Redirect no-slot path.
         stream_id, profile_id, error_reason, slot_reserved = channel.get_stream(
-            user, allowed_m3u_profiles
+            None if override_stream_profile_id is not None else user,
+            allowed_m3u_profiles,
         )
 
         if not stream_id or not profile_id:
@@ -185,14 +195,20 @@ def generate_stream_url(
                         )
                 return None, None, False, None, False, error_reason, None
 
-            # Check if transcoding is needed
-            stream_profile = channel.get_stream_profile()
-            if stream_profile.is_proxy() or stream_profile is None:
+            # Check if transcoding is needed. An override resolves the profile as
+            # Proxy (transcode=False), regardless of the channel's saved profile --
+            # StreamManager's own promote-to-ffmpeg logic takes it from there.
+            if override_stream_profile_id is not None:
                 transcode = False
+                stream_profile_id = override_stream_profile_id
             else:
-                transcode = True
+                stream_profile = channel.get_stream_profile()
+                if stream_profile.is_proxy() or stream_profile is None:
+                    transcode = False
+                else:
+                    transcode = True
 
-            stream_profile_id = stream_profile.id
+                stream_profile_id = stream_profile.id
 
             return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved, None, stream.id
         except Exception as e:
@@ -598,8 +614,11 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
 
         # If HEAD not supported, server will return 405 or other error
         if head_request_success and (200 <= head_response.status_code < 300):
-            # HEAD request successful
-            return True, url, head_response.status_code, "Valid (HEAD request)"
+            # head_response.url is the final URL after following the whole
+            # redirect chain -- return that instead of the original so
+            # clients that can't chase multi-hop redirects still land on
+            # a working single-hop URL.
+            return True, head_response.url, head_response.status_code, "Valid (HEAD request)"
 
         # Try a GET request with stream=True to avoid downloading all content
         get_response = session.get(
@@ -665,8 +684,8 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         # Clean up connection
         get_response.close()
 
-        # If we have content, consider it valid even with unrecognized content type
-        return is_valid, url, get_response.status_code, message
+        # Same as above: return the resolved final URL, not the original.
+        return is_valid, get_response.url, get_response.status_code, message
 
     except requests.exceptions.Timeout:
         return False, url, 0, "Timeout connecting to stream"
