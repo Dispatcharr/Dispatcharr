@@ -170,6 +170,9 @@ const SDSettings = ({ sourceId, customProperties }) => {
   const [posterStyle, setPosterStyle] = useState(
     resolvedCp.poster_style || 'sd_recommended'
   );
+  const [fetchExternalIds, setFetchExternalIds] = useState(
+    !!resolvedCp.fetch_external_ids
+  );
   const [extraDebugging, setExtraDebugging] = useState(
     !!resolvedCp.sd_extra_debugging
   );
@@ -181,6 +184,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
     setLogoStyle(newCp.logo_style || 'dark');
     setFetchPosters(!!newCp.fetch_posters);
     setPosterStyle(newCp.poster_style || 'sd_recommended');
+    setFetchExternalIds(!!newCp.fetch_external_ids);
     setExtraDebugging(!!newCp.sd_extra_debugging);
   }, [storeCustomProps, customProperties]);
 
@@ -207,6 +211,11 @@ const SDSettings = ({ sourceId, customProperties }) => {
     if (!style) return;
     setPosterStyle(style);
     saveSetting('poster_style', style);
+  };
+
+  const handleExternalIdsToggle = (checked) => {
+    setFetchExternalIds(checked);
+    saveSetting('fetch_external_ids', checked);
   };
 
   const handleExtraDebuggingToggle = (checked) => {
@@ -293,6 +302,17 @@ const SDSettings = ({ sourceId, customProperties }) => {
           allowDeselect={false}
         />
       )}
+
+      <Divider my="sm" />
+
+      <Switch
+        label="Fetch External IDs"
+        description="Looks up TMDB, IMDb and TheTVDB IDs after each refresh and adds them to the guide and XMLTV output. Requires TMDB_API_KEY."
+        checked={fetchExternalIds}
+        onChange={(e) => handleExternalIdsToggle(e.currentTarget.checked)}
+        disabled={saving}
+        size="sm"
+      />
 
       <Divider my="sm" />
 

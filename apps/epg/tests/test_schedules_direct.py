@@ -16,6 +16,7 @@ Covers:
 
 import hashlib
 import json
+import os
 import time
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from unittest.mock import MagicMock, patch
@@ -925,6 +926,65 @@ class SDScheduleDeltaIntegrationTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.lookup_sd_tmdb_ids')
+    @patch('apps.epg.sd_external_ids.clear_program_external_ids')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_external_ids_follow_source_toggle(
+        self, mock_post, mock_get, mock_send_epg_update, mock_clear, mock_lookup,
+    ):
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION, name='Mapped', epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+        date_list = self._build_date_list(3)
+        self._seed_full_window_program_data(mapped_epg, days=3)
+        today = date.today()
+        for i, ds in enumerate(date_list):
+            SDScheduleMD5.objects.create(
+                epg_source=source, station_id=self.MAPPED_STATION,
+                date=today + timedelta(days=i), md5=f'md5-{ds}', last_modified=timezone.now(),
+            )
+        mock_get.side_effect = self._lineup_get_side_effect
+        md5_payload = {
+            self.MAPPED_STATION: {
+                ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                for ds in date_list
+            },
+        }
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return MagicMock(status_code=200, json=MagicMock(return_value={'code': 0, 'token': 'tok'}))
+            if url.endswith('/schedules/md5'):
+                return MagicMock(status_code=200, json=MagicMock(return_value=md5_payload))
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+        mock_clear.assert_called_once_with({mapped_epg.id})
+        mock_lookup.delay.assert_not_called()
+
+        mock_clear.reset_mock()
+        source.custom_properties = {**(source.custom_properties or {}), 'fetch_external_ids': True}
+        source.save(update_fields=['custom_properties'])
+        with patch.dict('os.environ'):
+            os.environ.pop('TMDB_API_KEY', None)
+            fetch_schedules_direct(source, force=True)
+        mock_clear.assert_not_called()
+        mock_lookup.delay.assert_not_called()
+
+        with patch.dict('os.environ', {'TMDB_API_KEY': 'k'}):
+            fetch_schedules_direct(source, force=True)
+        mock_clear.assert_not_called()
+        mock_lookup.delay.assert_called_once_with(source.id)
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.output.streaming_chunk_cache.invalidate_epg_chunk_cache')
     @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
@@ -1032,7 +1092,7 @@ class SDScheduleDeltaIntegrationTests(TestCase):
         }]
         program_payload = [{
             'programID': 'EP000000000001',
-            'titles': [{'title120': 'Test Show'}],
+            'titles': [{'title120': 'Test Show', 'titleLanguage': 'en-GB'}],
         }]
 
         def post_side_effect(url, **kwargs):
@@ -1067,6 +1127,8 @@ class SDScheduleDeltaIntegrationTests(TestCase):
             ProgramData.objects.filter(epg=mapped_epg).count(),
             1,
         )
+        program = ProgramData.objects.get(epg=mapped_epg)
+        self.assertEqual(program.custom_properties['sd_title_language'], 'en-GB')
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.epg.sd_tasks.send_epg_update')

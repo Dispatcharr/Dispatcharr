@@ -17,7 +17,7 @@ import math
 from datetime import datetime, time, timedelta
 
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db.models.fields.json import KeyTransform
+from django.db.models.fields.json import KeyTextTransform, KeyTransform
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
@@ -301,6 +301,10 @@ def _program_value_to_dict(p):
         'is_live': bool(p.get('flag_live')),
         'is_premiere': bool(p.get('flag_premiere')),
         'is_finale': bool(premiere_text and 'finale' in premiere_text.lower()),
+        'tmdb_id': p.get('tmdb_id'),
+        'tmdb_type': p.get('tmdb_type'),
+        'imdb_id': p.get('imdb_id'),
+        'tvdb_id': p.get('tvdb_id'),
     }
 
 
@@ -322,12 +326,17 @@ def _iter_real_program_dicts(lookback, cutoff, epg_ids):
             flag_live=KeyTransform('live', 'custom_properties'),
             flag_premiere=KeyTransform('premiere', 'custom_properties'),
             premiere_text=KeyTransform('premiere_text', 'custom_properties'),
+            tmdb_id=KeyTextTransform('themoviedb.org_id', 'custom_properties'),
+            tmdb_type=KeyTextTransform('tmdb_type', 'custom_properties'),
+            imdb_id=KeyTextTransform('imdb.com_id', 'custom_properties'),
+            tvdb_id=KeyTextTransform('thetvdb.com_id', 'custom_properties'),
         )
         .values(
             'id', 'start_time', 'end_time', 'title', 'sub_title',
             'description', 'tvg_id',
             'season', 'episode',
             'flag_new', 'flag_live', 'flag_premiere', 'premiere_text',
+            'tmdb_id', 'tmdb_type', 'imdb_id', 'tvdb_id',
         )
         .iterator(chunk_size=_GRID_DB_ITERATOR_CHUNK_SIZE)
     )

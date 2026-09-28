@@ -11,6 +11,7 @@ import gc
 import hashlib
 import json
 import logging
+import os
 import time
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 
@@ -499,6 +500,36 @@ def fetch_sd_guide_for_epg(epg_id, force=False, _defer_retry=0):
         release_task_lock('parse_epg_programs', epg_id)
 
 
+@shared_task(name='apps.epg.tasks.lookup_sd_tmdb_ids', time_limit=14400)
+def lookup_sd_tmdb_ids(source_id):
+    """Match a Schedules Direct source's series and movies to TMDB and stamp the IDs."""
+    if not acquire_task_lock('lookup_sd_tmdb_ids', source_id):
+        return
+    lock_renewer = TaskLockRenewer('lookup_sd_tmdb_ids', source_id)
+    lock_renewer.start()
+    try:
+        from apps.channels.managers import epg_ids_mapped_to_channels
+        from apps.epg.sd_external_ids import update_sd_external_ids
+
+        def is_enabled():
+            return EPGSource.objects.filter(
+                id=source_id,
+                is_active=True,
+                source_type='schedules_direct',
+                custom_properties__fetch_external_ids=True,
+            ).exists()
+
+        if not is_enabled():
+            return
+        source = EPGSource.objects.get(id=source_id)
+        if update_sd_external_ids(epg_ids_mapped_to_channels(epg_source=source), is_enabled=is_enabled):
+            from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+            invalidate_epg_chunk_cache()
+    finally:
+        lock_renewer.stop()
+        release_task_lock('lookup_sd_tmdb_ids', source_id)
+
+
 @shared_task(name='apps.epg.tasks.fetch_schedules_direct_stations', bind=True)
 def fetch_schedules_direct_stations(self, source_id):
     """
@@ -627,7 +658,7 @@ def fetch_schedules_direct(
     # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
     def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
-        """Poster fetch, logo auto-apply, and pruning. Runs even when schedules are unchanged.
+        """Poster fetch, external IDs, logo auto-apply, and pruning. Runs even when schedules are unchanged.
 
         Returns the number of ProgramData rows updated with poster artwork.
         """
@@ -736,6 +767,15 @@ def fetch_schedules_direct(
                 logger.warning(f"Poster artwork fetch failed (non-fatal): {art_error}", exc_info=True)
         elif fetch_posters:
             logger.info("Poster fetch enabled but all mapped programs already have artwork.")
+
+        try:
+            from apps.epg.sd_external_ids import clear_program_external_ids
+            if not (source.custom_properties or {}).get('fetch_external_ids', False):
+                clear_program_external_ids(mapped_epg_ids)
+            elif os.environ.get('TMDB_API_KEY'):
+                lookup_sd_tmdb_ids.delay(source.id)
+        except Exception as ext_err:
+            logger.warning(f"External ID lookup failed (non-fatal): {ext_err}", exc_info=True)
 
         from apps.channels.utils import maybe_auto_apply_epg_logos
         maybe_auto_apply_epg_logos(source)
@@ -1745,6 +1785,10 @@ def fetch_schedules_direct(
                 country = meta.get('country', [])
                 if country:
                     custom_props['country'] = country[0] if len(country) == 1 else ', '.join(country)
+
+                # Title language, used to search TMDB for dubbed titles
+                if titles and titles[0].get('titleLanguage'):
+                    custom_props['sd_title_language'] = titles[0]['titleLanguage']
 
                 # Runtime — program duration without commercials (seconds → store for display)
                 runtime_secs = meta.get('duration') or meta.get('movie', {}).get('duration')

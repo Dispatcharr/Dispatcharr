@@ -96,8 +96,29 @@ class ProgramDataSerializerTests(TestCase):
             "id", "start_time", "end_time", "title", "sub_title",
             "description", "tvg_id", "season", "episode",
             "is_new", "is_live", "is_premiere", "is_finale",
+            "tmdb_id", "tmdb_type", "imdb_id", "tvdb_id",
         }
         self.assertEqual(set(data.keys()), expected_fields)
+
+    def test_external_ids(self):
+        program = self._create_program(
+            custom_properties={
+                "themoviedb.org_id": "1396",
+                "tmdb_type": "tv",
+                "imdb.com_id": "tt0903747",
+                "thetvdb.com_id": "81189",
+            }
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertEqual(data["tmdb_id"], "1396")
+        self.assertEqual(data["tmdb_type"], "tv")
+        self.assertEqual(data["imdb_id"], "tt0903747")
+        self.assertEqual(data["tvdb_id"], "81189")
+
+    def test_external_ids_null_when_absent(self):
+        data = ProgramDataSerializer(self._create_program(custom_properties=None)).data
+        for field in ("tmdb_id", "tmdb_type", "imdb_id", "tvdb_id"):
+            self.assertIsNone(data[field])
 
     def test_season_episode_from_onscreen_episode(self):
         """Serializer reads precomputed season/episode from custom_properties (set at import)."""
@@ -544,7 +565,7 @@ class ProgramDetailSerializerTests(TestCase):
             "categories", "rating", "rating_system", "star_ratings",
             "credits", "video_quality", "aspect_ratio", "stereo", "is_previously_shown",
             "country", "language", "production_date", "original_air_date",
-            "imdb_id", "tmdb_id", "tvdb_id", "icon", "images",
+            "imdb_id", "tmdb_id", "tmdb_type", "tvdb_id", "icon", "images",
             "poster_url", "content_advisory", "content_ratings", "event_details",
             "runtime", "runtime_units",
         }

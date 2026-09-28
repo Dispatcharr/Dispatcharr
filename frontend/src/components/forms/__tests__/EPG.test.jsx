@@ -13,6 +13,7 @@ vi.mock('../../../api.js', () => ({
     deleteSDLineup: vi.fn().mockResolvedValue({ success: true }),
     searchSDLineups: vi.fn().mockResolvedValue([]),
     updateSDSettings: vi.fn().mockResolvedValue({}),
+    updateEpgSourceSettings: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -273,6 +274,7 @@ vi.mock('@mantine/core', async () => ({
 import EPG from '../EPG';
 import * as DummyEpgUtils from '../../../utils/forms/DummyEpgUtils.js';
 import { useForm } from '@mantine/form';
+import API from '../../../api.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const makeEPG = (overrides = {}) => ({
@@ -461,6 +463,33 @@ describe('EPG', () => {
       render(<EPG {...defaultProps({ epg })} />);
       expect(screen.getByTestId('input-username')).toBeInTheDocument();
       expect(screen.getByTestId('input-password')).toBeInTheDocument();
+    });
+  });
+
+  // ── SD settings ───────────────────────────────────────────────────────────
+  describe('SD settings', () => {
+    it('reflects fetch_external_ids from custom_properties', () => {
+      const epg = makeEPG({
+        source_type: 'schedules_direct',
+        custom_properties: { fetch_external_ids: true },
+      });
+      render(<EPG {...defaultProps({ epg })} />);
+      expect(screen.getByTestId('switch-fetch-external-ids')).toBeChecked();
+    });
+
+    it('saves fetch_external_ids when the switch is toggled', async () => {
+      const epg = makeEPG({
+        source_type: 'schedules_direct',
+        custom_properties: {},
+      });
+      render(<EPG {...defaultProps({ epg })} />);
+      const toggle = screen.getByTestId('switch-fetch-external-ids');
+      expect(toggle).not.toBeChecked();
+      fireEvent.click(toggle);
+      expect(API.updateEpgSourceSettings).toHaveBeenCalledWith(1, {
+        fetch_external_ids: true,
+      });
+      await waitFor(() => expect(toggle).not.toBeDisabled());
     });
   });
 
