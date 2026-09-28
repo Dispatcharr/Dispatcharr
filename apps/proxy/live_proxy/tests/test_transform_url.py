@@ -19,7 +19,7 @@ class TransformUrlTests(SimpleTestCase):
         self.assertEqual(result, "http://example.com/live/newuser/newpass/1.ts")
 
     def test_catastrophic_search_pattern_times_out(self):
-        """Alternation+star ReDoS must fall back quickly instead of hanging."""
+        """Alternation+star ReDoS must fail quickly instead of hanging."""
         url = ("a" * 28) + "!"
         started = time.perf_counter()
         result = transform_url(url, r"(a|a)*$", "x")
@@ -31,7 +31,7 @@ class TransformUrlTests(SimpleTestCase):
             url_utils.URL_TRANSFORM_REGEX_TIMEOUT * 20,
             f"transform_url blocked for {elapsed:.2f}s on catastrophic regex",
         )
-        self.assertEqual(result, url)
+        self.assertIsNone(result)
 
     def test_subn_receives_timeout(self):
         with patch(
@@ -44,12 +44,11 @@ class TransformUrlTests(SimpleTestCase):
             url_utils.URL_TRANSFORM_REGEX_TIMEOUT,
         )
 
-    def test_timeout_error_falls_back_to_original(self):
+    def test_timeout_error_returns_none(self):
         with patch(
             "apps.proxy.live_proxy.url_utils.regex.subn",
             side_effect=TimeoutError("regex timed out"),
         ):
-            self.assertEqual(
+            self.assertIsNone(
                 transform_url("http://example.com/a", "a", "b"),
-                "http://example.com/a",
             )

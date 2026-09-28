@@ -88,6 +88,19 @@ vi.mock('@mantine/core', () => ({
   Stack: ({ children }) => <div>{children}</div>,
   Collapse: ({ in: isOpen, children }) =>
     isOpen ? <div data-testid="collapse-open">{children}</div> : null,
+  Switch: ({ label, description, ...rest }) => (
+    <div>
+      <label>{label}</label>
+      {description && <span data-testid={`desc-${label}`}>{description}</span>}
+      <input
+        data-testid={`switch-${label}`}
+        type="checkbox"
+        aria-label={label}
+        checked={Boolean(rest.checked ?? rest.value)}
+        onChange={(e) => rest.onChange?.(e)}
+      />
+    </div>
+  ),
   TextInput: ({ label, description, ...rest }) => (
     <div>
       <label>{label}</label>

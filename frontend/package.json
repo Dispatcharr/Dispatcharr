@@ -63,7 +63,7 @@
     "jsdom": "^27.0.0",
     "prettier": "^3.5.3",
     "vite": "^7.3.5",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.11"
   },
   "resolutions": {
     "vite": "7.3.5",
@@ -71,6 +71,8 @@
     "react-dom": "19.1.0"
   },
   "overrides": {
+    "@humanfs/node": "^0.16.8",
+    "@xmldom/xmldom": "^0.8.15",
     "esbuild": "^0.28.1",
     "js-yaml": "^5.2.2",
     "minimatch": "^10.2.1"

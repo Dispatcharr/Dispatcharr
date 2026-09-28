@@ -300,6 +300,13 @@ describe('guideUtils', () => {
       expect(result[0].startMs).toBe(dayjs(startTime).valueOf());
       expect(result[0].endMs).toBe(dayjs(endTime).valueOf());
     });
+
+    it('should forward grid query params', async () => {
+      vi.mocked(API.getGrid).mockResolvedValue([]);
+      const params = new URLSearchParams({ channel_profile_id: '3' });
+      await guideUtils.fetchPrograms(params);
+      expect(API.getGrid).toHaveBeenCalledWith(params);
+    });
   });
 
   // ── sortChannels ──────────────────────────────────────────────────────────

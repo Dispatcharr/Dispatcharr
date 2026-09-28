@@ -75,6 +75,11 @@ const request = async (url, options = {}) => {
     throw error;
   }
 
+  // { raw: true } hands back the Response for a caller that wants a blob.
+  if (options.raw) {
+    return response;
+  }
+
   // 204 / empty bodies are success with no payload. Return null, not '',
   // so callers that destructure the result don't silently get undefined fields.
   const text = await response.text();
@@ -1915,9 +1920,13 @@ export default class API {
     }
   }
 
-  static async getGrid() {
+  static async getGrid(params = new URLSearchParams()) {
     try {
-      const response = await request(`${host}/api/epg/grid/`);
+      const qs = params.toString();
+      const url = qs
+        ? `${host}/api/epg/grid/?${qs}`
+        : `${host}/api/epg/grid/`;
+      const response = await request(url);
 
       return response.data;
     } catch (e) {
@@ -3792,6 +3801,47 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve series info', e);
+    }
+  }
+
+  static async getLogFiles() {
+    try {
+      return await request(`${host}/api/core/logs/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve log files', e);
+    }
+  }
+
+  // silent drops the toast for background polls; a cursor asks only for new bytes.
+  static async getLogFile(name, { silent = false, cursor = null } = {}) {
+    try {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+      return await request(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/${query}`
+      );
+    } catch (e) {
+      if (!silent) {
+        errorNotification('Failed to retrieve log file', e);
+      }
+    }
+  }
+
+  static async downloadLogFile(name) {
+    try {
+      const response = await request(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/download/`,
+        { raw: true }
+      );
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      errorNotification('Failed to download log file', e);
     }
   }
 

@@ -15,6 +15,8 @@ from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from dispatcharr.log_collector import DEFAULT_LOG_KEEP, DEFAULT_LOG_MB
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +49,31 @@ PROXY_PROFILE_NAME = "Proxy"
 REDIRECT_PROFILE_NAME = "Redirect"
 
 
+def _enforce_locked_profile(instance, allowed_fields):
+    """Reject edits to a locked profile, except the named fields.
+
+    QuerySet.update() does not call save(), so migrations can still refresh
+    seeded commands. API writes and instance.save() go through this check.
+    """
+    if not instance.pk:
+        return
+    orig = type(instance).objects.get(pk=instance.pk)
+    if not orig.locked:
+        return
+    for field in instance._meta.fields:
+        field_name = field.name
+        orig_value = getattr(orig, field_name)
+        new_value = getattr(instance, field_name)
+        if isinstance(orig_value, models.Model):
+            orig_value = orig_value.pk
+        if isinstance(new_value, models.Model):
+            new_value = new_value.pk
+        if field_name not in allowed_fields and orig_value != new_value:
+            raise ValidationError(
+                f"Cannot modify {field_name} on a protected profile."
+            )
+
+
 class StreamProfile(models.Model):
     name = models.CharField(max_length=255, help_text="Name of the stream profile")
     command = models.CharField(
@@ -76,28 +103,8 @@ class StreamProfile(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        if self.pk:  # Only check existing records
-            orig = StreamProfile.objects.get(pk=self.pk)
-            if orig.locked:
-                allowed_fields = {"user_agent_id"}  # Only allow this field to change
-                for field in self._meta.fields:
-                    field_name = field.name
-
-                    # Convert user_agent to user_agent_id for comparison
-                    orig_value = getattr(orig, field_name)
-                    new_value = getattr(self, field_name)
-
-                    # Ensure that ForeignKey fields compare their ID values
-                    if isinstance(orig_value, models.Model):
-                        orig_value = orig_value.pk
-                    if isinstance(new_value, models.Model):
-                        new_value = new_value.pk
-
-                    if field_name not in allowed_fields and orig_value != new_value:
-                        raise ValidationError(
-                            f"Cannot modify {field_name} on a protected profile."
-                        )
-
+        # user_agent is the profile's request header, not the stream command.
+        _enforce_locked_profile(self, {"user_agent"})
         super().save(*args, **kwargs)
 
     @classmethod
@@ -105,7 +112,7 @@ class StreamProfile(models.Model):
         instance = cls.objects.get(pk=pk)
 
         if instance.locked:
-            allowed_fields = {"user_agent_id"}  # Only allow updating this field
+            allowed_fields = {"user_agent", "user_agent_id"}
 
             for field_name, new_value in kwargs.items():
                 if field_name not in allowed_fields:
@@ -191,6 +198,10 @@ class OutputProfile(models.Model):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        _enforce_locked_profile(self, set())
+        super().save(*args, **kwargs)
+
     def build_command(self):
         """Return the full command as a list suitable for subprocess.Popen."""
         from shlex import split as shlex_split
@@ -201,12 +212,14 @@ USER_OUTPUT_PROFILE_PROP_KEY = "output_profile"
 
 
 def scrub_output_profile_id(profile_id):
-    """Remove a deleted OutputProfile id from user overrides and stream settings.
+    """Remove a deleted OutputProfile id from user overrides and settings.
 
     Clears ``User.custom_properties.output_profile`` when it matches the deleted
     id (so the user falls back to no per-user transcode). Clears
     ``hdhr_output_profile_id`` in stream settings when it matches (HDHR falls
-    back to pass-through). Only rows that reference the id are touched.
+    back to pass-through). Clears ``output_profile_id`` in DVR settings when
+    it matches (recordings fall back to recording the source as-is). Only rows
+    that reference the id are touched.
     """
     from django.db.models import Q
 
@@ -239,6 +252,14 @@ def scrub_output_profile_id(profile_id):
             STREAM_SETTINGS_KEY,
             "Stream Settings",
             {"hdhr_output_profile_id": None},
+        )
+
+    current_dvr = CoreSettings.get_dvr_output_profile_id()
+    if current_dvr is not None and current_dvr == profile_id_int:
+        CoreSettings._update_group(
+            DVR_SETTINGS_KEY,
+            "DVR Settings",
+            {"output_profile_id": None},
         )
 
 
@@ -672,6 +693,7 @@ class CoreSettings(models.Model):
             "pre_offset_minutes": 0,
             "post_offset_minutes": 0,
             "series_rules": [],
+            "output_profile_id": None,
         })
 
     @classmethod
@@ -754,6 +776,7 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "validate_redirect_urls": True,
         })
 
     @classmethod
@@ -781,8 +804,8 @@ class CoreSettings(models.Model):
             "auto_import_mapped_files": True,
             "enable_ip_lookup": True,
             "catchup_enabled": True,
-            "log_max_mb": 10,
-            "log_keep": 5,
+            "log_max_mb": DEFAULT_LOG_MB,
+            "log_keep": DEFAULT_LOG_KEEP,
             "log_persist": True,
         })
 
@@ -805,6 +828,15 @@ class CoreSettings(models.Model):
     @classmethod
     def get_hdhr_output_profile_id(cls):
         raw = cls.get_stream_settings().get("hdhr_output_profile_id")
+        try:
+            return int(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    @classmethod
+    def get_dvr_output_profile_id(cls):
+        """Output profile applied to DVR captures, or None to record as-is."""
+        raw = cls.get_dvr_settings().get("output_profile_id")
         try:
             return int(raw) if raw is not None else None
         except (ValueError, TypeError):
@@ -839,8 +871,10 @@ class SystemEvent(models.Model):
         ('stream_switch', 'Stream Switched'),
         ('m3u_refresh', 'M3U Refreshed'),
         ('m3u_download', 'M3U Downloaded'),
+        ('m3u_error', 'M3U Error'),
         ('epg_refresh', 'EPG Refreshed'),
         ('epg_download', 'EPG Downloaded'),
+        ('epg_error', 'EPG Error'),
         ('login_success', 'Login Successful'),
         ('login_failed', 'Login Failed'),
         ('logout', 'User Logged Out'),

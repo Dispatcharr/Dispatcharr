@@ -22,17 +22,23 @@ class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
     def test_channel_client_wait_period_default(self, _mock_settings):
         self.assertEqual(TSConfig.get_channel_client_wait_period(), 5)
 
+    @patch.object(TSConfig, "get_proxy_settings", return_value={})
+    def test_validate_redirect_urls_default(self, _mock_settings):
+        self.assertTrue(TSConfig.get_validate_redirect_urls())
+
     @patch.object(
         TSConfig,
         "get_proxy_settings",
         return_value={
             "channel_init_grace_period": 120,
             "channel_client_wait_period": 15,
+            "validate_redirect_urls": False,
         },
     )
     def test_settings_override_db_values(self, _mock_settings):
         self.assertEqual(TSConfig.get_channel_init_grace_period(), 120)
         self.assertEqual(TSConfig.get_channel_client_wait_period(), 15)
+        self.assertFalse(TSConfig.get_validate_redirect_urls())
 
 
 class ProxySettingsSerializerTests(SimpleTestCase):
@@ -45,6 +51,7 @@ class ProxySettingsSerializerTests(SimpleTestCase):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "validate_redirect_urls": True,
         }
         payload.update(overrides)
         return payload
@@ -53,6 +60,20 @@ class ProxySettingsSerializerTests(SimpleTestCase):
         serializer = ProxySettingsSerializer(data=self._valid_payload())
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["channel_client_wait_period"], 5)
+
+    def test_accepts_validate_redirect_urls_false(self):
+        serializer = ProxySettingsSerializer(
+            data=self._valid_payload(validate_redirect_urls=False)
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertFalse(serializer.validated_data["validate_redirect_urls"])
+
+    def test_validate_redirect_urls_defaults_true_when_omitted(self):
+        payload = self._valid_payload()
+        payload.pop("validate_redirect_urls")
+        serializer = ProxySettingsSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertTrue(serializer.validated_data["validate_redirect_urls"])
 
     def test_init_grace_period_allows_up_to_300(self):
         serializer = ProxySettingsSerializer(
@@ -74,6 +95,7 @@ class CoreSettingsProxyDefaultsTests(TestCase):
         defaults = CoreSettings.get_proxy_settings()
         self.assertEqual(defaults["channel_init_grace_period"], 60)
         self.assertEqual(defaults["channel_client_wait_period"], 5)
+        self.assertTrue(defaults["validate_redirect_urls"])
 
 
 class Migration0026ProxySettingsTests(TestCase):

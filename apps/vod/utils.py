@@ -31,3 +31,17 @@ def is_vod_series_enabled(*, user=None):
     ``custom_properties.vod_series_enabled``.
     """
     return _is_vod_access_enabled(prop_key=_VOD_SERIES_ENABLED, user=user)
+
+
+def parse_category_filter_value(value, valid_types):
+    """Return ``(name, type_or_None)`` for a category filter value.
+
+    Only the trailing ``|token`` is treated as a type, and only when that token is in
+    ``valid_types``. Category names may themselves contain ``|``, so any other value is
+    kept as the full name.
+    """
+    if "|" in value:
+        name, _, suffix = value.rpartition("|")
+        if suffix in valid_types:
+            return name, suffix
+    return value, None

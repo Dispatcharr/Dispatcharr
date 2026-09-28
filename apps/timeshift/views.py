@@ -38,7 +38,7 @@ from apps.m3u.connection_pool import (
     reserve_profile_slot,
 )
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.m3u.tasks import get_transformed_credentials
+from apps.m3u.credentials import get_transformed_credentials
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 from apps.timeshift.redis_keys import (
@@ -1751,7 +1751,7 @@ def _select_catchup_redirect_url(
                 target.m3u_account.id, exc,
             )
             continue
-        if not server_url:
+        if not (server_url and xc_username and xc_password):
             continue
 
         creds = TimeshiftCredentials(server_url, xc_username, xc_password)
@@ -1976,6 +1976,20 @@ def _clear_pool_final_url(redis_client, session_id):
         redis_client.hdel(_pool_key(session_id), "final_url")
     except Exception as exc:
         logger.debug("Timeshift pool final_url clear failed: %s", exc)
+
+
+def _clear_pool_presentation_window(redis_client, session_id):
+    """Drop a scrub window that belonged to a CDN file the portal replaced."""
+    if redis_client is None or not session_id:
+        return
+    try:
+        redis_client.hdel(
+            _pool_key(session_id),
+            "presentation_length",
+            "presentation_byte_base",
+        )
+    except Exception as exc:
+        logger.debug("Timeshift pool presentation window clear failed: %s", exc)
 
 
 def _store_pool_presentation_window(
@@ -2680,11 +2694,18 @@ def _attempt_timeshift_stream(
     presentation_remaining=None,
     presentation_byte_base=None,
     relative_presentation_range=False,
+    cdn_only_range=False,
+    client_range_header=None,
 ):
     """Build the provider URL set for one (account, profile, stream) and stream it."""
     server_url, xc_username, xc_password = get_transformed_credentials(
         m3u_account, profile
     )
+    if not (server_url and xc_username and xc_password):
+        return HttpResponse(
+            "Credential transform failed for selected M3U profile",
+            status=503,
+        )
     creds = TimeshiftCredentials(server_url, xc_username, xc_password)
     candidate_urls = build_timeshift_candidate_urls(
         creds, stream_id_value, provider_timestamp, duration_minutes
@@ -2743,6 +2764,8 @@ def _attempt_timeshift_stream(
         presentation_remaining=presentation_remaining,
         presentation_byte_base=presentation_byte_base,
         relative_presentation_range=relative_presentation_range,
+        cdn_only_range=cdn_only_range,
+        client_range_header=client_range_header,
     )
 
 
@@ -2797,6 +2820,7 @@ def _stream_reused_session(
     presentation_remaining = None
     presentation_byte_base = None
     relative_presentation_range = False
+    cdn_only_range = False
     effective_range = range_header
     prior_presentation_base = _pool_int_field(
         descriptor.get("presentation_byte_base"),
@@ -2809,11 +2833,20 @@ def _stream_reused_session(
         # Same opened CDN archive: FF within the file opened for this session.
         keep_archive = True
         final_url = raw_final_url or None
-        if scrub_info["kind"] == "scrub" and not range_header:
+        if (
+            scrub_info["kind"] == "scrub"
+            and _is_full_restart_range(range_header)
+        ):
             effective_range = f"bytes={scrub_info['byte_offset']}-"
-            rewrite_plain_get = True
             presentation_remaining = scrub_info["remaining"]
             presentation_byte_base = scrub_info["byte_offset"]
+            cdn_only_range = True
+            if range_header:
+                # bytes=0- still wants a 206 starting at byte 0. A headerless
+                # GET wants a plain 200.
+                relative_presentation_range = True
+            else:
+                rewrite_plain_get = True
             if debug:
                 logger.debug(
                     "Timeshift session scrub: session=%s offset=%d remaining=%d "
@@ -2836,6 +2869,7 @@ def _stream_reused_session(
             relative_presentation_range = True
             presentation_byte_base = prior_presentation_base
             presentation_remaining = prior_presentation_length
+            cdn_only_range = True
             if debug:
                 logger.debug(
                     "Timeshift presentation range map: session=%s %s -> %s "
@@ -2865,6 +2899,7 @@ def _stream_reused_session(
             relative_presentation_range = True
             presentation_byte_base = prior_presentation_base
             presentation_remaining = prior_presentation_length
+            cdn_only_range = True
             if debug:
                 logger.debug(
                     "Timeshift presentation range map: session=%s %s -> %s "
@@ -2917,6 +2952,8 @@ def _stream_reused_session(
             presentation_remaining=presentation_remaining,
             presentation_byte_base=presentation_byte_base,
             relative_presentation_range=relative_presentation_range,
+            cdn_only_range=cdn_only_range,
+            client_range_header=range_header,
         )
     except Exception:
         _discard_pool_session(redis_client, session_id, profile.id)
@@ -3208,6 +3245,8 @@ def _stream_from_provider(
     presentation_remaining=None,
     presentation_byte_base=None,
     relative_presentation_range=False,
+    cdn_only_range=False,
+    client_range_header=None,
 ):
     """Try each upstream URL until one returns streamable MPEG-TS.
 
@@ -3220,6 +3259,9 @@ def _stream_from_provider(
     the XC start URL (instead of sending ``Range``) still get provider-like
     headers. Subsequent client Ranges are relative to that window and must be
     remapped via ``relative_presentation_range``.
+
+    ``cdn_only_range``: ``range_header`` addresses the cached CDN file only.
+    Portal attempts, including after a cached 416, use ``client_range_header``.
 
     Sets ``timeshift_decisive`` on auth/ban-class failures (401/403/406) so the
     failover loop skips the rest of that account's streams. ``release_cb`` frees
@@ -3258,9 +3300,12 @@ def _stream_from_provider(
     used_cached_final = False
     decisive_failure = False
     for url, follow_redirects, cached_final, orig_idx in attempts:
+        attempt_range = range_header
+        if cdn_only_range and not cached_final:
+            attempt_range = client_range_header
         try:
             response = _open_upstream(
-                url, user_agent, range_header, allow_redirects=follow_redirects,
+                url, user_agent, attempt_range, allow_redirects=follow_redirects,
             )
         except requests.exceptions.RequestException as exc:
             if cached_final:
@@ -3294,12 +3339,21 @@ def _stream_from_provider(
             # and only multiplies upstream connections.
             content_range = response.headers.get("Content-Range")
             response.close()
+            if cached_final and cdn_only_range:
+                # Synthesized for the cached file, so it is not the client's Range.
+                logger.info(
+                    "Timeshift cached CDN rejected scrub range with 416, "
+                    "clearing final_url for session %s",
+                    pool_session_id,
+                )
+                _clear_pool_final_url(redis_client, pool_session_id)
+                continue
             return _finalize_timeshift_response(_passthrough_response(416, content_range))
         if response.status_code in (200, 206):
             peek = response.raw.read(1024)
             content_type = response.headers.get("Content-Type", "")
             # 206 may start mid-packet; accept before sync probe trims peek bytes.
-            is_partial = response.status_code == 206 and bool(range_header)
+            is_partial = response.status_code == 206 and bool(attempt_range)
             if is_partial and peek and "html" not in content_type and "json" not in content_type:
                 response._peek_data = peek
                 upstream = response
@@ -3362,21 +3416,30 @@ def _stream_from_provider(
     content_range = upstream.headers.get("Content-Range", "")
     status = upstream.status_code
 
+    # The portal opened a new file. The CDN presentation base does not apply.
+    scrub_fell_back_to_portal = cdn_only_range and not used_cached_final
+    if scrub_fell_back_to_portal:
+        rewrite_plain_get = False
+        relative_presentation_range = False
+        presentation_remaining = None
+        presentation_byte_base = None
+        range_header = client_range_header
+        _clear_pool_presentation_window(redis_client, pool_session_id)
+
     _store_pool_content_length(redis_client, pool_session_id, upstream)
     _store_pool_serving_range(redis_client, pool_session_id, range_header)
     # Capture post-redirect CDN URL for reconnects (VOD final_url pattern).
     resolved_url = getattr(upstream, "url", None) or last_url
     if resolved_url:
         _store_pool_final_url(redis_client, pool_session_id, resolved_url)
-    # Portal opens define (or redefine) the session archive window; CDN scrubs reuse it.
-    # force=False: after keep_archive=False clear, these keys are empty and get set;
-    # after CDN→portal fallback mid-session, keep the original anchor.
+    # Only a portal file that replaced a CDN-only range gets a new anchor.
+    # Other CDN misses keep the open file's anchor.
     _ensure_pool_archive_anchor(
         redis_client,
         pool_session_id,
         timestamp=timestamp_utc,
         duration_minutes=duration_minutes,
-        force=False,
+        force=scrub_fell_back_to_portal,
     )
 
     representation_length = _extract_representation_length(upstream)
@@ -3446,10 +3509,13 @@ def _stream_from_provider(
     if duration_minutes:
         programme_duration_secs = float(duration_minutes) * 60.0
 
-    # XC start-URL scrub injects a CDN Range for the provider only. Stats must
-    # use the URL timestamp vs EPG; mapping archive bytes onto programme
-    # duration falsely parks the card at an unrelated offset.
-    stats_range_start = None if rewrite_plain_get else _parse_range_start(range_header)
+    # A timestamp restart injects a CDN offset the client did not send.
+    # A real mid-file Range still moves the playhead.
+    client_restarted = _is_full_restart_range(client_range_header)
+    if rewrite_plain_get or (cdn_only_range and used_cached_final and client_restarted):
+        stats_range_start = None
+    else:
+        stats_range_start = _parse_range_start(range_header)
     _register_stats_client(
         redis_client,
         stats_channel_id,

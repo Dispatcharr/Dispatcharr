@@ -19,12 +19,13 @@ const LazyLogo = ({
   const fetchAttempted = useRef(new Set());
   const isMountedRef = useRef(true);
 
-  const logos = useLogosStore((s) => s.logos);
+  const logoData = useLogosStore((s) =>
+    logoId ? s.logos[logoId] : undefined
+  );
   const fetchLogosByIds = useLogosStore((s) => s.fetchLogosByIds);
   const allowLogoRendering = useLogosStore((s) => s.allowLogoRendering);
 
   // Determine the logo source
-  const logoData = logoId && logos[logoId];
   const logoSrc = logoData?.cache_url || fallbackSrc;
 
   // Cleanup on unmount
@@ -115,6 +116,8 @@ const LazyLogo = ({
       src={logoSrc}
       alt={alt}
       style={style}
+      loading="lazy"
+      decoding="async"
       onError={(e) => {
         if (!hasError) {
           setHasError(true);

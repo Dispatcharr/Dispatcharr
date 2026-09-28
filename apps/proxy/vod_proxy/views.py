@@ -26,7 +26,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
-from core.utils import dispatcharr_user_agent
+from core.utils import dispatcharr_user_agent, RedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -181,13 +181,6 @@ def _select_vod_stream(
 
     for cand, selected_profile in candidate_profiles:
         cand_account = cand.m3u_account
-        cand_url = _get_stream_url_from_relation(cand)
-        if not cand_url:
-            logger.warning(
-                "[VOD-FAILOVER] No URL for relation on account %s, skipping",
-                cand_account.name,
-            )
-            continue
 
         restrict_to_profile_ids = (
             {p.id for p in allowed_m3u_profiles.get(cand.m3u_account_id, [])}
@@ -208,15 +201,17 @@ def _select_vod_stream(
             continue
 
         m3u_profile, current_connections = profile_result
-        final_stream_url = _transform_url(cand_url, m3u_profile)
+        final_stream_url = _build_vod_stream_url(cand, m3u_profile, content_type)
         if not final_stream_url or not final_stream_url.startswith(
             ("http://", "https://")
         ):
-            logger.warning(
-                "[VOD-FAILOVER] Invalid stream URL from account %s: %s",
-                cand_account.name,
-                final_stream_url,
-            )
+            if final_stream_url:
+                logger.warning(
+                    "[VOD-FAILOVER] Invalid stream URL from account %s profile %s: %s",
+                    cand_account.name,
+                    getattr(m3u_profile, "id", None),
+                    final_stream_url,
+                )
             continue
 
         logger.info(
@@ -465,28 +460,27 @@ def _order_candidates(candidates, preferred_relation=None):
         ]
     return list(candidates)
 
-def _get_stream_url_from_relation(relation):
-    """Get stream URL from the M3U relation"""
-    try:
-        # Log the relation type and available attributes
-        logger.info(f"[VOD-URL] Relation type: {type(relation).__name__}")
-        logger.info(f"[VOD-URL] Account type: {relation.m3u_account.account_type}")
-        logger.info(f"[VOD-URL] Stream ID: {getattr(relation, 'stream_id', 'N/A')}")
+def _build_vod_stream_url(relation, m3u_profile, content_type):
+    """
+    Build a VOD provider URL using the same credential resolution as Live/catchup.
 
-        # First try the get_stream_url method (this should build URLs dynamically)
-        if hasattr(relation, 'get_stream_url'):
-            url = relation.get_stream_url()
-            if url:
-                logger.info(f"[VOD-URL] Built URL from get_stream_url(): {url}")
-                return url
-            else:
-                logger.warning(f"[VOD-URL] get_stream_url() returned None")
+    XC relations use relation.get_stream_url(profile), which applies
+    get_transformed_credentials(). Failed transforms and non-XC accounts
+    return None.
+    """
+    account = relation.m3u_account
+    if getattr(account, "account_type", None) != "XC":
+        return None
 
-        logger.error(f"[VOD-URL] Relation has no get_stream_url method or it failed")
+    if content_type not in ("movie", "series", "episode"):
+        logger.error("[VOD-URL] Unsupported VOD content_type: %s", content_type)
         return None
-    except Exception as e:
-        logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
-        return None
+
+    url = relation.get_stream_url(m3u_profile)
+    if url:
+        logger.info("[VOD-URL] Built XC URL from transformed credentials: %s", url)
+    return url
+
 
 def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profile_ids=None):
     """Get appropriate M3U profile for streaming using Redis-based viewer counts
@@ -636,31 +630,6 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profi
     except Exception as e:
         logger.error(f"Error getting M3U profile: {e}")
         return None
-
-def _transform_url(original_url, m3u_profile):
-    """Transform URL based on M3U profile settings"""
-    try:
-        import regex
-
-        if not original_url:
-            return None
-
-        search_pattern = m3u_profile.search_pattern
-        replace_pattern = m3u_profile.replace_pattern
-        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
-        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
-        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
-
-        if search_pattern and replace_pattern:
-            # regex module accepts JS-style (?<name>...) named groups natively
-            transformed_url = regex.sub(search_pattern, safe_replace_pattern, original_url)
-            return transformed_url
-
-        return original_url
-
-    except Exception as e:
-        logger.error(f"Error transforming URL: {e}")
-        return original_url
 
 def _user_from_vod_request(request, user=None):
     """Prefer an explicit user, then an authenticated request.user, else None."""
@@ -1066,23 +1035,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
 
         # Store the total content length in Redis for the persistent connection to use
         try:
-            import redis
-            from django.conf import settings
-            redis_host = getattr(settings, 'REDIS_HOST', 'localhost')
-            redis_port = int(getattr(settings, 'REDIS_PORT', 6379))
-            redis_db = int(getattr(settings, 'REDIS_DB', 0))
-            redis_password = getattr(settings, 'REDIS_PASSWORD', '')
-            redis_user = getattr(settings, 'REDIS_USER', '')
-            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-            r = redis.StrictRedis(
-                host=redis_host,
-                port=redis_port,
-                db=redis_db,
-                password=redis_password if redis_password else None,
-                username=redis_user if redis_user else None,
-                decode_responses=True,
-                **ssl_params
-            )
+            r = RedisClient().get_client()
             content_length_key = f"vod_content_length:{session_id}"
             r.set(content_length_key, total_size, ex=1800)  # Store for 30 minutes
             logger.info(f"[VOD-HEAD] Stored total content length {total_size} for session {session_id}")

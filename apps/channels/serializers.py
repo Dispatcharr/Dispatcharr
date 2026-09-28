@@ -772,15 +772,50 @@ class ChannelSerializer(serializers.ModelSerializer):
 
 
 class RecordingSerializer(serializers.ModelSerializer):
+    # Storage paths and playback URLs are written only by the DVR pipeline.
+    # Clients must not be able to point playback/delete at arbitrary paths.
+    SERVER_OWNED_CUSTOM_PROPERTY_KEYS = frozenset(
+        {
+            "file_path",
+            "_hls_dir",
+            "file_name",
+            "file_url",
+            "output_file_url",
+        }
+    )
+
     class Meta:
         model = Recording
         fields = "__all__"
         read_only_fields = ["task_id"]
 
+    def validate_custom_properties(self, value):
+        if value is None:
+            return value
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("custom_properties must be an object.")
+
+        cleaned = {
+            key: item
+            for key, item in value.items()
+            if key not in self.SERVER_OWNED_CUSTOM_PROPERTY_KEYS
+        }
+        if self.instance is not None:
+            existing = self.instance.custom_properties or {}
+            for key in self.SERVER_OWNED_CUSTOM_PROPERTY_KEYS:
+                if key in existing:
+                    cleaned[key] = existing[key]
+        return cleaned
+
     def validate(self, data):
         from core.models import CoreSettings
         start_time = data.get("start_time")
         end_time = data.get("end_time")
+        if self.instance is not None:
+            if "start_time" not in data:
+                start_time = self.instance.start_time
+            if "end_time" not in data:
+                end_time = self.instance.end_time
 
         if start_time and timezone.is_naive(start_time):
             start_time = timezone.make_aware(start_time, timezone.get_current_timezone())

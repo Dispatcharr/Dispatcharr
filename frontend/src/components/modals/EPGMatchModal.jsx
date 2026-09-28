@@ -13,30 +13,12 @@ import { notifications } from '@mantine/notifications';
 import useSettingsStore from '../../store/settings';
 import API from '../../api';
 import {
-  getChangedSettings,
-  saveChangedSettings,
+  getChangedGroupSettings,
+  parseGroupSettings,
+  saveGroupSettings,
 } from '../../utils/pages/SettingsUtils';
 
-// Extract EPG settings directly without parsing all settings
-const getEpgSettingsFromStore = (settings) => {
-  const epgSettings = settings?.['epg_settings']?.value;
-  return {
-    epg_match_mode: epgSettings?.epg_match_mode || 'default',
-    epg_match_ignore_prefixes: Array.isArray(
-      epgSettings?.epg_match_ignore_prefixes
-    )
-      ? epgSettings.epg_match_ignore_prefixes
-      : [],
-    epg_match_ignore_suffixes: Array.isArray(
-      epgSettings?.epg_match_ignore_suffixes
-    )
-      ? epgSettings.epg_match_ignore_suffixes
-      : [],
-    epg_match_ignore_custom: Array.isArray(epgSettings?.epg_match_ignore_custom)
-      ? epgSettings.epg_match_ignore_custom
-      : [],
-  };
-};
+const EPG_GROUP = 'epg_settings';
 
 const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
   const settings = useSettingsStore((s) => s.settings);
@@ -46,7 +28,7 @@ const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
 
   // Compute form values directly from settings - memoized for performance
   const storedValues = useMemo(
-    () => getEpgSettingsFromStore(settings),
+    () => parseGroupSettings(settings, EPG_GROUP),
     [settings]
   );
 
@@ -74,9 +56,13 @@ const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
         ...formValues,
         epg_match_mode: settingsMode,
       };
-      const changedSettings = getChangedSettings(settingsToSave, settings);
+      const changedSettings = getChangedGroupSettings(
+        settingsToSave,
+        settings,
+        EPG_GROUP
+      );
       if (Object.keys(changedSettings).length > 0) {
-        await saveChangedSettings(settings, changedSettings);
+        await saveGroupSettings(settings, EPG_GROUP, changedSettings);
       }
 
       // Then trigger auto-match

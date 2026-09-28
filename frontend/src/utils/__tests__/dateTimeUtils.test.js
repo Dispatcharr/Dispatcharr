@@ -104,6 +104,28 @@ describe('dateTimeUtils', () => {
     });
   });
 
+  describe('startOfHour', () => {
+    it('should return start of hour', () => {
+      const date = '2024-01-15T10:48:37.123Z';
+      const result = dateTimeUtils.startOfHour(date);
+      expect(result.minute()).toBe(0);
+      expect(result.second()).toBe(0);
+      expect(result.millisecond()).toBe(0);
+      expect(result.valueOf()).toBeLessThanOrEqual(
+        dateTimeUtils.convertToMs(date)
+      );
+    });
+
+    it('should be a no-op when already on the hour', () => {
+      const onHour = dateTimeUtils.initializeTime(
+        new Date(2024, 0, 15, 14, 0, 0, 0)
+      );
+      expect(dateTimeUtils.startOfHour(onHour).valueOf()).toBe(
+        onHour.valueOf()
+      );
+    });
+  });
+
   describe('isBefore', () => {
     it('should return true when first date is before second', () => {
       const date1 = '2024-01-15T10:00:00Z';

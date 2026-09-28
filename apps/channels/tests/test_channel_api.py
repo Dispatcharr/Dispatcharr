@@ -773,6 +773,165 @@ class ChannelListIncludeStreamsQueryTests(TestCase):
         )
 
 
+class ChannelAssignedProfileScopeTests(TestCase):
+    """Non-admin with assigned profiles: list/summary/get_ids are limited to
+    enabled memberships in those profiles; retrieve by id is not.
+    """
+
+    def setUp(self):
+        from apps.channels.models import ChannelProfile, ChannelProfileMembership
+
+        self.group = ChannelGroup.objects.create(name="Profile Scope Group")
+        self.in_profile = Channel.objects.create(
+            channel_number=1.0, name="In Profile", channel_group=self.group,
+        )
+        self.out_of_profile = Channel.objects.create(
+            channel_number=2.0, name="Out Of Profile", channel_group=self.group,
+        )
+
+        # Profile creation auto-adds enabled memberships for every existing
+        # channel; disable the one we want excluded.
+        self.profile = ChannelProfile.objects.create(name="Assigned Profile")
+        ChannelProfileMembership.objects.filter(
+            channel_profile=self.profile, channel=self.out_of_profile,
+        ).update(enabled=False)
+
+        self.user = User.objects.create_user(username="profile_scoped", password="x")
+        self.user.user_level = User.UserLevel.STANDARD
+        self.user.save()
+        self.user.channel_profiles.add(self.profile)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_summary_limited_to_assigned_profile_union(self):
+        response = self.client.get("/api/channels/channels/summary/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
+
+    def test_list_limited_to_assigned_profile_union(self):
+        response = self.client.get(
+            "/api/channels/channels/", {"page": 1, "page_size": 50}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.in_profile.id})
+
+    def test_retrieve_reaches_channel_outside_assigned_profile(self):
+        response = self.client.get(
+            f"/api/channels/channels/{self.out_of_profile.id}/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.out_of_profile.id)
+
+    def test_explicit_profile_id_still_scopes_by_membership(self):
+        response = self.client.get(
+            "/api/channels/channels/summary/",
+            {"channel_profile_id": self.profile.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
+
+    def test_profile_id_all_uses_assigned_profile_union(self):
+        response = self.client.get(
+            "/api/channels/channels/summary/",
+            {"channel_profile_id": "all"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
+
+
+class ChannelGroupVisibilityTests(TestCase):
+    """Non-admin group list is scoped by user_level / adult hide, not profiles."""
+
+    def setUp(self):
+        from apps.channels.models import ChannelProfile, ChannelProfileMembership
+
+        self.sports = ChannelGroup.objects.create(name="Sports")
+        self.adult = ChannelGroup.objects.create(name="Adult")
+        self.premium = ChannelGroup.objects.create(name="Premium")
+        self.empty = ChannelGroup.objects.create(name="Empty Unused")
+
+        self.sports_ch = Channel.objects.create(
+            channel_number=1.0,
+            name="Sports 1",
+            channel_group=self.sports,
+            user_level=0,
+            is_adult=False,
+        )
+        self.adult_ch = Channel.objects.create(
+            channel_number=2.0,
+            name="Adult 1",
+            channel_group=self.adult,
+            user_level=0,
+            is_adult=True,
+        )
+        self.premium_ch = Channel.objects.create(
+            channel_number=3.0,
+            name="Premium 1",
+            channel_group=self.premium,
+            user_level=5,
+            is_adult=False,
+        )
+
+        # Profile only enables sports; groups API must still expose other
+        # activatable groups (not profile-limited).
+        self.profile = ChannelProfile.objects.create(name="Sports Only")
+        ChannelProfileMembership.objects.filter(
+            channel_profile=self.profile,
+            channel__in=[self.adult_ch, self.premium_ch],
+        ).update(enabled=False)
+
+        self.user = User.objects.create_user(username="group_viewer", password="x")
+        self.user.user_level = 1
+        self.user.custom_properties = {"hide_adult_content": True}
+        self.user.save()
+        self.user.channel_profiles.add(self.profile)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_standard_user_sees_groups_for_activatable_channels_only(self):
+        response = self.client.get("/api/channels/groups/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {row["name"] for row in response.data}
+        self.assertIn("Sports", names)
+        self.assertNotIn("Adult", names)
+        self.assertNotIn("Premium", names)
+        self.assertNotIn("Empty Unused", names)
+        sports = next(row for row in response.data if row["name"] == "Sports")
+        self.assertEqual(sports["channel_count"], 1)
+        self.assertEqual(sports["m3u_accounts"], [])
+        self.assertEqual(sports["m3u_account_count"], 0)
+
+    def test_standard_user_groups_not_limited_by_assigned_profiles(self):
+        # Raise level so Premium is activatable; still only Sports is in profile.
+        self.user.user_level = 5
+        self.user.save()
+        response = self.client.get("/api/channels/groups/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {row["name"] for row in response.data}
+        self.assertIn("Sports", names)
+        self.assertIn("Premium", names)
+        self.assertNotIn("Adult", names)
+
+    def test_admin_sees_all_groups(self):
+        admin = User.objects.create_user(username="group_admin", password="x")
+        admin.user_level = 10
+        admin.save()
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        response = client.get("/api/channels/groups/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {row["name"] for row in response.data}
+        self.assertTrue(
+            {"Sports", "Adult", "Premium", "Empty Unused"}.issubset(names)
+        )
+
+
 class ChannelListOnlyCatchupFilterTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="catchup_filter", password="x")

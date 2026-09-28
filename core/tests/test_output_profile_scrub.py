@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from core.models import (
+    DVR_SETTINGS_KEY,
     STREAM_SETTINGS_KEY,
     CoreSettings,
     OutputProfile,
@@ -93,6 +94,34 @@ class OutputProfileScrubTests(TestCase):
             CoreSettings.get_hdhr_output_profile_id(), self.other_profile.id
         )
 
+    def test_scrub_clears_dvr_default_when_matching(self):
+        CoreSettings.objects.update_or_create(
+            key=DVR_SETTINGS_KEY,
+            defaults={
+                "name": "DVR Settings",
+                "value": {"output_profile_id": self.profile.id},
+            },
+        )
+
+        scrub_output_profile_id(self.profile.id)
+
+        self.assertIsNone(CoreSettings.get_dvr_output_profile_id())
+
+    def test_scrub_leaves_dvr_default_when_different(self):
+        CoreSettings.objects.update_or_create(
+            key=DVR_SETTINGS_KEY,
+            defaults={
+                "name": "DVR Settings",
+                "value": {"output_profile_id": self.other_profile.id},
+            },
+        )
+
+        scrub_output_profile_id(self.profile.id)
+
+        self.assertEqual(
+            CoreSettings.get_dvr_output_profile_id(), self.other_profile.id
+        )
+
     def test_profile_delete_triggers_scrub(self):
         user = User.objects.create_user(
             username="viewer",
@@ -106,12 +135,20 @@ class OutputProfileScrubTests(TestCase):
                 "value": {"hdhr_output_profile_id": self.profile.id},
             },
         )
+        CoreSettings.objects.update_or_create(
+            key=DVR_SETTINGS_KEY,
+            defaults={
+                "name": "DVR Settings",
+                "value": {"output_profile_id": self.profile.id},
+            },
+        )
 
         self.profile.delete()
 
         user.refresh_from_db()
         self.assertNotIn("output_profile", user.custom_properties or {})
         self.assertIsNone(CoreSettings.get_hdhr_output_profile_id())
+        self.assertIsNone(CoreSettings.get_dvr_output_profile_id())
 
     def test_users_without_override_are_untouched(self):
         user = User.objects.create_user(

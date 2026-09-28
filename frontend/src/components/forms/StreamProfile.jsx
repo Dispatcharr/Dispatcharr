@@ -172,6 +172,7 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
           <Checkbox
             label="Is Active"
             description="Enable or disable this stream profile"
+            disabled={isLocked}
             checked={isActiveValue}
             onChange={(e) => setValue('is_active', e.currentTarget.checked)}
           />

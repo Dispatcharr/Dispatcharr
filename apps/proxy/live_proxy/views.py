@@ -425,6 +425,38 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     # Generate transcode command if needed
                     stream_profile = channel.get_stream_profile()
                     if stream_profile.is_redirect():
+                        from apps.proxy.config import TSConfig
+
+                        def _redirect_response(url):
+                            """Hand the client the provider URL (HTTP or non-HTTP)."""
+                            if url.startswith(("rtsp://", "rtp://", "udp://")):
+                                logger.info(
+                                    f"[{client_id}] Using manual redirect for non-HTTP protocol"
+                                )
+                                response = HttpResponse(status=301)
+                                response["Location"] = url
+                                return response
+                            return HttpResponseRedirect(url)
+
+                        def _release_redirect_slot():
+                            nonlocal connection_allocated
+                            if connection_allocated and not channel.release_stream():
+                                logger.warning(
+                                    f"[{client_id}] Failed to release stream before redirect"
+                                )
+                            connection_allocated = False
+
+                        # Optional pre-check (Settings → Proxy → Validate Redirect URLs).
+                        # Some providers abort HEAD/GET probes and waste a connection
+                        # slot; disabling skips failover probing and redirects immediately.
+                        if not TSConfig.get_validate_redirect_urls():
+                            logger.info(
+                                f"[{client_id}] Redirect URL validation disabled; "
+                                f"handing off to {stream_url}"
+                            )
+                            _release_redirect_slot()
+                            return _redirect_response(stream_url)
+
                         # Validate the stream URL before redirecting
                         from .url_utils import (
                             validate_stream_url,
@@ -493,24 +525,13 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                                         f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                                     )
                         # Release stream lock before redirecting only if we reserved a slot
-                        if connection_allocated and not channel.release_stream():
-                            logger.warning(f"[{client_id}] Failed to release stream before redirect")
-                        connection_allocated = False
+                        _release_redirect_slot()
                         # Final decision based on validation results
                         if is_valid:
                             logger.info(
                                 f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
                             )
-
-                            # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
-                            # because Django's HttpResponseRedirect blocks them for security
-                            if final_url.startswith(('rtsp://', 'rtp://', 'udp://')):
-                                logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
-                                response = HttpResponse(status=301)
-                                response['Location'] = final_url
-                                return response
-
-                            return HttpResponseRedirect(final_url)
+                            return _redirect_response(final_url)
                         else:
                             logger.error(
                                 f"[{client_id}] All available redirect URLs failed validation"

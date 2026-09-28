@@ -25,19 +25,32 @@ def _resolve_live_stream_url(stream, m3u_account, m3u_profile):
     XC accounts use current transformed credentials plus provider stream_id so
     playback matches the account login (not a stale stream.url from an old sync).
     STD/M3U accounts keep using the URL stored on the stream row.
+
+    Returns None when a configured profile transform fails or when STD URL
+    rewrite does not match.
     """
     if (
         m3u_account.account_type == M3UAccount.Types.XC
         and stream.stream_id
     ):
-        from apps.m3u.tasks import get_transformed_credentials
+        from apps.m3u.credentials import (
+            build_xc_playback_url,
+            get_transformed_credentials,
+        )
 
         server_url, username, password = get_transformed_credentials(
             m3u_account, m3u_profile
         )
-        if server_url and username and password:
-            base = server_url.rstrip("/")
-            return f"{base}/live/{username}/{password}/{stream.stream_id}.ts"
+        if not (server_url and username and password):
+            return None
+        return build_xc_playback_url(
+            server_url,
+            username,
+            password,
+            content_path="live",
+            stream_id=str(stream.stream_id),
+            extension="ts",
+        )
 
     return transform_url(
         stream.url or "",
@@ -99,6 +112,17 @@ def generate_stream_url(
                 stream_user_agent = m3u_account.get_user_agent_string()
 
                 stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
+                if not stream_url:
+                    error_reason = (
+                        "Failed to resolve stream URL for selected M3U profile "
+                        "(credential transform did not match)"
+                    )
+                    if slot_reserved and not stream.release_stream():
+                        logger.warning(
+                            "Failed to release stream %s after URL resolution failure",
+                            stream.id,
+                        )
+                    return None, None, False, None, False, error_reason, None
 
                 stream_profile = stream.get_stream_profile()
                 logger.debug(f"Using stream profile: {stream_profile.name}")
@@ -147,6 +171,19 @@ def generate_stream_url(
             stream_user_agent = m3u_account.get_user_agent_string()
 
             stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
+            if not stream_url:
+                error_reason = (
+                    "Failed to resolve stream URL for selected M3U profile "
+                    "(credential transform did not match)"
+                )
+                if slot_reserved:
+                    if not channel.release_stream():
+                        logger.warning(
+                            "Failed to release stream for channel %s after "
+                            "URL resolution failure",
+                            channel_id,
+                        )
+                return None, None, False, None, False, error_reason, None
 
             # Check if transcoding is needed
             stream_profile = channel.get_stream_profile()
@@ -175,9 +212,14 @@ def generate_stream_url(
 URL_TRANSFORM_REGEX_TIMEOUT = 0.1
 
 
-def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> str:
+def transform_url(
+    input_url: str, search_pattern: str, replace_pattern: str
+) -> Optional[str]:
     """
     Transform a URL using regex pattern replacement.
+
+    When search/replace are empty, returns *input_url* unchanged. When patterns
+    are set but do not match (or the regex errors/times out), returns None.
 
     Args:
         input_url: The base URL to transform
@@ -185,8 +227,11 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
         replace_pattern: The replacement pattern
 
     Returns:
-        str: The transformed URL
+        Transformed URL, original URL when no patterns, or None on failure.
     """
+    if not search_pattern or not replace_pattern:
+        return input_url
+
     try:
         logger.debug("Executing URL pattern replacement:")
         logger.debug(f"  base URL: {input_url}")
@@ -208,14 +253,18 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
             timeout=URL_TRANSFORM_REGEX_TIMEOUT,
         )
         if match_count == 0:
-            logger.warning(f"URL pattern '{search_pattern}' did not match, falling back to original URL: {input_url}")
-        else:
-            logger.info(f"Generated stream url: {stream_url}")
+            logger.warning(
+                "URL pattern %r did not match: %s",
+                search_pattern,
+                input_url,
+            )
+            return None
 
+        logger.info(f"Generated stream url: {stream_url}")
         return stream_url
     except Exception as e:
-        logger.error(f"Error transforming URL: {e}")
-        return input_url  # Return original URL on error
+        logger.error("Error transforming URL: %s", e)
+        return None
 
 def get_stream_info_for_switch(
     channel_id: str,
@@ -316,6 +365,15 @@ def get_stream_info_for_switch(
         user_agent = m3u_account.get_user_agent_string()
 
         stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
+        if not stream_url:
+            if slot_reserved:
+                channel.release_stream()
+            return {
+                "error": (
+                    "Failed to resolve stream URL for selected M3U profile "
+                    "(credential transform did not match)"
+                )
+            }
 
         stream_profile = channel.get_stream_profile()
         transcode = not (stream_profile.is_proxy() or stream_profile is None)

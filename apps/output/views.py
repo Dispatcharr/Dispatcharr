@@ -27,7 +27,11 @@ import regex
 from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
-from apps.output.dummy_epg import generate_dummy_programs, resolve_channel_parse_name
+from apps.output.dummy_epg import (
+    generate_dummy_programs,
+    prefetch_streams_for_stream_named_sources,
+    resolve_channel_parse_name,
+)
 from apps.output.epg import generate_epg
 from apps.vod.image_proxy import (
     is_proxyable_image_url,
@@ -864,14 +868,7 @@ def xc_get_epg(request, user, short=False):
         return (
             with_effective_values(qs, select_related_fks=True)
             .exclude(hidden_from_output=True)
-            .prefetch_related(
-                Prefetch(
-                    'streams',
-                    queryset=Stream.objects.only('id', 'name').order_by(
-                        'channelstream__order'
-                    ),
-                )
-            )
+            .select_related('epg_data__epg_source', 'override__epg_data__epg_source')
         )
 
     if user.user_level < 10:
@@ -887,7 +884,7 @@ def xc_get_epg(request, user, short=False):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channel = _annotate(Channel.objects.filter(**filters).select_related('epg_data__epg_source')).first()
+            channel = _annotate(Channel.objects.filter(**filters)).first()
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -899,17 +896,19 @@ def xc_get_epg(request, user, short=False):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channel = _annotate(Channel.objects.filter(**filters).select_related('epg_data__epg_source').distinct()).first()
+            channel = _annotate(Channel.objects.filter(**filters).distinct()).first()
 
         if not channel:
             raise Http404()
     else:
-        channel = _annotate(Channel.objects.filter(id=resolved_channel_id).select_related('epg_data__epg_source')).first()
+        channel = _annotate(Channel.objects.filter(id=resolved_channel_id)).first()
         if not channel:
             raise Http404()
 
     if not channel:
         raise Http404()
+
+    prefetch_streams_for_stream_named_sources([channel])
 
     # Calculate the collision-free integer channel number for this channel
     # This must match the logic in xc_get_live_streams to ensure consistency.

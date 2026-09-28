@@ -2,9 +2,18 @@
 import json
 import ipaddress
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from dispatcharr.utils import validate_proxy_auth_header
 from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY, REVERSE_PROXY_AUTH_KEY
+
+from dispatcharr.log_collector import (
+    DEFAULT_LOG_KEEP,
+    DEFAULT_LOG_MB,
+    MAX_LOG_KEEP,
+    MAX_LOG_MB,
+)
+
 
 
 def _clamp_int(value, default, lo, hi):
@@ -29,6 +38,14 @@ class UserAgentSerializer(serializers.ModelSerializer):
         ]
 
 
+def _update_profile(serializer, instance, validated_data):
+    """Save a profile and turn a locked-profile rejection into a 400."""
+    try:
+        return serializers.ModelSerializer.update(serializer, instance, validated_data)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(exc.messages)
+
+
 class StreamProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = StreamProfile
@@ -42,11 +59,17 @@ class StreamProfileSerializer(serializers.ModelSerializer):
             "locked",
         ]
 
+    def update(self, instance, validated_data):
+        return _update_profile(self, instance, validated_data)
+
 
 class OutputProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = OutputProfile
         fields = ["id", "name", "command", "parameters", "is_active", "locked"]
+
+    def update(self, instance, validated_data):
+        return _update_profile(self, instance, validated_data)
 
 
 class CoreSettingsSerializer(serializers.ModelSerializer):
@@ -84,9 +107,13 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
             value = validated_data.get("value")
             if isinstance(value, dict):
                 if "log_max_mb" in value:
-                    value["log_max_mb"] = _clamp_int(value["log_max_mb"], 10, 1, 1000)
+                    value["log_max_mb"] = _clamp_int(
+                        value["log_max_mb"], DEFAULT_LOG_MB, 1, MAX_LOG_MB
+                    )
                 if "log_keep" in value:
-                    value["log_keep"] = _clamp_int(value["log_keep"], 5, 1, 50)
+                    value["log_keep"] = _clamp_int(
+                        value["log_keep"], DEFAULT_LOG_KEEP, 2, MAX_LOG_KEEP
+                    )
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
 
@@ -139,6 +166,7 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
+    validate_redirect_urls = serializers.BooleanField(required=False, default=True)
 
     def validate_buffering_timeout(self, value):
         if value < 0 or value > 300:

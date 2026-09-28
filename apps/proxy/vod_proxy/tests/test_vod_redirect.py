@@ -383,21 +383,16 @@ class HeadVodRedirectTests(SimpleTestCase):
 
 class SelectVodStreamTests(SimpleTestCase):
     @patch(
-        "apps.proxy.vod_proxy.views._transform_url",
+        "apps.proxy.vod_proxy.views._build_vod_stream_url",
         return_value="http://final/movie.mp4",
     )
     @patch("apps.proxy.vod_proxy.views._get_m3u_profile")
-    @patch(
-        "apps.proxy.vod_proxy.views._get_stream_url_from_relation",
-        return_value="http://upstream/movie.mp4",
-    )
     @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
     def test_select_returns_provider_url(
         self,
         mock_content,
-        _stream_url,
         mock_profile,
-        _transform,
+        _build_url,
     ):
         relation = MagicMock()
         relation.m3u_account.name = "Provider"
@@ -414,23 +409,19 @@ class SelectVodStreamTests(SimpleTestCase):
         self.assertEqual(selected["final_stream_url"], "http://final/movie.mp4")
         self.assertNotIn("user_agent", selected)
         mock_profile.assert_called_once()
+        _build_url.assert_called_once()
 
     @patch(
-        "apps.proxy.vod_proxy.views._transform_url",
+        "apps.proxy.vod_proxy.views._build_vod_stream_url",
         return_value="http://final/movie.mp4",
     )
     @patch("apps.proxy.vod_proxy.views._get_m3u_profile")
-    @patch(
-        "apps.proxy.vod_proxy.views._get_stream_url_from_relation",
-        return_value="http://upstream/movie.mp4",
-    )
     @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
     def test_select_restricts_get_m3u_profile_to_allowed_ids(
         self,
         mock_content,
-        _stream_url,
         mock_profile,
-        _transform,
+        _build_url,
     ):
         # Redirect-mode allowlist must reach _get_m3u_profile as
         # restrict_to_profile_ids so its own capacity fallback can't
@@ -456,6 +447,28 @@ class SelectVodStreamTests(SimpleTestCase):
         mock_profile.assert_called_once_with(
             relation.m3u_account, 7, None, restrict_to_profile_ids={7}
         )
+
+    @patch(
+        "apps.proxy.vod_proxy.views._build_vod_stream_url",
+        return_value=None,
+    )
+    @patch("apps.proxy.vod_proxy.views._get_m3u_profile")
+    @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
+    def test_select_skips_when_credential_build_fails(
+        self,
+        mock_content,
+        mock_profile,
+        _build_url,
+    ):
+        relation = MagicMock()
+        relation.m3u_account.name = "Provider"
+        relation.m3u_account.priority = 10
+        mock_content.return_value = (MagicMock(), relation, [relation])
+        mock_profile.return_value = (MagicMock(), 0)
+
+        from apps.proxy.vod_proxy.views import _select_vod_stream
+
+        self.assertIsNone(_select_vod_stream("movie", "uuid"))
 
     @patch("apps.proxy.vod_proxy.views._get_m3u_profile")
     @patch("apps.proxy.vod_proxy.views._get_content_and_relation")

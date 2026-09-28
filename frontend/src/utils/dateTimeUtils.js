@@ -35,6 +35,8 @@ export const initializeTime = (
 
 export const startOfDay = (dateTime) => dayjs(dateTime).startOf('day');
 
+export const startOfHour = (dateTime) => dayjs(dateTime).startOf('hour');
+
 export const isBefore = (date1, date2) => dayjs(date1).isBefore(date2);
 
 export const isAfter = (date1, date2) => dayjs(date1).isAfter(date2);
