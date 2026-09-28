@@ -7,7 +7,7 @@ from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
-from apps.epg.models import EPGData, EPGSource
+from apps.epg.models import EPGData, EPGSource, ProgramData
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
 from apps.output.views import (
@@ -164,6 +164,40 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     def _epg_url(self, query="tvg_id_source=tvg_id&days=0&prev_days=0"):
         base = reverse("output:epg_endpoint", kwargs={"profile_name": self.profile.name})
         return f"{base}?{query}"
+
+    def test_paged_export_emits_every_programme_once_in_order(self):
+        """Paging by (epg_id, end_time, id) keeps rows with equal end times intact."""
+        from django.utils import timezone
+
+        source = EPGSource.objects.create(name=f"Paging {uuid4().hex[:8]}", source_type="xmltv")
+        base = timezone.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        expected = {}
+        for number, tvg in ((1.0, "paging.one"), (2.0, "paging.two")):
+            epg = EPGData.objects.create(epg_source=source, tvg_id=tvg, name=tvg)
+            self._add_channel(channel_number=number, name=tvg, tvg_id=tvg, epg_data=epg)
+            titles = []
+            for i in range(5):
+                start = base + timedelta(minutes=30 * i)
+                # Pairs share an end time, so page boundaries fall inside them.
+                end = base + timedelta(minutes=30 * (i // 2 * 2 + 2))
+                title = f"{tvg}-{i}"
+                ProgramData.objects.create(
+                    epg=epg, start_time=start, end_time=end, title=title, tvg_id=tvg,
+                )
+                titles.append(title)
+            expected[tvg] = titles
+
+        with patch("apps.output.epg._EPG_PROGRAM_DB_CHUNK_SIZE", 2):
+            response = self.client.get(self._epg_url())
+
+        root = ET.fromstring(_response_text(response))
+        for tvg, titles in expected.items():
+            got = [
+                p.findtext("title")
+                for p in root.findall("programme")
+                if p.get("channel") == tvg
+            ]
+            self.assertEqual(got, titles)
 
     def test_channel_id_with_ampersand(self):
         """Test channel ID with ampersand is properly escaped"""
