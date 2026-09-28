@@ -339,8 +339,11 @@ def generate_m3u(request, profile_name=None, user=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
-    # Advertise catch-up only where the emitted URL is /live/... form that
-    # catchup="xc" can rewrite into /timeshift/. Plain proxy URLs cannot.
+    # Catch-up is advertised only where the player can reach a timeshift
+    # endpoint: the XC playlist (catchup="xc" rewrites /live/... into
+    # /timeshift/) and direct provider URLs. The plain proxy URL has no
+    # catch-up entry point. catchup_allowed is computed above, for the
+    # playlist header.
 
     # Start building M3U content
     channel_count = 0
@@ -413,8 +416,25 @@ def generate_m3u(request, profile_name=None, user=None):
             elif is_xc_request and channel.is_catchup:
                 catchup_days = channel.catchup_days or 0
             catchup_days = min(catchup_days, MAX_AUTO_PREV_DAYS)
-            if catchup_days > 0:
+            if catchup_days > 0 and use_direct_urls:
                 catchup_attrs = f'catchup="xc" catchup-days="{catchup_days}" '
+            elif catchup_days > 0:
+                # Players fill {Y}/{H}/... (and catchup="xc") with their own
+                # local time, but the timeshift endpoints expect UTC. {utc} is
+                # the programme start as epoch seconds, which is always UTC.
+                # Named utc= because players that ignore placeholders (e.g.
+                # IPTVnator) set ?utc=<epoch> on the source URL themselves.
+                catchup_query = urlencode(
+                    {"username": xc_username, "password": xc_password, "stream": channel.id}
+                )
+                catchup_source = (
+                    f"{_base_url}/streaming/timeshift.php?{catchup_query}"
+                    "&utc={utc}&duration={duration:60}"
+                )
+                catchup_attrs = (
+                    f'catchup="default" catchup-days="{catchup_days}" '
+                    f'catchup-source="{catchup_source}" '
+                )
 
         radio_attr = 'radio="true" ' if channel.effective_is_radio else ""
 
