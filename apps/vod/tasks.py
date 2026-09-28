@@ -9,7 +9,7 @@ from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
-from .language import category_language
+from .utils import category_language
 from datetime import datetime
 import logging
 import json
@@ -99,6 +99,16 @@ def refresh_vod_content(account_id):
 
             # Refresh series with batch processing (pass scan start time)
             refresh_series(client, account, series_categories, relations, scan_start_time=start_time)
+
+        # Reconcile untagged movies/series whose relations now resolve to a
+        # real language, once per account refresh (not per batch - see
+        # process_movie_batch / process_series_batch for why relations are
+        # pinned to their current movie/series during the batch itself). Must
+        # run before cleanup_orphaned_vod_content so cleanup's orphan-deletion
+        # stays a backstop, not the primary mechanism.
+        logger.info(f"Reconciling VOD language identity for account {account.name}")
+        reconcile_movie_language_identity(account, scan_start_time=start_time)
+        reconcile_series_language_identity(account, scan_start_time=start_time)
 
         end_time = timezone.now()
         duration = (end_time - start_time).total_seconds()
@@ -430,6 +440,18 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     relations_to_update = []
     movie_keys = {}  # For deduplication like M3U stream_hashes
 
+    # Prefetch existing relations before computing identity so an already-known
+    # stream stays pinned to its current movie for this batch. A category
+    # re-tag only takes effect via reconcile_movie_language_identity(), run
+    # once after the full account refresh, not mid-batch.
+    batch_stream_ids = [str(movie_data.get('stream_id')) for movie_data in batch]
+    existing_relations = {
+        rel.stream_id: rel for rel in M3UMovieRelation.objects.filter(
+            m3u_account=account,
+            stream_id__in=batch_stream_ids
+        ).select_related('movie')
+    }
+
     # Process each movie in the batch
     for movie_data in batch:
         try:
@@ -485,8 +507,15 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # The category's language is part of movie identity
-            language = category_language(relations.get(category.id) if category else None)
+            # The category's language is part of movie identity. A stream we
+            # already have a relation for stays pinned to its current movie's
+            # language for this batch, even if its category was just tagged/
+            # retagged - only the reconcile pass moves it.
+            existing_relation = existing_relations.get(stream_id)
+            if existing_relation is not None:
+                language = existing_relation.movie.language
+            else:
+                language = category_language(relations.get(category.id) if category else None)
 
             # Create a unique key for this movie (priority: TMDB > IMDB > name+year),
             # scoped to the language like the Movie unique constraints
@@ -587,18 +616,8 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     for key_tuple, movie in lookup_by_name_year(Movie, name_year_keys).items():
         existing_movies[('name', *key_tuple)] = movie
 
-    # Get existing relations
-    stream_ids = [
-        stream_id
-        for data in movie_keys.values()
-        for stream_id in data['occurrences']
-    ]
-    existing_relations = {
-        rel.stream_id: rel for rel in M3UMovieRelation.objects.filter(
-            m3u_account=account,
-            stream_id__in=stream_ids
-        ).select_related('movie')
-    }
+    # existing_relations was already prefetched above (before movie_keys was
+    # built) so per-row identity could pin to it.
 
     # Process each movie
     for movie_key, data in movie_keys.items():
@@ -789,6 +808,18 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     relations_to_update = []
     series_keys = {}  # For deduplication like M3U stream_hashes
 
+    # Prefetch existing relations before computing identity so an already-known
+    # series stays pinned to its current series for this batch. A category
+    # re-tag only takes effect via reconcile_series_language_identity(), run
+    # once after the full account refresh, not mid-batch.
+    batch_series_ids = [str(series_data.get('series_id')) for series_data in batch]
+    existing_relations = {
+        rel.external_series_id: rel for rel in M3USeriesRelation.objects.filter(
+            m3u_account=account,
+            external_series_id__in=batch_series_ids
+        ).select_related('series')
+    }
+
     # Process each series in the batch
     for series_data in batch:
         try:
@@ -846,8 +877,15 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # The category's language is part of series identity
-            language = category_language(relations.get(category.id) if category else None)
+            # The category's language is part of series identity. A series we
+            # already have a relation for stays pinned to its current series'
+            # language for this batch, even if its category was just tagged/
+            # retagged - only the reconcile pass moves it.
+            existing_relation = existing_relations.get(series_id)
+            if existing_relation is not None:
+                language = existing_relation.series.language
+            else:
+                language = category_language(relations.get(category.id) if category else None)
 
             # Create a unique key for this series (priority: TMDB > IMDB > name+year),
             # scoped to the language like the Series unique constraints
@@ -948,18 +986,8 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     for key_tuple, series in lookup_by_name_year(Series, name_year_keys).items():
         existing_series[('name', *key_tuple)] = series
 
-    # Get existing relations
-    series_ids = [
-        series_id
-        for data in series_keys.values()
-        for series_id in data['occurrences']
-    ]
-    existing_relations = {
-        rel.external_series_id: rel for rel in M3USeriesRelation.objects.filter(
-            m3u_account=account,
-            external_series_id__in=series_ids
-        ).select_related('series')
-    }
+    # existing_relations was already prefetched above (before series_keys was
+    # built) so per-row identity could pin to it.
 
     # Process each series
     for series_key, data in series_keys.items():
@@ -1705,6 +1733,280 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
     except Exception as e:
         logger.error(f"Error in batch episode refresh for account {account_id}: {str(e)}")
         return f"Batch episode refresh failed: {str(e)}"
+
+
+def _find_movie_for_language(source_movie, language):
+    """Existing Movie at source_movie's identity + language, or None."""
+    if source_movie.tmdb_id:
+        return Movie.objects.filter(tmdb_id=source_movie.tmdb_id, language=language).first()
+    if source_movie.imdb_id:
+        return Movie.objects.filter(imdb_id=source_movie.imdb_id, language=language).first()
+    return Movie.objects.filter(
+        name=source_movie.name, year=source_movie.year, language=language,
+        tmdb_id__isnull=True, imdb_id__isnull=True,
+    ).first()
+
+
+def _find_or_create_movie_for_language(source_movie, language):
+    movie = _find_movie_for_language(source_movie, language)
+    if movie is not None:
+        return movie
+    # Explicit tmdb_id/imdb_id here, not get_or_create(..., tmdb_id__isnull=True):
+    # get_or_create() strips '__' kwargs when building the create() call, which
+    # would leave tmdb_id/imdb_id as '' (CharField default) instead of NULL and
+    # silently defeat the partial UniqueConstraint's isnull condition.
+    return Movie.objects.create(
+        name=source_movie.name,
+        year=source_movie.year,
+        language=language,
+        tmdb_id=source_movie.tmdb_id,
+        imdb_id=source_movie.imdb_id,
+    )
+
+
+def reconcile_movie_language_identity(account, scan_start_time):
+    """Resolve untagged movies this account's refresh touched onto the right
+    language identity.
+
+    process_movie_batch() pins an already-known stream to its current movie
+    for the duration of the batch so a category re-tag can't fork a new movie
+    mid-ingest. This runs once after refresh_movies() completes (from
+    refresh_vod_content, before cleanup_orphaned_vod_content) and does the
+    actual identity move/rename, considering every account's relations - not
+    just this one - since an untagged movie can be shared across accounts.
+    """
+    # Must stay a single .filter() call: chaining would join m3u_relations
+    # twice and match on "any relation belongs to this account" AND
+    # "any (possibly different) relation was touched this scan" separately.
+    candidates = list(
+        Movie.objects.filter(
+            language='',
+            m3u_relations__m3u_account=account,
+            m3u_relations__last_seen__gte=scan_start_time,
+        ).distinct()
+    )
+    if not candidates:
+        return "No untagged movies touched this refresh."
+
+    candidate_ids = [m.id for m in candidates]
+    source_by_id = {m.id: m for m in candidates}
+
+    all_relations = list(M3UMovieRelation.objects.filter(movie_id__in=candidate_ids))
+
+    account_ids = {r.m3u_account_id for r in all_relations if r.category_id}
+    category_ids = {r.category_id for r in all_relations if r.category_id}
+    category_rel_lookup = {}
+    if category_ids:
+        for cr in M3UVODCategoryRelation.objects.filter(
+            m3u_account_id__in=account_ids, category_id__in=category_ids
+        ):
+            category_rel_lookup[(cr.m3u_account_id, cr.category_id)] = cr
+
+    groups_by_movie = {}
+    for rel in all_relations:
+        lang = (
+            category_language(category_rel_lookup.get((rel.m3u_account_id, rel.category_id)))
+            if rel.category_id else ''
+        )
+        groups_by_movie.setdefault(rel.movie_id, {}).setdefault(lang, []).append(rel)
+
+    updated_in_place = moved = deleted = 0
+    for movie_id, groups in groups_by_movie.items():
+        source = source_by_id[movie_id]
+        non_empty_langs = [lang for lang in groups if lang != '']
+        if not non_empty_langs:
+            continue  # still fully untagged; nothing to reconcile
+
+        with transaction.atomic():
+            if len(groups) == 1:
+                (lang,) = non_empty_langs
+                target = _find_movie_for_language(source, lang)
+                if target is None:
+                    # Nobody else occupies this identity+language slot: rename
+                    # the existing movie in place. Id is unchanged.
+                    source.language = lang
+                    source.save(update_fields=['language'])
+                    updated_in_place += 1
+                    continue
+                for rel in groups[lang]:
+                    rel.movie = target
+                    cp = rel.custom_properties or {}
+                    cp['detailed_fetched'] = False
+                    rel.custom_properties = cp
+                M3UMovieRelation.objects.bulk_update(groups[lang], ['movie', 'custom_properties'])
+                moved += len(groups[lang])
+                source.delete()
+                deleted += 1
+            else:
+                # Relations disagree on language. Move each non-empty group
+                # onto its own identity+language row (creating it if needed);
+                # leave any still-untagged ('') group on the source.
+                for lang in non_empty_langs:
+                    target = _find_or_create_movie_for_language(source, lang)
+                    for rel in groups[lang]:
+                        rel.movie = target
+                        cp = rel.custom_properties or {}
+                        cp['detailed_fetched'] = False
+                        rel.custom_properties = cp
+                    M3UMovieRelation.objects.bulk_update(groups[lang], ['movie', 'custom_properties'])
+                    moved += len(groups[lang])
+                if not groups.get(''):
+                    source.delete()
+                    deleted += 1
+
+    result = (f"Movie language reconcile: {updated_in_place} updated in place, "
+              f"{moved} relations moved, {deleted} emptied movies deleted")
+    logger.info(result)
+    return result
+
+
+def _find_series_for_language(source_series, language):
+    """Existing Series at source_series's identity + language, or None."""
+    if source_series.tmdb_id:
+        return Series.objects.filter(tmdb_id=source_series.tmdb_id, language=language).first()
+    if source_series.imdb_id:
+        return Series.objects.filter(imdb_id=source_series.imdb_id, language=language).first()
+    return Series.objects.filter(
+        name=source_series.name, year=source_series.year, language=language,
+        tmdb_id__isnull=True, imdb_id__isnull=True,
+    ).first()
+
+
+def _find_or_create_series_for_language(source_series, language):
+    series = _find_series_for_language(source_series, language)
+    if series is not None:
+        return series
+    # See _find_or_create_movie_for_language for why tmdb_id/imdb_id are
+    # passed explicitly rather than via get_or_create(..., ...__isnull=True).
+    return Series.objects.create(
+        name=source_series.name,
+        year=source_series.year,
+        language=language,
+        tmdb_id=source_series.tmdb_id,
+        imdb_id=source_series.imdb_id,
+    )
+
+
+def _migrate_series_episodes(source_series, target_series):
+    """Move source_series's Episodes onto target_series before source_series
+    is deleted.
+
+    Repoints Episode.series in place (preserving Episode/relation ids - those
+    ids are what clients are currently playing) unless target_series already
+    has an Episode at the same (season, episode), in which case the source
+    episode's M3UEpisodeRelations move onto the existing target episode and
+    the now-empty source episode is deleted.
+    """
+    for episode in list(Episode.objects.filter(series=source_series)):
+        collision = Episode.objects.filter(
+            series=target_series,
+            season_number=episode.season_number,
+            episode_number=episode.episode_number,
+        ).first()
+        if collision:
+            M3UEpisodeRelation.objects.filter(episode=episode).update(episode=collision)
+            episode.delete()
+        else:
+            episode.series = target_series
+            episode.save(update_fields=['series'])
+
+
+def reconcile_series_language_identity(account, scan_start_time):
+    """Series counterpart to reconcile_movie_language_identity().
+
+    Unlike movies, an emptied source Series is never deleted until its
+    Episodes have been migrated onto the target series first - Episode.series
+    is on_delete=CASCADE, and episode ids are what clients play, so deleting
+    the series first would take still-in-use episodes with it.
+    """
+    candidates = list(
+        Series.objects.filter(
+            language='',
+            m3u_relations__m3u_account=account,
+            m3u_relations__last_seen__gte=scan_start_time,
+        ).distinct()
+    )
+    if not candidates:
+        return "No untagged series touched this refresh."
+
+    candidate_ids = [s.id for s in candidates]
+    source_by_id = {s.id: s for s in candidates}
+
+    all_relations = list(M3USeriesRelation.objects.filter(series_id__in=candidate_ids))
+
+    account_ids = {r.m3u_account_id for r in all_relations if r.category_id}
+    category_ids = {r.category_id for r in all_relations if r.category_id}
+    category_rel_lookup = {}
+    if category_ids:
+        for cr in M3UVODCategoryRelation.objects.filter(
+            m3u_account_id__in=account_ids, category_id__in=category_ids
+        ):
+            category_rel_lookup[(cr.m3u_account_id, cr.category_id)] = cr
+
+    groups_by_series = {}
+    for rel in all_relations:
+        lang = (
+            category_language(category_rel_lookup.get((rel.m3u_account_id, rel.category_id)))
+            if rel.category_id else ''
+        )
+        groups_by_series.setdefault(rel.series_id, {}).setdefault(lang, []).append(rel)
+
+    updated_in_place = moved = deleted = 0
+    for series_id, groups in groups_by_series.items():
+        source = source_by_id[series_id]
+        non_empty_langs = [lang for lang in groups if lang != '']
+        if not non_empty_langs:
+            continue  # still fully untagged; nothing to reconcile
+
+        with transaction.atomic():
+            if len(groups) == 1:
+                (lang,) = non_empty_langs
+                target = _find_series_for_language(source, lang)
+                if target is None:
+                    source.language = lang
+                    source.save(update_fields=['language'])
+                    updated_in_place += 1
+                    continue
+                for rel in groups[lang]:
+                    rel.series = target
+                    cp = rel.custom_properties or {}
+                    cp['detailed_fetched'] = False
+                    cp['episodes_fetched'] = False
+                    rel.custom_properties = cp
+                M3USeriesRelation.objects.bulk_update(groups[lang], ['series', 'custom_properties'])
+                moved += len(groups[lang])
+                _migrate_series_episodes(source, target)
+                source.delete()
+                deleted += 1
+            else:
+                targets = {}
+                for lang in non_empty_langs:
+                    target = _find_or_create_series_for_language(source, lang)
+                    targets[lang] = target
+                    for rel in groups[lang]:
+                        rel.series = target
+                        cp = rel.custom_properties or {}
+                        cp['detailed_fetched'] = False
+                        cp['episodes_fetched'] = False
+                        rel.custom_properties = cp
+                    M3USeriesRelation.objects.bulk_update(groups[lang], ['series', 'custom_properties'])
+                    moved += len(groups[lang])
+                if not groups.get(''):
+                    # Source fully emptied across 2+ language groups with no
+                    # single obvious episode-inheritance target: give the
+                    # episodes to whichever target got the most relations
+                    # (tie-broken by language code). The other target(s)
+                    # start with zero episodes and self-heal via the
+                    # episodes_fetched=False cleared above.
+                    majority_lang = max(non_empty_langs, key=lambda l: (len(groups[l]), l))
+                    _migrate_series_episodes(source, targets[majority_lang])
+                    source.delete()
+                    deleted += 1
+
+    result = (f"Series language reconcile: {updated_in_place} updated in place, "
+              f"{moved} relations moved, {deleted} emptied series deleted")
+    logger.info(result)
+    return result
 
 
 @shared_task

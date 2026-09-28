@@ -28,7 +28,7 @@ from apps.channels.utils import coerce_channel_profile_ids
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
-from apps.vod.language import validate_category_custom_properties
+from apps.vod.utils import validate_category_custom_properties
 
 from .serializers import (
     M3UAccountSerializer,

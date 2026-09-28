@@ -1,5 +1,7 @@
 """Category language is part of Movie/Series identity at ingest."""
 
+from datetime import timedelta
+
 from django.db import IntegrityError, transaction
 from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.utils import timezone
@@ -7,8 +9,10 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
 from apps.output.views import xc_get_series, xc_get_series_info
-from apps.vod.language import category_language, validate_category_custom_properties
+from apps.vod.utils import category_language, validate_category_custom_properties
 from apps.vod.models import (
+    Episode,
+    M3UEpisodeRelation,
     M3UMovieRelation,
     M3USeriesRelation,
     M3UVODCategoryRelation,
@@ -20,6 +24,8 @@ from apps.vod.tasks import (
     handle_movie_id_conflicts,
     process_movie_batch,
     process_series_batch,
+    reconcile_movie_language_identity,
+    reconcile_series_language_identity,
 )
 
 
@@ -94,11 +100,13 @@ class LanguageIdentityTestMixin:
 class MovieLanguageIdentityTests(LanguageIdentityTestMixin, TestCase):
     category_type = "movie"
 
-    def _ingest(self, rows):
+    def _ingest(self, rows, scan_start_time=None):
+        scan_start_time = scan_start_time or timezone.now()
         process_movie_batch(
             self.account, rows, self.categories, self.relations,
-            scan_start_time=timezone.now(),
+            scan_start_time=scan_start_time,
         )
+        return scan_start_time
 
     def _row(self, stream_id, category_id, **extra):
         row = {
@@ -152,7 +160,7 @@ class MovieLanguageIdentityTests(LanguageIdentityTestMixin, TestCase):
         self.assertEqual(movie.language, "es")
         self.assertEqual(movie.m3u_relations.count(), 2)
 
-    def test_tagging_a_category_moves_its_streams_to_a_new_movie(self):
+    def test_tagging_a_category_stays_pinned_until_reconciled(self):
         self._ingest([
             self._row(1, "1", tmdb_id="100"),
             self._row(2, "1", tmdb_id="100"),
@@ -163,19 +171,171 @@ class MovieLanguageIdentityTests(LanguageIdentityTestMixin, TestCase):
         )
 
         self.english_rel.custom_properties = {"language": "en"}
-        self._ingest([
+        self.english_rel.save()
+        scan_time = self._ingest([
             self._row(1, "2", tmdb_id="100"),
             self._row(2, "1", tmdb_id="100"),
         ])
 
-        # The untagged-to-tagged move produces a new id; the old id is untouched.
+        # No fork mid-batch: both relations stay pinned to the original,
+        # still-untagged movie even though stream 1's category changed and
+        # stream 2's category was retagged.
         relation_1 = M3UMovieRelation.objects.get(stream_id="1")
         relation_2 = M3UMovieRelation.objects.get(stream_id="2")
+        self.assertEqual(relation_1.movie_id, original.id)
+        self.assertEqual(relation_2.movie_id, original.id)
+        self.assertTrue(relation_2.custom_properties["detailed_fetched"])
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        relation_1.refresh_from_db()
+        relation_2.refresh_from_db()
         self.assertEqual(relation_1.movie.language, "es")
         self.assertEqual(relation_2.movie.language, "en")
         self.assertNotEqual(relation_2.movie_id, original.id)
-        self.assertTrue(Movie.objects.filter(id=original.id, language="").exists())
+        self.assertFalse(Movie.objects.filter(id=original.id).exists())
         self.assertFalse(relation_2.custom_properties["detailed_fetched"])
+
+    def test_reconcile_updates_language_in_place_when_no_target_exists(self):
+        self._ingest([self._row(1, "1", tmdb_id="100")])
+        original = Movie.objects.get(tmdb_id="100")
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = self._ingest([self._row(1, "1", tmdb_id="100")])
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        original.refresh_from_db()
+        self.assertEqual(original.language, "en")
+        self.assertEqual(M3UMovieRelation.objects.get(stream_id="1").movie_id, original.id)
+
+    def test_reconcile_moves_relations_to_existing_target_movie(self):
+        existing_target = Movie.objects.create(name="Shared Film", tmdb_id="100", language="en")
+        self._ingest([self._row(1, "1", tmdb_id="100")])
+        original = Movie.objects.get(tmdb_id="100", language="")
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = self._ingest([self._row(1, "1", tmdb_id="100")])
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        relation = M3UMovieRelation.objects.get(stream_id="1")
+        self.assertEqual(relation.movie_id, existing_target.id)
+        self.assertFalse(Movie.objects.filter(id=original.id).exists())
+
+    def test_reconcile_leaves_untagged_group_on_source(self):
+        french = VODCategory.objects.create(name="French", category_type="movie")
+        french_rel = M3UVODCategoryRelation.objects.create(
+            category=french, m3u_account=self.account, enabled=True,
+        )
+        self.categories["3"] = french
+        self.relations[french.id] = french_rel
+
+        self._ingest([
+            self._row(1, "1", tmdb_id="100"),
+            self._row(2, "3", tmdb_id="100"),
+        ])
+        original = Movie.objects.get(tmdb_id="100")
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = self._ingest([
+            self._row(1, "1", tmdb_id="100"),
+            self._row(2, "3", tmdb_id="100"),
+        ])
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        relation_1 = M3UMovieRelation.objects.get(stream_id="1")
+        relation_2 = M3UMovieRelation.objects.get(stream_id="2")
+        self.assertEqual(relation_1.movie.language, "en")
+        self.assertNotEqual(relation_1.movie_id, original.id)
+        self.assertEqual(relation_2.movie_id, original.id)
+        self.assertTrue(Movie.objects.filter(id=original.id, language="").exists())
+
+    def test_reconcile_considers_other_accounts_relations(self):
+        other_account = M3UAccount.objects.create(
+            name="Other XC", server_url="http://example.com", username="u2", password="p2",
+            account_type=M3UAccount.Types.XC, is_active=True,
+        )
+        other_category = VODCategory.objects.create(name="Other English", category_type="movie")
+        M3UVODCategoryRelation.objects.create(
+            category=other_category, m3u_account=other_account, enabled=True,
+            custom_properties={"language": "en"},
+        )
+
+        self._ingest([self._row(1, "1", tmdb_id="100")])
+        original = Movie.objects.get(tmdb_id="100")
+
+        M3UMovieRelation.objects.create(
+            m3u_account=other_account, movie=original, category=other_category,
+            stream_id="other-1", last_seen=timezone.now() - timedelta(days=1),
+        )
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = self._ingest([self._row(1, "1", tmdb_id="100")])
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        original.refresh_from_db()
+        self.assertEqual(original.language, "en")
+        self.assertTrue(
+            M3UMovieRelation.objects.filter(stream_id="other-1", movie=original).exists()
+        )
+
+    def test_reconcile_ignores_already_tagged_movies(self):
+        self._ingest([self._row(1, "2", tmdb_id="100")])
+        spanish_movie = Movie.objects.get(tmdb_id="100", language="es")
+
+        self.spanish_rel.custom_properties = {"language": "fr"}
+        self.spanish_rel.save()
+        scan_time = self._ingest([self._row(1, "2", tmdb_id="100")])
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        spanish_movie.refresh_from_db()
+        self.assertEqual(spanish_movie.language, "es")
+
+    def test_reconcile_is_idempotent(self):
+        self._ingest([
+            self._row(1, "1", tmdb_id="100"),
+            self._row(2, "1", tmdb_id="100"),
+        ])
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = self._ingest([
+            self._row(1, "1", tmdb_id="100"),
+            self._row(2, "1", tmdb_id="100"),
+        ])
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+        state_after_first = list(
+            M3UMovieRelation.objects.order_by("stream_id").values("stream_id", "movie_id")
+        )
+
+        result = reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        self.assertEqual(
+            list(M3UMovieRelation.objects.order_by("stream_id").values("stream_id", "movie_id")),
+            state_after_first,
+        )
+        self.assertIn("No untagged movies touched this refresh", result)
+
+    def test_reconcile_skips_movies_not_touched_this_scan(self):
+        self._ingest([self._row(1, "1", tmdb_id="100")])
+        original = Movie.objects.get(tmdb_id="100")
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = timezone.now()
+
+        reconcile_movie_language_identity(self.account, scan_start_time=scan_time)
+
+        original.refresh_from_db()
+        self.assertEqual(original.language, "")
 
     def test_unique_constraints_are_per_language(self):
         Movie.objects.create(name="A", tmdb_id="7", imdb_id="tt7")
@@ -204,11 +364,13 @@ class MovieLanguageIdentityTests(LanguageIdentityTestMixin, TestCase):
 class SeriesLanguageIdentityTests(LanguageIdentityTestMixin, TestCase):
     category_type = "series"
 
-    def _ingest(self, rows):
+    def _ingest(self, rows, scan_start_time=None):
+        scan_start_time = scan_start_time or timezone.now()
         process_series_batch(
             self.account, rows, self.categories, self.relations,
-            scan_start_time=timezone.now(),
+            scan_start_time=scan_start_time,
         )
+        return scan_start_time
 
     def test_same_tmdb_id_in_two_languages_creates_two_series(self):
         self._ingest([
@@ -225,9 +387,10 @@ class SeriesLanguageIdentityTests(LanguageIdentityTestMixin, TestCase):
             M3USeriesRelation.objects.get(external_series_id="2").series_id, spanish.id
         )
 
-    def test_moved_relation_refetches_details_and_episodes(self):
+    def test_retagged_category_stays_pinned_until_reconciled(self):
         rows = [{"series_id": 1, "name": "Show", "category_id": "1", "tmdb_id": "200"}]
         self._ingest(rows)
+        original = Series.objects.get(tmdb_id="200")
         M3USeriesRelation.objects.filter(external_series_id="1").update(
             custom_properties={"detailed_fetched": True, "episodes_fetched": True}
         )
@@ -237,11 +400,111 @@ class SeriesLanguageIdentityTests(LanguageIdentityTestMixin, TestCase):
         self.assertTrue(props["episodes_fetched"])
 
         self.english_rel.custom_properties = {"language": "en"}
-        self._ingest(rows)
+        self.english_rel.save()
+        scan_time = self._ingest(rows)
+
+        # No fork mid-batch: the relation stays pinned to the original,
+        # still-untagged series, and its fetched flags are untouched.
         relation = M3USeriesRelation.objects.get(external_series_id="1")
+        self.assertEqual(relation.series_id, original.id)
+        self.assertTrue(relation.custom_properties["detailed_fetched"])
+        self.assertTrue(relation.custom_properties["episodes_fetched"])
+
+        reconcile_series_language_identity(self.account, scan_start_time=scan_time)
+
+        # Single group, no pre-existing 'en' row: rename in place. Id is
+        # unchanged and nothing moved, so the fetched flags are preserved -
+        # the opposite outcome from the movie disagreement case above.
+        relation.refresh_from_db()
+        self.assertEqual(relation.series_id, original.id)
         self.assertEqual(relation.series.language, "en")
-        self.assertFalse(relation.custom_properties["detailed_fetched"])
-        self.assertFalse(relation.custom_properties["episodes_fetched"])
+        self.assertTrue(relation.custom_properties["detailed_fetched"])
+        self.assertTrue(relation.custom_properties["episodes_fetched"])
+
+    def test_reconcile_moves_episodes_without_collision(self):
+        existing_target = Series.objects.create(name="Show", tmdb_id="200", language="en")
+
+        rows = [{"series_id": 1, "name": "Show", "category_id": "1", "tmdb_id": "200"}]
+        self._ingest(rows)
+        original = Series.objects.get(tmdb_id="200", language="")
+        episode = Episode.objects.create(
+            series=original, season_number=1, episode_number=1, name="Pilot"
+        )
+        episode_relation = M3UEpisodeRelation.objects.create(
+            m3u_account=self.account, episode=episode, stream_id="ep-1",
+        )
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = self._ingest(rows)
+
+        reconcile_series_language_identity(self.account, scan_start_time=scan_time)
+
+        episode.refresh_from_db()
+        episode_relation.refresh_from_db()
+        self.assertEqual(episode.series_id, existing_target.id)
+        self.assertEqual(episode_relation.episode_id, episode.id)
+        self.assertFalse(Series.objects.filter(id=original.id).exists())
+
+    def test_reconcile_merges_colliding_episodes(self):
+        existing_target = Series.objects.create(name="Show", tmdb_id="200", language="en")
+        target_episode = Episode.objects.create(
+            series=existing_target, season_number=1, episode_number=1, name="Pilot (EN)"
+        )
+
+        rows = [{"series_id": 1, "name": "Show", "category_id": "1", "tmdb_id": "200"}]
+        self._ingest(rows)
+        original = Series.objects.get(tmdb_id="200", language="")
+        source_episode = Episode.objects.create(
+            series=original, season_number=1, episode_number=1, name="Pilot"
+        )
+        episode_relation = M3UEpisodeRelation.objects.create(
+            m3u_account=self.account, episode=source_episode, stream_id="ep-1",
+        )
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        scan_time = self._ingest(rows)
+
+        reconcile_series_language_identity(self.account, scan_start_time=scan_time)
+
+        episode_relation.refresh_from_db()
+        self.assertEqual(episode_relation.episode_id, target_episode.id)
+        self.assertFalse(Episode.objects.filter(id=source_episode.id).exists())
+
+    def test_reconcile_full_split_gives_episodes_to_majority_target(self):
+        french = VODCategory.objects.create(name="French", category_type="series")
+        french_rel = M3UVODCategoryRelation.objects.create(
+            category=french, m3u_account=self.account, enabled=True,
+        )
+        self.categories["3"] = french
+        self.relations[french.id] = french_rel
+
+        rows = [
+            {"series_id": 1, "name": "Show", "category_id": "1", "tmdb_id": "200"},
+            {"series_id": 2, "name": "Show", "category_id": "1", "tmdb_id": "200"},
+            {"series_id": 3, "name": "Show", "category_id": "3", "tmdb_id": "200"},
+        ]
+        self._ingest(rows)
+        original = Series.objects.get(tmdb_id="200")
+        episode = Episode.objects.create(
+            series=original, season_number=1, episode_number=1, name="Pilot"
+        )
+
+        self.english_rel.custom_properties = {"language": "en"}
+        self.english_rel.save()
+        french_rel.custom_properties = {"language": "fr"}
+        french_rel.save()
+        scan_time = self._ingest(rows)
+
+        reconcile_series_language_identity(self.account, scan_start_time=scan_time)
+
+        en_target = Series.objects.get(tmdb_id="200", language="en")
+        fr_target = Series.objects.get(tmdb_id="200", language="fr")
+        episode.refresh_from_db()
+        self.assertEqual(episode.series_id, en_target.id)
+        self.assertEqual(fr_target.episodes.count(), 0)
+        self.assertFalse(Series.objects.filter(id=original.id).exists())
 
 
 class XcSeriesPublishesSeriesIdTests(TestCase):
