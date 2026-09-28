@@ -27,6 +27,10 @@ STALLED_LINE = (
     "frame=100 fps=30 q=28.0 size=1024kB time=00:00:03.00 "
     "bitrate=500.0kbits/s speed=0.5x"
 )
+HEALTHY_LINE = (
+    "frame=100 fps=30 q=28.0 size=1024kB time=00:00:03.00 "
+    "bitrate=500.0kbits/s speed=1.0x"
+)
 
 
 class BufferingEventAttributionTests(SimpleTestCase):
@@ -97,6 +101,42 @@ class BufferingEventAttributionTests(SimpleTestCase):
         self.assertEqual(_calls_for(mock_log, "stream_switch"), [])
         self.assertEqual(_calls_for(mock_log, "channel_failover"), [])
         self.assertTrue(sm.buffering)
+
+    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
+    @patch.object(StreamManager, "_try_next_stream", return_value=False)
+    def test_buffering_timeout_error_is_logged_once_per_stall(self, try_next, _update_stats):
+        sm = _make_stream_manager(_DictRedis())
+        sm.current_stream_id = 100
+        clock = [10.0]
+
+        with patch("apps.proxy.live_proxy.input.manager.time") as mock_time, patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ) as mock_log:
+            mock_time.time.side_effect = lambda: clock[0]
+
+            # Stall persists past the timeout across several stats lines.
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+            clock[0] = 11.0
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+            clock[0] = 11.5
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+            self.assertEqual(len(_calls_for(mock_log, "channel_error")), 1)
+            self.assertEqual(try_next.call_count, 3)
+
+            # Speed recovers, then a new stall times out again.
+            clock[0] = 12.0
+            sm._parse_ffmpeg_stats(HEALTHY_LINE)
+            self.assertFalse(sm.buffering)
+            clock[0] = 13.0
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+            clock[0] = 15.0
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+
+        errors = _calls_for(mock_log, "channel_error")
+        self.assertEqual(len(errors), 2)
+        for call in errors:
+            self.assertEqual(call.kwargs["stream_id"], 100)
+            self.assertEqual(call.kwargs["error_type"], "buffering_timeout")
 
 
 def _make_switchable_manager(current_stream_id=100, url="http://current", redis_client=None):

@@ -60,6 +60,7 @@ class StreamManager:
         self.buffering_timeout = ConfigHelper.buffering_timeout()
         self.buffering_speed = ConfigHelper.buffering_speed()
         self.buffering_start_time = None
+        self.buffering_timeout_error_logged = False
         # Store worker_id for ownership checks
         self.worker_id = worker_id
 
@@ -1194,6 +1195,7 @@ class StreamManager:
                                 # Reset buffering state
                                 self.buffering = False
                                 self.buffering_start_time = None
+                                self.buffering_timeout_error_logged = False
                                 switched_after_buffering_timeout = True
 
                                 # Clear the Redis buffering label.
@@ -1223,17 +1225,20 @@ class StreamManager:
                             else:
                                 logger.error(f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout")
 
-                                # No stream_switch/channel_failover will follow; record the stall against its stream
-                                try:
-                                    log_system_event(
-                                        'channel_error',
-                                        channel_id=self.channel_id,
-                                        channel_name=self.channel_name,
-                                        stream_id=failed_stream_id,
-                                        error_type='buffering_timeout'
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Could not log buffering timeout error event: {e}")
+                                # No stream_switch/channel_failover will follow; record the stall against
+                                # its stream once, not on every stats line while the speed stays low
+                                if not self.buffering_timeout_error_logged:
+                                    try:
+                                        log_system_event(
+                                            'channel_error',
+                                            channel_id=self.channel_id,
+                                            channel_name=self.channel_name,
+                                            stream_id=failed_stream_id,
+                                            error_type='buffering_timeout'
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Could not log buffering timeout error event: {e}")
+                                    self.buffering_timeout_error_logged = True
                 else:
                     # Buffering just started, set the flag and start timer
                     self.buffering = True
@@ -1266,6 +1271,7 @@ class StreamManager:
                     logger.info(f"Buffering ended for channel {self.channel_id} - speed: {ffmpeg_speed}x")
                     self.buffering = False
                     self.buffering_start_time = None
+                    self.buffering_timeout_error_logged = False
                     # Set channel state to active if speed is good
                     if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                         metadata_key = RedisKeys.channel_metadata(self.channel_id)

@@ -39,6 +39,7 @@ def _make_stream_manager(redis_client, buffering_timeout=1.0, buffering_speed=1.
     sm.buffering_timeout = buffering_timeout
     sm.buffering_speed = buffering_speed
     sm.buffering_start_time = 0.0
+    sm.buffering_timeout_error_logged = False
     # Avoid the bitrate-to-DB flush path; these tests only care about state.
     sm.current_stream_id = None
     sm._bitrate_warmup_samples = 10
