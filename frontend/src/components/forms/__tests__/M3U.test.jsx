@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import M3U from '../M3U';
 
@@ -195,6 +201,49 @@ vi.mock('@mantine/core', () => ({
         {children}
       </div>
     ) : null,
+  MultiSelect: ({
+    id,
+    label,
+    placeholder,
+    value,
+    onChange,
+    data,
+    clearable,
+  }) => (
+    <div>
+      <label>
+        {label}
+        <select
+          multiple
+          aria-label={label}
+          data-testid={id ? `multiselect-${id}` : undefined}
+          value={value || []}
+          onChange={(e) => {
+            const selected = Array.from(e.target.selectedOptions).map(
+              (o) => o.value
+            );
+            onChange?.(selected);
+          }}
+        >
+          {data?.map((d) => (
+            <option key={d.value} value={d.value}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {placeholder && (
+        <span data-testid={id ? `placeholder-${id}` : 'placeholder'}>
+          {placeholder}
+        </span>
+      )}
+      {clearable && value?.length > 0 && (
+        <button aria-label={`clear-${label}`} onClick={() => onChange?.([])}>
+          clear
+        </button>
+      )}
+    </div>
+  ),
   NumberInput: ({
     label,
     placeholder,
@@ -515,6 +564,103 @@ describe('M3U', () => {
       render(<M3U {...defaultProps()} />);
       expect(screen.getByText('Agent One')).toBeInTheDocument();
       expect(screen.getByText('Agent Two')).toBeInTheDocument();
+    });
+  });
+
+  // ── Hash key override ────────────────────────────────────────────────────
+
+  describe('hash key override', () => {
+    it('shows the "use global default" placeholder for a new account', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      expect(screen.getByTestId('placeholder-hash_key')).toBeInTheDocument();
+    });
+
+    it('shows the placeholder when editing an account with no override', () => {
+      setupStores();
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ hash_key: null }),
+          })}
+        />
+      );
+      expect(screen.getByTestId('placeholder-hash_key')).toBeInTheDocument();
+    });
+
+    it('hides the placeholder when editing an account with an override set', () => {
+      // Regression test: the modal used to keep showing "Use global
+      // default" even with fields selected, because the form runs in
+      // Mantine's uncontrolled mode - the placeholder was originally
+      // computed from form.values.hash_key, which does not reflect the
+      // bulk form.setValues() call used to populate an existing account.
+      setupStores();
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ hash_key: 'name,tvg_id,m3u_id' }),
+          })}
+        />
+      );
+      expect(
+        screen.queryByTestId('placeholder-hash_key')
+      ).not.toBeInTheDocument();
+    });
+
+    it('pre-selects the fields from an existing override', () => {
+      setupStores();
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ hash_key: 'name,tvg_id' }),
+          })}
+        />
+      );
+      const select = screen.getByTestId('multiselect-hash_key');
+      const selected = Array.from(select.selectedOptions).map((o) => o.value);
+      expect(selected).toEqual(['name', 'tvg_id']);
+    });
+
+    it('brings back the placeholder after clearing a set override', async () => {
+      setupStores();
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ hash_key: 'name,tvg_id' }),
+          })}
+        />
+      );
+      expect(
+        screen.queryByTestId('placeholder-hash_key')
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'clear-Hash Key Override' })
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('placeholder-hash_key')).toBeInTheDocument();
+      });
+    });
+
+    it('resets to no override when switching from editing to a new account', () => {
+      setupStores();
+      const { rerender } = render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ hash_key: 'name,tvg_id' }),
+          })}
+        />
+      );
+      expect(
+        screen.queryByTestId('placeholder-hash_key')
+      ).not.toBeInTheDocument();
+
+      act(() => {
+        rerender(<M3U {...defaultProps({ m3uAccount: null })} />);
+      });
+
+      expect(screen.getByTestId('placeholder-hash_key')).toBeInTheDocument();
     });
   });
 

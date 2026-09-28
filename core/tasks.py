@@ -442,30 +442,89 @@ def fetch_channel_stats():
     )
 
 @shared_task
-def rehash_streams(keys):
+def rehash_streams(keys, account_id=None):
     """
-    Regenerate stream hashes for all streams based on current hash key configuration.
+    Regenerate stream hashes based on the current hash key configuration.
     This task checks for and blocks M3U refresh tasks to prevent conflicts.
+
+    ``keys`` is the default/global hash key list, used for any stream whose
+    M3U account has no ``hash_key`` override of its own (and for streams
+    with no M3U account at all). The override, when present, lives at
+    ``M3UAccount.custom_properties["hash_key"]``.
+
+    When ``account_id`` is given, only that account's streams are rehashed
+    (used when a single account's hash key override changes) - the account
+    is locked and rehashed regardless of whether it has its own override.
+
+    Otherwise (``account_id`` is ``None``, used when the global default
+    changes or the user manually triggers a full rehash) the run is scoped
+    to streams that actually use ``keys``: accounts with their own
+    ``hash_key`` override are skipped entirely - not locked, not loaded,
+    not rewritten - since a global key change doesn't affect them. Only
+    active accounts without an override are locked (only they can race a
+    concurrent refresh); inactive accounts without an override still have
+    their streams rehashed, without a lock, since refresh never runs
+    against them. Streams with no M3U account are always rehashed.
     """
     from apps.channels.models import Stream
     from apps.m3u.models import M3UAccount
 
     logger.info("Starting stream rehash process")
 
-    # Get all M3U account IDs for locking
-    m3u_account_ids = list(M3UAccount.objects.filter(is_active=True).values_list('id', flat=True))
+    # Per-account hash key overrides, resolved once up front. Streams whose
+    # m3u_account isn't in this map fall back to the global `keys` default.
+    # hash_key lives in custom_properties (not a dedicated column) - a
+    # missing key means the account inherits the global default.
+    account_hash_overrides = {}
+    for aid, custom_props in M3UAccount.objects.filter(
+        custom_properties__has_key="hash_key"
+    ).values_list("id", "custom_properties"):
+        raw_hash_key = (custom_props or {}).get("hash_key")
+        override_keys = [k for k in (raw_hash_key or "").split(",") if k]
+        if override_keys:
+            account_hash_overrides[aid] = override_keys
+    override_account_ids = set(account_hash_overrides.keys())
+
+    # Get M3U account IDs for locking, and the account scope for the stream
+    # queries below.
+    #
+    # - Scoped run (account_id set): just that one account, regardless of
+    #   whether it has its own override - this is the "save a single
+    #   account's override" path, and it always rehashes exactly that
+    #   account's streams with the keys it was given.
+    # - Unscoped run (account_id is None, e.g. the global default changed,
+    #   or a manual full rehash): only active accounts WITHOUT an override
+    #   need locking, since only their streams pick up the new `keys` value
+    #   and only they can race a concurrent refresh (refresh doesn't run
+    #   against inactive accounts). Accounts with their own override are
+    #   skipped entirely here - they aren't affected by a global key change,
+    #   so there's no reason to lock them or load their streams.
+    if account_id is not None:
+        m3u_account_ids = list(
+            M3UAccount.objects.filter(id=account_id, is_active=True).values_list('id', flat=True)
+        )
+        excluded_account_ids = set()
+    else:
+        m3u_account_ids = list(
+            M3UAccount.objects.filter(is_active=True)
+            .exclude(id__in=override_account_ids)
+            .values_list('id', flat=True)
+        )
+        excluded_account_ids = override_account_ids
 
     # Check if any M3U refresh tasks are currently running
+    # (note: use a different loop variable than `account_id` - that
+    # parameter is still needed below to scope the stream queries)
     blocked_accounts = []
-    for account_id in m3u_account_ids:
-        if not acquire_task_lock('refresh_single_m3u_account', account_id):
-            blocked_accounts.append(account_id)
+    for aid in m3u_account_ids:
+        if not acquire_task_lock('refresh_single_m3u_account', aid):
+            blocked_accounts.append(aid)
 
     if blocked_accounts:
         # Release any locks we did acquire
-        for account_id in m3u_account_ids:
-            if account_id not in blocked_accounts:
-                release_task_lock('refresh_single_m3u_account', account_id)
+        for aid in m3u_account_ids:
+            if aid not in blocked_accounts:
+                release_task_lock('refresh_single_m3u_account', aid)
 
         logger.warning(f"Rehash blocked: M3U refresh tasks running for accounts: {blocked_accounts}")
 
@@ -499,8 +558,20 @@ def rehash_streams(keys):
         deleted_stream_ids = set()
 
         # Get initial count for progress reporting
-        initial_total_records = Stream.objects.count()
-        logger.info(f"Starting rehash of {initial_total_records} streams with keys: {keys}")
+        base_stream_qs = Stream.objects.all()
+        if account_id is not None:
+            base_stream_qs = base_stream_qs.filter(m3u_account_id=account_id)
+        elif excluded_account_ids:
+            # Unscoped run: accounts with their own override aren't affected
+            # by a global key change, so their streams are left untouched.
+            # Streams with no M3U account, and streams on accounts without
+            # an override (active or inactive), are still processed.
+            base_stream_qs = base_stream_qs.exclude(m3u_account_id__in=excluded_account_ids)
+        initial_total_records = base_stream_qs.count()
+        logger.info(
+            f"Starting rehash of {initial_total_records} streams "
+            f"(account_id={account_id}) with default keys: {keys}"
+        )
 
         # Send initial WebSocket update
         send_websocket_update(
@@ -529,8 +600,13 @@ def rehash_streams(keys):
             with transaction.atomic():
                 # Fetch batch by ID ordering, using select_for_update to lock records
                 # This prevents race conditions and ensures we process each record exactly once
+                batch_qs = Stream.objects.filter(id__gt=last_processed_id)
+                if account_id is not None:
+                    batch_qs = batch_qs.filter(m3u_account_id=account_id)
+                elif excluded_account_ids:
+                    batch_qs = batch_qs.exclude(m3u_account_id__in=excluded_account_ids)
                 batch = list(
-                    Stream.objects.filter(id__gt=last_processed_id)
+                    batch_qs
                     .select_for_update(skip_locked=True, of=('self',))
                     .select_related('channel_group', 'm3u_account')
                     .order_by('id')[:batch_size]
@@ -548,9 +624,12 @@ def rehash_streams(keys):
                     group_name = obj.channel_group.name if obj.channel_group else None
                     account_type = obj.m3u_account.account_type if obj.m3u_account else None
                     stream_id_val = obj.stream_id if hasattr(obj, 'stream_id') else None
+                    # Use the stream's account-specific hash key override when
+                    # one exists, otherwise fall back to the default `keys`.
+                    effective_keys = account_hash_overrides.get(obj.m3u_account_id, keys)
 
                     new_hash = Stream.generate_hash_key(
-                        obj.name, obj.url, obj.tvg_id, keys,
+                        obj.name, obj.url, obj.tvg_id, effective_keys,
                         m3u_id=obj.m3u_account_id, group=group_name,
                         account_type=account_type, stream_id=stream_id_val
                     )
@@ -680,8 +759,8 @@ def rehash_streams(keys):
         raise
     finally:
         # Always release all acquired M3U locks
-        for account_id in acquired_locks:
-            release_task_lock('refresh_single_m3u_account', account_id)
+        for aid in acquired_locks:
+            release_task_lock('refresh_single_m3u_account', aid)
         logger.info(f"Released M3U task locks for {len(acquired_locks)} accounts")
 
 
