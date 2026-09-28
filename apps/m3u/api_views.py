@@ -150,7 +150,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         old_vod_enabled = False
-        old_hash_key = instance.hash_key
+        old_hash_key = (instance.custom_properties or {}).get("hash_key")
 
         # Check current VOD setting
         if instance.custom_properties:
@@ -196,8 +196,9 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         # If this account's hash key override changed, rehash just its own
         # streams (cheaper than a full rehash, and correct since every other
         # account's effective keys are unaffected by this account's change).
-        instance.refresh_from_db(fields=["hash_key"])
-        if instance.hash_key != old_hash_key:
+        instance.refresh_from_db(fields=["custom_properties"])
+        new_hash_key = (instance.custom_properties or {}).get("hash_key")
+        if new_hash_key != old_hash_key:
             new_keys = instance.get_effective_hash_keys()
             rehash_streams.delay(new_keys, account_id=instance.id)
 
