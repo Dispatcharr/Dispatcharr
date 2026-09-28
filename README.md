@@ -108,6 +108,8 @@ First-time web setup is limited to local/private networks by default. If you are
 
 Behind a reverse proxy, set `DISPATCHARR_TRUSTED_PROXIES` to your proxy's IP or CIDR so Network Access, Stats, and rate limits see real client IPs (defaults trust private/loopback peers; use `none` to ignore forwarded headers).
 
+The optional Reverse Proxy Auth setting (Settings → Reverse Proxy Auth) signs users in from an identity header asserted by an authenticating proxy such as Cloudflare Access, oauth2-proxy, or Authelia. It needs its own allowlist, `DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES`, set to that proxy's IP or CIDR — there is no default, and while it is unset the setting signs nobody in.
+
 ---
 
 ### 🐋 Docker Compose Options

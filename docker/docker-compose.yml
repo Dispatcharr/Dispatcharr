@@ -71,6 +71,11 @@ services:
       #- DISPATCHARR_TRUSTED_PROXIES=172.18.0.0/16
       #- DISPATCHARR_TRUSTED_PROXIES=none
 
+      # Reverse Proxy Auth peers (optional). Only requests from these IPs/CIDRs
+      # may assert the identity header configured under Settings -> Reverse
+      # Proxy Auth. No default: while unset, that setting signs nobody in.
+      #- DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES=172.18.0.0/16
+
       # Legacy CPU Support (Optional)
       # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
       # that lack support for newer baseline CPU features:
