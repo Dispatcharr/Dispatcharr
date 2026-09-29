@@ -9,7 +9,6 @@ zero-clients → stop_channel shutdown chain works for all client types.
 
 import time
 import gevent
-from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
 from django.db import close_old_connections
 from ...server import ProxyServer
@@ -374,11 +373,9 @@ class FMP4StreamGenerator:
                                 and ConfigHelper.channel_shutdown_delay() <= 0
                             ):
                                 try:
-                                    try:
-                                        obj = Channel.objects.get(uuid=self.channel_id)
-                                    except (Channel.DoesNotExist, Exception):
-                                        obj = Stream.objects.get(stream_hash=self.channel_id)
-                                    obj.release_stream()
+                                    from ...url_utils import release_worker_stream
+
+                                    release_worker_stream(self.channel_id)
                                 except Exception as e:
                                     logger.error(
                                         f"[{self.client_id}] Error releasing stream: {e}"
