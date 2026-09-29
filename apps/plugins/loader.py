@@ -10,7 +10,8 @@ import types
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from django.db import close_old_connections, transaction
+from django.db import close_old_connections, connection, transaction
+from django.utils import timezone
 
 from .models import PluginConfig
 
@@ -264,6 +265,10 @@ class PluginManager:
                     self._last_reload_token = token
                 self._discovery_completed = True
 
+            for plugin_key, lp in new_registry.items():
+                if lp.loaded:
+                    self._record_owned_tasks(plugin_key, configs.get(plugin_key) if configs else None)
+
             logger.info(f"Discovered {len(new_registry)} plugin(s)")
         except FileNotFoundError:
             logger.warning(f"Plugins directory not found: {self.plugins_dir}")
@@ -293,6 +298,127 @@ class PluginManager:
                     and event_name in events
                 ):
                     yield key, action_id
+
+    def _own_alias(self, key: str) -> Optional[str]:
+        """The plugin's folder name, if sys.modules holds a package rooted in this plugin's directory."""
+        with self._lock:
+            lp = self._registry.get(key)
+        if not lp or not lp.folder_name or not lp.path or not self._is_valid_identifier(lp.folder_name):
+            return None
+        module = sys.modules.get(lp.folder_name)
+        plugin_dir = os.path.abspath(lp.path)
+        if any(os.path.abspath(entry) == plugin_dir for entry in getattr(module, "__path__", None) or ()):
+            return lp.folder_name
+        return None
+
+    def _registered_task_names(self, key: str) -> set:
+        """Celery tasks registered in this process whose module is in the plugin's package or its alias."""
+        from dispatcharr.celery import app as celery_app
+
+        roots = [self._resolve_package_name(key)]
+        alias = self._own_alias(key)
+        if alias:
+            roots.append(alias)
+        names = set()
+        for task_name, task in celery_app.tasks.items():
+            module = getattr(task, "__module__", None) or getattr(
+                getattr(task, "run", None), "__module__", ""
+            )
+            if module and any(module == root or module.startswith(f"{root}.") for root in roots):
+                names.add(task_name)
+        return names
+
+    def _record_owned_tasks(self, key: str, cfg: Optional[PluginConfig]) -> None:
+        if cfg is None:
+            return
+        try:
+            registered = self._registered_task_names(key)
+            stored = PluginConfig.objects.filter(key=key).values_list("owned_tasks", flat=True).first()
+            if registered <= set(stored or []):
+                return
+            # Re-read under the lock: other processes may have recorded different names since the read above.
+            with transaction.atomic():
+                locked = PluginConfig.objects.select_for_update().filter(key=key).first()
+                if locked is None:
+                    return
+                names = sorted(set(locked.owned_tasks or []) | registered)
+                PluginConfig.objects.filter(pk=locked.pk).update(owned_tasks=names)
+        except Exception:
+            logger.exception("Could not record Celery tasks owned by plugin '%s'", key)
+
+    def _owned_task_names(self, cfg: PluginConfig) -> set:
+        names = set(cfg.owned_tasks or [])
+        try:
+            names |= self._registered_task_names(cfg.key)
+        except Exception:
+            logger.exception("Could not read registered Celery tasks for plugin '%s'", cfg.key)
+        return names
+
+    def suspend_schedules(self, cfg: PluginConfig) -> int:
+        """Disable the plugin's enabled PeriodicTask rows and record their pks.
+
+        `cfg` must be row-locked by the caller's transaction.
+        """
+        from django_celery_beat.models import PeriodicTask, PeriodicTasks
+
+        with transaction.atomic():
+            names = self._owned_task_names(cfg)
+            pks = list(
+                PeriodicTask.objects.filter(task__in=names, enabled=True).values_list("pk", flat=True)
+            )
+            if not pks:
+                return 0
+            PeriodicTask.objects.filter(pk__in=pks).update(
+                enabled=False, last_run_at=None, date_changed=timezone.now()
+            )
+            PeriodicTasks.update_changed()
+            cfg.suspended_schedules = sorted(set(cfg.suspended_schedules or []) | set(pks))
+            cfg.save(update_fields=["suspended_schedules", "updated_at"])
+        return len(pks)
+
+    def restore_schedules(self, cfg: PluginConfig) -> int:
+        """Re-enable suspended rows that still run one of the plugin's tasks.
+
+        `cfg` must be row-locked by the caller's transaction.
+        """
+        from django_celery_beat.models import PeriodicTask, PeriodicTasks
+
+        pks = list(cfg.suspended_schedules or [])
+        if not pks:
+            return 0
+        with transaction.atomic():
+            # ModelEntry uses date_changed when last_run_at is unset.
+            restored = PeriodicTask.objects.filter(
+                pk__in=pks, task__in=self._owned_task_names(cfg), enabled=False
+            ).update(enabled=True, date_changed=timezone.now())
+            PeriodicTasks.update_changed()
+            cfg.suspended_schedules = []
+            cfg.save(update_fields=["suspended_schedules", "updated_at"])
+        return restored
+
+    def delete_plugin_periodic_tasks(self, key: str) -> int:
+        """Delete the PeriodicTask rows of a plugin being removed.
+
+        Rows are matched only by exact Celery task name, from the names recorded
+        while the plugin was enabled plus those registered in this process. Must
+        run before its PluginConfig row is deleted.
+        """
+        from django_celery_beat.models import PeriodicTask
+        from core.scheduling import delete_periodic_task
+
+        cfg = PluginConfig.objects.filter(key=key).first()
+        names = self._owned_task_names(cfg) if cfg else self._registered_task_names(key)
+        if not names:
+            logger.info("No Celery tasks recorded for plugin '%s'; its schedules are left untouched", key)
+            return 0
+        deleted = 0
+        with transaction.atomic():
+            for pt_name in list(
+                PeriodicTask.objects.filter(task__in=names).values_list("name", flat=True)
+            ):
+                if delete_periodic_task(pt_name):
+                    deleted += 1
+        return deleted
 
     def _load_plugin(
         self,
@@ -617,7 +743,9 @@ class PluginManager:
                         return False
             return False
         finally:
-            close_old_connections()
+            # Closing the connection inside an atomic block would abort the caller's transaction.
+            if not connection.in_atomic_block:
+                close_old_connections()
 
     def stop_all_plugins(self, reason: Optional[str] = None) -> int:
         stopped = 0
