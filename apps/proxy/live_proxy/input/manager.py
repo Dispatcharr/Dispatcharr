@@ -146,6 +146,12 @@ class StreamManager:
         # Add stderr reader thread property
         self.stderr_reader_thread = None
         self.ffmpeg_input_phase = True  # Track if we're still reading input info
+        # Stream kinds FFmpeg reported between "Input #0" and "Output #"
+        # (audio-only check). Tracked separately from ffmpeg_input_phase,
+        # which also flips on input metadata lines such as "encoder : Lavf".
+        self._in_input_section = False
+        self._input_has_audio = False
+        self._input_has_video = False
 
         # Add HTTP reader thread property
         self.http_reader = None
@@ -757,6 +763,7 @@ class StreamManager:
 
     def _establish_transcode_connection(self):
         """Establish a connection using transcoding"""
+        self._reset_audio_only()
         try:
             logger.debug(f"Building transcode command for channel {self.channel_id}")
 
@@ -1032,6 +1039,43 @@ class StreamManager:
         finally:
             close_old_connections()
 
+    def _reset_audio_only(self):
+        """Forget the previous stream's audio-only result (new connection or input)."""
+        self._in_input_section = False
+        self._input_has_audio = False
+        self._input_has_video = False
+        redis_client = getattr(self.buffer, 'redis_client', None)
+        if not redis_client:
+            return
+        try:
+            redis_client.hdel(
+                RedisKeys.channel_metadata(self.channel_id), ChannelMetadataField.AUDIO_ONLY
+            )
+        except Exception as e:
+            logger.debug(f"Could not clear audio-only flag for channel {self.channel_id}: {e}")
+
+    def _store_audio_only(self):
+        """Record whether the input FFmpeg just finished describing has no video.
+
+        Written once the input section ends, so a video line that follows the
+        audio line cannot be missed.
+        """
+        redis_client = getattr(self.buffer, 'redis_client', None)
+        if not redis_client:
+            return
+        audio_only = self._input_has_audio and not self._input_has_video
+        try:
+            redis_client.hset(
+                RedisKeys.channel_metadata(self.channel_id),
+                ChannelMetadataField.AUDIO_ONLY,
+                "1" if audio_only else "0",
+            )
+        except Exception as e:
+            logger.debug(f"Could not store audio-only flag for channel {self.channel_id}: {e}")
+            return
+        if audio_only:
+            logger.info(f"Channel {self.channel_id} is audio-only, using the smaller start buffer")
+
     def _log_stderr_content(self, content):
         """Log stderr content from FFmpeg with appropriate log levels"""
         try:
@@ -1041,6 +1085,15 @@ class StreamManager:
 
             # Convert to lowercase for easier matching
             content_lower = content.lower()
+            # Audio-only check: collect stream kinds from "Input #0" up to
+            # the first "Output #", then record the result once.
+            if content_lower.startswith('input #0'):
+                self._reset_audio_only()
+                self._in_input_section = True
+            elif content_lower.startswith('output #') and self._in_input_section:
+                self._in_input_section = False
+                self._store_audio_only()
+
             # Check if we are still in the input phase
             if content_lower.startswith('input #') or 'decoder' in content_lower:
                 self.ffmpeg_input_phase = True
@@ -1077,6 +1130,11 @@ class StreamManager:
 
             if parse_result:
                 stream_type, parsed_data = parse_result
+                if self._in_input_section:
+                    if stream_type == 'video':
+                        self._input_has_video = True
+                    elif stream_type == 'audio':
+                        self._input_has_audio = True
                 # For FFmpeg, only parse during input phase
                 if stream_type in ['video', 'audio', 'input']:
                     if self.ffmpeg_input_phase:
@@ -1280,6 +1338,7 @@ class StreamManager:
 
     def _establish_http_connection(self):
         """Establish HTTP connection using thread-based reader (same as transcode path)"""
+        self._reset_audio_only()
         try:
             logger.debug(f"Using HTTP streamer thread to connect to stream: {self.url}")
 
@@ -1945,7 +2004,7 @@ class StreamManager:
                         except Exception as e:
                             logger.error(f"Error reading buffer index from Redis: {e}")
 
-                        initial_chunks_needed = ConfigHelper.initial_behind_chunks()
+                        initial_chunks_needed = ConfigHelper.initial_chunks_needed(redis_client, channel_id)
 
                         if current_buffer_index < initial_chunks_needed:
                             # Not enough buffer yet - set to connecting state if not already
@@ -1996,7 +2055,7 @@ class StreamManager:
                 except Exception as e:
                     logger.error(f"Error reading buffer index from Redis: {e}")
 
-                initial_chunks_needed = ConfigHelper.initial_behind_chunks()  # Use ConfigHelper for consistency
+                initial_chunks_needed = ConfigHelper.initial_chunks_needed(redis_client, channel_id)
 
                 if current_buffer_index >= initial_chunks_needed:
                     # We now have enough buffer, call _set_waiting_for_clients again

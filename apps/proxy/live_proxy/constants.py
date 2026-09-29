@@ -103,6 +103,8 @@ class ChannelMetadataField:
 
     # Stream format info
     STREAM_TYPE = "stream_type"
+    # "1" when FFmpeg reported audio but no video for the current stream
+    AUDIO_ONLY = "audio_only"
     # Stream info timestamp
     STREAM_INFO_UPDATED = "stream_info_updated"
 

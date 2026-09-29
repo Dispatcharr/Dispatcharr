@@ -94,6 +94,9 @@ class TSConfig(BaseConfig):
 
     # Buffer settings
     INITIAL_BEHIND_CHUNKS = 4  # How many chunks behind to start a client (4 chunks = ~1MB)
+    # Audio-only streams (radio) fill a chunk at 128-320 kbps, so 4 chunks
+    # take tens of seconds; 2 chunks still hold ~15-30 s of audio.
+    AUDIO_ONLY_INITIAL_BEHIND_CHUNKS = 2
     CHUNK_BATCH_SIZE = 5       # How many chunks to fetch in one batch
     NEW_CLIENT_BEHIND_SECONDS = 5  # Start new clients this many seconds behind live (0 = start at live)
     KEEPALIVE_INTERVAL = 0.5   # Seconds between keepalive packets when at buffer head
