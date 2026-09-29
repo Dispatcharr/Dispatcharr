@@ -16,6 +16,7 @@ Covers:
 
 import hashlib
 import json
+import os
 import time
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from unittest.mock import MagicMock, patch
@@ -925,6 +926,65 @@ class SDScheduleDeltaIntegrationTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.lookup_sd_tmdb_ids')
+    @patch('apps.epg.sd_external_ids.clear_program_external_ids')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_external_ids_follow_source_toggle(
+        self, mock_post, mock_get, mock_send_epg_update, mock_clear, mock_lookup,
+    ):
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION, name='Mapped', epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+        date_list = self._build_date_list(3)
+        self._seed_full_window_program_data(mapped_epg, days=3)
+        today = date.today()
+        for i, ds in enumerate(date_list):
+            SDScheduleMD5.objects.create(
+                epg_source=source, station_id=self.MAPPED_STATION,
+                date=today + timedelta(days=i), md5=f'md5-{ds}', last_modified=timezone.now(),
+            )
+        mock_get.side_effect = self._lineup_get_side_effect
+        md5_payload = {
+            self.MAPPED_STATION: {
+                ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                for ds in date_list
+            },
+        }
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return MagicMock(status_code=200, json=MagicMock(return_value={'code': 0, 'token': 'tok'}))
+            if url.endswith('/schedules/md5'):
+                return MagicMock(status_code=200, json=MagicMock(return_value=md5_payload))
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+        mock_clear.assert_called_once_with({mapped_epg.id})
+        mock_lookup.delay.assert_not_called()
+
+        mock_clear.reset_mock()
+        source.custom_properties = {**(source.custom_properties or {}), 'fetch_external_ids': True}
+        source.save(update_fields=['custom_properties'])
+        with patch.dict('os.environ'):
+            os.environ.pop('TMDB_API_KEY', None)
+            fetch_schedules_direct(source, force=True)
+        mock_clear.assert_not_called()
+        mock_lookup.delay.assert_not_called()
+
+        with patch.dict('os.environ', {'TMDB_API_KEY': 'k'}):
+            fetch_schedules_direct(source, force=True)
+        mock_clear.assert_not_called()
+        mock_lookup.delay.assert_called_once_with(source.id)
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.output.streaming_chunk_cache.invalidate_epg_chunk_cache')
     @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
@@ -1032,7 +1092,7 @@ class SDScheduleDeltaIntegrationTests(TestCase):
         }]
         program_payload = [{
             'programID': 'EP000000000001',
-            'titles': [{'title120': 'Test Show'}],
+            'titles': [{'title120': 'Test Show', 'titleLanguage': 'en-GB'}],
         }]
 
         def post_side_effect(url, **kwargs):
@@ -1067,6 +1127,8 @@ class SDScheduleDeltaIntegrationTests(TestCase):
             ProgramData.objects.filter(epg=mapped_epg).count(),
             1,
         )
+        program = ProgramData.objects.get(epg=mapped_epg)
+        self.assertEqual(program.custom_properties['sd_title_language'], 'en-GB')
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.epg.sd_tasks.send_epg_update')
@@ -1156,6 +1218,130 @@ class SDScheduleDeltaIntegrationTests(TestCase):
             {'EP0001'},
         )
         self.assertEqual(needed, set())
+
+
+class SDTitleLanguageBackfillTests(TestCase):
+    """Stored programmes without sd_title_language are downloaded once when external IDs are on."""
+
+    STATION = '10001'
+    PROGRAM_ID = 'EP000000000001'
+
+    def _run_refresh(self, fetch_external_ids, program_language, seed_language=None, schedule_unchanged=False):
+        from apps.epg.models import SDProgramMD5, SDScheduleMD5
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = EPGSource.objects.create(
+            name='SD Backfill',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+            custom_properties={'fetch_external_ids': fetch_external_ids},
+        )
+        epg = EPGData.objects.create(tvg_id=self.STATION, name='Mapped', epg_source=source)
+        Channel.objects.create(name='Mapped Ch', epg_data=epg)
+
+        today = date.today()
+        start = datetime(today.year, today.month, today.day, 12, 0, tzinfo=dt_timezone.utc)
+        seeded = {'sd_title_language': seed_language} if seed_language is not None else {}
+        for day in range(3 if schedule_unchanged else 1):
+            day_start = start + timedelta(days=day)
+            ProgramData.objects.create(
+                epg=epg, start_time=day_start, end_time=day_start + timedelta(hours=1),
+                title='Stored Show', program_id=self.PROGRAM_ID, custom_properties=dict(seeded),
+            )
+        SDProgramMD5.objects.create(epg_source=source, program_id=self.PROGRAM_ID, md5='prog-md5')
+
+        date_list = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
+        if schedule_unchanged:
+            for i, ds in enumerate(date_list):
+                SDScheduleMD5.objects.create(
+                    epg_source=source, station_id=self.STATION,
+                    date=today + timedelta(days=i), md5=f'md5-{ds}', last_modified=timezone.now(),
+                )
+        schedule_payload = [{
+            'stationID': self.STATION,
+            'metadata': {'startDate': date_list[0], 'md5': 'md5-' + date_list[0], 'modified': '2026-06-11T00:00:00Z'},
+            'programs': [{
+                'programID': self.PROGRAM_ID,
+                'airDateTime': f'{date_list[0]}T12:00:00Z',
+                'duration': 3600,
+                'md5': 'prog-md5',
+            }],
+        }]
+        title = {'title120': 'Downloaded Show'}
+        if program_language:
+            title['titleLanguage'] = program_language
+        program_payload = [{'programID': self.PROGRAM_ID, 'titles': [title]}]
+        program_calls = []
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return MagicMock(status_code=200, json=MagicMock(return_value={'code': 0, 'token': 'tok'}))
+            if url.endswith('/schedules/md5'):
+                return MagicMock(status_code=200, json=MagicMock(return_value={
+                    self.STATION: {
+                        ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                        for ds in date_list
+                    },
+                }))
+            if url.endswith('/schedules'):
+                return MagicMock(status_code=200, json=MagicMock(return_value=schedule_payload))
+            if url.endswith('/programs'):
+                program_calls.append(kwargs.get('json'))
+                return MagicMock(status_code=200, json=MagicMock(return_value=program_payload))
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        def get_side_effect(url, **kwargs):
+            if url.endswith('/status'):
+                return MagicMock(status_code=200, json=MagicMock(return_value={'systemStatus': [{'status': 'Online'}]}))
+            if url.endswith('/lineups'):
+                return MagicMock(status_code=200, json=MagicMock(return_value={'lineups': [{'lineupID': 'USA-TEST-X'}]}))
+            if '/lineups/USA-TEST-X' in url:
+                return MagicMock(status_code=200, json=MagicMock(return_value={
+                    'stations': [{'stationID': self.STATION, 'name': 'Mapped', 'callsign': 'MAP'}],
+                }))
+            raise AssertionError(f'Unexpected GET URL: {url}')
+
+        with patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3), \
+                patch('apps.epg.sd_tasks.send_epg_update'), \
+                patch('apps.epg.sd_tasks.requests.get', side_effect=get_side_effect), \
+                patch('apps.epg.sd_tasks.requests.post', side_effect=post_side_effect), \
+                patch('apps.epg.sd_tasks.lookup_sd_tmdb_ids'):
+            fetch_schedules_direct(source, force=True)
+            first_calls = len(program_calls)
+            first_language = (ProgramData.objects.filter(epg=epg).order_by('id').first().custom_properties or {}).get('sd_title_language')
+            fetch_schedules_direct(source, force=True)
+        return first_calls, len(program_calls) - first_calls, first_language
+
+    def test_missing_language_is_downloaded_once(self):
+        first, second, language = self._run_refresh(True, 'es')
+        self.assertEqual((first, second), (1, 0))
+        self.assertEqual(language, 'es')
+
+    def test_programme_without_sd_language_gets_empty_marker_and_is_not_repeated(self):
+        first, second, language = self._run_refresh(True, None)
+        self.assertEqual((first, second), (1, 0))
+        self.assertEqual(language, '')
+
+    def test_programme_in_unchanged_schedule_is_stamped_in_place_once(self):
+        first, second, language = self._run_refresh(True, 'es', schedule_unchanged=True)
+        self.assertEqual((first, second), (1, 0))
+        self.assertEqual(language, 'es')
+
+    def test_stored_language_is_not_downloaded_again(self):
+        first, _, language = self._run_refresh(True, 'es', seed_language='es')
+        self.assertEqual(first, 0)
+        self.assertEqual(language, 'es')
+
+    def test_unchanged_schedule_downloads_nothing_when_external_ids_off(self):
+        first, _, language = self._run_refresh(False, 'es', schedule_unchanged=True)
+        self.assertEqual(first, 0)
+        self.assertIsNone(language)
+
+    def test_nothing_extra_downloaded_when_external_ids_off(self):
+        first, _, language = self._run_refresh(False, 'es')
+        self.assertEqual(first, 0)
+        self.assertIsNone(language)
 
 
 # ---------------------------------------------------------------------------

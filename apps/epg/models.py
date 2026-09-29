@@ -256,3 +256,28 @@ class SDProgramMD5(models.Model):
 
     def __str__(self):
         return f"SDProgramMD5: {self.program_id} ({self.epg_source.name})"
+
+
+class SDSeriesExternalID(models.Model):
+    """
+    External database IDs for a Schedules Direct series or movie, keyed by
+    programID root (EP/SH normalised to SH).
+    """
+    series_key = models.CharField(
+        max_length=16,
+        unique=True,
+        help_text="SD programID prefix + root, e.g. SH01258333 or MV00123456"
+    )
+    tmdb_id = models.CharField(max_length=32, null=True, blank=True)
+    tmdb_type = models.CharField(
+        max_length=8, null=True, blank=True,
+        help_text="TMDB media type for tmdb_id: 'tv' or 'movie'"
+    )
+    imdb_id = models.CharField(max_length=32, null=True, blank=True)
+    tvdb_id = models.CharField(max_length=32, null=True, blank=True)
+    attempted_at = models.DateTimeField(
+        help_text="Last TMDB search, used to back off retries for unmatched entries"
+    )
+
+    def __str__(self):
+        return f"SDSeriesExternalID: {self.series_key} (tmdb={self.tmdb_id}, imdb={self.imdb_id})"

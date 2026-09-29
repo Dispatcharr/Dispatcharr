@@ -107,6 +107,10 @@ class ProgramDataSerializer(serializers.ModelSerializer):
         data['is_premiere'] = bool(cp.get('premiere'))
         premiere_text = cp.get('premiere_text', '')
         data['is_finale'] = bool(premiere_text and 'finale' in premiere_text.lower())
+        data['tmdb_id'] = cp.get('themoviedb.org_id')
+        data['tmdb_type'] = cp.get('tmdb_type')
+        data['imdb_id'] = cp.get('imdb.com_id')
+        data['tvdb_id'] = cp.get('thetvdb.com_id')
         return data
 
 
@@ -135,6 +139,12 @@ class EPGGridProgramSerializer(serializers.Serializer):
     is_live = serializers.BooleanField()
     is_premiere = serializers.BooleanField()
     is_finale = serializers.BooleanField()
+    tmdb_id = serializers.CharField(allow_null=True, required=False)
+    tmdb_type = serializers.CharField(
+        allow_null=True, required=False, help_text="TMDB media type for tmdb_id: 'tv' or 'movie'."
+    )
+    imdb_id = serializers.CharField(allow_null=True, required=False)
+    tvdb_id = serializers.CharField(allow_null=True, required=False)
     custom_properties = serializers.JSONField(
         required=False,
         allow_null=True,
@@ -208,11 +218,6 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         length = cp.get('length') or {}
         data['runtime'] = length.get('value') if length else None
         data['runtime_units'] = length.get('units') if length else None
-
-        # External IDs
-        data['imdb_id'] = cp.get('imdb.com_id')
-        data['tmdb_id'] = cp.get('themoviedb.org_id')
-        data['tvdb_id'] = cp.get('thetvdb.com_id')
 
         # Images
         data['icon'] = cp.get('icon')

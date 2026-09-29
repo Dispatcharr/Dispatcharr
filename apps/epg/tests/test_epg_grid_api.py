@@ -775,6 +775,25 @@ class EPGGridWindowParamTests(TestCase):
         self.assertNotIn("Old", titles)
         self.assertNotIn("Too Far", titles)
 
+    def test_real_program_includes_external_ids(self):
+        prog = self._create_program(1, title="Breaking Bad")
+        prog.custom_properties = {
+            "themoviedb.org_id": "1396",
+            "tmdb_type": "tv",
+            "imdb.com_id": "tt0903747",
+            "thetvdb.com_id": "81189",
+        }
+        prog.save()
+        plain = self._create_program(3, title="No IDs")
+
+        by_title = {p["title"]: p for p in _grid_programs(self._get_grid())}
+        self.assertEqual(by_title["Breaking Bad"]["tmdb_id"], "1396")
+        self.assertEqual(by_title["Breaking Bad"]["tmdb_type"], "tv")
+        self.assertEqual(by_title["Breaking Bad"]["imdb_id"], "tt0903747")
+        self.assertEqual(by_title["Breaking Bad"]["tvdb_id"], "81189")
+        for field in ("tmdb_id", "tmdb_type", "imdb_id", "tvdb_id"):
+            self.assertIsNone(by_title["No IDs"][field])
+
     # ── days / prev_days ─────────────────────────────────────────────────
 
     def test_days_extends_forward_window(self):
