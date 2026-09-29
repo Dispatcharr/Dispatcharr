@@ -3,6 +3,8 @@
 from django.test import TestCase
 from unittest.mock import patch
 
+from redis.exceptions import WatchError
+
 from apps.m3u.connection_pool import (
     extract_credentials_from_stream_url,
     get_credential_connection_count,
@@ -60,6 +62,28 @@ class FakeRedisPipeline:
     def __init__(self, redis):
         self.redis = redis
         self._ops = []
+        self._watched = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._ops = []
+        self._watched = {}
+
+    def watch(self, *keys):
+        for key in keys:
+            self._watched[key] = self.redis.get(key)
+
+    def get(self, key):
+        return self.redis.get(key)
+
+    def multi(self):
+        pass
+
+    def delete(self, key):
+        self._ops.append(("delete", key))
+        return self
 
     def decr(self, key):
         self._ops.append(("decr", key))
@@ -74,6 +98,8 @@ class FakeRedisPipeline:
         return self
 
     def execute(self):
+        if any(self.redis.get(key) != value for key, value in self._watched.items()):
+            raise WatchError()
         for op in self._ops:
             if op[0] == "decr":
                 self.redis.decr(op[1])
@@ -81,6 +107,8 @@ class FakeRedisPipeline:
                 self.redis.incr(op[1])
             elif op[0] == "set":
                 self.redis.set(op[1], op[2])
+            elif op[0] == "delete":
+                self.redis.delete(op[1])
         self._ops = []
 
 
@@ -214,6 +242,90 @@ class PoolEnforcementTests(TestCase):
         release_profile_slot(self.profile.id, self.redis)
         self.assertEqual(self.redis._data[cred_key], 0)
         self.assertEqual(self.redis._data[profile_key], 0)
+
+    def test_releasing_concurrent_streams_returns_both_counters_to_zero(self):
+        self.profile.max_streams = 4
+        cred_key = server_group_connections_key(
+            self.group.id, get_profile_credential_fingerprint(self.profile)
+        )
+        profile_key = profile_connections_key(self.profile.id)
+        release_key = profile_credential_release_key(self.profile.id)
+
+        for _ in range(3):
+            for count in range(1, 5):
+                self.assertEqual(
+                    reserve_profile_slot(self.profile, self.redis),
+                    (True, count, None),
+                )
+            self.assertFalse(reserve_profile_slot(self.profile, self.redis)[0])
+
+            for remaining in range(3, -1, -1):
+                release_profile_slot(self.profile.id, self.redis)
+                self.assertEqual(int(self.redis.get(profile_key)), remaining)
+                self.assertEqual(int(self.redis.get(cred_key)), remaining)
+                self.assertEqual(self.redis.get(release_key) is not None, remaining > 0)
+
+            release_profile_slot(self.profile.id, self.redis)
+            self.assertEqual(int(self.redis.get(profile_key)), 0)
+            self.assertEqual(int(self.redis.get(cred_key)), 0)
+            self.assertTrue(pool_has_capacity_for_profile(self.profile, self.redis))
+
+    def test_release_retries_when_another_stream_stops_before_commit(self):
+        self.profile.max_streams = 4
+        for _ in range(2):
+            self.assertTrue(reserve_profile_slot(self.profile, self.redis)[0])
+        original_pipeline = self.redis.pipeline
+        interrupted = False
+
+        def pipeline_with_teardown():
+            pipe = original_pipeline()
+            original_execute = pipe.execute
+
+            def execute():
+                nonlocal interrupted
+                if not interrupted:
+                    interrupted = True
+                    release_profile_slot(self.profile.id, self.redis)
+                return original_execute()
+
+            pipe.execute = execute
+            return pipe
+
+        with patch.object(self.redis, "pipeline", side_effect=pipeline_with_teardown):
+            release_profile_slot(self.profile.id, self.redis)
+
+        self.assertEqual(get_profile_connection_count(self.profile, self.redis), 0)
+        self.assertEqual(get_credential_connection_count(self.profile, self.redis), 0)
+        self.assertIsNone(self.redis.get(profile_credential_release_key(self.profile.id)))
+
+    def test_release_keeps_marker_when_another_stream_starts_before_commit(self):
+        self.profile.max_streams = 4
+        self.assertTrue(reserve_profile_slot(self.profile, self.redis)[0])
+        original_pipeline = self.redis.pipeline
+        interrupted = False
+
+        def pipeline_with_reservation():
+            pipe = original_pipeline()
+            original_execute = pipe.execute
+
+            def execute():
+                nonlocal interrupted
+                if not interrupted:
+                    interrupted = True
+                    self.assertTrue(reserve_profile_slot(self.profile, self.redis)[0])
+                return original_execute()
+
+            pipe.execute = execute
+            return pipe
+
+        with patch.object(self.redis, "pipeline", side_effect=pipeline_with_reservation):
+            release_profile_slot(self.profile.id, self.redis)
+
+        self.assertEqual(get_profile_connection_count(self.profile, self.redis), 1)
+        self.assertEqual(get_credential_connection_count(self.profile, self.redis), 1)
+        self.assertIsNotNone(self.redis.get(profile_credential_release_key(self.profile.id)))
+        release_profile_slot(self.profile.id, self.redis)
+        self.assertEqual(get_credential_connection_count(self.profile, self.redis), 0)
 
     def test_same_credential_capped_at_profile_max(self):
         """Shared credential counter is capped by each profile's max_streams."""
@@ -490,7 +602,7 @@ class UpdateStreamProfileTests(TestCase):
             max_streams=5,
         )
         profile_a = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
-        profile_a.max_streams = 1
+        profile_a.max_streams = 2
         profile_a.save()
         profile_b = M3UAccountProfile.objects.create(
             m3u_account=account,
@@ -516,16 +628,22 @@ class UpdateStreamProfileTests(TestCase):
             side_effect=lambda profile: fp_a if profile.id == profile_a.id else fp_b,
         ):
             reserve_profile_slot(profile_a, redis)
+            reserve_profile_slot(profile_a, redis)
             redis.set(f"channel_stream:{channel.id}", stream.id)
             redis.set(f"stream_profile:{stream.id}", profile_a.id)
-            self.assertEqual(redis._data[key_a], 1)
+            self.assertEqual(redis._data[key_a], 2)
             self.assertNotIn(key_b, redis._data)
 
             with patch("core.utils.RedisClient.get_client", return_value=redis):
                 self.assertTrue(channel.update_stream_profile(profile_b.id))
 
-            self.assertEqual(redis._data[key_a], 0)
+            self.assertEqual(redis._data[key_a], 1)
             self.assertEqual(redis._data[key_b], 1)
+
+            release_profile_slot(profile_a.id, redis)
+            self.assertEqual(redis._data[key_a], 0)
+            release_profile_slot(profile_b.id, redis)
+            self.assertEqual(redis._data[key_b], 0)
 
 
 class VodProfileSelectionTests(TestCase):
