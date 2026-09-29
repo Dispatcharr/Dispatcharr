@@ -16,6 +16,10 @@ if [ ! -e "/tmp/init" ]; then
 
     # Install frontend dependencies
     cd /app/frontend && npm install
+    # Vite runs as $POSTGRES_USER via uWSGI attach-daemon and needs write
+    # access under node_modules (e.g. .vite-temp). Keep ownership aligned.
+    chown -R "$PUID:$PGID" /app/frontend/node_modules \
+        /app/frontend/package-lock.json /app/frontend/package.json 2>/dev/null || true
     # Install Python dependencies using UV
     cd /app && uv sync --python $UV_PROJECT_ENVIRONMENT/bin/python --no-install-project --no-dev
 

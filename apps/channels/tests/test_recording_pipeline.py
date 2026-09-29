@@ -929,6 +929,8 @@ class FfmpegRetryTests(TestCase):
         )
         self.assertIn("-start_number", cmd)
         self.assertEqual(cmd[cmd.index("-start_number") + 1], "42")
+        self.assertIn("-hls_playlist_type", cmd)
+        self.assertEqual(cmd[cmd.index("-hls_playlist_type") + 1], "event")
         hls_flags = cmd[cmd.index("-hls_flags") + 1]
         self.assertIn("append_list", hls_flags)
         self.assertIn("omit_endlist", hls_flags)
