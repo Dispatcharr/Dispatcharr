@@ -786,7 +786,9 @@ class ChannelService:
                     sample_rate=parsed_data.get('sample_rate'),
                     audio_channels=parsed_data.get('audio_channels'),
                     audio_bitrate=parsed_data.get('audio_bitrate'),
-                    stream_type=parsed_data.get('stream_type')
+                    stream_type=parsed_data.get('stream_type'),
+                    subtitle_codec=parsed_data.get('subtitle_codec'),
+                    subtitle_language=parsed_data.get('subtitle_language')
                 )
 
         except Exception as e:

@@ -34,31 +34,37 @@ class BaseLogParser(ABC):
     def parse_audio_stream(self, line: str) -> Optional[Dict[str, Any]]:
         pass
 
+    def parse_subtitle_stream(self, line: str) -> Optional[Dict[str, Any]]:
+        return None
+
 
 class FFmpegLogParser(BaseLogParser):
     """Parser for FFmpeg log output"""
-    
+
     STREAM_TYPE_METHODS = {
         'input': 'parse_input_format',
         'video': 'parse_video_stream',
-        'audio': 'parse_audio_stream'
+        'audio': 'parse_audio_stream',
+        'subtitle': 'parse_subtitle_stream'
     }
 
     def can_parse(self, line: str) -> Optional[str]:
         """Check if this is an FFmpeg line we can parse"""
         lower = line.lower()
-        
+
         # Input format detection
         if lower.startswith('input #'):
             return 'input'
-        
+
         # Stream info (only during input phase, but we'll let stream_manager handle phase tracking)
         if 'stream #' in lower:
             if 'video:' in lower:
                 return 'video'
             elif 'audio:' in lower:
                 return 'audio'
-        
+            elif 'subtitle:' in lower:
+                return 'subtitle'
+
         return None
 
     def parse_input_format(self, line: str) -> Optional[Dict[str, Any]]:
@@ -148,6 +154,27 @@ class FFmpegLogParser(BaseLogParser):
 
         except Exception as e:
             logger.debug(f"Error parsing FFmpeg audio stream info: {e}")
+
+        return None
+
+    def parse_subtitle_stream(self, line: str) -> Optional[Dict[str, Any]]:
+        """Parse FFmpeg subtitle stream info"""
+        try:
+            result = {}
+
+            codec_match = re.search(r'Subtitle:\s*([a-zA-Z0-9_]+)', line)
+            if codec_match:
+                result['subtitle_codec'] = codec_match.group(1)
+
+            language_match = re.search(r'\(([a-z]{3})\)', line)
+            if language_match:
+                result['subtitle_language'] = language_match.group(1)
+
+            if result:
+                return result
+
+        except Exception as e:
+            logger.debug(f"Error parsing FFmpeg subtitle stream info: {e}")
 
         return None
 
