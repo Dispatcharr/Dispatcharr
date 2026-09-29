@@ -28,6 +28,10 @@ class CoreConfig(AppConfig):
         from django.conf import settings as django_settings
         from dispatcharr.log_collector import apply_settings
 
+        # Only run in the main process (not in management commands, migrations, or workers)
+        if should_skip_initialization():
+            return
+
         try:
             from core.models import CoreSettings
 
@@ -40,10 +44,6 @@ class CoreConfig(AppConfig):
             pass
 
         # Sync developer notifications and check for version updates on startup
-        # Only run in the main process (not in management commands, migrations, or workers)
-        if should_skip_initialization():
-            return
-
         self._sync_developer_notifications()
 
     def _sync_developer_notifications(self):

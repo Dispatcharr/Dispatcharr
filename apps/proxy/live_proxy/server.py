@@ -88,8 +88,8 @@ class ProxyServer:
             # Use dedicated Redis client for proxy
             self.redis_client = RedisClient.get_client()
             if self.redis_client is not None:
-                logger.info("Using dedicated Redis client for proxy server")
-                logger.info(f"Worker ID: {self.worker_id}")
+                logger.debug("Using dedicated Redis client for proxy server")
+                logger.debug(f"Worker ID: {self.worker_id}")
             else:
                 # Fall back to direct connection with retry
                 self._setup_redis_connection()
@@ -169,13 +169,14 @@ class ProxyServer:
 
             pubsub_client = None
             pubsub = None
+            started = False
 
             while True:
                 try:
                     # Use dedicated PubSub client for event listener
                     pubsub_client = RedisClient.get_pubsub_client(retry_interval = 1, max_retry_interval =  30)
                     if pubsub_client:
-                        logger.info("Using dedicated Redis PubSub client for event listener")
+                        logger.debug("Using dedicated Redis PubSub client for event listener")
                     else:
                         # Fall back to creating a dedicated client if utility fails
                         logger.warning("Utility function for PubSub client failed, creating direct connection")
@@ -189,7 +190,11 @@ class ProxyServer:
                     pubsub = pubsub_client.pubsub()
                     pubsub.psubscribe("live:events:*")
 
-                    logger.info("Started Redis event listener for client activity")
+                    # A restart after a failure is news; the first start is not.
+                    (logger.info if started else logger.debug)(
+                        "Started Redis event listener for client activity"
+                    )
+                    started = True
 
                     for message in pubsub.listen():
                         if message["type"] != "pmessage":
@@ -435,8 +440,10 @@ class ProxyServer:
             lock_key = RedisKeys.channel_owner(channel_id)
 
             # Use atomic SET NX EX for locking with error handling
+            # None means Redis failed; a held lock gives False.
             acquired = self._execute_redis_command(
                 lambda: self.redis_client.set(lock_key, self.worker_id, nx=True, ex=ttl)
+                or False
             )
 
             if acquired is None:  # Redis command failed
@@ -2129,7 +2136,7 @@ class ProxyServer:
         thread = threading.Thread(target=cleanup_task, daemon=True)
         thread.name = "ts-proxy-cleanup"
         thread.start()
-        logger.info(f"Started TS proxy cleanup thread (interval: {ConfigHelper.cleanup_check_interval()}s)")
+        logger.debug(f"Started TS proxy cleanup thread (interval: {ConfigHelper.cleanup_check_interval()}s)")
 
     def _check_orphaned_channels(self):
         """Check for orphaned channels in Redis (owner worker crashed)"""
