@@ -7,6 +7,8 @@ Covers:
 """
 
 from unittest.mock import MagicMock, patch, call
+from redis.exceptions import WatchError
+
 from django.test import TestCase
 
 
@@ -45,6 +47,28 @@ class FakePipeline:
     def __init__(self, redis):
         self._redis = redis
         self._cmds = []
+        self._watched = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._cmds = []
+        self._watched = {}
+
+    def watch(self, *keys):
+        for key in keys:
+            self._watched[key] = self._redis.get(key)
+
+    def get(self, key):
+        return self._redis.get(key)
+
+    def multi(self):
+        pass
+
+    def delete(self, key):
+        self._cmds.append(('delete', key))
+        return self
 
     def incr(self, key):
         self._cmds.append(('incr', key))
@@ -55,6 +79,8 @@ class FakePipeline:
         return self
 
     def execute(self):
+        if any(self._redis.get(key) != value for key, value in self._watched.items()):
+            raise WatchError()
         results = []
         for cmd, key in self._cmds:
             results.append(getattr(self._redis, cmd)(key))

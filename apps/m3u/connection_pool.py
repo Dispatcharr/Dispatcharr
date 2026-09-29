@@ -15,6 +15,8 @@ import logging
 import re
 from typing import Literal, Optional, Tuple
 
+from redis.exceptions import WatchError
+
 logger = logging.getLogger(__name__)
 
 ReserveFailureReason = Literal["profile_full", "credential_full"]
@@ -236,33 +238,43 @@ def move_credential_slot_on_profile_switch(
     return True
 
 
-def _safe_decr(redis_client, key: str) -> None:
-    current = int(redis_client.get(key) or 0)
-    if current <= 0:
-        return
-    new_count = redis_client.decr(key)
-    if new_count < 0:
-        redis_client.set(key, 0)
-
-
 def _remember_credential_release_key(
     profile_id: int, cred_key: str, redis_client
 ) -> None:
     redis_client.set(profile_credential_release_key(profile_id), cred_key)
 
 
-def _release_credential_slot_by_profile_id(profile_id: int, redis_client) -> bool:
-    """Release a reserved credential counter using the key stored at reserve time."""
+def _release_credential_slot_by_profile_id(
+    profile_id: int, redis_client, *, release_profile: bool = False
+) -> bool:
+    """Keep the stored credential key until the profile's last reservation ends."""
     release_key = profile_credential_release_key(profile_id)
-    cred_key = redis_client.get(release_key)
-    if not cred_key:
-        return False
+    profile_key = profile_connections_key(profile_id)
+    while True:
+        with redis_client.pipeline() as pipe:
+            try:
+                pipe.watch(release_key, profile_key)
+                profile_count = int(pipe.get(profile_key) or 0)
+                cred_key = pipe.get(release_key)
+                if isinstance(cred_key, bytes):
+                    cred_key = cred_key.decode()
+                if cred_key:
+                    pipe.watch(cred_key)
+                    cred_count = int(pipe.get(cred_key) or 0)
 
-    if isinstance(cred_key, bytes):
-        cred_key = cred_key.decode()
-    _safe_decr(redis_client, cred_key)
-    redis_client.delete(release_key)
-    return True
+                # Watch the reads and commit both decrements together so concurrent
+                # teardowns cannot consume the same final reservation.
+                pipe.multi()
+                if cred_key and profile_count > 0 and cred_count > 0:
+                    pipe.decr(cred_key)
+                if profile_count <= 1:
+                    pipe.delete(release_key)
+                if release_profile and profile_count > 0:
+                    pipe.decr(profile_key)
+                pipe.execute()
+                return bool(cred_key and profile_count > 0)
+            except WatchError:
+                continue
 
 
 def _reserve_server_group_slot_for_profile(
@@ -322,9 +334,6 @@ def reserve_profile_slot(
 
 def release_profile_slot(profile_id: int, redis_client) -> None:
     """Release profile and shared credential slots after a stream end."""
-    _release_credential_slot_by_profile_id(profile_id, redis_client)
-
-    profile_key = profile_connections_key(profile_id)
-    current = int(redis_client.get(profile_key) or 0)
-    if current > 0:
-        redis_client.decr(profile_key)
+    _release_credential_slot_by_profile_id(
+        profile_id, redis_client, release_profile=True
+    )
