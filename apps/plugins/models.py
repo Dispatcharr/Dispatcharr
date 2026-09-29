@@ -12,6 +12,11 @@ class PluginConfig(models.Model):
     # Tracks whether this plugin has ever been enabled at least once
     ever_enabled = models.BooleanField(default=False)
     settings = models.JSONField(default=dict, blank=True)
+    # Celery task names implemented by the plugin, recorded whenever it is
+    # loaded while enabled; PeriodicTask rows are matched to the plugin by these.
+    owned_tasks = models.JSONField(default=list, blank=True)
+    # PeriodicTask pks disabled by disabling the plugin, re-enabled with it.
+    suspended_schedules = models.JSONField(default=list, blank=True)
 
     # Managed plugin fields (populated when installed from a repo)
     source_repo = models.ForeignKey(
