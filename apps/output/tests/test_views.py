@@ -537,7 +537,7 @@ class XcVodSeriesDistinctTests(TestCase):
             series=series,
             external_series_id="low-series",
         )
-        high_rel = M3USeriesRelation.objects.create(
+        M3USeriesRelation.objects.create(
             m3u_account=high,
             series=series,
             external_series_id="high-series",
@@ -547,7 +547,7 @@ class XcVodSeriesDistinctTests(TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["name"], "Shared Series")
-        self.assertEqual(results[0]["series_id"], high_rel.id)
+        self.assertEqual(results[0]["series_id"], series.id)
 
     def test_series_excludes_inactive_accounts(self):
         active = self._account(f"active-{uuid4().hex[:6]}")
@@ -883,7 +883,7 @@ class XcVodSeriesRegressionTests(TestCase):
         row = xc_get_series(self.request, self.user)[0]
 
         self.assertEqual(set(row.keys()), XC_SERIES_KEYS)
-        self.assertEqual(row["series_id"], relation.id)
+        self.assertEqual(row["series_id"], series.id)
         self.assertIn(f"/{logo.id}/", row["cover"])
         self.assertEqual(row["plot"], "Series plot")
         self.assertEqual(row["cast"], "Actor A")
@@ -1662,12 +1662,12 @@ class XcVodAccessFlagTests(TestCase):
             xc_get_vod_info(self.request, no_movies, self.movie.id)
         # ...but the series detail for the same user still resolves.
         self.assertIn(
-            "info", xc_get_series_info(self.request, no_movies, self.series_relation.id)
+            "info", xc_get_series_info(self.request, no_movies, self.series.id)
         )
 
         no_series = self._user(vod_series_enabled=False)
         with self.assertRaises(Http404):
-            xc_get_series_info(self.request, no_series, self.series_relation.id)
+            xc_get_series_info(self.request, no_series, self.series.id)
         self.assertIn("info", xc_get_vod_info(self.request, no_series, self.movie.id))
 
     def test_flags_apply_to_admins(self):
