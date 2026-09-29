@@ -405,6 +405,40 @@ describe('UserUtils', () => {
       expect(result.custom_properties.dvr_access).toBe('none');
     });
 
+    it('stores request when selected', () => {
+      const result = formValuesToPayload(
+        makeValues({ dvr_access: 'request' }),
+        null
+      );
+      expect(result.custom_properties.dvr_access).toBe('request');
+    });
+
+    it('maps dvr_quota_mb into custom_properties', () => {
+      const result = formValuesToPayload(
+        makeValues({ dvr_access: 'request', dvr_quota_mb: 500 }),
+        null
+      );
+      expect(result.dvr_quota_mb).toBeUndefined();
+      expect(result.custom_properties.dvr_quota_mb).toBe(500);
+    });
+
+    it('normalizes a missing or zero/negative dvr_quota_mb to 0 (unlimited)', () => {
+      const unset = formValuesToPayload(makeValues(), null);
+      expect(unset.custom_properties.dvr_quota_mb).toBe(0);
+
+      const zero = formValuesToPayload(
+        makeValues({ dvr_quota_mb: 0 }),
+        null
+      );
+      expect(zero.custom_properties.dvr_quota_mb).toBe(0);
+
+      const negative = formValuesToPayload(
+        makeValues({ dvr_quota_mb: -10 }),
+        null
+      );
+      expect(negative.custom_properties.dvr_quota_mb).toBe(0);
+    });
+
     it('forces dvr_access none when saving a streamer', () => {
       // This file mocks USER_LEVELS.STREAMER as 2 (see vi.mock above).
       const result = formValuesToPayload(
@@ -511,6 +545,7 @@ describe('UserUtils', () => {
         vod_movies_enabled: true,
         vod_series_enabled: true,
         dvr_access: 'view',
+        dvr_quota_mb: 0,
         epg_days: 0,
         epg_prev_days: 0,
         allowed_ips: [],
