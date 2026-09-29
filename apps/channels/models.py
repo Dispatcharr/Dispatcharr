@@ -151,6 +151,14 @@ class Stream(models.Model):
         help_text="Number of days of catch-up archive available (tv_archive_duration)",
     )
 
+    # Populated at import from the provider's stream_type (XC accounts) or the
+    # M3U radio EXTINF attribute (standard M3U accounts).
+    is_radio = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this stream is a radio (audio-only) stream, per the provider",
+    )
+
     class Meta:
         # If you use m3u_account, you might do unique_together = ('name','url','m3u_account')
         verbose_name = "Stream"
@@ -505,6 +513,15 @@ class Channel(models.Model):
     catchup_days = models.PositiveIntegerField(
         default=0,
         help_text="Max catch-up archive days across all streams on this channel",
+    )
+
+    # Copied from the source stream at creation and on auto-sync, like name
+    # and logo. Not rolled up across streams like is_catchup: radio is a
+    # classification, not a capability. ChannelOverride.is_radio wins when set.
+    is_radio = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this channel is a radio channel, copied from its source stream",
     )
 
     # Hidden channels are excluded from HDHR, M3U, EPG, and XC output queries.
@@ -1184,6 +1201,11 @@ class ChannelOverride(models.Model):
         blank=True,
         related_name="+",
     )
+    is_radio = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="User override for is_radio; null follows the channel value",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1202,6 +1224,7 @@ class ChannelOverride(models.Model):
                 "tvc_guide_stationid",
                 "epg_data_id",
                 "stream_profile_id",
+                "is_radio",
             )
         )
 

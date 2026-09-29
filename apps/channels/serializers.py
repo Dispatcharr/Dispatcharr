@@ -161,6 +161,7 @@ class StreamSerializer(serializers.ModelSerializer):
             "stream_chno",
             "is_catchup",
             "catchup_days",
+            "is_radio",
         ]
 
     def get_fields(self):
@@ -384,11 +385,13 @@ class ChannelOverrideSerializer(serializers.ModelSerializer):
             "tvc_guide_stationid",
             "epg_data_id",
             "stream_profile_id",
+            "is_radio",
         ]
         extra_kwargs = {
             "name": {"allow_null": True, "required": False},
             "tvg_id": {"allow_null": True, "required": False},
             "tvc_guide_stationid": {"allow_null": True, "required": False},
+            "is_radio": {"allow_null": True, "required": False},
         }
 
 
@@ -458,6 +461,7 @@ class ChannelSerializer(serializers.ModelSerializer):
     effective_tvc_guide_stationid = serializers.SerializerMethodField()
     effective_epg_data_id = serializers.SerializerMethodField()
     effective_stream_profile_id = serializers.SerializerMethodField()
+    effective_is_radio = serializers.SerializerMethodField()
 
     class Meta:
         model = Channel
@@ -477,6 +481,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "is_adult",
             "is_catchup",
             "catchup_days",
+            "is_radio",
             "hidden_from_output",
             "auto_created",
             "auto_created_by",
@@ -491,6 +496,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "effective_tvc_guide_stationid",
             "effective_epg_data_id",
             "effective_stream_profile_id",
+            "effective_is_radio",
         ]
 
     def _effective_value(self, obj, field_name):
@@ -530,6 +536,9 @@ class ChannelSerializer(serializers.ModelSerializer):
 
     def get_effective_stream_profile_id(self, obj):
         return self._effective_value(obj, "stream_profile_id")
+
+    def get_effective_is_radio(self, obj):
+        return self._effective_value(obj, "is_radio")
 
     def get_source_stream(self, obj):
         """

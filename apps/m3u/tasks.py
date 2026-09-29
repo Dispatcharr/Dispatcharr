@@ -1060,7 +1060,7 @@ _STREAM_TOUCH_FIELDS = ("last_seen", "is_stale")
 _STREAM_CHANGED_FIELDS = (
     "name", "url", "logo_url", "tvg_id", "custom_properties", "is_adult",
     "last_seen", "updated_at", "is_stale", "stream_id", "stream_chno",
-    "channel_group_id", "is_catchup", "catchup_days",
+    "channel_group_id", "is_catchup", "catchup_days", "is_radio",
 )
 
 
@@ -1403,6 +1403,15 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 _catchup_days_m3u = int(_attrs.get("tv_archive_duration", 0) or 0)
             except (TypeError, ValueError):
                 _catchup_days_m3u = 0
+            # Standard M3U accounts use the radio EXTINF attribute (the one
+            # Kodi's PVR IPTV Simple Client reads). XC accounts refresh through
+            # here too; collect_xc_streams keeps the provider's stream_type on
+            # the attributes, and "radio_streams" is the only radio value seen
+            # from real providers.
+            _is_radio_m3u = (
+                str(get_case_insensitive_attr(_attrs, "radio", "")).lower() in ("1", "true")
+                or str(_attrs.get("stream_type", "")).lower() == "radio_streams"
+            )
 
             stream_props = {
                 "name": name,
@@ -1419,6 +1428,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 "stream_chno": channel_num,
                 "is_catchup": _is_catchup_m3u,
                 "catchup_days": _catchup_days_m3u,
+                "is_radio": _is_radio_m3u,
             }
 
             if stream_hash not in stream_hashes:
@@ -1430,7 +1440,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days', 'is_radio'
         )
     }
 
@@ -1449,7 +1459,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 obj.stream_chno != stream_props["stream_chno"] or
                 obj.channel_group_id != stream_props["channel_group_id"] or
                 obj.is_catchup != stream_props["is_catchup"] or
-                obj.catchup_days != stream_props["catchup_days"]
+                obj.catchup_days != stream_props["catchup_days"] or
+                obj.is_radio != stream_props["is_radio"]
             )
 
             obj.last_seen = timezone.now()
@@ -1467,6 +1478,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 obj.channel_group_id = stream_props["channel_group_id"]
                 obj.is_catchup = stream_props["is_catchup"]
                 obj.catchup_days = stream_props["catchup_days"]
+                obj.is_radio = stream_props["is_radio"]
                 obj.updated_at = timezone.now()
                 streams_to_update.append(obj)
             else:
@@ -2116,6 +2128,22 @@ def sync_auto_channels(account_id, scan_start_time=None):
         )
         used_numbers.discard(None)
 
+        # Source stream (lowest order) per auto-synced channel, limited to
+        # this account's streams. Built once across all groups so a channel
+        # whose streams span groups still resolves to one source stream.
+        primary_stream_id_by_channel = {}
+        for ch_id, stream_id in (
+            ChannelStream.objects.filter(
+                channel__auto_created=True,
+                channel__auto_created_by=account,
+                stream__m3u_account=account,
+            )
+            .order_by("channel_id", "order")
+            .values_list("channel_id", "stream_id")
+        ):
+            if ch_id not in primary_stream_id_by_channel:
+                primary_stream_id_by_channel[ch_id] = stream_id
+
         for group_relation in auto_sync_groups:
             channel_group = group_relation.channel_group
             start_number = group_relation.auto_sync_channel_start or 1.0
@@ -2762,6 +2790,19 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             existing_channel.stream_profile = stream_profile_to_assign
                             dirty_fields.append("stream_profile")
 
+                        # Only the source stream sets is_radio, so a
+                        # multi-stream channel does not flip between TV and
+                        # Radio with loop order.
+                        primary_stream_id = primary_stream_id_by_channel.get(
+                            existing_channel.id
+                        )
+                        if (
+                            stream.id == primary_stream_id
+                            and existing_channel.is_radio != stream.is_radio
+                        ):
+                            existing_channel.is_radio = stream.is_radio
+                            dirty_fields.append("is_radio")
+
                         if dirty_fields:
                             # Multi-stream channels appear once per stream;
                             # dedupe by id so bulk_update does not double-fire
@@ -2830,6 +2871,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                                     logo=new_logo,
                                     epg_data=new_epg_data,
                                     stream_profile=stream_profile_to_assign,
+                                    is_radio=stream.is_radio,
                                 ),
                                 stream,
                             )
