@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status, serializers
 from drf_spectacular.utils import extend_schema, inline_serializer
 from django.core.cache import cache
+from django.db import transaction
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 from django.http import FileResponse
@@ -480,18 +481,34 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
         if enabled is None:
             return Response({"success": False, "error": "Invalid 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            cfg = PluginConfig.objects.get(key=key)
             pm = PluginManager.get()
-            if not enabled and cfg.enabled:
-                try:
-                    pm.stop_plugin(key, reason="disable")
-                except Exception:
-                    logger.exception("Failed to stop plugin '%s' on disable", key)
-            cfg.enabled = enabled
-            # Mark that this plugin has been enabled at least once
-            if cfg.enabled and not cfg.ever_enabled:
-                cfg.ever_enabled = True
-            cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+            try:
+                with transaction.atomic():
+                    cfg = PluginConfig.objects.select_for_update().get(key=key)
+                    stopping = cfg.enabled and not enabled
+                    if stopping:
+                        pm.suspend_schedules(cfg)
+                        # stop() is not transactional; running it under the row lock keeps a
+                        # newer enable from being stopped by this older disable.
+                        try:
+                            pm.stop_plugin(key, reason="disable")
+                        except Exception:
+                            logger.exception("Failed to stop plugin '%s' on disable", key)
+                    cfg.enabled = enabled
+                    # Mark that this plugin has been enabled at least once
+                    if cfg.enabled and not cfg.ever_enabled:
+                        cfg.ever_enabled = True
+                    cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+                    if enabled:
+                        pm.restore_schedules(cfg)
+            except PluginConfig.DoesNotExist:
+                raise
+            except Exception as e:
+                logger.exception("Failed to change enabled state of plugin '%s'", key)
+                return Response(
+                    {"success": False, "error": f"Failed to change plugin enabled state: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
             pm.discover_plugins(force_reload=True)
             plugin_entry = None
             try:
@@ -542,6 +559,14 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
             pm.stop_plugin(key, reason="delete")
         except Exception:
             logger.exception("Failed to stop plugin '%s' before delete", key)
+        try:
+            pm.delete_plugin_periodic_tasks(key)
+        except Exception as e:
+            logger.exception("Failed to delete periodic tasks of plugin '%s'", key)
+            return Response(
+                {"success": False, "error": f"Failed to delete plugin schedules: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         plugins_dir = pm.plugins_dir
         target_dir = os.path.join(plugins_dir, key)
         # Safety: ensure path inside plugins_dir
