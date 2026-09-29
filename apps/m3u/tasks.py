@@ -1487,7 +1487,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 streams_to_update, streams_to_touch, batch_size=200,
             )
     except Exception as e:
+        # The batch rolled back, so none of its streams got a fresh last_seen;
+        # the refresh must not treat it as processed.
         logger.error(f"Bulk operation failed: {str(e)}")
+        connections.close_all()
+        raise
 
     retval = (
         f"M3U account: {account_id}, Batch processed: "
@@ -1506,6 +1510,29 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     gc.collect()
 
     return retval
+
+
+def _retry_failed_batches(account_id, failed_batches, groups, hash_keys, compiled_filters):
+    """Retry batches that failed in the thread pool once, sequentially.
+
+    Returns (created, updated, unchanged, failed) counts.
+    """
+    created = updated = unchanged = failed = 0
+    for batch_idx, batch in failed_batches:
+        try:
+            result = process_m3u_batch_direct(
+                account_id, batch, groups, hash_keys, compiled_filters
+            )
+        except Exception as e:
+            logger.error(f"Batch {batch_idx} failed again on retry: {str(e)}")
+            failed += 1
+            continue
+        created_count, updated_count, unchanged_count = _parse_batch_stream_counts(result)
+        created += created_count
+        updated += updated_count
+        unchanged += unchanged_count
+        logger.info(f"Batch {batch_idx} succeeded on retry")
+    return created, updated, unchanged, failed
 
 
 def cleanup_streams(account_id, scan_start_time=timezone.now):
@@ -3611,6 +3638,7 @@ def _refresh_single_m3u_account_impl(account_id):
         streams_created = 0
         streams_updated = 0
         streams_unchanged = 0
+        failed_batch_count = 0
 
         if account.account_type == M3UAccount.Types.STADNARD:
             logger.debug(
@@ -3627,6 +3655,8 @@ def _refresh_single_m3u_account_impl(account_id):
             # Use 2 threads for optimal database connection handling
             max_workers = min(2, len(batches))
             logger.debug(f"Using {max_workers} threads for processing")
+
+            failed_batches = []
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit batch processing tasks using direct functions (now thread-safe)
@@ -3648,6 +3678,7 @@ def _refresh_single_m3u_account_impl(account_id):
                 # Process completed batches as they finish
                 for future in as_completed(future_to_batch):
                     batch_idx = future_to_batch[future]
+                    result = None
                     try:
                         result = future.result()
                         completed_batches += 1
@@ -3684,14 +3715,26 @@ def _refresh_single_m3u_account_impl(account_id):
 
                     except Exception as e:
                         logger.error(f"Error in thread batch {batch_idx}: {str(e)}")
-                        completed_batches += 1  # Still count it to avoid hanging
+                        if result is None:
+                            completed_batches += 1  # Still count it to avoid hanging
+                            failed_batches.append((batch_idx, batches[batch_idx]))
                     finally:
                         batches[batch_idx] = None
+
+            created_count, updated_count, unchanged_count, failed_batch_count = (
+                _retry_failed_batches(
+                    account_id, failed_batches, existing_groups, hash_keys,
+                    compiled_stream_filters,
+                )
+            )
+            streams_created += created_count
+            streams_updated += updated_count
+            streams_unchanged += unchanged_count
 
             logger.info(f"Thread-based processing completed for account {account_id}")
 
             # Parsed catalog is no longer needed; drop before stale cleanup / auto-sync.
-            del extinf_data, batches
+            del extinf_data, batches, failed_batches
             gc.collect()
         else:
             # For XC accounts, get the groups with their custom properties containing xc_id
@@ -3767,6 +3810,8 @@ def _refresh_single_m3u_account_impl(account_id):
                 max_workers = min(4, len(batches))
                 logger.debug(f"Using {max_workers} threads for XC stream processing")
 
+                failed_batches = []
+
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     # Submit stream batch processing tasks (reuse standard M3U processing)
                     future_to_batch = {
@@ -3787,6 +3832,7 @@ def _refresh_single_m3u_account_impl(account_id):
                     # Process completed batches as they finish
                     for future in as_completed(future_to_batch):
                         batch_idx = future_to_batch[future]
+                        result = None
                         try:
                             result = future.result()
                             completed_batches += 1
@@ -3823,14 +3869,55 @@ def _refresh_single_m3u_account_impl(account_id):
 
                         except Exception as e:
                             logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
-                            completed_batches += 1  # Still count it to avoid hanging
+                            if result is None:
+                                completed_batches += 1  # Still count it to avoid hanging
+                                failed_batches.append((batch_idx, batches[batch_idx]))
                         finally:
                             batches[batch_idx] = None
 
+                created_count, updated_count, unchanged_count, failed_batch_count = (
+                    _retry_failed_batches(
+                        account_id, failed_batches, existing_groups, hash_keys,
+                        compiled_stream_filters,
+                    )
+                )
+                streams_created += created_count
+                streams_updated += updated_count
+                streams_unchanged += unchanged_count
+
                 logger.info(f"XC thread-based processing completed for account {account_id}")
 
-                del batches
+                del batches, failed_batches
                 gc.collect()
+
+        if failed_batch_count:
+            # Stale marking and auto-sync compare last_seen against this
+            # refresh, so they would treat the failed batches' streams as gone.
+            logger.error(
+                f"{failed_batch_count} batch(es) failed for account {account_id}; "
+                f"skipping stale marking and cleanup for this incomplete refresh."
+            )
+            error_msg = (
+                f"Refresh incomplete: {failed_batch_count} batch(es) failed to process."
+            )
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_error=error_msg,
+            )
+            # Committed batches already changed Stream rows.
+            try:
+                rollup_channel_catchup_fields(account_id)
+            except Exception as e:
+                logger.error(f"Error rolling up catch-up fields for account {account_id}: {str(e)}")
+            from apps.output.streaming_chunk_cache import (
+                invalidate_output_caches_after_m3u_refresh,
+            )
+            invalidate_output_caches_after_m3u_refresh()
+            return "Failed to update m3u account, one or more batches failed to process"
 
         # Ensure all database transactions are committed before cleanup
         logger.info(
