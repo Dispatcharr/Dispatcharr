@@ -109,6 +109,25 @@ class RedactionImportTests(SimpleTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("/live/[username]/[password]/1.ts", result.stdout)
 
+    def test_the_module_runs_as_the_supervisor_fallback(self):
+        stdin = (
+            b"GET /live/portaluser/portalpass/1.ts\n"
+            b"untouched \xff bytes\n"
+            b"no newline password=s3cret"
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", log_redaction.__file__],
+            input=stdin,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            b"GET /live/[username]/[password]/1.ts\n"
+            b"untouched \xff bytes\n"
+            b"no newline password=[password]",
+        )
+
 
 class CollectorTests(SimpleTestCase):
     def setUp(self):

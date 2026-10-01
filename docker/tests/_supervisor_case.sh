@@ -3,7 +3,7 @@
 # process so the caller can cap it with `timeout`: a supervisor that fails to
 # degrade restarts forever, and one that degrades replaces itself with cat.
 #
-# Usage: _supervisor_case.sh <init-script> always-fails|slow-failures
+# Usage: _supervisor_case.sh <init-script> always-fails|masking-fails|slow-failures
 set -uo pipefail
 . "$1"
 export LOG_COLLECTOR_RESTART_DELAY=0
@@ -11,7 +11,15 @@ export LOG_COLLECTOR_RESTART_DELAY=0
 case "$2" in
     always-fails)
         start_log_collector() { return 1; }
-        printf 'a line the collector never saw\n' \
+        start_masked_passthrough() { sed 's/s3cret/[password]/'; }
+        printf 'a line the collector never saw: password=s3cret\n' \
+            | supervise_log_collector user python /tmp 2>&1
+        echo "supervisor returned"
+        ;;
+    masking-fails)
+        start_log_collector() { return 1; }
+        start_masked_passthrough() { return 1; }
+        printf 'a line nothing could mask\n' \
             | supervise_log_collector user python /tmp 2>&1
         ;;
     slow-failures)
