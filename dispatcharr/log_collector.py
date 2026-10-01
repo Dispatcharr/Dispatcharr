@@ -8,7 +8,9 @@ instant and touches only stdout, so a dead /data can never back-pressure the
 producers; bounded memory with drop-oldest and an explicit dropped-lines
 marker absorbs disk stalls (markers are file-only: the forwarded stream never
 dropped anything). Every line is rewritten into the canonical
-"stamp [offset] LEVEL source rest" grammar. Owns rotation and pruning.
+"stamp [offset] LEVEL source rest" grammar and swept for provider
+credentials -- which is why uwsgi, postgres, redis and the entrypoint are
+masked here and not by any Python formatter. Owns rotation and pruning.
 Django-free; configured via <logdir>/config/collector.conf from apply_settings().
 """
 
@@ -22,6 +24,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+try:
+    # Started by path, so siblings import but the package does not: importing
+    # it would pull celery and django into a process built to have neither.
+    from log_redaction import redact_text
+except ImportError:
+    from dispatcharr.log_redaction import redact_text
 
 
 def _role_suffix():
@@ -54,6 +63,11 @@ _BATCH_BYTES = 128 * 1024
 _BUFFER_BYTES = 2 * 1024 * 1024
 _MAX_LINE_BYTES = 256 * 1024
 _MAX_RECORD_BYTES = 16 * 1024
+# An oversize line is cut where no mask straddles the cut; the tail carries over.
+_CARRY_MIN_BYTES = 1024
+_CARRY_MAX_BYTES = 16 * 1024
+_CARRY_TRIES = 16
+_CARRY_SEP = re.compile(r"[\s&,;]")
 
 _TRUNCATED = b" ... [log_collector truncated this record at %d bytes]\n" % _MAX_RECORD_BYTES
 
@@ -150,6 +164,23 @@ def _cap_record(line):
     while cut > 0 and (line[cut] & 0xC0) == 0x80:
         cut -= 1
     return line[:cut] + _TRUNCATED
+
+
+def _carry_cut(chunk):
+    """Index to cut an oversize *chunk* at, so masking each side alone loses nothing."""
+    lo = max(len(chunk) - _CARRY_MAX_BYTES, 0)
+    window = chunk[lo:].decode("utf-8", "surrogateescape")
+    hi = len(window) - _CARRY_MIN_BYTES
+    try:
+        whole = redact_text(window)
+        cuts = [m.end() for m in _CARRY_SEP.finditer(window, 0, max(hi, 0))]
+        for cut in reversed(cuts[-_CARRY_TRIES:]):
+            if redact_text(window[:cut]) + redact_text(window[cut:]) == whole:
+                return lo + len(window[:cut].encode("utf-8", "surrogateescape"))
+    except Exception:
+        pass
+    # No safe cut: carry the most the next read can take.
+    return lo
 
 
 def _resolve_container_zone():
@@ -318,17 +349,23 @@ class Collector:
     def reader(self, stream):
         mid_line = False
         overrun = False
+        carry = b""
         while True:
-            chunk = stream.readline(_MAX_LINE_BYTES)
-            if not chunk:
+            chunk = stream.readline(_MAX_LINE_BYTES - len(carry))
+            if not chunk and not carry:
                 break
+            eof = not chunk
+            chunk, carry = carry + chunk, b""
             more = not chunk.endswith(b"\n")
+            if more and not eof and len(chunk) > _CARRY_MAX_BYTES:
+                cut = _carry_cut(chunk)
+                chunk, carry = chunk[:cut], chunk[cut:]
             # Continuation chunks of an oversize line must not be stamped.
             tail = mid_line
             if mid_line:
-                line = chunk
+                line = self._filter(chunk)
             else:
-                line = self._normalize(chunk)
+                line = self._filter(self._normalize(chunk))
                 # One runaway record can evict a rotation of history, so only the
                 # file copy is capped; docker logs takes the record whole.
                 overrun = len(line) > _MAX_RECORD_BYTES
@@ -521,6 +558,23 @@ class Collector:
                 view = view[os.write(self.out_fd, view) :]
         except OSError:
             pass
+
+    def _filter(self, raw):
+        """Mask credentials in every line, on the way to both sinks.
+
+        A fixed stage, not a configurable one: nothing can turn it off. A line
+        the battery leaves alone is returned as its original bytes, so the
+        lossy decode never reaches either sink.
+        """
+        try:
+            text = raw.decode("utf-8", "replace")
+            masked = redact_text(text)
+        except Exception:
+            # Redaction must never lose the stream: keep the line.
+            return raw
+        if masked == text:
+            return raw
+        return masked.encode("utf-8", "replace")
 
     # ── writer thread: batches, markers, rotation ─────────────────────────
 

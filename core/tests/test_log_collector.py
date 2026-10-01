@@ -5,6 +5,8 @@ import io
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 from datetime import timezone
@@ -14,7 +16,7 @@ from zoneinfo import ZoneInfo
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import CoreSettings, SYSTEM_SETTINGS_KEY
-from dispatcharr import log_collector
+from dispatcharr import log_collector, log_redaction
 from dispatcharr.log_collector import Collector
 
 
@@ -86,6 +88,48 @@ class ConfTests(SimpleTestCase):
     def test_missing_conf_gives_defaults(self):
         self.assertEqual(log_collector.read_conf(self.log_dir), log_collector._DEFAULT_CONF)
 
+class RedactionImportTests(SimpleTestCase):
+    def test_redaction_module_needs_no_django(self):
+        """The collector runs with no settings, so its masking must load bare."""
+        script = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('lr', sys.argv[1])\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "assert not [n for n in sys.modules if n.split('.')[0] == 'django'], "
+            "sorted(sys.modules)\n"
+            "print(module.redact_text('GET /live/portaluser/portalpass/1.ts'))\n"
+        )
+        # -I keeps PYTHONPATH and the cwd off sys.path: nothing but the file.
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", script, log_redaction.__file__],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/live/[username]/[password]/1.ts", result.stdout)
+
+    def test_the_module_runs_as_the_supervisor_fallback(self):
+        stdin = (
+            b"GET /live/portaluser/portalpass/1.ts\n"
+            b"untouched \xff bytes\n"
+            b"no newline password=s3cret"
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", log_redaction.__file__],
+            input=stdin,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            b"GET /live/[username]/[password]/1.ts\n"
+            b"untouched \xff bytes\n"
+            b"no newline password=[password]",
+        )
+
+
+class CollectorTests(SimpleTestCase):
     def setUp(self):
         self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
@@ -200,6 +244,12 @@ class ConfTests(SimpleTestCase):
         done.join(timeout=5.0)
         self.assertFalse(done.is_alive())
 
+    def test_masking_keeps_an_open_chunk_open(self):
+        self.assertEqual(
+            self.collector._filter(b"GET /live/joe/s3cret/1.ts"),
+            b"GET /live/[username]/[password]/1.ts",
+        )
+
     def test_both_sinks_get_the_same_bytes(self):
         self.feed(b"one line\n")
         self.collector._drain()
@@ -239,6 +289,32 @@ class ConfTests(SimpleTestCase):
         self.assertEqual(len(re.findall(r"\d{4}-\d{2}-\d{2} ", forward)), 1)
         self.assertIn("x" * 200, forward)
 
+    def straddle(self, secret_line, offset):
+        # Pads so the read boundary falls *offset* bytes into secret_line.
+        size = log_collector._MAX_LINE_BYTES - offset
+        pad = (b"w " * (size // 2 + 1))[-size:]
+        self.feed(pad + secret_line + b" and the rest\n")
+        return self.strip_stamps(self.read_forward())
+
+    def test_a_credential_across_a_read_boundary_is_masked_whole(self):
+        for offset in range(1, 30):
+            with self.subTest(offset=offset):
+                self.setUp()
+                out = self.straddle(b"password=s3cretvalue", offset)
+                self.assertIn("password=[password] and the rest", out)
+                self.assertNotIn("s3cret", out)
+                self.assertNotIn("value", out)
+
+    def test_failure_prose_across_a_read_boundary_is_masked_whole(self):
+        out = self.straddle(b"connection to prov.example.com timed out", 20)
+        self.assertIn("connection to [host] timed out", out)
+        self.assertNotIn("prov.example.com", out)
+
+    def test_an_oversize_line_crosses_the_boundary_byte_for_byte(self):
+        line = b"a b&c,d;e " * (log_collector._MAX_LINE_BYTES // 5) + b"\n"
+        self.feed(line)
+        self.assertEqual(self.strip_stamps(self.read_forward()).encode(), line)
+
     def test_oversize_record_is_capped_in_the_file_and_whole_on_stdout(self):
         # The file rotates so it takes the cap; docker logs has to stay complete.
         big = b"2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + b"y" * 60000
@@ -250,6 +326,14 @@ class ConfTests(SimpleTestCase):
         forwarded = self.read_forward()
         self.assertGreater(len(forwarded), 60000)
         self.assertNotIn("truncated this record at", forwarded)
+
+    def test_a_record_masked_under_the_cap_is_filed_whole(self):
+        record = b"x" * 16300 + b" password=" + b"A" * 200
+        self.feed(record + b"\n")
+        self.collector._drain()
+        filed = self.read_log()
+        self.assertIn("password=[password]", filed)
+        self.assertNotIn("truncated this record at", filed)
 
     def test_the_cap_never_cuts_through_a_codepoint(self):
         # The tail is served as charset=utf-8, so a cut mid-sequence malforms the file.
