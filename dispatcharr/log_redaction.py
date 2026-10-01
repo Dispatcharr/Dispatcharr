@@ -166,3 +166,24 @@ def redact_text(value):
     if not _TRIGGER.search(value):
         return value
     return _apply(value)
+
+
+def _passthrough(stdin, stdout):
+    """Mask stdin onto stdout line by line, for when the collector cannot run."""
+    for raw in iter(lambda: stdin.readline(256 * 1024), b""):
+        try:
+            text = raw.decode("utf-8", "replace")
+            masked = redact_text(text)
+            if masked != text:
+                raw = masked.encode("utf-8", "replace")
+        except Exception:
+            # Masking must never lose the stream: keep the line.
+            pass
+        stdout.write(raw)
+        stdout.flush()
+
+
+if __name__ == "__main__":
+    import sys
+
+    _passthrough(sys.stdin.buffer, sys.stdout.buffer)
