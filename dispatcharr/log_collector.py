@@ -63,6 +63,11 @@ _BATCH_BYTES = 128 * 1024
 _BUFFER_BYTES = 2 * 1024 * 1024
 _MAX_LINE_BYTES = 256 * 1024
 _MAX_RECORD_BYTES = 16 * 1024
+# An oversize line is cut where no mask straddles the cut; the tail carries over.
+_CARRY_MIN_BYTES = 1024
+_CARRY_MAX_BYTES = 16 * 1024
+_CARRY_TRIES = 16
+_CARRY_SEP = re.compile(r"[\s&,;]")
 
 _TRUNCATED = b" ... [log_collector truncated this record at %d bytes]\n" % _MAX_RECORD_BYTES
 
@@ -159,6 +164,23 @@ def _cap_record(line):
     while cut > 0 and (line[cut] & 0xC0) == 0x80:
         cut -= 1
     return line[:cut] + _TRUNCATED
+
+
+def _carry_cut(chunk):
+    """Index to cut an oversize *chunk* at, so masking each side alone loses nothing."""
+    lo = max(len(chunk) - _CARRY_MAX_BYTES, 0)
+    window = chunk[lo:].decode("utf-8", "surrogateescape")
+    hi = len(window) - _CARRY_MIN_BYTES
+    try:
+        whole = redact_text(window)
+        cuts = [m.end() for m in _CARRY_SEP.finditer(window, 0, max(hi, 0))]
+        for cut in reversed(cuts[-_CARRY_TRIES:]):
+            if redact_text(window[:cut]) + redact_text(window[cut:]) == whole:
+                return lo + len(window[:cut].encode("utf-8", "surrogateescape"))
+    except Exception:
+        pass
+    # No safe cut: carry the most the next read can take.
+    return lo
 
 
 def _resolve_container_zone():
@@ -327,11 +349,17 @@ class Collector:
     def reader(self, stream):
         mid_line = False
         overrun = False
+        carry = b""
         while True:
-            chunk = stream.readline(_MAX_LINE_BYTES)
-            if not chunk:
+            chunk = stream.readline(_MAX_LINE_BYTES - len(carry))
+            if not chunk and not carry:
                 break
+            eof = not chunk
+            chunk, carry = carry + chunk, b""
             more = not chunk.endswith(b"\n")
+            if more and not eof and len(chunk) > _CARRY_MAX_BYTES:
+                cut = _carry_cut(chunk)
+                chunk, carry = chunk[:cut], chunk[cut:]
             # Continuation chunks of an oversize line must not be stamped.
             tail = mid_line
             if mid_line:

@@ -289,6 +289,32 @@ class CollectorTests(SimpleTestCase):
         self.assertEqual(len(re.findall(r"\d{4}-\d{2}-\d{2} ", forward)), 1)
         self.assertIn("x" * 200, forward)
 
+    def straddle(self, secret_line, offset):
+        # Pads so the read boundary falls *offset* bytes into secret_line.
+        size = log_collector._MAX_LINE_BYTES - offset
+        pad = (b"w " * (size // 2 + 1))[-size:]
+        self.feed(pad + secret_line + b" and the rest\n")
+        return self.strip_stamps(self.read_forward())
+
+    def test_a_credential_across_a_read_boundary_is_masked_whole(self):
+        for offset in range(1, 30):
+            with self.subTest(offset=offset):
+                self.setUp()
+                out = self.straddle(b"password=s3cretvalue", offset)
+                self.assertIn("password=[password] and the rest", out)
+                self.assertNotIn("s3cret", out)
+                self.assertNotIn("value", out)
+
+    def test_failure_prose_across_a_read_boundary_is_masked_whole(self):
+        out = self.straddle(b"connection to prov.example.com timed out", 20)
+        self.assertIn("connection to [host] timed out", out)
+        self.assertNotIn("prov.example.com", out)
+
+    def test_an_oversize_line_crosses_the_boundary_byte_for_byte(self):
+        line = b"a b&c,d;e " * (log_collector._MAX_LINE_BYTES // 5) + b"\n"
+        self.feed(line)
+        self.assertEqual(self.strip_stamps(self.read_forward()).encode(), line)
+
     def test_oversize_record_is_capped_in_the_file_and_whole_on_stdout(self):
         # The file rotates so it takes the cap; docker logs has to stay complete.
         big = b"2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + b"y" * 60000
