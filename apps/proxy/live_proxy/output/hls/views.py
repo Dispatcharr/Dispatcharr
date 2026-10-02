@@ -101,8 +101,9 @@ def _serve_hls_playlist(token):
     channel_id, client_id, client_hash = loaded
     fmt = _resolved_format(client_hash)
 
-    # The segmenter needs a couple of segments after a cold start; wait
-    # briefly (gevent-friendly) instead of bouncing the player.
+    # Cold start holds the playlist key until listed media reaches the
+    # manager's MIN_INITIAL_PLAYLIST_SECONDS gate. Wait briefly
+    # (gevent-friendly) instead of bouncing the player.
     playlist_key = RedisKeys.output_playlist(channel_id, fmt)
     deadline = time.time() + 10
     playlist_json = redis_client.get(playlist_key)

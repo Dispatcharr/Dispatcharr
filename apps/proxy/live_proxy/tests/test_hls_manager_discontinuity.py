@@ -87,6 +87,9 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         mgr._prune_playlist_window = MagicMock(return_value=False)
         mgr._write_playlist_state = MagicMock()
         mgr._last_segment_ts = 1.0
+        # Heartbeat prune republish only runs after the cold-start gate
+        # has published once; these loop tests assume an active playlist.
+        mgr._playlist_published = True
         return mgr
 
     def test_sidecar_index_cuts_before_discontinuity_chunk(self):
@@ -232,6 +235,7 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         ts_buffer.get_optimized_client_data.side_effect = get_data
         mgr = self._manager(ts_buffer)
         mgr._last_segment_ts = None
+        mgr._playlist_published = False
         mgr._prune_playlist_window.return_value = True
         t0 = 1_000_000.0
         with patch(
@@ -240,6 +244,98 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         ):
             mgr._segmenter_loop()
         mgr._write_playlist_state.assert_not_called()
+
+
+class HLSInitialPlaylistGateTests(SimpleTestCase):
+    """Cold-start playlist publish waits for enough listed media time."""
+
+    def _manager(self):
+        mgr = HLSOutputManager.__new__(HLSOutputManager)
+        mgr.channel_id = CHANNEL_ID
+        mgr.fmt = "hls"
+        mgr.segment_duration = 4.0
+        mgr.adv_target = 6
+        mgr.start_behind = 5.0
+        mgr._disc_sequence = 0
+        mgr._window = []
+        mgr._last_segment_ts = None
+        mgr._playlist_published = False
+        mgr._redis = MagicMock()
+        mgr.segment_buffer = MagicMock()
+        mgr.segment_buffer.put_chunk.return_value = True
+        mgr.segment_buffer.index = 0
+        mgr._prune_playlist_window = MagicMock(return_value=False)
+        return mgr
+
+    def _segment(self, duration, discontinuity=False):
+        seg = MagicMock()
+        seg.data = b"x" * 188
+        seg.duration = duration
+        seg.discontinuity = discontinuity
+        return seg
+
+    def test_holds_playlist_until_four_seconds_of_media(self):
+        mgr = self._manager()
+        mgr.segment_buffer.index = 1
+        mgr._store_segment(self._segment(2.002))
+        self.assertFalse(mgr._playlist_published)
+        mgr._redis.setex.assert_not_called()
+        self.assertEqual(len(mgr._window), 1)
+
+        mgr.segment_buffer.index = 2
+        mgr._store_segment(self._segment(2.002))
+        self.assertTrue(mgr._playlist_published)
+        mgr._redis.setex.assert_called_once()
+        self.assertEqual(len(mgr._window), 2)
+
+    def test_single_four_second_segment_publishes(self):
+        mgr = self._manager()
+        mgr.segment_buffer.index = 1
+        mgr._store_segment(self._segment(4.004))
+        self.assertTrue(mgr._playlist_published)
+        mgr._redis.setex.assert_called_once()
+
+    def test_early_keyframe_segment_clears_gate(self):
+        """A 3.96s GOP is within the segmenter's early-keyframe slack."""
+        mgr = self._manager()
+        mgr.segment_buffer.index = 1
+        mgr._store_segment(self._segment(3.96))
+        self.assertTrue(mgr._playlist_published)
+        mgr._redis.setex.assert_called_once()
+
+    def test_short_first_segment_still_held(self):
+        mgr = self._manager()
+        mgr.segment_buffer.index = 1
+        mgr._store_segment(self._segment(3.5))
+        self.assertFalse(mgr._playlist_published)
+        mgr._redis.setex.assert_not_called()
+
+    def test_start_marks_seeded_window_published(self):
+        mgr = self._manager()
+        mgr.worker_id = WORKER_ID
+        mgr.running = False
+        mgr._thread = None
+        mgr._owns_output = False
+        mgr._stopped = False
+        mgr._set_state = MagicMock()
+        mgr._acquire_owner_lock = MagicMock(return_value=True)
+        mgr._write_playlist_state = MagicMock()
+        mgr._last_segment_ts = 99.0
+        mgr._window = [{"seq": 5, "dur": 4.0, "disc": False}]
+        mgr.segment_buffer.chunk_ttl = 100
+        with patch("apps.proxy.live_proxy.output.hls.manager.threading.Thread") as thread_cls:
+            thread_cls.return_value = MagicMock()
+            self.assertTrue(mgr.start())
+        self.assertTrue(mgr._playlist_published)
+        mgr._write_playlist_state.assert_called_once()
+
+    def test_continues_publishing_after_gate(self):
+        mgr = self._manager()
+        mgr.segment_buffer.index = 1
+        mgr._store_segment(self._segment(4.0))
+        mgr.segment_buffer.index = 2
+        mgr._store_segment(self._segment(4.0))
+        self.assertEqual(mgr._redis.setex.call_count, 2)
 
 
 class HLSPlaylistWindowPruneTests(SimpleTestCase):
