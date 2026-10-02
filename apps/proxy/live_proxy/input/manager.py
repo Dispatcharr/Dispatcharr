@@ -1536,13 +1536,19 @@ class StreamManager:
             # Reset retry counter to allow immediate reconnect
             self._clear_connection_failure_history()
 
-            # Also reset buffer position to prevent stale data after URL change
-            if hasattr(self.buffer, 'reset_buffer_position'):
+            # Flush the last old-source packets to Redis, record the discontinuity
+            # sidecar index, and arm in-band discontinuity_indicator stamping on
+            # the first packet of each PID from the new source (ISO 13818-1 /
+            # FFmpeg initial_discontinuity). Replaces a bare local reset that
+            # discarded complete packets still sitting in the write buffer.
+            try:
+                self.buffer.mark_discontinuity()
+            except Exception as e:
+                logger.warning(f"Failed to mark buffer discontinuity: {e}")
                 try:
                     self.buffer.reset_buffer_position()
-                    logger.debug("Reset buffer position for clean URL switch")
-                except Exception as e:
-                    logger.warning(f"Failed to reset buffer position: {e}")
+                except Exception as e2:
+                    logger.warning(f"Failed to reset buffer position: {e2}")
 
             # Log stream switch event
             try:
