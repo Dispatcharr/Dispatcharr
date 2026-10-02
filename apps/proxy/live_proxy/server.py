@@ -14,7 +14,6 @@ import os
 import json
 import gevent
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel, Stream
 from core.utils import RedisClient, log_system_event
 from django.db import close_old_connections
 from redis.exceptions import ConnectionError, TimeoutError
@@ -1574,11 +1573,17 @@ class ProxyServer:
 
     @staticmethod
     def _channel_id_from_metadata_key(key):
+        """Extract channel/worker id from ``live:channel:{id}:metadata``.
+
+        Uses prefix/suffix slicing so ids that contain dots (profile-scoped
+        stream previews) are preserved; a naive ``split(':')[2]`` would truncate.
+        """
         if isinstance(key, bytes):
             key = key.decode('utf-8', errors='replace')
-        parts = key.split(':')
-        if len(parts) >= 3:
-            return parts[2]
+        prefix = "live:channel:"
+        suffix = ":metadata"
+        if key.startswith(prefix) and key.endswith(suffix):
+            return key[len(prefix) : -len(suffix)] or None
         return None
 
     def _stop_upstream_before_redis_cleanup(self, channel_id):
@@ -2336,24 +2341,13 @@ class ProxyServer:
         metadata-only release when the channel was deleted mid-playback.
         """
         try:
-            channel = Channel.objects.get(uuid=channel_id)
-            if channel.release_stream():
-                return True
-            logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-        except Channel.DoesNotExist:
-            pass
-        except Exception as e:
-            logger.debug(f"Channel {channel_id}: release_stream via ORM failed: {e}")
+            from .url_utils import release_worker_stream
 
-        try:
-            stream = Stream.objects.get(stream_hash=channel_id)
-            if stream.release_stream():
+            if release_worker_stream(channel_id):
                 return True
-            logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-        except Stream.DoesNotExist:
-            pass
+            logger.debug(f"Worker {channel_id}: release_stream found no keys to clean")
         except Exception as e:
-            logger.debug(f"Stream {channel_id}: release_stream via ORM failed: {e}")
+            logger.debug(f"Worker {channel_id}: release_stream failed: {e}")
 
         if self._release_profile_slot_from_redis_metadata(channel_id):
             return True

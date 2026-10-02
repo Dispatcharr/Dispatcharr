@@ -269,6 +269,24 @@ class OrphanChannelCleanupTests(TestCase):
         mock_stop_local.assert_called_once_with(CHANNEL_ID)
         mock_clean_redis.assert_called_once_with(CHANNEL_ID)
 
+    def test_channel_id_from_metadata_key_preserves_preview_worker_id(self):
+        worker_id = "abcdef0123456789.p12"
+        key = RedisKeys.channel_metadata(worker_id)
+        self.assertEqual(
+            ProxyServer._channel_id_from_metadata_key(key),
+            worker_id,
+        )
+        self.assertEqual(
+            ProxyServer._channel_id_from_metadata_key(key.encode()),
+            worker_id,
+        )
+        self.assertEqual(
+            ProxyServer._channel_id_from_metadata_key(
+                RedisKeys.channel_metadata(CHANNEL_ID)
+            ),
+            CHANNEL_ID,
+        )
+
 
 class StreamManagerOwnershipTests(TestCase):
     def test_still_owner_false_when_different_worker(self):
@@ -431,12 +449,12 @@ class StopChannelTeardownTests(TestCase):
 
 
 class CleanRedisKeysOrderTests(TestCase):
-    @patch("apps.proxy.live_proxy.server.Stream.objects.get")
-    @patch("apps.proxy.live_proxy.server.Channel.objects.get")
+    @patch("apps.proxy.live_proxy.url_utils.Stream.objects.get")
+    @patch("apps.proxy.live_proxy.url_utils.Channel.objects.get")
     def test_clean_redis_keys_releases_profile_slot_before_live_keys_deleted(
         self, mock_channel_get, mock_stream_get
     ):
-        from apps.channels.models import Channel, Stream
+        from apps.channels.models import Stream
 
         with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
             server = ProxyServer()
@@ -470,8 +488,8 @@ class CleanRedisKeysOrderTests(TestCase):
         server.redis_client.delete.assert_called_once_with(channel_key)
 
     @patch("apps.m3u.connection_pool.release_profile_slot")
-    @patch("apps.proxy.live_proxy.server.Stream.objects.get")
-    @patch("apps.proxy.live_proxy.server.Channel.objects.get")
+    @patch("apps.proxy.live_proxy.url_utils.Stream.objects.get")
+    @patch("apps.proxy.live_proxy.url_utils.Channel.objects.get")
     def test_clean_redis_keys_releases_profile_from_metadata_when_channel_gone(
         self, mock_channel_get, mock_stream_get, mock_release_slot
     ):

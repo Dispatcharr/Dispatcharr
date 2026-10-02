@@ -44,6 +44,12 @@ DEFAULT_SEGMENT_DURATION = 4
 # TTL). The advertised playlist window tracks whatever is still in Redis
 # (minus a segment about to expire), not this fixed count.
 DEFAULT_WINDOW_SIZE = 10
+# Cold-start gate: do not publish the playlist descriptor until the
+# rolling window holds at least this much media time (sum of EXTINF),
+# so the first manifest is deep enough to avoid an early underrun.
+# This is video time, not wall clock. One steady 4s cut or two ~2s
+# fast-start cuts both clear it.
+MIN_INITIAL_PLAYLIST_SECONDS = 4.0
 # Accept a keyframe this far before the configured cut length. A GOP
 # aimed at 4s that lands a picture or two early (3.9s at 25 fps) then
 # closes cleanly instead of skipping that keyframe and force-cutting.
@@ -120,6 +126,10 @@ class HLSOutputManager:
         # Playlist "ts" is last segment production, not last Redis write, so
         # prune-only republishes do not mask a stalled producer as live.
         self._last_segment_ts = None
+        # False until the first playlist publish clears the cold-start media
+        # gate (or a prior owner's descriptor is seeded). Prune/heartbeat
+        # must not create an empty or shallow first manifest.
+        self._playlist_published = False
         # Seed the rolling window + frozen target from an existing descriptor so
         # a mid-session worker restart/takeover does not clobber the playlist to
         # a fresh window (MEDIA-SEQUENCE must never regress; RFC 8216 6.2.2). The
@@ -140,6 +150,10 @@ class HLSOutputManager:
                     if prior.get("ts") is not None:
                         self._last_segment_ts = float(prior["ts"])
                     self._prune_playlist_window()
+                    # A descriptor already in Redis was visible to clients;
+                    # keep updating it rather than re-applying the cold gate.
+                    if self._window:
+                        self._playlist_published = True
             except Exception:
                 pass
 
@@ -159,6 +173,7 @@ class HLSOutputManager:
         # __init__ pruned any seeded window in memory only; publish now that we own.
         if self._last_segment_ts is not None:
             self._write_playlist_state()
+            self._playlist_published = True
 
         short_id = self.channel_id[:8]
         self._thread = threading.Thread(
@@ -244,7 +259,12 @@ class HLSOutputManager:
                     if not self.running:
                         break
                     # Drop expired advertised URIs while the input is stalled.
-                    if self._prune_playlist_window() and self._last_segment_ts is not None:
+                    # Skip until the cold-start media gate has published once.
+                    if (
+                        self._playlist_published
+                        and self._prune_playlist_window()
+                        and self._last_segment_ts is not None
+                    ):
                         self._write_playlist_state()
                     if self._has_hls_demand():
                         idle_demand_checks = 0
@@ -373,6 +393,35 @@ class HLSOutputManager:
                  self._window[0]["seq"] if self._window else None)
         return after != before
 
+    def _window_media_seconds(self):
+        """Total EXTINF media time currently listed in the rolling window."""
+        return sum(float(entry.get("dur") or 0.0) for entry in self._window)
+
+    def _maybe_write_playlist_state(self):
+        """Publish the playlist once the cold-start media gate is satisfied.
+
+        Before the first publish, wait until listed media reaches
+        MIN_INITIAL_PLAYLIST_SECONDS. After that, every call updates Redis.
+        """
+        if not self._playlist_published:
+            media = self._window_media_seconds()
+            # Same slack the segmenter allows for an early keyframe, so a
+            # ~3.96s GOP clears the gate instead of waiting for a second cut.
+            if media + _EARLY_KEYFRAME_SLACK < MIN_INITIAL_PLAYLIST_SECONDS:
+                logger.debug(
+                    f"[HLS:{self.channel_id}] Holding initial playlist "
+                    f"({media:.3f}s < {MIN_INITIAL_PLAYLIST_SECONDS}s media)"
+                )
+                return
+            self._write_playlist_state()
+            self._playlist_published = True
+            logger.info(
+                f"[HLS:{self.channel_id}] Initial playlist published "
+                f"({media:.3f}s media, {len(self._window)} segments)"
+            )
+            return
+        self._write_playlist_state()
+
     def _write_playlist_state(self):
         """Publish the current window descriptor to Redis."""
         if not self._redis:
@@ -406,7 +455,7 @@ class HLSOutputManager:
         })
         self._last_segment_ts = time.time()
         self._prune_playlist_window()
-        self._write_playlist_state()
+        self._maybe_write_playlist_state()
 
         logger.debug(
             f"[HLS:{self.channel_id}] Segment {seq}: "
