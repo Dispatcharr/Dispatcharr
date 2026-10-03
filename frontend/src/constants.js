@@ -372,6 +372,14 @@ export const REGION_CHOICES = [
   { value: 'zw', label: 'ZW' },
 ];
 
+export const REFRESH_INTERVAL_OPTIONS = [
+  { value: '0', label: 'Manual' },
+  { value: '5', label: '5s' },
+  { value: '10', label: '10s' },
+  { value: '30', label: '30s' },
+  { value: '60', label: '1m' },
+];
+
 export const VOD_TYPES = {
   MOVIE: 'movie',
   EPISODE: 'episode',
@@ -413,7 +421,9 @@ export const SUBSCRIPTION_EVENTS = {
   recording_start: 'Recording Started',
   recording_end: 'Recording Ended',
   epg_refresh: 'EPG Refreshed',
+  epg_error: 'EPG Error',
   m3u_refresh: 'M3U Refreshed',
+  m3u_error: 'M3U Error',
   client_connect: 'Client Connected',
   client_disconnect: 'Client Disconnected',
   login_failed: 'Login Failed',

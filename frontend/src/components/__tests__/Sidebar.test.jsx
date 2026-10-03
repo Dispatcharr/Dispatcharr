@@ -303,6 +303,34 @@ describe('Sidebar', () => {
     });
   });
 
+  describe('Navigation Links - Log persistence', () => {
+    it('shows Logs while persist is on or unset', async () => {
+      renderSidebar();
+      fireEvent.click(screen.getByText('System'));
+      await waitFor(() => {
+        expect(screen.getByText('Logs')).toBeInTheDocument();
+      });
+    });
+
+    it('hides Logs when log persistence is off', async () => {
+      useSettingsStore.mockImplementation((selector) =>
+        selector({
+          environment: mockEnvironment,
+          version: mockVersion,
+          settings: {
+            system_settings: { value: { log_persist: false } },
+          },
+        })
+      );
+      renderSidebar();
+      fireEvent.click(screen.getByText('System'));
+      await waitFor(() => {
+        expect(screen.getByText('Logo Manager')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Logs')).not.toBeInTheDocument();
+    });
+  });
+
   describe('Navigation Links - Regular User without DVR view', () => {
     beforeEach(() => {
       useAuthStore.mockImplementation((selector) => {

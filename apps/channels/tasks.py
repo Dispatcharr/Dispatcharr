@@ -1629,6 +1629,7 @@ def _dvr_build_ffmpeg_cmd(
         "-f", "hls",
         "-hls_time", "4",
         "-hls_list_size", "0",
+        "-hls_playlist_type", "event",
         "-hls_flags", "append_list+omit_endlist+independent_segments",
         "-start_number", str(hls_start_number),
         "-hls_segment_filename", hls_seg_pattern,
@@ -4220,8 +4221,12 @@ def set_channels_names_from_epg(self, channel_ids):
             batch_ids = channel_ids[i:i + batch_size]
             batch_updates = []
 
-            # Get channels and their EPG data
-            channels = Channel.objects.filter(id__in=batch_ids).select_related('epg_data')
+            # Get channels and their EPG data. A dummy source shares one placeholder
+            # EPGData row across all its channels, so copying from it would collapse
+            # every channel on that source onto the same value.
+            channels = Channel.objects.filter(id__in=batch_ids).select_related(
+                'epg_data'
+            ).exclude(epg_data__epg_source__source_type='dummy')
 
             for channel in channels:
                 try:
@@ -4483,8 +4488,12 @@ def set_channels_tvg_ids_from_epg(self, channel_ids):
             batch_ids = channel_ids[i:i + batch_size]
             batch_updates = []
 
-            # Get channels and their EPG data
-            channels = Channel.objects.filter(id__in=batch_ids).select_related('epg_data')
+            # Get channels and their EPG data. A dummy source shares one placeholder
+            # EPGData row across all its channels, so copying from it would collapse
+            # every channel on that source onto the same value.
+            channels = Channel.objects.filter(id__in=batch_ids).select_related(
+                'epg_data'
+            ).exclude(epg_data__epg_source__source_type='dummy')
 
             for channel in channels:
                 try:

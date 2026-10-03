@@ -116,6 +116,14 @@ describe('CustomTableBody', () => {
       expect(document.querySelector('.tbody')).toBeInTheDocument();
     });
 
+    it('leaves vertical scrolling to the containing table viewport', () => {
+      render(<CustomTableBody {...defaultProps()} />);
+      const body = document.querySelector('.tbody');
+
+      expect(body.style.flex).toBe('0 0 auto');
+      expect(body.style.overflowY).toBe('');
+    });
+
     it('renders a row for each entry in getRowModel', () => {
       render(<CustomTableBody {...defaultProps()} />);
       expect(document.querySelectorAll('.tr')).toHaveLength(2);
@@ -263,6 +271,9 @@ describe('CustomTableBody', () => {
       setupMocks({ isUnlocked: false });
       render(<CustomTableBody {...defaultProps({ enableDragDrop: true })} />);
       expect(screen.queryByTestId('grip-vertical')).not.toBeInTheDocument();
+      expect(useSortable).toHaveBeenCalledWith(
+        expect.objectContaining({ disabled: true })
+      );
     });
 
     it('renders grip handle when enableDragDrop is true and table is unlocked', () => {
@@ -285,26 +296,26 @@ describe('CustomTableBody', () => {
     });
 
     it('calls useSortable with row id', () => {
+      setupMocks({ isUnlocked: true });
       const row = makeRow('abc', [makeCell(1, 'name')], 1);
       const props = defaultProps({
         getRowModel: vi.fn(() => ({ rows: [row] })),
+        enableDragDrop: true,
       });
       render(<CustomTableBody {...props} />);
       expect(useSortable).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'row-abc' })
+        expect.objectContaining({ id: 'row-abc', disabled: false })
       );
     });
 
-    it('disables useSortable when enableDragDrop is false', () => {
+    it('does not call useSortable when drag and drop is disabled', () => {
       const row = makeRow(1, [makeCell(1, 'name')], 1);
       const props = defaultProps({
         getRowModel: vi.fn(() => ({ rows: [row] })),
         enableDragDrop: false,
       });
       render(<CustomTableBody {...props} />);
-      expect(useSortable).toHaveBeenCalledWith(
-        expect.objectContaining({ disabled: true })
-      );
+      expect(useSortable).not.toHaveBeenCalled();
     });
   });
 

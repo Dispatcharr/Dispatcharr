@@ -9,13 +9,11 @@ Handles live TS stream proxying with support for:
 
 import threading
 import socket
-import random
 import time
 import os
 import json
 import gevent
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel, Stream
 from core.utils import RedisClient, log_system_event
 from django.db import close_old_connections
 from redis.exceptions import ConnectionError, TimeoutError
@@ -25,7 +23,7 @@ from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, REDIS_TTL_DEFAULT
+from .constants import ChannelState, EventType, ChannelMetadataField, REDIS_TTL_DEFAULT
 from .config_helper import ConfigHelper
 from .utils import get_logger
 
@@ -45,9 +43,6 @@ class ProxyServer:
             cls._instance = cls._INITIALIZING
             try:
                 from .server import ProxyServer
-                from .input.manager import StreamManager
-                from .input.buffer import StreamBuffer
-                from .client_manager import ClientManager
                 real_instance = ProxyServer()
                 cls._instance = real_instance
                 return real_instance
@@ -93,7 +88,7 @@ class ProxyServer:
             # Use dedicated Redis client for proxy
             self.redis_client = RedisClient.get_client()
             if self.redis_client is not None:
-                logger.info(f"Using dedicated Redis client for proxy server")
+                logger.info("Using dedicated Redis client for proxy server")
                 logger.info(f"Worker ID: {self.worker_id}")
             else:
                 # Fall back to direct connection with retry
@@ -125,7 +120,7 @@ class ProxyServer:
         self.redis_client = RedisClient.get_client(max_retries=self.redis_max_retries,
                                             retry_interval=self.redis_retry_interval)
         if self.redis_client:
-            logger.info(f"Successfully connected to Redis using utility function")
+            logger.info("Successfully connected to Redis using utility function")
             logger.info(f"Worker ID: {self.worker_id}")
         else:
             logger.error(f"Failed to connect to Redis after {self.redis_max_retries} attempts")
@@ -171,27 +166,21 @@ class ProxyServer:
             return
 
         def event_listener():
-            retry_count = 0
-            max_retries = 10
-            base_retry_delay = 1  # Start with 1 second delay
-            max_retry_delay = 30  # Cap at 30 seconds
+
             pubsub_client = None
             pubsub = None
 
             while True:
                 try:
                     # Use dedicated PubSub client for event listener
-                    pubsub_client = RedisClient.get_pubsub_client()
+                    pubsub_client = RedisClient.get_pubsub_client(retry_interval = 1, max_retry_interval =  30)
                     if pubsub_client:
                         logger.info("Using dedicated Redis PubSub client for event listener")
                     else:
                         # Fall back to creating a dedicated client if utility fails
                         logger.warning("Utility function for PubSub client failed, creating direct connection")
-                        pubsub_client = RedisClient._make_client(
-                            decode_responses=True,
-                            socket_timeout=None,
-                        )
-                        logger.info("Created fallback Redis PubSub client for event listener")
+                        pubsub_client = RedisClient.get_client(disable_persistence=False)
+                        logger.info("Created fallback Redis client for event listener")
 
                     # Test connection before subscribing
                     pubsub_client.ping()
@@ -200,17 +189,13 @@ class ProxyServer:
                     pubsub = pubsub_client.pubsub()
                     pubsub.psubscribe("live:events:*")
 
-                    logger.info(f"Started Redis event listener for client activity")
-
-                    # Reset retry count on successful connection
-                    retry_count = 0
+                    logger.info("Started Redis event listener for client activity")
 
                     for message in pubsub.listen():
                         if message["type"] != "pmessage":
                             continue
 
                         try:
-                            channel = message["channel"]
                             data = json.loads(message["data"])
 
                             event_type = data.get("event")
@@ -389,17 +374,6 @@ class ProxyServer:
                         except Exception as e:
                             logger.error(f"Error processing event message: {e}")
 
-                except (ConnectionError, TimeoutError) as e:
-                    # Calculate exponential backoff with jitter
-                    retry_count += 1
-                    delay = min(base_retry_delay * (2 ** (retry_count - 1)), max_retry_delay)
-                    # Add some randomness to prevent thundering herd
-                    jitter = random.uniform(0, 0.5 * delay)
-                    final_delay = delay + jitter
-
-                    logger.error(f"Error in event listener: {e}. Retrying in {final_delay:.1f}s (attempt {retry_count})")
-                    gevent.sleep(final_delay)
-
                 except Exception as e:
                     logger.error(f"Error in event listener: {e}")
                     # Add a short delay to prevent rapid retries on persistent errors
@@ -466,7 +440,7 @@ class ProxyServer:
             )
 
             if acquired is None:  # Redis command failed
-                logger.warning(f"Redis command failed during ownership acquisition - assuming ownership")
+                logger.warning("Redis command failed during ownership acquisition - assuming ownership")
                 return True
 
             if acquired:
@@ -1589,11 +1563,17 @@ class ProxyServer:
 
     @staticmethod
     def _channel_id_from_metadata_key(key):
+        """Extract channel/worker id from ``live:channel:{id}:metadata``.
+
+        Uses prefix/suffix slicing so ids that contain dots (profile-scoped
+        stream previews) are preserved; a naive ``split(':')[2]`` would truncate.
+        """
         if isinstance(key, bytes):
             key = key.decode('utf-8', errors='replace')
-        parts = key.split(':')
-        if len(parts) >= 3:
-            return parts[2]
+        prefix = "live:channel:"
+        suffix = ":metadata"
+        if key.startswith(prefix) and key.endswith(suffix):
+            return key[len(prefix) : -len(suffix)] or None
         return None
 
     def _stop_upstream_before_redis_cleanup(self, channel_id):
@@ -2351,24 +2331,13 @@ class ProxyServer:
         metadata-only release when the channel was deleted mid-playback.
         """
         try:
-            channel = Channel.objects.get(uuid=channel_id)
-            if channel.release_stream():
-                return True
-            logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-        except Channel.DoesNotExist:
-            pass
-        except Exception as e:
-            logger.debug(f"Channel {channel_id}: release_stream via ORM failed: {e}")
+            from .url_utils import release_worker_stream
 
-        try:
-            stream = Stream.objects.get(stream_hash=channel_id)
-            if stream.release_stream():
+            if release_worker_stream(channel_id):
                 return True
-            logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-        except Stream.DoesNotExist:
-            pass
+            logger.debug(f"Worker {channel_id}: release_stream found no keys to clean")
         except Exception as e:
-            logger.debug(f"Stream {channel_id}: release_stream via ORM failed: {e}")
+            logger.debug(f"Worker {channel_id}: release_stream failed: {e}")
 
         if self._release_profile_slot_from_redis_metadata(channel_id):
             return True

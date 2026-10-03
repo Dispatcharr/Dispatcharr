@@ -149,18 +149,24 @@ describe('CustomTableHeader', () => {
   describe('headerPinned', () => {
     it('sets data-header-pinned="true" when headerPinned is true', () => {
       render(<CustomTableHeader {...defaultProps({ headerPinned: true })} />);
-      expect(screen.getByTestId('thead')).toHaveAttribute(
+      const header = screen.getByTestId('thead');
+      expect(header).toHaveAttribute(
         'data-header-pinned',
         'true'
       );
+      expect(header.style.position).toBe('sticky');
+      expect(header.style.top).toBe('0px');
     });
 
     it('sets data-header-pinned="false" when headerPinned is false', () => {
       render(<CustomTableHeader {...defaultProps({ headerPinned: false })} />);
-      expect(screen.getByTestId('thead')).toHaveAttribute(
+      const header = screen.getByTestId('thead');
+      expect(header).toHaveAttribute(
         'data-header-pinned',
         'false'
       );
+      expect(header.style.position).toBe('relative');
+      expect(header.style.top).toBe('auto');
     });
   });
 

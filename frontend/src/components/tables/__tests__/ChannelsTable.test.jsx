@@ -287,8 +287,8 @@ vi.mock('@mantine/core', () => ({
       onChange={onChange}
     >
       {(data || []).map((d) => (
-        <option key={d} value={d}>
-          {d}
+        <option key={d.value ?? d} value={d.value ?? d}>
+          {d.label ?? d}
         </option>
       ))}
     </select>
@@ -1042,9 +1042,10 @@ describe('ChannelsTable', () => {
       const { tableInstance } = setupMocks({ authUser: makeAdminUser() });
       render(<ChannelsTable />);
       const col = getActionsCol();
-      const { getAllByTestId } = render(
+      const { getAllByTestId, getByTestId } = render(
         col.cell({ row: { original: channel }, table: tableInstance })
       );
+      fireEvent.click(getByTestId('icon-ellipsis').closest('button'));
       // Record menu item is the second menu-item (after Copy URL)
       const menuItems = getAllByTestId('menu-item');
       const recordItem = menuItems.find((el) =>
@@ -1062,9 +1063,10 @@ describe('ChannelsTable', () => {
       const { tableInstance } = setupMocks({ authUser: makeAdminUser() });
       render(<ChannelsTable />);
       const col = getActionsCol();
-      const { getAllByTestId } = render(
+      const { getAllByTestId, getByTestId } = render(
         col.cell({ row: { original: channel }, table: tableInstance })
       );
+      fireEvent.click(getByTestId('icon-ellipsis').closest('button'));
       const menuItems = getAllByTestId('menu-item');
       const recordItem = menuItems.find((el) =>
         el.textContent.includes('Record')
@@ -1083,9 +1085,10 @@ describe('ChannelsTable', () => {
       const { tableInstance } = setupMocks();
       render(<ChannelsTable />);
       const col = getActionsCol();
-      const { getAllByTestId } = render(
+      const { getAllByTestId, getByTestId } = render(
         col.cell({ row: { original: channel }, table: tableInstance })
       );
+      fireEvent.click(getByTestId('icon-ellipsis').closest('button'));
       const menuItems = getAllByTestId('unstyled-button');
       const copyBtn = menuItems.find((el) =>
         el.textContent.includes('Copy URL')
@@ -1107,6 +1110,14 @@ describe('ChannelsTable', () => {
       setupMocks({ totalCount: 50 });
       render(<ChannelsTable />);
       expect(screen.getByText('1 to 25 of 50')).toBeInTheDocument();
+    });
+
+    it('offers 500 as the largest page size option', () => {
+      setupMocks({ totalCount: 50 });
+      render(<ChannelsTable />);
+      const select = screen.getByTestId('native-select');
+      expect(select.options).toHaveLength(5);
+      expect(select.options[4]).toHaveValue('500');
     });
 
     it('clicking next page triggers fetchData with updated page', async () => {

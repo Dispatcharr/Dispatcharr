@@ -43,6 +43,7 @@ from .image_proxy import (
     vod_image_url_parts,
     vodlogo_cache_url,
 )
+from core.image_proxy import RawImageContentNegotiationMixin
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from drf_spectacular.types import OpenApiTypes
 from .tasks import refresh_series_episodes, refresh_movie_advanced_data
@@ -96,7 +97,7 @@ class MovieFilter(django_filters.FilterSet):
         return queryset.filter(m3u_relations__category__name=category_name)
 
 
-class MovieViewSet(viewsets.ReadOnlyModelViewSet):
+class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Movie content"""
     queryset = Movie.objects.all()
     serializer_class = MovieSerializer
@@ -367,7 +368,7 @@ class SeriesFilter(django_filters.FilterSet):
         return queryset.filter(m3u_relations__category__name=category_name)
 
 
-class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
+class EpisodeViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Episode content"""
     queryset = Episode.objects.all()
     serializer_class = EpisodeSerializer
@@ -403,7 +404,7 @@ class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
         return vod_image_action(self, request, 'episode')
 
 
-class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
+class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Series management"""
     queryset = Series.objects.all()
     serializer_class = SeriesSerializer
@@ -1108,7 +1109,7 @@ class VODLogoPagination(PageNumberPagination):
     max_page_size = 1000
 
 
-class VODLogoViewSet(viewsets.ModelViewSet):
+class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
     """ViewSet for VOD Logo management"""
     queryset = VODLogo.objects.all()
     serializer_class = VODLogoSerializer
