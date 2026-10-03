@@ -5,7 +5,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.test import RequestFactory, SimpleTestCase
 
 from apps.proxy.live_proxy.output.hls import session as hls_session
@@ -170,110 +170,289 @@ class TouchHlsSessionTests(SimpleTestCase):
         redis.sadd.assert_not_called()
 
 
-class WaitForPlaylistTests(SimpleTestCase):
-    """_wait_for_playlist driven by a fake clock (sleep advances time)."""
+def _playlist_json(seq=1, ts=None):
+    return json.dumps({
+        "window": [{"seq": seq, "dur": 4.0, "disc": False}],
+        "target": 4,
+        "adv_target": 6,
+        "disc_seq": 0,
+        "ts": time.time() if ts is None else ts,
+    })
 
-    BODY = '{"window": []}'
+
+class ColdStartPlaylistStreamTests(SimpleTestCase):
+    """_cold_start_playlist_chunks driven by a fake clock (sleep advances time)."""
+
+    INIT_GRACE = 60.0
 
     def setUp(self):
         self.clock = [0.0]
-        self.sleeps = []
 
         def fake_sleep(seconds):
-            self.sleeps.append(seconds)
             self.clock[0] += seconds
 
         fake_time = SimpleNamespace(time=time.time, monotonic=lambda: self.clock[0])
         base = "apps.proxy.live_proxy.output.hls.views"
-        patches = [
-            patch(f"{base}.time", fake_time),
-            patch(f"{base}.gevent.sleep", side_effect=fake_sleep),
-            patch(f"{base}.ConfigHelper.channel_init_grace_period", return_value=60),
-            patch(
+        self.waiter = MagicMock()
+        self.waiter.wait.side_effect = lambda timeout=None: fake_sleep(timeout or 0)
+        patches = {
+            "time": patch(f"{base}.time", fake_time),
+            "config": patch(
                 f"{base}.ConfigHelper.get",
                 side_effect=lambda key, default=None: default,
             ),
-        ]
-        for p in patches:
-            p.start()
+            "enter": patch(f"{base}.enter_cold_start", return_value=1),
+            "exit": patch(f"{base}.exit_cold_start", return_value=0),
+            "spawn_later": patch(f"{base}.gevent.spawn_later"),
+            "register": patch(
+                f"{base}.register_playlist_waiter", return_value=self.waiter
+            ),
+            "unregister": patch(f"{base}.unregister_playlist_waiter"),
+        }
+        for name, p in patches.items():
+            setattr(self, f"{name}_mock", p.start())
             self.addCleanup(p.stop)
 
     def _redis(self, poll):
         """poll(now) -> (playlist, output_state, channel_state, stopping, client_stop)."""
         redis = MagicMock()
-        redis.get.return_value = None
         pipe = redis.pipeline.return_value
         pipe.execute.side_effect = lambda: poll(self.clock[0])
         return redis
 
-    def _wait(self, redis):
-        return hls_views._wait_for_playlist(
-            redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls"
+    def _chunks(self, redis):
+        return hls_views._cold_start_playlist_chunks(
+            redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls", self.INIT_GRACE
         )
 
-    def test_published_playlist_returns_without_polling_pipeline(self):
-        redis = MagicMock()
-        redis.get.return_value = self.BODY
-        self.assertEqual(self._wait(redis), (self.BODY, None))
-        redis.pipeline.assert_not_called()
+    def _consume(self, redis, touch_return=(None, None)):
+        with patch.object(hls_views, "touch_hls_session", return_value=touch_return):
+            return list(self._chunks(redis))
 
-    def test_starting_channel_waits_for_init_grace_then_gives_up(self):
+    def test_starts_with_extm3u_then_comments_then_finishes_without_duplicate_header(self):
+        playlist = _playlist_json()
+
+        def poll(now):
+            return (playlist if now >= 2.5 else None, None, "connecting", 0, 0)
+
+        chunks = self._consume(self._redis(poll))
+        self.assertEqual(chunks[0], "#EXTM3U\n")
+        self.assertTrue(
+            all(c.startswith("# dispatcharr: waiting") for c in chunks[1:-1])
+        )
+        self.assertGreaterEqual(len(chunks), 4)
+        self.assertNotIn("#EXTM3U", chunks[-1])
+        self.assertIn("#EXT-X-MEDIA-SEQUENCE:1", chunks[-1])
+        self.assertIn("#EXTINF:4.000", chunks[-1])
+        # Concatenated, the document is a valid playlist with one header.
+        self.assertEqual("".join(chunks).count("#EXTM3U"), 1)
+
+    def test_comments_are_dripped_about_once_per_poll(self):
+        redis = self._redis(lambda now: (None, None, "active", 0, 0))
+        chunks = self._consume(redis)
+        comments = [c for c in chunks if c.startswith("# dispatcharr: waiting")]
+        waited = hls_views.HLS_READY_PLAYLIST_WAIT_SECONDS
+        expected = waited / hls_views._PLAYLIST_WAIT_POLL_SECONDS
+        self.assertGreaterEqual(len(comments), expected - 2)
+        self.assertLessEqual(len(comments), expected + 1)
+
+    def test_every_poll_tick_after_the_header_writes_one_comment(self):
+        def poll(now):
+            return (_playlist_json() if now >= 1.0 else None, None, "connecting", 0, 0)
+
+        chunks = self._consume(self._redis(poll))
+        poll_seconds = hls_views._PLAYLIST_WAIT_POLL_SECONDS
+        self.assertEqual(chunks[0], "#EXTM3U\n")
+        self.assertEqual(
+            chunks[1:-1],
+            [f"# dispatcharr: waiting {n}\n" for n in range(1, int(1.0 / poll_seconds))],
+        )
+
+    def test_starting_channel_times_out_after_init_grace_without_header_only_body(self):
         redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
-        with patch.object(hls_views, "touch_hls_session", return_value=(None, None)):
-            self.assertEqual(self._wait(redis), (None, None))
-        self.assertGreaterEqual(self.clock[0], 60)
-        self.assertLess(self.clock[0], 61)
+        chunks = self._consume(redis)
+        self.assertEqual(chunks[0], "#EXTM3U\n")
+        self.assertTrue(any(c.startswith("# dispatcharr: waiting") for c in chunks))
+        # Giving up just ends the response. It must not append a header-only
+        # Media Playlist (RFC 8216 section 2: a Media Playlist has segments).
+        self.assertNotIn("#EXT-X-TARGETDURATION", "".join(chunks))
+        self.assertGreaterEqual(self.clock[0], self.INIT_GRACE)
+        self.assertLess(self.clock[0], self.INIT_GRACE + 1)
 
     def test_missing_channel_metadata_is_treated_as_starting(self):
         redis = self._redis(lambda now: (None, None, None, 0, 0))
-        with patch.object(hls_views, "touch_hls_session", return_value=(None, None)):
-            self.assertEqual(self._wait(redis), (None, None))
-        self.assertGreaterEqual(self.clock[0], 60)
+        self._consume(redis)
+        self.assertGreaterEqual(self.clock[0], self.INIT_GRACE)
 
-    def test_ready_channel_gives_up_after_short_wait(self):
+    def test_ready_channel_times_out_after_short_wait(self):
         redis = self._redis(lambda now: (None, None, "active", 0, 0))
-        with patch.object(hls_views, "touch_hls_session", return_value=(None, None)):
-            self.assertEqual(self._wait(redis), (None, None))
+        chunks = self._consume(redis)
         self.assertGreaterEqual(self.clock[0], hls_views.HLS_READY_PLAYLIST_WAIT_SECONDS)
         self.assertLess(self.clock[0], hls_views.HLS_READY_PLAYLIST_WAIT_SECONDS + 1)
+        self.assertNotIn("#EXT-X-TARGETDURATION", "".join(chunks))
 
     def test_time_spent_starting_does_not_use_up_the_ready_wait(self):
-        """A channel that connects after 30s must still get the ready wait."""
+        playlist = _playlist_json()
 
         def poll(now):
             state = "connecting" if now < 30 else "active"
-            playlist = self.BODY if now >= 34 else None
-            return (playlist, None, state, 0, 0)
+            return (playlist if now >= 34 else None, None, state, 0, 0)
 
-        redis = self._redis(poll)
-        with patch.object(hls_views, "touch_hls_session", return_value=(None, None)):
-            self.assertEqual(self._wait(redis), (self.BODY, None))
+        chunks = self._consume(self._redis(poll))
+        self.assertIn("#EXT-X-MEDIA-SEQUENCE:1", "".join(chunks))
         self.assertGreaterEqual(self.clock[0], 34)
 
-    def test_dead_channel_state_returns_410_and_drops_session(self):
-        for state in ("error", "stopping", "stopped"):
-            redis = self._redis(lambda now, s=state: (None, None, s, 0, 0))
-            playlist, response = self._wait(redis)
-            self.assertIsNone(playlist, msg=state)
-            self.assertEqual(response.status_code, 410, msg=state)
+    def test_dead_channel_yields_nothing_and_drops_session(self):
+        cases = [
+            (None, "error", 0, 0),
+            (None, "stopping", 0, 0),
+            (None, "stopped", 0, 0),
+            (None, "connecting", 1, 0),
+            (None, "connecting", 0, 1),
+            ("stopped", "active", 0, 0),
+        ]
+        for output_state, channel_state, stopping, client_stop in cases:
+            self.clock[0] = 0.0
+            redis = self._redis(
+                lambda now, c=(output_state, channel_state, stopping, client_stop): (
+                    None, c[0], c[1], c[2], c[3]
+                )
+            )
+            chunks = self._consume(redis)
+            self.assertEqual(chunks, [], msg=str((output_state, channel_state, stopping, client_stop)))
             redis.delete.assert_called_with(RedisKeys.hls_session(TOKEN))
 
-    def test_stopping_or_client_stop_flags_return_410(self):
-        for flags in ((1, 0), (0, 1)):
-            redis = self._redis(
-                lambda now, f=flags: (None, None, "connecting", f[0], f[1])
-            )
-            playlist, response = self._wait(redis)
-            self.assertIsNone(playlist, msg=flags)
-            self.assertEqual(response.status_code, 410, msg=flags)
+    def test_playlist_ready_on_first_poll_sends_full_body_without_comments(self):
+        redis = self._redis(lambda now: (_playlist_json(), None, "active", 0, 0))
+        chunks = self._consume(redis)
+        self.assertEqual(len(chunks), 1)
+        self.assertTrue(chunks[0].startswith("#EXTM3U\n"))
+        self.assertIn("#EXT-X-MEDIA-SEQUENCE:1", chunks[0])
+        self.assertNotIn("dispatcharr: waiting", chunks[0])
 
-    def test_output_state_stopped_returns_410(self):
-        redis = self._redis(lambda now: (None, "stopped", "active", 0, 0))
-        _, response = self._wait(redis)
-        self.assertEqual(response.status_code, 410)
+    def test_unusable_descriptor_ends_stream_without_a_body(self):
+        stale = _playlist_json(ts=time.time() - 3600)
+        for descriptor in (stale, "{not json", json.dumps({"window": "bad"})):
+            self.clock[0] = 0.0
+            redis = self._redis(lambda now, d=descriptor: (d, None, "active", 0, 0))
+            chunks = self._consume(redis)
+            self.assertNotIn("#EXT-X-TARGETDURATION", "".join(chunks), msg=descriptor)
+            self.assertLessEqual(len(chunks), 1, msg=descriptor)
+
+    def _disconnect_after_first_chunk(self, redis):
+        with patch.object(hls_views, "touch_hls_session", return_value=(None, None)):
+            gen = self._chunks(redis)
+            self.assertEqual(next(gen), "#EXTM3U\n")
+            gen.close()
+
+    def test_stream_is_counted_on_start_and_released_on_finish(self):
+        redis = self._redis(lambda now: (_playlist_json(), None, "active", 0, 0))
+        self.enter_mock.assert_not_called()
+        self._consume(redis)
+        self.enter_mock.assert_called_once_with(redis, TOKEN)
+        self.exit_mock.assert_called_once_with(redis, TOKEN)
+        self.register_mock.assert_called_once_with(CHANNEL_ID, "hls")
+        self.unregister_mock.assert_called_once_with(CHANNEL_ID, "hls", self.waiter)
+        self.spawn_later_mock.assert_not_called()
+
+    def test_stream_closed_before_it_starts_is_never_counted(self):
+        redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
+        self._chunks(redis).close()
+        self.enter_mock.assert_not_called()
+        self.exit_mock.assert_not_called()
+        self.register_mock.assert_not_called()
+        self.unregister_mock.assert_not_called()
+        self.spawn_later_mock.assert_not_called()
+
+    def test_playlist_ready_signal_wakes_the_wait_before_the_poll_timeout(self):
+        """A notify mid-wait must not burn the rest of the 250ms tick."""
+        wake_at = [None]
+
+        def wait(timeout=None):
+            # First wait: return early as if the segmenter signalled.
+            # Later waits (should not happen once playlist is seen): full tick.
+            if wake_at[0] is None:
+                wake_at[0] = self.clock[0]
+                self.clock[0] += 0.01
+                return
+            self.clock[0] += timeout or 0
+
+        self.waiter.wait.side_effect = wait
+
+        def poll(now):
+            # Playlist appears right after the early wake.
+            ready = wake_at[0] is not None and now >= wake_at[0]
+            return (_playlist_json() if ready else None, None, "connecting", 0, 0)
+
+        chunks = self._consume(self._redis(poll))
+        self.assertIn("#EXT-X-MEDIA-SEQUENCE:1", "".join(chunks))
+        self.assertLess(self.clock[0], 0.25)
+        self.assertGreaterEqual(self.clock[0], 0.01)
+
+    def test_last_disconnect_schedules_stop_after_the_reconnect_grace(self):
+        redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
+        before = time.time()
+        self._disconnect_after_first_chunk(redis)
+        after = time.time()
+
+        self.exit_mock.assert_called_once_with(redis, TOKEN)
+        self.spawn_later_mock.assert_called_once()
+        args = self.spawn_later_mock.call_args.args
+        self.assertEqual(args[0], 0.5)
+        self.assertEqual(args[0], hls_views.HLS_COLD_START_RECONNECT_GRACE_SECONDS)
+        self.assertIs(args[1], hls_views._stop_abandoned_cold_start)
+        self.assertEqual(args[2:7], (redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls"))
+        self.assertTrue(before <= args[7] <= after)
+        # Nothing is torn down synchronously: the session stays usable for a
+        # player that reconnects inside the grace.
+        redis.delete.assert_not_called()
+
+    def test_disconnect_with_another_request_still_held_does_not_schedule_stop(self):
+        self.exit_mock.return_value = 1
+        redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
+        self._disconnect_after_first_chunk(redis)
+        self.exit_mock.assert_called_once_with(redis, TOKEN)
+        self.spawn_later_mock.assert_not_called()
+
+    def test_disconnect_after_session_is_gone_does_not_schedule_stop(self):
+        self.exit_mock.return_value = None
+        redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
+        self._disconnect_after_first_chunk(redis)
+        self.spawn_later_mock.assert_not_called()
+
+    def test_endings_that_are_not_a_disconnect_never_schedule_stop(self):
+        timed_out = self._redis(lambda now: (None, None, "connecting", 0, 0))
+        dead = self._redis(lambda now: (None, None, "error", 0, 0))
+        for redis in (timed_out, dead):
+            self.clock[0] = 0.0
+            self._consume(redis)
+            self.exit_mock.assert_called_with(redis, TOKEN)
+        lapsed = self._redis(lambda now: (None, None, "connecting", 0, 0))
+        self.clock[0] = 0.0
+        self._consume(lapsed, touch_return=(None, "lapsed"))
+        self.assertEqual(self.exit_mock.call_count, 3)
+        self.spawn_later_mock.assert_not_called()
+
+    def test_uncounted_stream_does_not_release_or_schedule(self):
+        for entered in (None, RuntimeError("redis down")):
+            self.enter_mock.reset_mock(return_value=True, side_effect=True)
+            self.exit_mock.reset_mock()
+            if isinstance(entered, Exception):
+                self.enter_mock.side_effect = entered
+            else:
+                self.enter_mock.return_value = entered
+            redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
+            self._disconnect_after_first_chunk(redis)
+            self.exit_mock.assert_not_called()
+            self.spawn_later_mock.assert_not_called()
+
+    def test_failing_release_does_not_break_the_close(self):
+        self.exit_mock.side_effect = RuntimeError("redis down")
+        redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
+        self._disconnect_after_first_chunk(redis)
+        self.spawn_later_mock.assert_not_called()
 
     def test_wait_keeps_client_alive_well_inside_ghost_timeout(self):
-        """last_active only advances on touch; ghost timeout is 12s by default."""
         redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
         touch_times = []
 
@@ -282,19 +461,20 @@ class WaitForPlaylistTests(SimpleTestCase):
             return (None, None)
 
         with patch.object(hls_views, "touch_hls_session", side_effect=fake_touch):
-            self._wait(redis)
+            list(self._chunks(redis))
 
         gaps = [b - a for a, b in zip([0.0] + touch_times, touch_times)]
         self.assertGreater(len(touch_times), 10)
         self.assertLess(max(gaps), 12)
 
-    def test_touch_reporting_lapsed_client_ends_wait_with_410(self):
+    def test_touch_reporting_lapsed_ends_stream_without_extra_delete(self):
         redis = self._redis(lambda now: (None, None, "connecting", 0, 0))
-        with patch.object(hls_views, "touch_hls_session", return_value=(None, "lapsed")):
-            playlist, response = self._wait(redis)
-        self.assertIsNone(playlist)
-        self.assertEqual(response.status_code, 410)
-        self.assertIn(b"Session expired", response.content)
+        chunks = self._consume(redis, touch_return=(None, "lapsed"))
+        self.assertEqual(chunks[0], "#EXTM3U\n")
+        self.assertNotIn("#EXT-X-TARGETDURATION", "".join(chunks))
+        # The touch script already forgot the session; no second delete.
+        redis.delete.assert_not_called()
+        self.assertLess(self.clock[0], self.INIT_GRACE)
 
     def test_touch_interval_scales_with_ghost_timeout(self):
         base = "apps.proxy.live_proxy.output.hls.views.ConfigHelper.get"
@@ -303,6 +483,104 @@ class WaitForPlaylistTests(SimpleTestCase):
         values = {"HLS_SEGMENT_DURATION": 1, "HLS_CLIENT_GHOST_SEGMENTS": 3}
         with patch(base, side_effect=lambda key, default=None: values.get(key, default)):
             self.assertEqual(hls_views._touch_interval_seconds(), 0.75)
+
+
+class StopAbandonedColdStartTests(SimpleTestCase):
+    """The delayed stop that runs once the reconnect grace has passed."""
+
+    def _run(self, claim_result=None, claim_error=None, stop_error=None):
+        redis = MagicMock()
+        base = "apps.proxy.live_proxy.output.hls.views"
+        with patch(
+            f"{base}.claim_abandoned_session",
+            return_value=claim_result,
+            side_effect=claim_error,
+        ) as claim, patch(
+            f"{base}.ChannelService.stop_client", side_effect=stop_error
+        ) as stop_client:
+            hls_views._stop_abandoned_cold_start(
+                redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls", 123.5
+            )
+        return redis, claim, stop_client
+
+    def test_claimed_session_stops_the_client(self):
+        redis, claim, stop_client = self._run(claim_result=(CHANNEL_ID, CLIENT_ID))
+        claim.assert_called_once_with(
+            redis, TOKEN, RedisKeys.output_playlist(CHANNEL_ID, "hls"), 123.5
+        )
+        stop_client.assert_called_once_with(CHANNEL_ID, CLIENT_ID)
+
+    def test_player_that_came_back_is_left_alone(self):
+        _redis, _claim, stop_client = self._run(claim_result=None)
+        stop_client.assert_not_called()
+
+    def test_playlist_key_follows_the_clients_output_format(self):
+        redis = MagicMock()
+        base = "apps.proxy.live_proxy.output.hls.views"
+        with patch(f"{base}.claim_abandoned_session", return_value=None) as claim:
+            hls_views._stop_abandoned_cold_start(
+                redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls:p7", 1.0
+            )
+        self.assertEqual(
+            claim.call_args.args[2], RedisKeys.output_playlist(CHANNEL_ID, "hls:p7")
+        )
+
+    def test_redis_failure_is_contained(self):
+        _redis, _claim, stop_client = self._run(claim_error=RuntimeError("down"))
+        stop_client.assert_not_called()
+
+    def test_stop_failure_is_contained(self):
+        self._run(
+            claim_result=(CHANNEL_ID, CLIENT_ID), stop_error=RuntimeError("boom")
+        )
+
+
+class ColdStartCountHelperTests(SimpleTestCase):
+    """Python wrappers around the cold-start count / claim scripts."""
+
+    def setUp(self):
+        hls_session._script_cache.clear()
+
+    def _redis(self, result):
+        redis = MagicMock()
+        script = MagicMock(return_value=result)
+        redis.register_script.return_value = script
+        return redis, script
+
+    def test_enter_returns_the_new_count(self):
+        redis, script = self._redis(2)
+        self.assertEqual(hls_session.enter_cold_start(redis, TOKEN), 2)
+        script.assert_called_once_with(keys=[RedisKeys.hls_session(TOKEN)])
+
+    def test_enter_and_exit_report_a_missing_session_as_none(self):
+        redis, _script = self._redis(-1)
+        self.assertIsNone(hls_session.enter_cold_start(redis, TOKEN))
+        self.assertIsNone(hls_session.exit_cold_start(redis, TOKEN))
+
+    def test_exit_returns_what_is_still_held(self):
+        redis, script = self._redis(0)
+        self.assertEqual(hls_session.exit_cold_start(redis, TOKEN), 0)
+        script.assert_called_once_with(keys=[RedisKeys.hls_session(TOKEN)])
+
+    def test_claim_returns_channel_and_client_when_taken(self):
+        redis, script = self._redis([1, CHANNEL_ID, CLIENT_ID])
+        playlist_key = RedisKeys.output_playlist(CHANNEL_ID, "hls")
+        claimed = hls_session.claim_abandoned_session(
+            redis, TOKEN, playlist_key, 1700000000.25
+        )
+        self.assertEqual(claimed, (CHANNEL_ID, CLIENT_ID))
+        script.assert_called_once_with(
+            keys=[RedisKeys.hls_session(TOKEN), playlist_key],
+            args=["1700000000.25"],
+        )
+
+    def test_claim_returns_none_when_not_taken(self):
+        for result in ([0], [], None):
+            redis, _script = self._redis(result)
+            self.assertIsNone(
+                hls_session.claim_abandoned_session(redis, TOKEN, "playlist", 1.0),
+                msg=str(result),
+            )
 
 
 class HLSPlaylistViewTests(SimpleTestCase):
@@ -397,6 +675,25 @@ class HLSPlaylistViewTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
     @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
+    def test_malformed_playlist_descriptor_returns_500_not_stale(
+        self, mock_proxy_cls, _network, _close
+    ):
+        """Bad JSON is a ValueError too; it must not be reported as stale."""
+        for descriptor in ("{not json", json.dumps({"window": "bad"})):
+            redis = MagicMock()
+            redis.get.return_value = descriptor
+            mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
+                redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
+            )
+
+            response = hls_views.hls_playlist(self._request(), TOKEN)
+
+            self.assertEqual(response.status_code, 500, msg=descriptor)
+            self.assertIn(b"Playlist unavailable", response.content)
+
+    @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
+    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
     def test_fresh_playlist_returns_m3u8(self, mock_proxy_cls, _network, _close):
         redis = MagicMock()
         body = json.dumps({
@@ -419,72 +716,66 @@ class HLSPlaylistViewTests(SimpleTestCase):
         self.assertIn(b"#EXT-X-MEDIA-SEQUENCE:7", response.content)
         redis.delete.assert_not_called()
         redis.register_script.return_value.assert_called_once()
+        redis.pipeline.assert_not_called()
 
-    @patch("apps.proxy.live_proxy.output.hls.views._wait_for_playlist")
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
     @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_exhausted_wait_returns_503_with_retry_after(
-        self, mock_proxy_cls, _network, _close, mock_wait
+    def test_missing_playlist_returns_streaming_response(
+        self, mock_proxy_cls, _network, _close
     ):
         redis = MagicMock()
+        redis.get.return_value = None
+        # Precheck poll: not published, not dead
+        redis.pipeline.return_value.execute.return_value = (
+            None, None, "connecting", 0, 0
+        )
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
             redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
         )
-        mock_wait.return_value = (None, None)
 
-        response = hls_views.hls_playlist(self._request(), TOKEN)
+        with patch.object(
+            hls_views,
+            "_cold_start_playlist_chunks",
+            return_value=iter(["#EXTM3U\n", "#EXT-X-VERSION:3\n"]),
+        ) as chunks, patch(
+            "apps.proxy.live_proxy.output.hls.views.ConfigHelper.channel_init_grace_period",
+            return_value=45,
+        ):
+            response = hls_views.hls_playlist(self._request(), TOKEN)
 
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response["Retry-After"], "2")
+        self.assertIsInstance(response, StreamingHttpResponse)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/vnd.apple.mpegurl")
+        self.assertEqual(response["Cache-Control"], "no-cache")
+        self.assertEqual(
+            b"".join(response.streaming_content), b"#EXTM3U\n#EXT-X-VERSION:3\n"
+        )
+        # Resolved in the view (ORM-capable), before the connection is released.
+        chunks.assert_called_once_with(
+            redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls", 45.0
+        )
 
-    @patch("apps.proxy.live_proxy.output.hls.views._wait_for_playlist")
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
     @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_wait_error_response_is_returned_as_is(
-        self, mock_proxy_cls, _network, _close, mock_wait
+    def test_dead_channel_before_stream_returns_410(
+        self, mock_proxy_cls, _network, _close
     ):
         redis = MagicMock()
+        redis.get.return_value = None
+        redis.pipeline.return_value.execute.return_value = (
+            None, None, "error", 0, 0
+        )
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
             redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
-        )
-        mock_wait.return_value = (
-            None,
-            JsonResponse({"error": "Stream stopped"}, status=410),
         )
 
         response = hls_views.hls_playlist(self._request(), TOKEN)
 
         self.assertEqual(response.status_code, 410)
         self.assertIn(b"Stream stopped", response.content)
-
-    @patch("apps.proxy.live_proxy.output.hls.views._wait_for_playlist")
-    @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
-    @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_playlist_published_during_wait_is_rendered(
-        self, mock_proxy_cls, _network, _close, mock_wait
-    ):
-        redis = MagicMock()
-        mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
-            redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
-        )
-        mock_wait.return_value = (
-            json.dumps({
-                "window": [{"seq": 1, "dur": 4.0, "disc": False}],
-                "target": 4,
-                "adv_target": 6,
-                "disc_seq": 0,
-                "ts": time.time(),
-            }),
-            None,
-        )
-
-        response = hls_views.hls_playlist(self._request(), TOKEN)
-
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"#EXT-X-MEDIA-SEQUENCE:1", response.content)
+        redis.delete.assert_called_with(RedisKeys.hls_session(TOKEN))
 
 
 class HLSSegmentViewTests(SimpleTestCase):

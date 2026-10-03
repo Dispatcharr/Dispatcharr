@@ -96,6 +96,63 @@ end
 return reply
 """
 
+# Cold-start playlist requests are the only long-lived HLS requests, so they
+# are the only place a player leaving can be seen. Each one is counted on the
+# session hash while it is held. The count lives and dies with the session key
+# (and shares its TTL, refreshed by every touch), and neither script creates
+# the key, so a count can never outlive its session. A lost decrement (worker
+# killed) only leaves the count high, which defers cleanup to the ghost reaper.
+_LUA_COLD_START_ENTER = """
+local session_key = KEYS[1]
+if redis.call('EXISTS', session_key) == 0 then
+  return -1
+end
+return redis.call('HINCRBY', session_key, 'cold_streams', 1)
+"""
+
+_LUA_COLD_START_EXIT = """
+local session_key = KEYS[1]
+if redis.call('EXISTS', session_key) == 0 then
+  return -1
+end
+local held = redis.call('HINCRBY', session_key, 'cold_streams', -1)
+if held < 0 then
+  redis.call('HSET', session_key, 'cold_streams', 0)
+  return 0
+end
+return held
+"""
+
+# Claim a session whose player has gone, atomically with the checks that say
+# so, and forget the capability URL in the same step so a request racing the
+# claim either wins (and is seen here) or gets a 410. Nothing is claimed while
+# any cold-start request is still held, once the playlist is published, or if
+# the client was touched after ``since`` (the player came back). Return codes:
+# 0 nothing to do, 1 + channel_id + client_id claimed.
+_LUA_CLAIM_ABANDONED = """
+local session_key = KEYS[1]
+local playlist_key = KEYS[2]
+local channel_id = redis.call('HGET', session_key, 'channel_id')
+local client_id = redis.call('HGET', session_key, 'client_id')
+if (not channel_id) or channel_id == false or (not client_id) or client_id == false then
+  return {0}
+end
+local held = tonumber(redis.call('HGET', session_key, 'cold_streams'))
+if held and held > 0 then
+  return {0}
+end
+if redis.call('EXISTS', playlist_key) == 1 then
+  return {0}
+end
+local client_key = 'live:channel:' .. channel_id .. ':clients:' .. client_id
+local last_active = tonumber(redis.call('HGET', client_key, 'last_active'))
+if last_active and last_active > tonumber(ARGV[1]) then
+  return {0}
+end
+redis.call('DEL', session_key)
+return {1, channel_id, client_id}
+"""
+
 # EVALSHA handles keyed by (redis client id, script name).
 _script_cache = {}
 
@@ -196,3 +253,45 @@ def touch_hls_session(redis_client, token):
         return None, "lapsed"
     channel_id, client_id = result[1], result[2]
     return (channel_id, client_id, _lua_hash(result[3:])), None
+
+
+def enter_cold_start(redis_client, token):
+    """Count one more held cold-start playlist request on this session.
+
+    Returns the new count, or None when the session no longer exists (nothing
+    is written in that case).
+    """
+    held = int(_script(redis_client, "cold_enter", _LUA_COLD_START_ENTER)(
+        keys=[RedisKeys.hls_session(token)],
+    ))
+    return None if held < 0 else held
+
+
+def exit_cold_start(redis_client, token):
+    """Release one held cold-start request. Returns how many are still held.
+
+    Returns None when the session no longer exists. The count never goes
+    below zero.
+    """
+    held = int(_script(redis_client, "cold_exit", _LUA_COLD_START_EXIT)(
+        keys=[RedisKeys.hls_session(token)],
+    ))
+    return None if held < 0 else held
+
+
+def claim_abandoned_session(redis_client, token, playlist_key, since):
+    """Atomically take over a session whose player left during cold start.
+
+    ``since`` is the wall-clock time the last held request disconnected.
+    Returns (channel_id, client_id) when the caller now owns tearing the
+    client down, or None when the player is still around: another request is
+    held, the playlist is published, the client was touched after ``since``,
+    or the session is already gone.
+    """
+    result = _script(redis_client, "claim_abandoned", _LUA_CLAIM_ABANDONED)(
+        keys=[RedisKeys.hls_session(token), playlist_key],
+        args=[str(float(since))],
+    )
+    if not result or int(result[0]) != 1 or len(result) < 3:
+        return None
+    return result[1], result[2]
