@@ -1641,8 +1641,45 @@ def _dvr_build_ffmpeg_cmd(
 _DVR_HLS_REMUX_TIMEOUT_SECONDS = 30 * 60
 
 
-def _dvr_recording_end_payload(cp, final_path, remux_success, start_time=None, end_time=None):
+def _dvr_recording_end_payload(
+    cp, final_path, remux_success, start_time=None, end_time=None,
+    cancelled_by=None, cancelled_by_id=None, cancelled=False,
+):
+    """Build the ``recording_end`` event payload. Never raises.
+
+    ``start_time``/``end_time`` should be the Recording's scheduled times, as
+    ISO strings or datetimes. ``cancelled=True`` (a user deleted an in-progress
+    recording) reports ``outcome``/``status`` ``"cancelled"`` with no file, so
+    a subscriber's failure alert does not fire on a deliberate cancel.
+    """
     props = cp if isinstance(cp, dict) else {}
+
+    def _iso(value):
+        if isinstance(value, str):
+            return value or None
+        try:
+            return value.isoformat() if value is not None else None
+        except Exception:
+            return None
+
+    if cancelled:
+        return {
+            "outcome": "cancelled",
+            "has_file": False,
+            "failure_reason": None,
+            "status": "cancelled",
+            "interrupted_reason": None,
+            "file_path": None,
+            "file_name": None,
+            "file_url": None,
+            "file_size": None,
+            "remux_success": False,
+            "bytes_written": None,
+            "start_time": _iso(start_time),
+            "end_time": _iso(end_time),
+            "cancelled_by": cancelled_by if isinstance(cancelled_by, str) and cancelled_by else None,
+            "cancelled_by_id": cancelled_by_id if isinstance(cancelled_by_id, int) and not isinstance(cancelled_by_id, bool) else None,
+        }
 
     status = props.get("status")
     if not isinstance(status, str) or not status:
@@ -1692,9 +1729,37 @@ def _dvr_recording_end_payload(cp, final_path, remux_success, start_time=None, e
         "file_size": file_size,
         "remux_success": remux_success,
         "bytes_written": bytes_written,
-        "start_time": start_time if isinstance(start_time, str) else None,
-        "end_time": end_time if isinstance(end_time, str) else None,
+        "start_time": _iso(start_time),
+        "end_time": _iso(end_time),
     }
+
+
+def _dvr_emit_recording_end(
+    recording, channel, cp, final_path, remux_success,
+    fallback_start=None, fallback_end=None, recording_id=None,
+):
+    """Emit ``recording_end`` for a finished recording. Never raises.
+
+    The window reported is the Recording's own scheduled ``start_time`` and
+    ``end_time``. The fallbacks (the task arguments) are used only when no
+    Recording object is at hand: a recording resumed after a restart is
+    dispatched with ``now`` as its start, which is not when it started.
+    """
+    try:
+        from core.utils import log_system_event
+        start = getattr(recording, "start_time", None) or fallback_start
+        end = getattr(recording, "end_time", None) or fallback_end
+        log_system_event(
+            'recording_end',
+            channel_id=getattr(channel, "uuid", None),
+            channel_name=getattr(channel, "name", None),
+            recording_id=recording_id if recording_id is not None else getattr(recording, "id", None),
+            **_dvr_recording_end_payload(
+                cp, final_path, remux_success, start_time=start, end_time=end,
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Could not log recording end event: {e}")
 
 
 def _dvr_build_hls_playlist_remux_cmd(m3u8_path, output_path, extra_args=None):
@@ -2959,27 +3024,24 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             recording_obj.custom_properties = cp
             recording_obj.save(update_fields=["custom_properties"])
 
-        _db_retry(
-            _save_final_metadata,
-            max_retries=_dvr_db_max_retries,
-            base_interval=_dvr_db_retry_interval,
-            label=f"DVR recording {recording_id}: metadata save",
-        )
-
         try:
-            from core.utils import log_system_event
-            log_system_event(
-                'recording_end',
-                channel_id=channel.uuid,
-                channel_name=channel.name,
-                recording_id=recording_id,
-                **_dvr_recording_end_payload(
-                    cp, final_path, remux_success,
-                    start_time=start_time.isoformat(), end_time=end_time.isoformat(),
-                ),
+            _db_retry(
+                _save_final_metadata,
+                max_retries=_dvr_db_max_retries,
+                base_interval=_dvr_db_retry_interval,
+                label=f"DVR recording {recording_id}: metadata save",
             )
-        except Exception as e:
-            logger.error(f"Could not log recording end event: {e}")
+        except Exception as save_e:
+            logger.error(
+                f"DVR recording {recording_id}: final metadata save failed ({save_e}); "
+                f"emitting recording_end from in-memory state"
+            )
+
+        _dvr_emit_recording_end(
+            recording_obj, channel, cp, final_path, remux_success,
+            fallback_start=start_time, fallback_end=end_time,
+            recording_id=recording_id,
+        )
 
         # Notify frontends so the UI refreshes immediately (e.g. "Stopped" → "Completed")
         try:
@@ -3192,26 +3254,20 @@ def recover_recordings_on_startup():
                     cp["remux_success"] = False
 
                 rec.custom_properties = cp
-                _db_retry(
-                    lambda r=rec: r.save(update_fields=["custom_properties"]),
-                    label=f"DVR recovery: recording {rec.id} expired status update",
-                )
-
                 try:
-                    from core.utils import log_system_event
-                    log_system_event(
-                        'recording_end',
-                        channel_id=rec.channel.uuid,
-                        channel_name=rec.channel.name,
-                        recording_id=rec.id,
-                        **_dvr_recording_end_payload(
-                            cp, mkv_path, cp.get("remux_success"),
-                            start_time=rec.start_time.isoformat() if rec.start_time else None,
-                            end_time=rec.end_time.isoformat() if rec.end_time else None,
-                        ),
+                    _db_retry(
+                        lambda r=rec: r.save(update_fields=["custom_properties"]),
+                        label=f"DVR recovery: recording {rec.id} expired status update",
                     )
-                except Exception as _ev_e:
-                    logger.error(f"Could not log recording end event for recovered recording {rec.id}: {_ev_e}")
+                except Exception as _save_e:
+                    logger.error(
+                        f"DVR recovery: recording {rec.id} status save failed ({_save_e}); "
+                        f"emitting recording_end from in-memory state"
+                    )
+
+                _dvr_emit_recording_end(
+                    rec, rec.channel, cp, mkv_path, cp.get("remux_success"),
+                )
             except Exception as e:
                 logger.warning(f"Failed to finalize expired recording {rec.id}: {e}")
 

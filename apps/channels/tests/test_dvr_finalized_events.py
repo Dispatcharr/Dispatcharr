@@ -98,3 +98,120 @@ class DvrRecordingEndPayloadTests(SimpleTestCase):
         payload = _dvr_recording_end_payload({"status": "completed"}, self.path, True)
         self.assertIsNone(payload["start_time"])
         self.assertIsNone(payload["end_time"])
+
+
+class DvrRecordingEndCancelPayloadTests(SimpleTestCase):
+    def test_cancel_reports_cancelled_not_failed(self):
+        payload = _dvr_recording_end_payload(
+            {"status": "recording", "bytes_written": 99}, "/data/recordings/x.mkv", True,
+            cancelled=True, cancelled_by="admin", cancelled_by_id=3,
+        )
+        self.assertEqual(payload["outcome"], "cancelled")
+        self.assertEqual(payload["status"], "cancelled")
+        self.assertFalse(payload["has_file"])
+        self.assertIsNone(payload["failure_reason"])
+        self.assertIsNone(payload["file_path"])
+        self.assertEqual(payload["cancelled_by"], "admin")
+        self.assertEqual(payload["cancelled_by_id"], 3)
+
+    def test_cancel_rejects_malformed_user_fields(self):
+        payload = _dvr_recording_end_payload(
+            {}, None, False, cancelled=True, cancelled_by=5, cancelled_by_id=True,
+        )
+        self.assertIsNone(payload["cancelled_by"])
+        self.assertIsNone(payload["cancelled_by_id"])
+
+    def test_datetimes_are_serialised_to_iso(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2026, 9, 15, 4, 0, tzinfo=timezone.utc)
+        payload = _dvr_recording_end_payload({}, None, False, start_time=start, end_time=None)
+        self.assertEqual(payload["start_time"], "2026-09-15T04:00:00+00:00")
+        self.assertIsNone(payload["end_time"])
+
+
+class DvrEmitRecordingEndTests(SimpleTestCase):
+    """The resume path dispatches run_recording with start = now; the event
+    must still report the Recording's own scheduled window."""
+
+    def test_uses_recording_times_over_task_arguments(self):
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from apps.channels.tasks import _dvr_emit_recording_end
+
+        scheduled_start = datetime(2026, 9, 15, 4, 0, tzinfo=timezone.utc)
+        scheduled_end = datetime(2026, 9, 15, 4, 30, tzinfo=timezone.utc)
+        resumed_now = datetime(2026, 9, 15, 4, 17, tzinfo=timezone.utc)
+        rec = SimpleNamespace(id=7, start_time=scheduled_start, end_time=scheduled_end)
+        channel = SimpleNamespace(uuid="c-uuid", name="Ten")
+
+        with mock.patch("core.utils.log_system_event") as emit:
+            _dvr_emit_recording_end(
+                rec, channel, {"status": "completed"}, None, False,
+                fallback_start=resumed_now, fallback_end=scheduled_end,
+            )
+
+        emit.assert_called_once()
+        args, kwargs = emit.call_args
+        self.assertEqual(args[0], "recording_end")
+        self.assertEqual(kwargs["recording_id"], 7)
+        self.assertEqual(kwargs["start_time"], scheduled_start.isoformat())
+        self.assertEqual(kwargs["end_time"], scheduled_end.isoformat())
+
+    def test_never_raises_when_the_emit_fails(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from apps.channels.tasks import _dvr_emit_recording_end
+
+        with mock.patch("core.utils.log_system_event", side_effect=RuntimeError("boom")):
+            _dvr_emit_recording_end(SimpleNamespace(id=1), None, {}, None, False)
+
+
+class DvrCancelEmitsRecordingEndTests(SimpleTestCase):
+    """Deleting an in-progress recording closes the recording_start pair."""
+
+    def _destroy(self, status):
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from apps.channels.api_views import RecordingViewSet
+
+        instance = SimpleNamespace(
+            pk=11,
+            start_time=datetime(2026, 9, 15, 4, 0, tzinfo=timezone.utc),
+            end_time=datetime(2026, 9, 15, 4, 30, tzinfo=timezone.utc),
+            channel=SimpleNamespace(uuid="c-uuid", name="Ten"),
+            custom_properties={"status": status, "file_path": None, "_hls_dir": None},
+        )
+        view = RecordingViewSet()
+        request = SimpleNamespace(user=SimpleNamespace(username="admin", pk=3))
+        with mock.patch.object(RecordingViewSet, "get_object", return_value=instance), \
+                mock.patch("rest_framework.viewsets.ModelViewSet.destroy", return_value="deleted"), \
+                mock.patch("core.utils.RedisClient.get_client", return_value=None), \
+                mock.patch("core.utils.send_websocket_update"), \
+                mock.patch("core.utils.log_system_event") as emit, \
+                mock.patch("threading.Thread"):
+            view.destroy(request)
+        return emit
+
+    def test_cancel_emits_cancelled_with_cancelled_by(self):
+        emit = self._destroy("recording")
+        emit.assert_called_once()
+        args, kwargs = emit.call_args
+        self.assertEqual(args[0], "recording_end")
+        self.assertEqual(kwargs["recording_id"], 11)
+        self.assertEqual(kwargs["outcome"], "cancelled")
+        self.assertEqual(kwargs["status"], "cancelled")
+        self.assertFalse(kwargs["has_file"])
+        self.assertIsNone(kwargs["failure_reason"])
+        self.assertEqual(kwargs["cancelled_by"], "admin")
+        self.assertEqual(kwargs["cancelled_by_id"], 3)
+        self.assertEqual(kwargs["start_time"], "2026-09-15T04:00:00+00:00")
+
+    def test_deleting_a_finished_recording_emits_nothing(self):
+        emit = self._destroy("completed")
+        emit.assert_not_called()
