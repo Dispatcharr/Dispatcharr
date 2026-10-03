@@ -22,6 +22,7 @@ from .input.buffer import StreamBuffer
 from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
 from .output.hls.manager import HLSOutputManager
+from .output.hls.waiters import notify_playlist_ready
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, ChannelMetadataField, REDIS_TTL_DEFAULT
@@ -203,6 +204,15 @@ class ProxyServer:
                             channel_id = data.get("channel_id")
 
                             if channel_id and event_type:
+                                # Any worker may be holding a cold-start playlist
+                                # request for this channel. Wake them as soon as
+                                # the segmenter publishes, not on the next poll.
+                                if event_type == EventType.HLS_PLAYLIST_READY:
+                                    notify_playlist_ready(
+                                        channel_id, data.get("fmt") or "hls"
+                                    )
+                                    continue
+
                                 # For owner, update client status immediately
                                 if self.am_i_owner(channel_id):
                                     if event_type == EventType.CLIENT_CONNECTED:

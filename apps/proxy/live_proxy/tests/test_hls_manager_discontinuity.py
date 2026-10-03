@@ -1,10 +1,13 @@
 """HLS manager: buffer discontinuity sidecar triggers a cut at the right chunk."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
+from apps.proxy.live_proxy.constants import EventType
 from apps.proxy.live_proxy.output.hls.manager import HLSOutputManager
+from apps.proxy.live_proxy.redis_keys import RedisKeys
 
 
 CHANNEL_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -336,6 +339,38 @@ class HLSInitialPlaylistGateTests(SimpleTestCase):
         mgr.segment_buffer.index = 2
         mgr._store_segment(self._segment(4.0))
         self.assertEqual(mgr._redis.setex.call_count, 2)
+
+    def test_first_publish_wakes_waiters_and_notifies_other_workers(self):
+        mgr = self._manager()
+        with patch(
+            "apps.proxy.live_proxy.output.hls.manager.notify_playlist_ready"
+        ) as notify:
+            mgr.segment_buffer.index = 1
+            mgr._store_segment(self._segment(4.0))
+            notify.assert_called_once_with(CHANNEL_ID, "hls")
+            mgr._redis.publish.assert_called_once()
+            channel, payload = mgr._redis.publish.call_args.args
+            self.assertEqual(channel, RedisKeys.events_channel(CHANNEL_ID))
+            data = json.loads(payload)
+            self.assertEqual(data["event"], EventType.HLS_PLAYLIST_READY)
+            self.assertEqual(data["channel_id"], CHANNEL_ID)
+            self.assertEqual(data["fmt"], "hls")
+
+            mgr.segment_buffer.index = 2
+            mgr._store_segment(self._segment(4.0))
+            # Later playlist rewrites must not re-broadcast the cold-start signal.
+            notify.assert_called_once()
+            mgr._redis.publish.assert_called_once()
+
+    def test_held_playlist_does_not_signal_waiters(self):
+        mgr = self._manager()
+        with patch(
+            "apps.proxy.live_proxy.output.hls.manager.notify_playlist_ready"
+        ) as notify:
+            mgr.segment_buffer.index = 1
+            mgr._store_segment(self._segment(2.0))
+            notify.assert_not_called()
+            mgr._redis.publish.assert_not_called()
 
 
 class HLSPlaylistWindowPruneTests(SimpleTestCase):

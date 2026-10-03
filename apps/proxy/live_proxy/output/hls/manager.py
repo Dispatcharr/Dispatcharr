@@ -18,6 +18,8 @@ import time
 from core.utils import RedisClient
 from ..buffer import OutputStreamBuffer
 from .segmenter import TSSegmenter
+from .waiters import notify_playlist_ready
+from ...constants import EventType
 from ...redis_keys import RedisKeys
 from ...config_helper import ConfigHelper
 from ...utils import get_logger
@@ -415,12 +417,40 @@ class HLSOutputManager:
                 return
             self._write_playlist_state()
             self._playlist_published = True
+            self._signal_playlist_ready()
             logger.info(
                 f"[HLS:{self.channel_id}] Initial playlist published "
                 f"({media:.3f}s media, {len(self._window)} segments)"
             )
             return
         self._write_playlist_state()
+
+    def _signal_playlist_ready(self):
+        """Wake cold-start waiters on this worker and across the cluster.
+
+        Local Events cover same-worker clients immediately. The pubsub event
+        covers clients held on other workers. Waiters always re-check Redis
+        after waking, so a late subscribe cannot miss a playlist that is
+        already published.
+        """
+        notify_playlist_ready(self.channel_id, self.fmt)
+        if not self._redis:
+            return
+        try:
+            self._redis.publish(
+                RedisKeys.events_channel(self.channel_id),
+                json.dumps({
+                    "event": EventType.HLS_PLAYLIST_READY,
+                    "channel_id": self.channel_id,
+                    "fmt": self.fmt,
+                    "timestamp": time.time(),
+                }),
+            )
+        except Exception as e:
+            logger.warning(
+                f"[HLS:{self.channel_id}] Failed to publish playlist-ready "
+                f"event: {e}"
+            )
 
     def _write_playlist_state(self):
         """Publish the current window descriptor to Redis."""
