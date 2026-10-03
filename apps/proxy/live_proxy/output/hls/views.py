@@ -26,6 +26,8 @@ from rest_framework.response import Response
 from core.utils import RedisClient
 from dispatcharr.utils import network_access_allowed
 
+from ...config_helper import ConfigHelper
+from ...constants import ChannelMetadataField, ChannelState
 from ...redis_keys import RedisKeys
 from ...server import ProxyServer
 from ...utils import get_logger
@@ -38,6 +40,25 @@ logger = get_logger()
 # segmenter behind it any more (worker gone, thread dead). Scaled up for
 # configurations with long segments, where legitimate gaps are longer.
 HLS_STALE_PLAYLIST_SECONDS = 45
+# Once channel input is live, how long to keep waiting for the output to
+# publish its first playlist (the media-duration gate). Counted from the
+# moment the channel was first seen ready, not from request start, so time
+# spent in startup/failover does not use it up. While the channel is still
+# starting, the wait follows channel_init_grace_period instead.
+HLS_READY_PLAYLIST_WAIT_SECONDS = 10
+_PLAYLIST_WAIT_POLL_SECONDS = 0.25
+# Channel metadata states where startup/failover is still in progress. A
+# missing state is treated the same way: metadata is written during setup.
+_CHANNEL_STARTING_STATES = frozenset({
+    ChannelState.INITIALIZING,
+    ChannelState.CONNECTING,
+    ChannelState.BUFFERING,
+})
+_CHANNEL_DEAD_STATES = frozenset({
+    ChannelState.ERROR,
+    ChannelState.STOPPING,
+    ChannelState.STOPPED,
+})
 
 
 def _resolved_format(client_hash):
@@ -63,19 +84,6 @@ def _playlist_is_stale(state):
     return (time.time() - updated) > limit
 
 
-def _session_gone(channel_id, client_id):
-    """True when the channel or this specific client has been stopped."""
-    proxy_server = ProxyServer.get_instance()
-    redis_client = proxy_server.redis_client
-    if not redis_client:
-        return False
-    if redis_client.exists(RedisKeys.channel_stopping(channel_id)):
-        return True
-    if redis_client.exists(RedisKeys.client_stop(channel_id, client_id)):
-        return True
-    return False
-
-
 def _load_live_session(redis_client, token):
     """Resolve + refresh the capability URL, or return a 410 response."""
     loaded, reason = touch_hls_session(redis_client, token)
@@ -86,6 +94,90 @@ def _load_live_session(redis_client, token):
         # a complete client record (including output format/profile binding).
         return None, JsonResponse({"error": "Session expired"}, status=410)
     return loaded, None
+
+
+def _touch_interval_seconds():
+    """How often a held playlist request must refresh its client record.
+
+    last_active is only advanced by touch_hls_session, and an HLS client is
+    reaped as a ghost after HLS_SEGMENT_DURATION * HLS_CLIENT_GHOST_SEGMENTS
+    seconds without it. A request parked for the whole channel init grace
+    would otherwise be reaped mid-wait.
+    """
+    ghost_timeout = float(ConfigHelper.get("HLS_SEGMENT_DURATION", 4)) * float(
+        ConfigHelper.get("HLS_CLIENT_GHOST_SEGMENTS", 3)
+    )
+    return max(0.5, min(3.0, ghost_timeout / 4))
+
+
+def _wait_for_playlist(redis_client, token, channel_id, client_id, fmt):
+    """Hold a playlist request until the output publishes its first playlist.
+
+    Returns (playlist_json, error_response). (None, None) means the wait
+    budget ran out and the caller should answer 503.
+
+    While the channel is still starting or failing over, the wait follows
+    channel_init_grace_period, matching how long a TS client is held. After
+    the channel is ready, only the HLS media-duration gate remains, so the
+    wait drops to HLS_READY_PLAYLIST_WAIT_SECONDS measured from the moment
+    the channel was first seen ready.
+    """
+    playlist_key = RedisKeys.output_playlist(channel_id, fmt)
+    # Steady-state polls hit this single GET and never enter the wait loop.
+    playlist_json = redis_client.get(playlist_key)
+    if playlist_json:
+        return playlist_json, None
+
+    output_state_key = RedisKeys.output_state(channel_id, fmt)
+    metadata_key = RedisKeys.channel_metadata(channel_id)
+    stopping_key = RedisKeys.channel_stopping(channel_id)
+    client_stop_key = RedisKeys.client_stop(channel_id, client_id)
+
+    init_grace = float(ConfigHelper.channel_init_grace_period())
+    touch_interval = _touch_interval_seconds()
+    started = last_touch = time.monotonic()
+    ready_since = None
+
+    while True:
+        # One round trip per poll for everything the loop decides on.
+        pipe = redis_client.pipeline(transaction=False)
+        pipe.get(playlist_key)
+        pipe.get(output_state_key)
+        pipe.hget(metadata_key, ChannelMetadataField.STATE)
+        pipe.exists(stopping_key)
+        pipe.exists(client_stop_key)
+        playlist_json, output_state, channel_state, stopping, client_stop = pipe.execute()
+
+        if playlist_json:
+            return playlist_json, None
+        if (
+            output_state == "stopped"
+            or stopping
+            or client_stop
+            or channel_state in _CHANNEL_DEAD_STATES
+        ):
+            _drop_hls_session(redis_client, token)
+            return None, JsonResponse({"error": "Stream stopped"}, status=410)
+
+        now = time.monotonic()
+        if channel_state is None or channel_state in _CHANNEL_STARTING_STATES:
+            ready_since = None
+            if now - started >= init_grace:
+                return None, None
+        else:
+            if ready_since is None:
+                ready_since = now
+            if now - ready_since >= HLS_READY_PLAYLIST_WAIT_SECONDS:
+                return None, None
+
+        if now - last_touch >= touch_interval:
+            _, reason = touch_hls_session(redis_client, token)
+            if reason is not None:
+                status_error = "Stream stopped" if reason == "stopped" else "Session expired"
+                return None, JsonResponse({"error": status_error}, status=410)
+            last_touch = now
+
+        gevent.sleep(_PLAYLIST_WAIT_POLL_SECONDS)
 
 
 def _serve_hls_playlist(token):
@@ -101,20 +193,11 @@ def _serve_hls_playlist(token):
     channel_id, client_id, client_hash = loaded
     fmt = _resolved_format(client_hash)
 
-    # Cold start holds the playlist key until listed media reaches the
-    # manager's MIN_INITIAL_PLAYLIST_SECONDS gate. Wait briefly
-    # (gevent-friendly) instead of bouncing the player.
-    playlist_key = RedisKeys.output_playlist(channel_id, fmt)
-    deadline = time.time() + 10
-    playlist_json = redis_client.get(playlist_key)
-    while not playlist_json and time.time() < deadline:
-        state = redis_client.get(RedisKeys.output_state(channel_id, fmt))
-        if state == 'stopped' or _session_gone(channel_id, client_id):
-            _drop_hls_session(redis_client, token)
-            return JsonResponse({"error": "Stream stopped"}, status=410)
-        gevent.sleep(0.25)
-        playlist_json = redis_client.get(playlist_key)
-
+    playlist_json, error = _wait_for_playlist(
+        redis_client, token, channel_id, client_id, fmt
+    )
+    if error is not None:
+        return error
     if not playlist_json:
         response = JsonResponse({"error": "Stream not ready"}, status=503)
         response["Retry-After"] = "2"
