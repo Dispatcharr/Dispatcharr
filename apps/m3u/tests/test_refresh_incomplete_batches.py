@@ -1,4 +1,5 @@
 """A stream batch that fails to write must not lead to stale marking of its streams."""
+import tempfile
 import threading
 from unittest import skipUnless
 from unittest.mock import patch
@@ -60,6 +61,16 @@ class ProcessBatchWriteFailureTests(TransactionTestCase):
 )
 class RealBatchWriteFailureTests(TransactionTestCase):
     """Runs the real process_m3u_batch_direct against PostgreSQL write failures, injected or real."""
+
+    def setUp(self):
+        # Refresh reads MEDIA_ROOT/cached_m3u/<account_id>.json when present
+        # and deletes it afterward. Point at an empty temp dir so a colliding
+        # account id cannot load (or remove) a real cache file from the host.
+        self._m3u_cache_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._m3u_cache_dir.cleanup)
+        m3u_dir_patcher = patch("apps.m3u.tasks.m3u_dir", self._m3u_cache_dir.name)
+        m3u_dir_patcher.start()
+        self.addCleanup(m3u_dir_patcher.stop)
 
     def _setup(self, account_type):
         account = M3UAccount.objects.create(

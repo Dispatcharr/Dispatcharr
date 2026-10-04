@@ -1535,6 +1535,101 @@ def _retry_failed_batches(account_id, failed_batches, groups, hash_keys, compile
     return created, updated, unchanged, failed
 
 
+def _process_stream_batches_with_retry(
+    account_id,
+    batches,
+    groups,
+    hash_keys,
+    compiled_filters,
+    *,
+    max_workers,
+    start_time,
+    error_label="thread batch",
+    progress_label="Thread batch",
+):
+    """Run stream batches in a thread pool, then retry write failures once.
+
+    Batches that raise before returning a result are queued for one sequential
+    retry after the pool finishes. A failure after a successful write (for
+    example a progress notification) does not requeue that committed batch.
+
+    Returns (created, updated, unchanged, failed_batch_count).
+    """
+    streams_created = streams_updated = streams_unchanged = 0
+    failed_batches = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_batch = {
+            executor.submit(
+                process_m3u_batch_direct,
+                account_id,
+                batch,
+                groups,
+                hash_keys,
+                compiled_filters,
+            ): i
+            for i, batch in enumerate(batches)
+        }
+
+        completed_batches = 0
+        total_batches = len(batches)
+
+        for future in as_completed(future_to_batch):
+            batch_idx = future_to_batch[future]
+            result = None
+            try:
+                result = future.result()
+                completed_batches += 1
+
+                created_count, updated_count, unchanged_count = (
+                    _parse_batch_stream_counts(result)
+                )
+                if created_count or updated_count or unchanged_count:
+                    streams_created += created_count
+                    streams_updated += updated_count
+                    streams_unchanged += unchanged_count
+
+                progress = int((completed_batches / total_batches) * 100)
+                current_elapsed = time.time() - start_time
+
+                if progress > 0:
+                    estimated_total = (current_elapsed / progress) * 100
+                    time_remaining = max(0, estimated_total - current_elapsed)
+                else:
+                    time_remaining = 0
+
+                send_m3u_update(
+                    account_id,
+                    "parsing",
+                    progress,
+                    elapsed_time=current_elapsed,
+                    time_remaining=time_remaining,
+                    streams_processed=streams_created + streams_updated + streams_unchanged,
+                )
+
+                logger.debug(
+                    f"{progress_label} {completed_batches}/{total_batches} completed"
+                )
+
+            except Exception as e:
+                logger.error(f"Error in {error_label} {batch_idx}: {str(e)}")
+                if result is None:
+                    completed_batches += 1  # Still count it to avoid hanging
+                    failed_batches.append((batch_idx, batches[batch_idx]))
+            finally:
+                batches[batch_idx] = None
+
+    created_count, updated_count, unchanged_count, failed_batch_count = (
+        _retry_failed_batches(
+            account_id, failed_batches, groups, hash_keys, compiled_filters,
+        )
+    )
+    streams_created += created_count
+    streams_updated += updated_count
+    streams_unchanged += unchanged_count
+    return streams_created, streams_updated, streams_unchanged, failed_batch_count
+
+
 def cleanup_streams(account_id, scan_start_time=timezone.now):
     account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
     existing_groups = ChannelGroup.objects.filter(
@@ -3656,85 +3751,22 @@ def _refresh_single_m3u_account_impl(account_id):
             max_workers = min(2, len(batches))
             logger.debug(f"Using {max_workers} threads for processing")
 
-            failed_batches = []
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit batch processing tasks using direct functions (now thread-safe)
-                future_to_batch = {
-                    executor.submit(
-                        process_m3u_batch_direct,
-                        account_id,
-                        batch,
-                        existing_groups,
-                        hash_keys,
-                        compiled_stream_filters,
-                    ): i
-                    for i, batch in enumerate(batches)
-                }
-
-                completed_batches = 0
-                total_batches = len(batches)
-
-                # Process completed batches as they finish
-                for future in as_completed(future_to_batch):
-                    batch_idx = future_to_batch[future]
-                    result = None
-                    try:
-                        result = future.result()
-                        completed_batches += 1
-
-                        # Extract stream counts from result
-                        created_count, updated_count, unchanged_count = (
-                            _parse_batch_stream_counts(result)
-                        )
-                        if created_count or updated_count or unchanged_count:
-                            streams_created += created_count
-                            streams_updated += updated_count
-                            streams_unchanged += unchanged_count
-
-                        # Send progress update
-                        progress = int((completed_batches / total_batches) * 100)
-                        current_elapsed = time.time() - start_time
-
-                        if progress > 0:
-                            estimated_total = (current_elapsed / progress) * 100
-                            time_remaining = max(0, estimated_total - current_elapsed)
-                        else:
-                            time_remaining = 0
-
-                        send_m3u_update(
-                            account_id,
-                            "parsing",
-                            progress,
-                            elapsed_time=current_elapsed,
-                            time_remaining=time_remaining,
-                            streams_processed=streams_created + streams_updated + streams_unchanged,
-                        )
-
-                        logger.debug(f"Thread batch {completed_batches}/{total_batches} completed")
-
-                    except Exception as e:
-                        logger.error(f"Error in thread batch {batch_idx}: {str(e)}")
-                        if result is None:
-                            completed_batches += 1  # Still count it to avoid hanging
-                            failed_batches.append((batch_idx, batches[batch_idx]))
-                    finally:
-                        batches[batch_idx] = None
-
-            created_count, updated_count, unchanged_count, failed_batch_count = (
-                _retry_failed_batches(
-                    account_id, failed_batches, existing_groups, hash_keys,
+            streams_created, streams_updated, streams_unchanged, failed_batch_count = (
+                _process_stream_batches_with_retry(
+                    account_id,
+                    batches,
+                    existing_groups,
+                    hash_keys,
                     compiled_stream_filters,
+                    max_workers=max_workers,
+                    start_time=start_time,
                 )
             )
-            streams_created += created_count
-            streams_updated += updated_count
-            streams_unchanged += unchanged_count
 
             logger.info(f"Thread-based processing completed for account {account_id}")
 
             # Parsed catalog is no longer needed; drop before stale cleanup / auto-sync.
-            del extinf_data, batches, failed_batches
+            del extinf_data, batches
             gc.collect()
         else:
             # For XC accounts, get the groups with their custom properties containing xc_id
@@ -3810,84 +3842,23 @@ def _refresh_single_m3u_account_impl(account_id):
                 max_workers = min(4, len(batches))
                 logger.debug(f"Using {max_workers} threads for XC stream processing")
 
-                failed_batches = []
-
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit stream batch processing tasks (reuse standard M3U processing)
-                    future_to_batch = {
-                        executor.submit(
-                            process_m3u_batch_direct,
-                            account_id,
-                            batch,
-                            existing_groups,
-                            hash_keys,
-                            compiled_stream_filters,
-                        ): i
-                        for i, batch in enumerate(batches)
-                    }
-
-                    completed_batches = 0
-                    total_batches = len(batches)
-
-                    # Process completed batches as they finish
-                    for future in as_completed(future_to_batch):
-                        batch_idx = future_to_batch[future]
-                        result = None
-                        try:
-                            result = future.result()
-                            completed_batches += 1
-
-                            # Extract stream counts from result
-                            created_count, updated_count, unchanged_count = (
-                                _parse_batch_stream_counts(result)
-                            )
-                            if created_count or updated_count or unchanged_count:
-                                streams_created += created_count
-                                streams_updated += updated_count
-                                streams_unchanged += unchanged_count
-
-                            # Send progress update
-                            progress = int((completed_batches / total_batches) * 100)
-                            current_elapsed = time.time() - start_time
-
-                            if progress > 0:
-                                estimated_total = (current_elapsed / progress) * 100
-                                time_remaining = max(0, estimated_total - current_elapsed)
-                            else:
-                                time_remaining = 0
-
-                            send_m3u_update(
-                                account_id,
-                                "parsing",
-                                progress,
-                                elapsed_time=current_elapsed,
-                                time_remaining=time_remaining,
-                                streams_processed=streams_created + streams_updated + streams_unchanged,
-                            )
-
-                            logger.debug(f"XC thread batch {completed_batches}/{total_batches} completed")
-
-                        except Exception as e:
-                            logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
-                            if result is None:
-                                completed_batches += 1  # Still count it to avoid hanging
-                                failed_batches.append((batch_idx, batches[batch_idx]))
-                        finally:
-                            batches[batch_idx] = None
-
-                created_count, updated_count, unchanged_count, failed_batch_count = (
-                    _retry_failed_batches(
-                        account_id, failed_batches, existing_groups, hash_keys,
+                streams_created, streams_updated, streams_unchanged, failed_batch_count = (
+                    _process_stream_batches_with_retry(
+                        account_id,
+                        batches,
+                        existing_groups,
+                        hash_keys,
                         compiled_stream_filters,
+                        max_workers=max_workers,
+                        start_time=start_time,
+                        error_label="XC thread batch",
+                        progress_label="XC thread batch",
                     )
                 )
-                streams_created += created_count
-                streams_updated += updated_count
-                streams_unchanged += unchanged_count
 
                 logger.info(f"XC thread-based processing completed for account {account_id}")
 
-                del batches, failed_batches
+                del batches
                 gc.collect()
 
         if failed_batch_count:
