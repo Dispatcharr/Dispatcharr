@@ -313,8 +313,19 @@ def generate_m3u(request, profile_name=None, user=None):
         else:
             epg_url = epg_base_url
 
-    # Add x-tvg-url and url-tvg attribute for EPG URL
-    m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
+    # Add x-tvg-url and url-tvg attribute for EPG URL. catchup-timezone is the
+    # IANA zone Dispatcharr's timeshift endpoints expect for wall-clock
+    # placeholders (same as player_api server_info.timezone). Only on the XC
+    # /live/ playlist: direct provider URLs use the provider's own local time,
+    # and plain /proxy/ts/stream output does not advertise catch-up.
+    catchup_allowed = is_catchup_enabled(user=user)
+    catchup_header_attrs = ""
+    if catchup_allowed and is_xc_request and not use_direct_urls:
+        catchup_header_attrs = ' catchup-timezone="UTC"'
+    m3u_content = (
+        f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"'
+        f"{catchup_header_attrs}\n"
+    )
 
     # Host/port/scheme are constant per request; precompute URL prefixes once.
     # XC without direct has no proxy fallback; admin XC+direct may fall back.
@@ -330,7 +341,6 @@ def generate_m3u(request, profile_name=None, user=None):
 
     # Advertise catch-up only where the emitted URL is /live/... form that
     # catchup="xc" can rewrite into /timeshift/. Plain proxy URLs cannot.
-    catchup_allowed = is_catchup_enabled(user=user)
 
     # Start building M3U content
     channel_count = 0

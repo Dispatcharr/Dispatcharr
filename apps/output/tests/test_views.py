@@ -1242,6 +1242,8 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
 
         response = generate_m3u(self._xc_style_request(), None, self.user)
         content = _response_text(response)
+        header = content.splitlines()[0]
+        self.assertIn('catchup-timezone="UTC"', header)
         self.assertIn('catchup="xc" catchup-days="7"', content)
 
     def test_catchup_omitted_for_plain_proxy_output(self):
@@ -1250,7 +1252,8 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
         request = self.factory.get("/output/m3u")
         response = generate_m3u(request, None, None)
         content = _response_text(response)
-        self.assertNotIn('catchup=', content)
+        self.assertNotIn("catchup=", content)
+        self.assertNotIn("catchup-timezone=", content)
 
     def test_catchup_omitted_when_channel_is_not_catchup(self):
         from apps.output.views import generate_m3u
@@ -1259,7 +1262,11 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
         self.channel.save(update_fields=["is_catchup"])
         response = generate_m3u(self._xc_style_request(), None, self.user)
         content = _response_text(response)
-        self.assertNotIn('catchup=', content)
+        # Header still advertises the server zone; no per-channel catchup tags.
+        self.assertIn('catchup-timezone="UTC"', content.splitlines()[0])
+        for line in content.splitlines():
+            if line.startswith("#EXTINF"):
+                self.assertNotIn("catchup=", line)
 
     def test_catchup_omitted_when_user_disables_catchup(self):
         from apps.output.views import generate_m3u
@@ -1271,7 +1278,8 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
         self.user.save(update_fields=["custom_properties"])
         response = generate_m3u(self._xc_style_request(), None, self.user)
         content = _response_text(response)
-        self.assertNotIn('catchup=', content)
+        self.assertNotIn("catchup=", content)
+        self.assertNotIn("catchup-timezone=", content)
 
     def test_catchup_days_capped_at_max_lookback(self):
         from apps.output.views import generate_m3u
@@ -1354,6 +1362,15 @@ class GenerateM3UDirectCatchupTests(OutputEndpointTestMixin, TestCase):
         self._channel(1, "Archive", "http://provider.example/live/u/p/1", True, 3)
         self._channel(2, "No Archive", "http://provider.example/live/u/p/2", False, 0)
         no_url = self._channel(3, "No URL", "", True, 3)
+
+        from apps.output.views import generate_m3u
+
+        request = self.factory.get(
+            "/get.php", {"username": "x", "password": "y", "direct": "true"}
+        )
+        content = _response_text(generate_m3u(request, None, self.user))
+        # Provider URLs use the provider's local time, so omit our UTC header.
+        self.assertNotIn("catchup-timezone=", content.splitlines()[0])
 
         entries = self._entries()
 
