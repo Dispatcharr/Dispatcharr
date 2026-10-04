@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live-proxy stream events identify which stream stalled or failed over.** `channel_buffering`, `channel_failover`, `channel_reconnect`, `channel_error`, and `stream_switch` carry the active `stream_id`, and switches also carry `previous_stream_id`, a switch `reason` (`buffering_timeout`, `max_retries_exceeded`, `health_monitor`, `manual`, or `unknown`), and the previous stream name/provider when already known from the failover lookup or channel metadata. `channel_buffering` is now a Connect subscription event, so webhooks, scripts, and plugins can track unstable providers without scraping logs. A buffering timeout that cannot switch emits a single `channel_error` per stalled stream. (Closes #1564) - Thanks [@lukezbihlyj](https://github.com/lukezbihlyj)
+
 ### Changed
 
 - **Container boot and runtime logs are much quieter.** Postgres readiness and role probes no longer provoke FATAL noise; per-process log-level and TLS-disabled echoes are gone; routine live-proxy / Redis / plugin / gevent startup lines move to DEBUG; unset env vars with working defaults are optional; Celery banners and Redis notice logs are suppressed in production; uWSGI request lines are stamped INFO; recording failures use the module logger; channel-ownership races and task-lock contention no longer look like Redis failures; the browser WebSocket connect log drops the JWT query string. One-shot startup work (collector settings, developer notifications, backup scheduler, plugin-repo refresh) runs once in uWSGI worker 1 instead of accidentally on the DVR Celery worker. - Thanks [@nagelm](https://github.com/nagelm)
