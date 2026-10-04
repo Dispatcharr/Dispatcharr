@@ -703,7 +703,7 @@ def xc_get_live_categories(user):
             # User has specific limited profiles assigned
             filters = {
                 "channels__channelprofilemembership__enabled": True,
-                "channels__user_level": 0,
+                "channels__user_level__lte": user.user_level,
                 "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
                 **hidden_exclusion,
             }

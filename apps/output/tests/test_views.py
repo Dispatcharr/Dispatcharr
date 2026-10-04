@@ -11,6 +11,7 @@ from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
 from apps.output.views import (
+    xc_get_live_categories,
     xc_get_live_streams,
     xc_get_series,
     xc_get_series_categories,
@@ -1139,6 +1140,46 @@ class XcLiveStreamsNullChannelNumberTests(TestCase):
         self.assertIn(unnumbered.id, by_id)
         self.assertIsInstance(by_id[unnumbered.id]["num"], int)
         self.assertNotIn(by_id[unnumbered.id]["num"], {5})
+
+
+class XcLiveCategoriesProfileUserLevelTests(OutputEndpointTestMixin, TestCase):
+    """Standard Users with a Channel Profile must see matching live categories.
+
+    get_live_streams already filters with user_level__lte. Categories used an
+    exact channels__user_level=0 check, so Standard Users (level 1) with only
+    level-1 channels in their profile got streams but an empty category list.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.request = self.factory.get("/player_api.php")
+        self.group = ChannelGroup.objects.create(name=f"Cat Group {uuid4().hex[:8]}")
+        self.profile = self._create_isolated_profile("xc-cat")
+        self.channel = self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            name="Standard Ch",
+            channel_number=1,
+            user_level=1,
+        )
+        self.user = User.objects.create_user(
+            username=f"xc-std-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=1,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.user.channel_profiles.add(self.profile)
+
+    def test_standard_user_with_profile_gets_live_categories(self):
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual([s["stream_id"] for s in streams], [self.channel.id])
+
+        categories = xc_get_live_categories(self.user)
+        self.assertEqual(
+            [(c["category_id"], c["category_name"]) for c in categories],
+            [(str(self.group.id), self.group.name)],
+        )
 
 
 class XcLiveStreamsCatchupAdvertisingTests(TestCase):
