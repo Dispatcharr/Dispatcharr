@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 from django.http import HttpResponseRedirect
 from django.test import RequestFactory, SimpleTestCase
 
+from apps.channels.models import Channel
+
 
 class StreamTsRedirectValidationTests(SimpleTestCase):
     def setUp(self):
@@ -13,7 +15,7 @@ class StreamTsRedirectValidationTests(SimpleTestCase):
         self.provider_url = "http://provider.example/live/1"
 
     def _channel(self):
-        channel = MagicMock()
+        channel = MagicMock(spec=Channel)
         channel.id = 1
         channel.uuid = self.channel_id
         channel.name = "Test Channel"
@@ -28,6 +30,7 @@ class StreamTsRedirectValidationTests(SimpleTestCase):
         proxy_server.redis_client = MagicMock()
         proxy_server.redis_client.exists.return_value = False
         proxy_server.redis_client.get.return_value = None
+        proxy_server.redis_client.hmget.return_value = (None, None, None)
         proxy_server.redis_client.hgetall.return_value = {}
         proxy_server.stream_buffers = {}
         proxy_server.client_managers = {}
@@ -140,4 +143,49 @@ class StreamTsRedirectValidationTests(SimpleTestCase):
         self.assertIsInstance(response, HttpResponseRedirect)
         self.assertEqual(response.url, self.provider_url)
         mock_validate_stream_url.assert_called_once()
+        channel.release_stream.assert_called_once()
+
+    @patch("apps.proxy.live_proxy.views.close_old_connections")
+    @patch(
+        "apps.proxy.live_proxy.url_utils.validate_stream_url",
+        side_effect=RuntimeError("probe blew up"),
+    )
+    @patch("apps.proxy.config.TSConfig.get_validate_redirect_urls", return_value=True)
+    @patch("apps.proxy.live_proxy.views.generate_stream_url")
+    @patch(
+        "apps.proxy.live_proxy.views.ChannelService.is_channel_unavailable_for_new_clients",
+        return_value=False,
+    )
+    @patch("apps.proxy.live_proxy.views.get_stream_object")
+    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.ProxyServer")
+    def test_releases_slot_when_validation_raises(
+        self,
+        mock_proxy_cls,
+        _network_ok,
+        mock_get_stream_object,
+        _unavailable,
+        mock_generate_stream_url,
+        _mock_validate_setting,
+        _mock_validate_stream_url,
+        _mock_close,
+    ):
+        mock_generate_stream_url.return_value = (
+            self.provider_url,
+            "ua",
+            False,
+            "None",
+            True,
+            None,
+            42,
+        )
+        channel = self._channel()
+        mock_get_stream_object.return_value = channel
+        mock_proxy_cls.get_instance.return_value = self._proxy_server()
+
+        from apps.proxy.live_proxy.views import stream_ts
+
+        response = stream_ts(self._request(), self.channel_id)
+
+        self.assertEqual(response.status_code, 500)
         channel.release_stream.assert_called_once()

@@ -667,17 +667,18 @@ describe('OutputProfiles', () => {
   // ── Store reactivity ───────────────────────────────────────────────────────
 
   describe('store reactivity', () => {
-    it('passes store profiles directly to the table data', () => {
+    it('orders locked profiles before unlocked ones, then by name', () => {
       const profiles = [
-        makeProfile({ id: 1, name: 'Alpha' }),
-        makeProfile({ id: 2, name: 'Beta' }),
+        makeProfile({ id: 1, name: 'Custom', locked: false }),
+        makeProfile({ id: 2, name: 'Web Player (AAC Audio)', locked: true }),
+        makeProfile({ id: 3, name: 'Media Server (AC3 Audio)', locked: true }),
       ];
       setupMocks({ profiles });
       render(<OutputProfiles />);
-      expect(capturedTableOptions.data).toHaveLength(2);
       expect(capturedTableOptions.data.map((p) => p.name)).toEqual([
-        'Alpha',
-        'Beta',
+        'Media Server (AC3 Audio)',
+        'Web Player (AAC Audio)',
+        'Custom',
       ]);
     });
 
