@@ -150,8 +150,6 @@ class Stream(models.Model):
         help_text="Number of days of catch-up archive available (tv_archive_duration)",
     )
 
-    # Populated at import from the provider's stream_type (XC accounts) or the
-    # M3U radio EXTINF attribute (standard M3U accounts).
     is_radio = models.BooleanField(
         default=False,
         db_index=True,

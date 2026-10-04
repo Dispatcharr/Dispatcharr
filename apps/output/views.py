@@ -374,9 +374,6 @@ def generate_m3u(request, profile_name=None, user=None):
                 f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
-        # Kodi's PVR IPTV Simple Client (and other radio="true"-aware clients)
-        # use this to route the entry into a Radio section instead of TV.
-        # Only emitted when true, "radio=false" is not a real M3U convention.
         radio_attr = 'radio="true" ' if channel.effective_is_radio else ""
 
         extinf_line = (

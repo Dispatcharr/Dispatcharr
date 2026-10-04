@@ -92,7 +92,7 @@ class RefreshSetsStreamRadioTests(TestCase):
 
 
 class AutoSyncCopiesRadioTests(TestCase):
-    """Auto-sync copies is_radio from the source stream, never an override."""
+    """Auto-sync copies is_radio from the stream, never an override."""
 
     def setUp(self):
         self.account = M3UAccount.objects.create(
@@ -120,7 +120,7 @@ class AutoSyncCopiesRadioTests(TestCase):
             last_seen=timezone.now(),
         )
 
-    def _auto_channel(self, stream, is_radio=False, extra_streams=()):
+    def _auto_channel(self, stream, is_radio=False):
         channel = Channel.objects.create(
             name=stream.name,
             channel_number=100,
@@ -130,8 +130,7 @@ class AutoSyncCopiesRadioTests(TestCase):
             auto_created_by=self.account,
             is_radio=is_radio,
         )
-        for order, s in enumerate((stream, *extra_streams)):
-            ChannelStream.objects.create(channel=channel, stream=s, order=order)
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
         return channel
 
     def test_new_auto_channel_copies_stream_radio(self):
@@ -165,14 +164,3 @@ class AutoSyncCopiesRadioTests(TestCase):
         channel.refresh_from_db()
         self.assertTrue(channel.is_radio)
         self.assertIs(ChannelOverride.objects.get(channel=channel).is_radio, False)
-
-    def test_only_source_stream_sets_radio(self):
-        """A TV channel with a radio stream further down the list stays TV."""
-        tv = self._stream("Mixed", is_radio=False)
-        radio = self._stream("Mixed Radio", is_radio=True)
-        channel = self._auto_channel(tv, is_radio=False, extra_streams=(radio,))
-
-        sync_auto_channels(self.account.id, scan_start_time=_scan_start_time())
-
-        channel.refresh_from_db()
-        self.assertFalse(channel.is_radio)

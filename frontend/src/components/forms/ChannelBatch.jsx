@@ -868,7 +868,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
               <Select
                 size="xs"
                 label="Radio"
-                description="Classify as Radio instead of TV in M3U/XC output. Auto-synced channels get an override."
+                description="Shown as radio instead of TV in M3U and XC client output."
                 {...form.getInputProps('is_radio')}
                 key={form.key('is_radio')}
                 data={[

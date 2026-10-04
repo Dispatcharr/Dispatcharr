@@ -150,11 +150,7 @@ class OutputM3UTest(OutputEndpointTestMixin, TestCase):
 
 
 class GenerateM3URadioAttributeTests(OutputEndpointTestMixin, TestCase):
-    """EXTINF should carry radio="true" for radio channels.
-
-    Kodi's PVR IPTV Simple Client (and other radio="true"-aware clients) use
-    this attribute to route the entry into a Radio section instead of TV.
-    """
+    """EXTINF should carry radio="true" for radio channels."""
 
     def setUp(self):
         super().setUp()
