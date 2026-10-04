@@ -403,7 +403,6 @@ class Channel(models.Model):
     # classification, not a capability. ChannelOverride.is_radio wins when set.
     is_radio = models.BooleanField(
         default=False,
-        db_index=True,
         help_text="Whether this channel is a radio channel, copied from its source stream",
     )
 

@@ -150,7 +150,7 @@ class OutputM3UTest(OutputEndpointTestMixin, TestCase):
 
 
 class GenerateM3URadioAttributeTests(OutputEndpointTestMixin, TestCase):
-    """Issue #1683: EXTINF should carry radio="true" for radio channels.
+    """EXTINF should carry radio="true" for radio channels.
 
     Kodi's PVR IPTV Simple Client (and other radio="true"-aware clients) use
     this attribute to route the entry into a Radio section instead of TV.
@@ -1213,8 +1213,8 @@ class XcLiveStreamsCatchupAdvertisingTests(TestCase):
 class XcLiveStreamsStreamTypeTests(TestCase):
     """xc_get_live_streams reports stream_type from the effective radio flag.
 
-    Issue #1683: this was hardcoded to "live" for every entry regardless of
-    what the provider actually said, discarding a real stream_type: "radio_streams"
+    Previously hardcoded to "live" for every entry regardless of what the
+    provider actually said, discarding a real stream_type: "radio_streams"
     signal some XC providers send.
     """
 

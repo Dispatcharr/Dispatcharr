@@ -29,7 +29,6 @@ class Migration(migrations.Migration):
             name="is_radio",
             field=models.BooleanField(
                 default=False,
-                db_index=True,
                 help_text="Whether this channel is a radio channel, copied from its source stream",
             ),
         ),

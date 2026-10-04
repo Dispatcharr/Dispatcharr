@@ -1,4 +1,4 @@
-"""Radio classification on refresh and auto-sync (issue #1683)."""
+"""Radio classification on refresh and auto-sync."""
 from datetime import timedelta
 from unittest.mock import patch
 
