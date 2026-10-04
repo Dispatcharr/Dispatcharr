@@ -48,6 +48,7 @@ class UserAgent(models.Model):
 
 PROXY_PROFILE_NAME = "Proxy"
 REDIRECT_PROFILE_NAME = "Redirect"
+FFMPEG_PROFILE_NAME = "FFmpeg"
 
 
 def _enforce_locked_profile(instance, allowed_fields):
@@ -107,6 +108,11 @@ class StreamProfile(models.Model):
         # user_agent is the profile's request header, not the stream command.
         _enforce_locked_profile(self, {"user_agent"})
         super().save(*args, **kwargs)
+
+    @classmethod
+    def get_locked(cls, name):
+        """Return the locked profile whose display name matches case-insensitively."""
+        return cls.objects.get(name__iexact=name, locked=True)
 
     @classmethod
     def update(cls, pk, **kwargs):

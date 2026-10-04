@@ -799,9 +799,9 @@ class StreamManager:
 
                 # Use FFmpeg specifically for HLS streams
                 if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
-                    from core.models import StreamProfile
+                    from core.models import FFMPEG_PROFILE_NAME, StreamProfile
                     try:
-                        stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
+                        stream_profile = StreamProfile.get_locked(FFMPEG_PROFILE_NAME)
                         logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
                     except StreamProfile.DoesNotExist:
                         # Fall back to channel's profile if FFmpeg not found
