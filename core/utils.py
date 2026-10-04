@@ -806,6 +806,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         channel_obj = None
         if channel_id:
+            payload["channel_id"] = str(channel_id)
             try:
                 channel_obj = Channel.objects.get(uuid=channel_id)
                 payload["channel_name"] = channel_obj.name
@@ -833,6 +834,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
                 stream_obj = None
 
         # Populate stream details
+        payload["stream_id"] = stream_id
         payload["stream_name"] = getattr(stream_obj, "name", None)
         payload["stream_url"] = getattr(stream_obj, "url", None)
 
@@ -862,9 +864,9 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         payload["profile_used"] = profile_used
 
-        # remove empty keys
+        # remove empty keys (keep falsy values such as speed=0.0)
         for k in list(payload.keys()):
-            if not payload[k]:
+            if payload[k] is None or payload[k] == "":
                 del payload[k]
 
         trigger_event(event_type, payload)
