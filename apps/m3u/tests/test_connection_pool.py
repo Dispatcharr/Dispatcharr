@@ -6,6 +6,7 @@ from unittest.mock import patch
 from redis.exceptions import WatchError
 
 from apps.m3u.connection_pool import (
+    RELEASE_MAX_ATTEMPTS,
     extract_credentials_from_stream_url,
     get_credential_connection_count,
     get_enforced_server_group_for_profile,
@@ -327,6 +328,18 @@ class PoolEnforcementTests(TestCase):
         release_profile_slot(self.profile.id, self.redis)
         self.assertEqual(get_credential_connection_count(self.profile, self.redis), 0)
 
+    def test_release_gives_up_after_repeated_watch_conflicts(self):
+        self.assertTrue(reserve_profile_slot(self.profile, self.redis)[0])
+
+        with patch.object(
+            FakeRedisPipeline, "execute", side_effect=WatchError
+        ) as execute, self.assertLogs("apps.m3u.connection_pool", level="WARNING"):
+            release_profile_slot(self.profile.id, self.redis)
+
+        self.assertEqual(execute.call_count, RELEASE_MAX_ATTEMPTS)
+        self.assertEqual(get_profile_connection_count(self.profile, self.redis), 1)
+        self.assertEqual(get_credential_connection_count(self.profile, self.redis), 1)
+
     def test_same_credential_capped_at_profile_max(self):
         """Shared credential counter is capped by each profile's max_streams."""
         account2 = M3UAccount.objects.create(
@@ -644,6 +657,117 @@ class UpdateStreamProfileTests(TestCase):
             self.assertEqual(redis._data[key_a], 0)
             release_profile_slot(profile_b.id, redis)
             self.assertEqual(redis._data[key_b], 0)
+
+    def _shared_login_switch_fixture(self, *, channel_number, max_a, max_b):
+        """Two profiles on one XC login (same fingerprint) with a stream on profile A."""
+        from apps.channels.models import Channel, Stream
+
+        redis = FakeRedis()
+        group = ServerGroup.objects.create(name=f"shared-login-{channel_number}")
+        account = M3UAccount.objects.create(
+            name=f"Shared Login Account {channel_number}",
+            account_type="XC",
+            username="user",
+            password="pass",
+            server_url="http://xc.example.com",
+            server_group=group,
+            max_streams=5,
+        )
+        profile_a = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        profile_a.max_streams = max_a
+        profile_a.save()
+        profile_b = M3UAccountProfile.objects.create(
+            m3u_account=account,
+            name="alt",
+            is_default=False,
+            is_active=True,
+            max_streams=max_b,
+            search_pattern="",
+            replace_pattern="",
+        )
+        stream = Stream.objects.create(name="Shared Login Stream", m3u_account=account)
+        channel = Channel.objects.create(
+            channel_number=channel_number, name="Shared Login Channel"
+        )
+        channel.streams.add(stream)
+        cred_key = server_group_connections_key(
+            group.id, get_profile_credential_fingerprint(profile_a)
+        )
+        return redis, channel, stream, profile_a, profile_b, cred_key
+
+    def _start_stream_on(self, redis, channel, stream, profile):
+        redis.set(f"channel_stream:{channel.id}", stream.id)
+        redis.set(f"stream_profile:{stream.id}", profile.id)
+
+    def test_switch_between_profiles_sharing_a_login_hands_release_to_new_profile(self):
+        redis, channel, stream, profile_a, profile_b, cred_key = (
+            self._shared_login_switch_fixture(channel_number=504, max_a=2, max_b=2)
+        )
+        reserve_profile_slot(profile_a, redis)
+        reserve_profile_slot(profile_a, redis)
+        self._start_stream_on(redis, channel, stream, profile_a)
+
+        with patch("core.utils.RedisClient.get_client", return_value=redis):
+            self.assertTrue(channel.update_stream_profile(profile_b.id))
+
+        self.assertEqual(redis._data[cred_key], 2)
+        self.assertEqual(
+            redis.get(profile_credential_release_key(profile_b.id)), cred_key.encode()
+        )
+
+        release_profile_slot(profile_b.id, redis)
+        self.assertEqual(redis._data[cred_key], 1)
+        release_profile_slot(profile_a.id, redis)
+        self.assertEqual(redis._data[cred_key], 0)
+        self.assertEqual(redis._data[profile_connections_key(profile_a.id)], 0)
+        self.assertEqual(redis._data[profile_connections_key(profile_b.id)], 0)
+
+    def test_switch_to_unlimited_profile_with_same_login_frees_credential_slot(self):
+        redis, channel, stream, profile_a, profile_b, cred_key = (
+            self._shared_login_switch_fixture(channel_number=505, max_a=1, max_b=0)
+        )
+        reserve_profile_slot(profile_a, redis)
+        self._start_stream_on(redis, channel, stream, profile_a)
+        self.assertEqual(redis._data[cred_key], 1)
+
+        with patch("core.utils.RedisClient.get_client", return_value=redis):
+            self.assertTrue(channel.update_stream_profile(profile_b.id))
+
+        self.assertEqual(redis._data[cred_key], 0)
+        self.assertNotIn(profile_credential_release_key(profile_a.id), redis._data)
+
+        release_profile_slot(profile_b.id, redis)
+        self.assertEqual(redis._data[cred_key], 0)
+
+    def test_switch_from_unlimited_profile_with_same_login_reserves_credential_slot(self):
+        redis, channel, stream, profile_a, profile_b, cred_key = (
+            self._shared_login_switch_fixture(channel_number=506, max_a=0, max_b=1)
+        )
+        reserve_profile_slot(profile_a, redis)
+        self._start_stream_on(redis, channel, stream, profile_a)
+        self.assertEqual(redis._data.get(cred_key, 0), 0)
+
+        with patch("core.utils.RedisClient.get_client", return_value=redis):
+            self.assertTrue(channel.update_stream_profile(profile_b.id))
+
+        self.assertEqual(redis._data[cred_key], 1)
+        release_profile_slot(profile_b.id, redis)
+        self.assertEqual(redis._data[cred_key], 0)
+
+    def test_switch_from_unlimited_profile_rejected_when_login_pool_full(self):
+        redis, channel, stream, profile_a, profile_b, cred_key = (
+            self._shared_login_switch_fixture(channel_number=507, max_a=0, max_b=1)
+        )
+        reserve_profile_slot(profile_a, redis)
+        self._start_stream_on(redis, channel, stream, profile_a)
+        redis.set(cred_key, 1)
+
+        with patch("core.utils.RedisClient.get_client", return_value=redis):
+            self.assertFalse(channel.update_stream_profile(profile_b.id))
+
+        self.assertEqual(redis._data[cred_key], 1)
+        self.assertEqual(int(redis.get(f"stream_profile:{stream.id}")), profile_a.id)
+        self.assertNotIn(profile_credential_release_key(profile_b.id), redis._data)
 
 
 class VodProfileSelectionTests(TestCase):

@@ -25,6 +25,8 @@ PROFILE_CONNECTIONS_KEY = "profile_connections:{profile_id}"
 PROFILE_CREDENTIAL_RELEASE_KEY = "profile_credential_release:{profile_id}"
 SERVER_GROUP_CONNECTIONS_KEY = "server_group_connections:{group_id}:{fingerprint}"
 
+RELEASE_MAX_ATTEMPTS = 10
+
 _XC_URL_CREDENTIALS_RE = re.compile(
     r"/(?:live|movie|series)/([^/]+)/([^/]+)/",
     re.IGNORECASE,
@@ -208,14 +210,19 @@ def move_credential_slot_on_profile_switch(
     old_profile, new_profile, redis_client
 ) -> bool:
     """
-    Move the shared credential counter when switching to a different provider login.
+    Move the shared credential counter when a stream switches profiles.
 
     Profile counters are managed separately by Channel.update_stream_profile().
-    Returns False when the new profile's credential pool is full.
+    When both profiles hold a slot on the same credential counter, the slot stays
+    where it is and only the new profile's release key is armed, so ending the
+    stream on the new profile still frees it. Returns False when the new profile's
+    credential pool is full.
     """
-    old_fp = get_profile_credential_fingerprint(old_profile)
-    new_fp = get_profile_credential_fingerprint(new_profile)
-    if old_fp == new_fp:
+    old_slot_key = _held_credential_slot_key(old_profile)
+    new_slot_key = _held_credential_slot_key(new_profile)
+    if old_slot_key == new_slot_key:
+        if new_slot_key:
+            _remember_credential_release_key(new_profile.id, new_slot_key, redis_client)
         return True
 
     _release_credential_slot_by_profile_id(old_profile.id, redis_client)
@@ -238,6 +245,14 @@ def move_credential_slot_on_profile_switch(
     return True
 
 
+def _held_credential_slot_key(profile) -> Optional[str]:
+    """Credential counter key a reservation on this profile holds, or None if it holds none."""
+    group = get_enforced_server_group_for_profile(profile)
+    if not group or profile.max_streams == 0:
+        return None
+    return _credential_counter_key(profile, group)
+
+
 def _remember_credential_release_key(
     profile_id: int, cred_key: str, redis_client
 ) -> None:
@@ -246,11 +261,18 @@ def _remember_credential_release_key(
 
 def _release_credential_slot_by_profile_id(
     profile_id: int, redis_client, *, release_profile: bool = False
-) -> bool:
-    """Keep the stored credential key until the profile's last reservation ends."""
+) -> None:
+    """
+    Release one credential slot for the profile, and its profile slot if requested.
+
+    The stored credential key is kept until the profile's last reservation ends so
+    every stream sharing the profile can still find it. Concurrent counter changes
+    are retried; after RELEASE_MAX_ATTEMPTS conflicts the release is abandoned with
+    a warning instead of blocking stream teardown.
+    """
     release_key = profile_credential_release_key(profile_id)
     profile_key = profile_connections_key(profile_id)
-    while True:
+    for _ in range(RELEASE_MAX_ATTEMPTS):
         with redis_client.pipeline() as pipe:
             try:
                 pipe.watch(release_key, profile_key)
@@ -272,9 +294,16 @@ def _release_credential_slot_by_profile_id(
                 if release_profile and profile_count > 0:
                     pipe.decr(profile_key)
                 pipe.execute()
-                return bool(cred_key and profile_count > 0)
+                return
             except WatchError:
                 continue
+
+    logger.warning(
+        "Gave up releasing connection slots for profile %s after %d conflicting "
+        "updates; its counters may be stale",
+        profile_id,
+        RELEASE_MAX_ATTEMPTS,
+    )
 
 
 def _reserve_server_group_slot_for_profile(
