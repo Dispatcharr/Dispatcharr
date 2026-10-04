@@ -889,12 +889,24 @@ class ProxyServer:
                     # Otherwise assume it's still in progress
                     return True
 
-            # Additional checks if metadata doesn't exist
+            # No metadata yet. An owner lock held by a live worker means that worker
+            # claimed the channel and may still be fetching a URL before it writes
+            # initializing metadata, so the lock must not be treated as an orphan.
+            # A lock whose owner has no heartbeat (crashed or recycled worker) is
+            # stale and is cleaned up so the next request can take over immediately.
             additional_keys = [
                 RedisKeys.clients(channel_id),
                 RedisKeys.buffer_index(channel_id),
-                RedisKeys.channel_owner(channel_id)
             ]
+            owner = self.get_channel_owner(channel_id)
+            if owner:
+                if owner == self.worker_id or self.redis_client.exists(RedisKeys.worker_heartbeat(owner)):
+                    logger.info(
+                        f"Channel {channel_id} has an owner lock held by live worker {owner} "
+                        f"but no metadata yet - initialization in progress, not cleaning up"
+                    )
+                    return False
+                additional_keys.append(RedisKeys.channel_owner(channel_id))
 
             for key in additional_keys:
                 if self.redis_client.exists(key):
