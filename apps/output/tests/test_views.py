@@ -1144,8 +1144,7 @@ class XcLiveStreamsCatchupAdvertisingTests(TestCase):
 
 
 class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
-    """catchup="xc" is only emitted for a URL the player can rewrite into a
-    timeshift request; the plain proxy URL gets nothing."""
+    """catchup="xc" only for /live/... URLs; plain proxy output gets none."""
 
     def setUp(self):
         super().setUp()
@@ -1247,8 +1246,8 @@ class GenerateM3UDirectCatchupTests(OutputEndpointTestMixin, TestCase):
         super().tearDown()
 
     def _channel(self, number, name, stream_url, stream_catchup, stream_days):
-        """First stream is the one direct=true emits. A second stream with a
-        7-day archive keeps the channel rollup at catch-up/7 either way."""
+        """First stream is what direct=true emits. A second catch-up stream
+        keeps the channel rollup at catch-up/7 either way."""
         from apps.channels.models import ChannelStream, Stream
 
         channel = Channel.objects.create(
@@ -1308,7 +1307,7 @@ class GenerateM3UDirectCatchupTests(OutputEndpointTestMixin, TestCase):
         self.assertNotIn("catchup=", extinf)
 
     def test_no_tag_for_standard_m3u_provider_url(self):
-        """Only XC provider URLs have the /live/ form catchup="xc" rewrites."""
+        """STD provider URLs are not /live/ form, so catchup="xc" is omitted."""
         self.account.account_type = "STD"
         self.account.save(update_fields=["account_type"])
         self._channel(1, "Plain", "http://cdn.example/hls/plain.m3u8", True, 3)

@@ -72,9 +72,9 @@ def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
     behavior: the first stream's stored URL, or ``None`` if missing.
 
     Returns ``(url, is_catchup, catchup_days)`` for the stream whose URL was
-    used, since the channel rollup may describe a different stream. Catch-up
-    is only reported for XC accounts, whose URLs have the /live/ form that
-    catchup="xc" rewrites.
+    used. The channel rollup may describe a different stream, so only this
+    stream's own XC catch-up flags are returned (``catchup="xc"`` only applies
+    to ``/live/`` URLs).
     """
     from apps.m3u.models import M3UAccount
     from apps.proxy.live_proxy.url_utils import _resolve_live_stream_url
@@ -328,8 +328,8 @@ def generate_m3u(request, profile_name=None, user=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
-    # catchup="xc" makes the player rewrite /live/user/pass/id into a
-    # /timeshift/ request. The plain proxy URL has no such form.
+    # Advertise catch-up only where the emitted URL is /live/... form that
+    # catchup="xc" can rewrite into /timeshift/. Plain proxy URLs cannot.
     catchup_allowed = is_catchup_enabled(user=user)
 
     # Start building M3U content
@@ -391,10 +391,9 @@ def generate_m3u(request, profile_name=None, user=None):
                 f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
-        # Tag only the URL that is emitted below: a direct provider URL
-        # carries that stream's own archive, /live/ carries the channel
-        # rollup (same as tv_archive in the XC API), and the proxy fallback
-        # carries none.
+        # Match the tag to the URL emitted below: stream flags for a direct
+        # provider URL, channel rollup for /live/ (same as XC tv_archive),
+        # nothing for the proxy fallback.
         catchup_attrs = ""
         if catchup_allowed:
             catchup_days = 0
