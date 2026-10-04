@@ -21,8 +21,17 @@ from ..utils import resolve_channel_display_name
 
 logger = get_logger()
 
+
+def _present(**fields):
+    """Drop unset fields so system events do not persist (or display) null values."""
+    return {key: value for key, value in fields.items() if value is not None}
+
+
 class StreamManager:
     """Manages a connection to a TS stream without using raw sockets"""
+
+    # Distinct from a missing stream id (None), which can still time out once.
+    _NO_BUFFERING_TIMEOUT_ERROR = object()
 
     def __init__(
         self,
@@ -60,7 +69,9 @@ class StreamManager:
         self.buffering_timeout = ConfigHelper.buffering_timeout()
         self.buffering_speed = ConfigHelper.buffering_speed()
         self.buffering_start_time = None
-        self.buffering_timeout_error_logged = False
+        # Stream id for which a buffering_timeout channel_error was already logged.
+        # Lets each stalled stream emit once without repeating on every stats line.
+        self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
         # Store worker_id for ownership checks
         self.worker_id = worker_id
 
@@ -537,9 +548,9 @@ class StreamManager:
                                         'channel_reconnect',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
-                                        stream_id=self.current_stream_id,
                                         attempt=attempt,
-                                        max_attempts=self.max_retries
+                                        max_attempts=self.max_retries,
+                                        **_present(stream_id=self.current_stream_id),
                                     )
                                 except Exception as e:
                                     logger.error(f"Could not log reconnection event: {e}")
@@ -595,10 +606,12 @@ class StreamManager:
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
-                                    stream_id=self.current_stream_id,
                                     error_type='connection_failed',
-                                    url=self.url[:100] if self.url else None,
-                                    attempts=self.max_retries
+                                    attempts=self.max_retries,
+                                    **_present(
+                                        stream_id=self.current_stream_id,
+                                        url=self.url[:100] if self.url else None,
+                                    ),
                                 )
                             except Exception as e:
                                 logger.error(f"Could not log connection error event: {e}")
@@ -626,11 +639,13 @@ class StreamManager:
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
-                                    stream_id=self.current_stream_id,
                                     error_type='connection_exception',
-                                    error_message=str(e)[:200],
-                                    url=self.url[:100] if self.url else None,
-                                    attempts=self.max_retries
+                                    attempts=self.max_retries,
+                                    **_present(
+                                        stream_id=self.current_stream_id,
+                                        error_message=str(e)[:200] or None,
+                                        url=self.url[:100] if self.url else None,
+                                    ),
                                 )
                             except Exception as log_error:
                                 logger.error(f"Could not log connection error event: {log_error}")
@@ -1195,7 +1210,7 @@ class StreamManager:
                                 # Reset buffering state
                                 self.buffering = False
                                 self.buffering_start_time = None
-                                self.buffering_timeout_error_logged = False
+                                self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
                                 switched_after_buffering_timeout = True
 
                                 # Clear the Redis buffering label.
@@ -1213,12 +1228,14 @@ class StreamManager:
                                         'channel_failover',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
-                                        previous_stream_id=failed_stream_id,
-                                        previous_stream_name=previous_stream.get('stream_name'),
-                                        previous_provider_name=previous_stream.get('provider_name'),
-                                        stream_id=self.current_stream_id,
                                         reason='buffering_timeout',
-                                        duration=buffering_duration
+                                        duration=buffering_duration,
+                                        **_present(
+                                            previous_stream_id=failed_stream_id,
+                                            previous_stream_name=previous_stream.get('stream_name'),
+                                            previous_provider_name=previous_stream.get('provider_name'),
+                                            stream_id=self.current_stream_id,
+                                        ),
                                     )
                                 except Exception as e:
                                     logger.error(f"Could not log failover event: {e}")
@@ -1226,19 +1243,20 @@ class StreamManager:
                                 logger.error(f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout")
 
                                 # No stream_switch/channel_failover will follow; record the stall against
-                                # its stream once, not on every stats line while the speed stays low
-                                if not self.buffering_timeout_error_logged:
+                                # its stream once, not on every stats line while the speed stays low.
+                                # Key by stream id so a later stream that also stalls still gets an event.
+                                if self.buffering_timeout_error_stream_id != failed_stream_id:
                                     try:
                                         log_system_event(
                                             'channel_error',
                                             channel_id=self.channel_id,
                                             channel_name=self.channel_name,
-                                            stream_id=failed_stream_id,
-                                            error_type='buffering_timeout'
+                                            error_type='buffering_timeout',
+                                            **_present(stream_id=failed_stream_id),
                                         )
                                     except Exception as e:
                                         logger.error(f"Could not log buffering timeout error event: {e}")
-                                    self.buffering_timeout_error_logged = True
+                                    self.buffering_timeout_error_stream_id = failed_stream_id
                 else:
                     # Buffering just started, set the flag and start timer
                     self.buffering = True
@@ -1251,8 +1269,8 @@ class StreamManager:
                             'channel_buffering',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,
-                            stream_id=self.current_stream_id,
-                            speed=ffmpeg_speed
+                            speed=ffmpeg_speed,
+                            **_present(stream_id=self.current_stream_id),
                         )
                     except Exception as e:
                         logger.error(f"Could not log buffering event: {e}")
@@ -1271,7 +1289,7 @@ class StreamManager:
                     logger.info(f"Buffering ended for channel {self.channel_id} - speed: {ffmpeg_speed}x")
                     self.buffering = False
                     self.buffering_start_time = None
-                    self.buffering_timeout_error_logged = False
+                    self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
                     # Set channel state to active if speed is good
                     if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                         metadata_key = RedisKeys.channel_metadata(self.channel_id)
@@ -1496,8 +1514,9 @@ class StreamManager:
                    previous_stream_name=None, previous_provider_name=None):
         """Update stream URL and reconnect with proper cleanup for both HTTP and transcode sessions.
 
-        reason (buffering_timeout, max_retries_exceeded, health_monitor or manual)
-        is recorded on the stream_switch system event. previous_stream_name and
+        reason (buffering_timeout, max_retries_exceeded, health_monitor or manual;
+        recorded as unknown when omitted) is stored on the stream_switch system
+        event. previous_stream_name and
         previous_provider_name describe the stream being left; failover passes
         them from the alternate-stream lookup, while manual switches fall back
         to the stream_name still held in the channel metadata hash.
@@ -1576,11 +1595,16 @@ class StreamManager:
             # Update stream ID if provided
             previous_stream_id = self.current_stream_id
             if stream_id:
-                old_stream_id = self.current_stream_id
                 self.current_stream_id = stream_id
                 # Add stream ID to tried streams for proper tracking
                 self.tried_stream_ids.add(stream_id)
-                logger.info(f"Updated stream ID from {old_stream_id} to {stream_id} for channel {self.channel_id}")
+                logger.info(
+                    f"Updated stream ID from {previous_stream_id} to {stream_id} "
+                    f"for channel {self.channel_id}"
+                )
+                # New stream gets its own buffering_timeout channel_error chance
+                if stream_id != previous_stream_id:
+                    self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
 
             # Reset retry counter to allow immediate reconnect
             self._clear_connection_failure_history()
@@ -1599,12 +1623,14 @@ class StreamManager:
                     'stream_switch',
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,
-                    previous_stream_id=previous_stream_id,
-                    previous_stream_name=previous_stream_name,
-                    previous_provider_name=previous_provider_name,
-                    stream_id=stream_id,
-                    reason=reason,
-                    new_url=new_url[:100] if new_url else None,
+                    reason=reason or "unknown",
+                    **_present(
+                        previous_stream_id=previous_stream_id,
+                        previous_stream_name=previous_stream_name,
+                        previous_provider_name=previous_provider_name,
+                        stream_id=stream_id,
+                        new_url=new_url[:100] if new_url else None,
+                    ),
                 )
             except Exception as e:
                 logger.error(f"Could not log stream switch event: {e}")
@@ -1735,8 +1761,8 @@ class StreamManager:
                             'channel_reconnect',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,
-                            stream_id=self.current_stream_id,
-                            reason='health_monitor'
+                            reason='health_monitor',
+                            **_present(stream_id=self.current_stream_id),
                         )
                     except Exception as e:
                         logger.error(f"Could not log reconnection event: {e}")
@@ -2221,7 +2247,8 @@ class StreamManager:
                         ChannelMetadataField.M3U_PROFILE: str(profile_id),  # Use the profile_id from get_alternate_streams
                         ChannelMetadataField.STREAM_ID: str(stream_id),
                         ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: reason
+                        # redis-py rejects None; unknown is the safety when callers omit reason
+                        ChannelMetadataField.STREAM_SWITCH_REASON: reason or "unknown",
                     }
                     # Keep the hash's stream_name current so the next switch attributes correctly
                     if stream_info.get('stream_name'):

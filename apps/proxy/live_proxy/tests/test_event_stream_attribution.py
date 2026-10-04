@@ -1,4 +1,4 @@
-"""Live-proxy runtime events must say which stream they relate to (#1564).
+"""Live-proxy runtime events must say which stream they relate to.
 
 channel_buffering, channel_failover, channel_reconnect, channel_error and
 stream_switch are logged from the StreamManager, which already tracks
@@ -81,6 +81,30 @@ class BufferingEventAttributionTests(SimpleTestCase):
         self.assertEqual(_calls_for(mock_log, "channel_error"), [])
 
     @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
+    def test_failover_omits_previous_names_when_stalled_stream_not_captured(
+        self, _update_stats
+    ):
+        sm = _make_stream_manager(_DictRedis())
+        sm.current_stream_id = 100
+
+        def fake_switch(reason=None, previous_stream_info=None):
+            sm.current_stream_id = 200
+            return True
+
+        with patch.object(
+            StreamManager, "_try_next_stream", side_effect=fake_switch
+        ), patch("apps.proxy.live_proxy.input.manager.time") as mock_time, patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ) as mock_log:
+            mock_time.time.return_value = 10.0
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+
+        (call,) = _calls_for(mock_log, "channel_failover")
+        self.assertEqual(call.kwargs["previous_stream_id"], 100)
+        self.assertNotIn("previous_stream_name", call.kwargs)
+        self.assertNotIn("previous_provider_name", call.kwargs)
+
+    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
     @patch.object(StreamManager, "_try_next_stream", return_value=False)
     def test_buffering_timeout_without_switch_logs_error_against_stalled_stream(
         self, _try_next, _update_stats
@@ -138,6 +162,58 @@ class BufferingEventAttributionTests(SimpleTestCase):
             self.assertEqual(call.kwargs["stream_id"], 100)
             self.assertEqual(call.kwargs["error_type"], "buffering_timeout")
 
+    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
+    @patch.object(StreamManager, "_try_next_stream", return_value=False)
+    def test_buffering_timeout_error_fires_again_for_new_stream(
+        self, _try_next, _update_stats
+    ):
+        sm = _make_stream_manager(_DictRedis())
+        sm.current_stream_id = 100
+        clock = [10.0]
+
+        with patch("apps.proxy.live_proxy.input.manager.time") as mock_time, patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ) as mock_log:
+            mock_time.time.side_effect = lambda: clock[0]
+
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+            self.assertEqual(len(_calls_for(mock_log, "channel_error")), 1)
+            self.assertEqual(sm.buffering_timeout_error_stream_id, 100)
+
+            # Stream changed during the stall (for example via update_url). The
+            # guard is keyed by stream id, so the new stream still gets an error
+            # even if the flag was not cleared.
+            sm.current_stream_id = 200
+            sm.buffering_start_time = 0.0
+            clock[0] = 11.0
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+
+        errors = _calls_for(mock_log, "channel_error")
+        self.assertEqual([c.kwargs["stream_id"] for c in errors], [100, 200])
+        self.assertEqual(sm.buffering_timeout_error_stream_id, 200)
+
+    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
+    @patch.object(StreamManager, "_try_next_stream", return_value=False)
+    def test_buffering_timeout_error_logs_once_when_stream_id_is_missing(
+        self, _try_next, _update_stats
+    ):
+        sm = _make_stream_manager(_DictRedis())
+        sm.current_stream_id = None
+        clock = [10.0]
+
+        with patch("apps.proxy.live_proxy.input.manager.time") as mock_time, patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ) as mock_log:
+            mock_time.time.side_effect = lambda: clock[0]
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+            clock[0] = 11.0
+            sm._parse_ffmpeg_stats(STALLED_LINE)
+
+        errors = _calls_for(mock_log, "channel_error")
+        self.assertEqual(len(errors), 1)
+        self.assertNotIn("stream_id", errors[0].kwargs)
+        self.assertEqual(errors[0].kwargs["error_type"], "buffering_timeout")
+
 
 def _make_switchable_manager(current_stream_id=100, url="http://current", redis_client=None):
     sm = StreamManager.__new__(StreamManager)
@@ -158,6 +234,7 @@ def _make_switchable_manager(current_stream_id=100, url="http://current", redis_
     sm._had_successful_connection = True
     sm._failover_rotation_passes = 0
     sm._rotation_cooldown_until = None
+    sm.buffering_timeout_error_stream_id = StreamManager._NO_BUFFERING_TIMEOUT_ERROR
     sm.buffer = MagicMock()
     sm.buffer.redis_client = redis_client if redis_client is not None else _DictRedis()
     return sm
@@ -195,7 +272,7 @@ class StreamSwitchEventAttributionTests(SimpleTestCase):
         self.assertEqual(call.kwargs["channel_id"], CHANNEL_ID)
         self.assertEqual(call.kwargs["previous_stream_id"], 100)
         self.assertEqual(call.kwargs["previous_stream_name"], "Feed A")
-        self.assertIsNone(call.kwargs["previous_provider_name"])
+        self.assertNotIn("previous_provider_name", call.kwargs)
         self.assertEqual(call.kwargs["stream_id"], 200)
         self.assertEqual(call.kwargs["reason"], "manual")
         self.assertEqual(sm.current_stream_id, 200)
@@ -244,6 +321,79 @@ class StreamSwitchEventAttributionTests(SimpleTestCase):
         self.assertEqual(metadata[ChannelMetadataField.STREAM_SWITCH_REASON], "buffering_timeout")
         self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "200")
         self.assertEqual(metadata[ChannelMetadataField.STREAM_NAME], "Feed B")
+
+    @patch("apps.proxy.live_proxy.input.manager.get_stream_info_for_switch", return_value=STREAM_INFO)
+    @patch("apps.proxy.live_proxy.input.manager.get_alternate_streams")
+    @patch.object(StreamManager, "update_url", return_value=True)
+    def test_try_next_stream_records_unknown_when_reason_omitted(
+        self, mock_update, mock_alts, _mock_info
+    ):
+        sm = _make_switchable_manager(current_stream_id=100)
+        mock_alts.return_value = [{"stream_id": 200, "profile_id": 7}]
+
+        self.assertTrue(sm._try_next_stream())
+
+        metadata = sm.buffer.redis_client.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
+        self.assertEqual(metadata[ChannelMetadataField.STREAM_SWITCH_REASON], "unknown")
+
+    @patch.object(StreamManager, "_clear_connection_failure_history")
+    @patch.object(StreamManager, "_close_connection")
+    @patch("apps.channels.models.Channel.objects")
+    def test_stream_switch_omits_previous_names_when_unavailable(
+        self, channel_objects, _close, _clear
+    ):
+        redis = MagicMock()
+        redis.hget.return_value = None
+        sm = _make_switchable_manager(current_stream_id=100, redis_client=redis)
+
+        with patch("django.db.connection"), patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ) as mock_log:
+            self.assertTrue(sm.update_url("http://next", 200, 7, reason="manual"))
+
+        (call,) = _calls_for(mock_log, "stream_switch")
+        self.assertEqual(call.kwargs["previous_stream_id"], 100)
+        self.assertNotIn("previous_stream_name", call.kwargs)
+        self.assertNotIn("previous_provider_name", call.kwargs)
+
+    @patch.object(StreamManager, "_clear_connection_failure_history")
+    @patch.object(StreamManager, "_close_connection")
+    @patch("apps.channels.models.Channel.objects")
+    def test_update_url_without_reason_logs_unknown(
+        self, channel_objects, _close, _clear
+    ):
+        sm = _make_switchable_manager(current_stream_id=100)
+
+        with patch("django.db.connection"), patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ) as mock_log:
+            self.assertTrue(sm.update_url("http://next", 200, 7))
+
+        (call,) = _calls_for(mock_log, "stream_switch")
+        self.assertEqual(call.kwargs["reason"], "unknown")
+        self.assertIs(
+            sm.buffering_timeout_error_stream_id,
+            StreamManager._NO_BUFFERING_TIMEOUT_ERROR,
+        )
+
+    @patch.object(StreamManager, "_clear_connection_failure_history")
+    @patch.object(StreamManager, "_close_connection")
+    @patch("apps.channels.models.Channel.objects")
+    def test_update_url_clears_buffering_timeout_error_guard_for_new_stream(
+        self, channel_objects, _close, _clear
+    ):
+        sm = _make_switchable_manager(current_stream_id=100)
+        sm.buffering_timeout_error_stream_id = 100
+
+        with patch("django.db.connection"), patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ):
+            self.assertTrue(sm.update_url("http://next", 200, 7, reason="manual"))
+
+        self.assertIs(
+            sm.buffering_timeout_error_stream_id,
+            StreamManager._NO_BUFFERING_TIMEOUT_ERROR,
+        )
 
     @patch.object(StreamManager, "_try_next_stream", return_value=True)
     def test_cooldown_wrapper_propagates_reason(self, mock_try_next):

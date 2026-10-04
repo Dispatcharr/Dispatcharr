@@ -250,7 +250,8 @@ class ProxyServer:
                                                 self.redis_client.setex(status_key, 60, "switching")
 
                                             stream_manager = self.stream_managers[channel_id]
-                                            if new_url == stream_manager.url:
+                                            url_changed = new_url != stream_manager.url
+                                            if not url_changed:
                                                 # update_url() returns False for same URL; still success so metadata refreshes
                                                 logger.info(f"Channel {channel_id} already using requested URL, refreshing metadata only")
                                                 success = True
@@ -268,6 +269,7 @@ class ProxyServer:
                                                             channel_id, new_url, user_agent,
                                                             event_stream_id, event_m3u_profile_id,
                                                             event_stream_name,
+                                                            switch_reason='manual' if url_changed else None,
                                                         )
                                                     except Exception as e:
                                                         logger.error(f"Error updating switch metadata for channel {channel_id}: {e}", exc_info=True)

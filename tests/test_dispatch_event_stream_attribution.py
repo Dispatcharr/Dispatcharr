@@ -2,7 +2,7 @@
 
 Live-proxy runtime events (buffering, failover, reconnect, error, stream
 switch) must identify the stream that caused them so per-stream reliability
-can be derived from persisted events and webhook/plugin payloads. See #1564.
+can be derived from persisted events and webhook/plugin payloads.
 """
 
 import uuid

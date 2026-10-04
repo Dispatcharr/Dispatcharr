@@ -105,6 +105,7 @@ class OwnerPathTests(TestCase):
         self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "144065")
         self.assertEqual(metadata[ChannelMetadataField.M3U_PROFILE], "7")
         self.assertEqual(metadata[ChannelMetadataField.STREAM_NAME], "Alt Feed")
+        self.assertEqual(metadata[ChannelMetadataField.STREAM_SWITCH_REASON], "manual")
 
     def test_owner_same_url_is_success_and_repairs_metadata(self):
         result, redis, manager = self._run(manager_url=NEW_URL)
@@ -114,6 +115,7 @@ class OwnerPathTests(TestCase):
 
         metadata = redis.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
         self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "144065")
+        self.assertNotIn(ChannelMetadataField.STREAM_SWITCH_REASON, metadata)
 
 
 class NonOwnerPathTests(TestCase):
