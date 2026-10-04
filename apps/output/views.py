@@ -374,9 +374,11 @@ def generate_m3u(request, profile_name=None, user=None):
                 f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
+        radio_attr = 'radio="true" ' if channel.effective_is_radio else ""
+
         extinf_line = (
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
-            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
+            f'tvg-chno="{formatted_channel_number}" {radio_attr}{tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
         )
 
         # Determine the stream URL based on request type
@@ -803,7 +805,7 @@ def _xc_channel_entry(
     return {
         "num": channel_num_int,
         "name": channel.effective_name,
-        "stream_type": "live",
+        "stream_type": "radio_streams" if channel.effective_is_radio else "live",
         "stream_id": channel.id,
         "stream_icon": (
             f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"

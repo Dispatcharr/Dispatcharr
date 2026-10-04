@@ -975,3 +975,145 @@ class ChannelListOnlyCatchupFilterTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         sql = " ".join(q["sql"] for q in ctx.captured_queries).upper()
         self.assertNotIn("DISTINCT", sql)
+
+
+class ChannelListOnlyRadioFilterTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="radio_filter", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.radio_channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Radio Channel",
+            is_radio=True,
+        )
+        self.tv_channel = Channel.objects.create(
+            channel_number=2.0,
+            name="TV Channel",
+            is_radio=False,
+        )
+
+    def test_only_radio_returns_radio_channels(self):
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"only_radio": "true", "page": 1, "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.radio_channel.id})
+
+    def test_only_radio_uses_override(self):
+        ChannelOverride.objects.create(channel=self.radio_channel, is_radio=False)
+        ChannelOverride.objects.create(channel=self.tv_channel, is_radio=True)
+
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"only_radio": "true", "page": 1, "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.tv_channel.id})
+
+
+class ChannelRadioEditTests(TestCase):
+    """Radio edits: override row on auto-synced channels, column on manual ones."""
+
+    def setUp(self):
+        from apps.m3u.models import M3UAccount
+
+        self.user = User.objects.create_user(username="radio_edit", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.account = M3UAccount.objects.create(
+            name="radio-edit-account",
+            server_url="http://example.com/list.m3u",
+        )
+
+    def _stream(self, is_radio):
+        from apps.channels.models import Stream
+
+        return Stream.objects.create(
+            name="Radio Stream",
+            url="http://example.com/radio.ts",
+            m3u_account=self.account,
+            is_radio=is_radio,
+        )
+
+    def test_from_stream_copies_radio(self):
+        stream = self._stream(is_radio=True)
+
+        response = self.client.post(
+            "/api/channels/channels/from-stream/",
+            {"stream_id": stream.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(Channel.objects.get(pk=response.data["id"]).is_radio)
+
+    def test_override_false_is_stored_and_reported(self):
+        channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Auto Radio",
+            auto_created=True,
+            auto_created_by=self.account,
+            is_radio=True,
+        )
+
+        response = self.client.patch(
+            f"/api/channels/channels/{channel.id}/",
+            {"override": {"is_radio": False}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIs(ChannelOverride.objects.get(channel=channel).is_radio, False)
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_radio)
+        detail = self.client.get(f"/api/channels/channels/{channel.id}/")
+        self.assertIs(detail.data["effective_is_radio"], False)
+
+    def test_bulk_edit_routes_radio_like_the_editor(self):
+        auto = Channel.objects.create(
+            channel_number=3.0,
+            name="Auto Bulk",
+            auto_created=True,
+            auto_created_by=self.account,
+            is_radio=True,
+        )
+        manual = Channel.objects.create(channel_number=4.0, name="Manual Bulk")
+
+        response = self.client.patch(
+            "/api/channels/channels/edit/bulk/",
+            [
+                {"id": auto.id, "override": {"is_radio": False}},
+                {"id": manual.id, "is_radio": True},
+            ],
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertIs(ChannelOverride.objects.get(channel=auto).is_radio, False)
+        manual.refresh_from_db()
+        self.assertTrue(manual.is_radio)
+
+    def test_manual_channel_saves_column(self):
+        channel = Channel.objects.create(channel_number=2.0, name="Manual")
+
+        response = self.client.patch(
+            f"/api/channels/channels/{channel.id}/",
+            {"is_radio": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_radio)
+        self.assertFalse(ChannelOverride.objects.filter(channel=channel).exists())
