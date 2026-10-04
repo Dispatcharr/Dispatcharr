@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Radio channels are preserved through M3U and XC output.** Streams pick up `is_radio` on refresh from the M3U `radio` attribute or XC `stream_type: radio_streams`. Channels copy it on create-from-stream and auto-sync, with a nullable override for auto-synced channels so a manual correction survives the next refresh. M3U emits `radio="true"` and XC `get_live_streams` returns `stream_type: radio_streams` from the effective value. The channel editor and batch editor expose a Radio control. Existing manual channels stay TV until set; auto-synced channels follow their stream after the next refresh. (Closes #1683) - Thanks [@dillardblom](https://github.com/dillardblom)
 - **Live-proxy stream events identify which stream stalled or failed over.** `channel_buffering`, `channel_failover`, `channel_reconnect`, `channel_error`, and `stream_switch` carry the active `stream_id`, and switches also carry `previous_stream_id`, a switch `reason` (`buffering_timeout`, `max_retries_exceeded`, `health_monitor`, `manual`, or `unknown`), and the previous stream name/provider when already known from the failover lookup or channel metadata. `channel_buffering` is now a Connect subscription event, so webhooks, scripts, and plugins can track unstable providers without scraping logs. A buffering timeout that cannot switch emits a single `channel_error` per stalled stream. (Closes #1564) - Thanks [@lukezbihlyj](https://github.com/lukezbihlyj)
 
 ### Changed
