@@ -245,7 +245,7 @@ class RedisClient:
                             logger.error(f"Redis configuration error: {e}")
 
                 cls._netloc = location
-                logger.info(f"Connected to Redis at {cls._netloc}")
+                logger.debug(f"Connected to Redis at {cls._netloc}")
 
                 return client
 
@@ -347,7 +347,7 @@ def acquire_task_lock(task_name, id):
     lock_acquired = redis_client.set(lock_id, "locked", ex=300, nx=True)
 
     if not lock_acquired:
-        logger.warning(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
+        logger.info(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
 
     return lock_acquired
 
@@ -806,6 +806,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         channel_obj = None
         if channel_id:
+            payload["channel_id"] = str(channel_id)
             try:
                 channel_obj = Channel.objects.get(uuid=channel_id)
                 payload["channel_name"] = channel_obj.name
@@ -833,6 +834,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
                 stream_obj = None
 
         # Populate stream details
+        payload["stream_id"] = stream_id
         payload["stream_name"] = getattr(stream_obj, "name", None)
         payload["stream_url"] = getattr(stream_obj, "url", None)
 
@@ -862,9 +864,9 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         payload["profile_used"] = profile_used
 
-        # remove empty keys
+        # remove empty keys (keep falsy values such as speed=0.0)
         for k in list(payload.keys()):
-            if not payload[k]:
+            if payload[k] is None or payload[k] == "":
                 del payload[k]
 
         trigger_event(event_type, payload)

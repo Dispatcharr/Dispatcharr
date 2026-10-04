@@ -23,6 +23,7 @@ import { CustomTable, useTable } from './CustomTable';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { showNotification } from '../../utils/notificationUtils.js';
 import { updateStreamProfile } from '../../utils/forms/StreamProfileUtils.js';
+import { sortLockedFirstByName } from '../../utils/tables/profileTableUtils.js';
 
 const RowActions = ({ row, editStreamProfile, handleDeleteStreamProfile }) => {
   return (
@@ -212,7 +213,11 @@ const StreamProfiles = () => {
 
   useEffect(() => {
     setData(
-      streamProfiles.filter((profile) => !(hideInactive && !profile.is_active))
+      sortLockedFirstByName(
+        streamProfiles.filter(
+          (profile) => !(hideInactive && !profile.is_active)
+        )
+      )
     );
   }, [streamProfiles, hideInactive]);
 

@@ -453,12 +453,13 @@ class ChannelService:
             old_url = manager.url
 
             if new_url == old_url:
-                # update_url() returns False for same URL; still success so metadata refreshes
+                # update_url() returns False for same URL; still success so metadata refreshes.
+                # Do not relabel stream_switch_reason: this is not a new switch.
                 success = True
                 logger.info(f"Channel {channel_id} already using URL {new_url}, refreshing metadata only")
             else:
                 # Update the stream
-                success = manager.update_url(new_url, stream_id, m3u_profile_id)
+                success = manager.update_url(new_url, stream_id, m3u_profile_id, reason='manual')
                 logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
 
             if success:
@@ -472,7 +473,11 @@ class ChannelService:
             if proxy_server.redis_client:
                 try:
                     if success:
-                        ChannelService._update_channel_metadata(channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name)
+                        ChannelService._update_channel_metadata(
+                            channel_id, new_url, user_agent, stream_id, m3u_profile_id,
+                            stream_name,
+                            switch_reason='manual' if new_url != old_url else None,
+                        )
                     else:
                         ChannelService._update_channel_metadata(channel_id, manager.url, user_agent)
                     result['metadata_updated'] = True
@@ -885,7 +890,10 @@ class ChannelService:
     # Helper methods for Redis operations
 
     @staticmethod
-    def _update_channel_metadata(channel_id, url, user_agent=None, stream_id=None, m3u_profile_id=None, stream_name=None):
+    def _update_channel_metadata(
+        channel_id, url, user_agent=None, stream_id=None, m3u_profile_id=None,
+        stream_name=None, switch_reason=None,
+    ):
         """Update channel metadata in Redis"""
         try:
             proxy_server = ProxyServer.get_instance()
@@ -918,6 +926,8 @@ class ChannelService:
 
             # Also update the stream switch time field
             metadata[ChannelMetadataField.STREAM_SWITCH_TIME] = str(time.time())
+            if switch_reason:
+                metadata[ChannelMetadataField.STREAM_SWITCH_REASON] = switch_reason
 
             # Use the appropriate method based on the key type
             if key_type == 'hash':
