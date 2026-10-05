@@ -2,6 +2,7 @@
 import ipaddress
 import logging
 import os
+import re
 
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
@@ -143,6 +144,55 @@ def get_client_ip(request):
             return str(hop_ip)
 
     return str(peer)
+
+
+_PROXY_AUTH_HEADER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
+
+
+def validate_proxy_auth_header(header):
+    """Whether a header name is safe to read a proxy-asserted identity from."""
+    return bool(_PROXY_AUTH_HEADER_RE.match((header or "").strip()))
+
+
+def proxy_auth_identity(request):
+    """Username or email asserted for this request by a trusted reverse proxy.
+
+    Returns None unless reverse proxy auth is enabled with a valid header name
+    and the connecting peer is listed in an explicitly set
+    DISPATCHARR_TRUSTED_PROXIES. The header is client-suppliable, so the
+    private-network default that variable falls back to for X-Forwarded-For
+    is not trusted here: it would let any LAN host sign in as any user.
+    """
+    config = CoreSettings.get_reverse_proxy_auth_settings()
+    if not config.get("enabled"):
+        return None
+
+    header = (config.get("header") or "").strip()
+    if not validate_proxy_auth_header(header):
+        return None
+
+    if TRUSTED_PROXIES_ENV not in os.environ:
+        logger.warning(
+            "Reverse proxy auth is enabled but %s is not set; ignoring %s. Set "
+            "it to the authenticating proxy's IP or CIDR to turn the feature on.",
+            TRUSTED_PROXIES_ENV,
+            header,
+        )
+        return None
+
+    peer = _normalize_ip(request.META.get("REMOTE_ADDR") or "")
+    if not _ip_in_trusted(peer):
+        logger.warning(
+            "Ignoring %s from untrusted peer %s; add it to %s to enable "
+            "reverse proxy auth from that host",
+            header,
+            peer,
+            TRUSTED_PROXIES_ENV,
+        )
+        return None
+
+    meta_key = "HTTP_" + header.upper().replace("-", "_")
+    return (request.META.get(meta_key) or "").strip() or None
 
 
 def setup_ip_allowed(request):
