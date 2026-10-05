@@ -558,38 +558,35 @@ class PluginLogoAPIView(APIView):
 class PluginDeleteAPIView(PluginAuthMixin, APIView):
     def delete(self, request, key):
         pm = PluginManager.get()
-        try:
-            pm.stop_plugin(key, reason="delete")
-        except Exception:
-            logger.exception("Failed to stop plugin '%s' before delete", key)
-        try:
-            pm.delete_plugin_periodic_tasks(key)
-        except Exception as e:
-            logger.exception("Failed to delete periodic tasks of plugin '%s'", key)
-            return Response(
-                {"success": False, "error": f"Failed to delete plugin schedules: {e}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
         plugins_dir = pm.plugins_dir
-        target_dir = os.path.join(plugins_dir, key)
+        target_dir = pm.get_plugin_path(key)
         # Safety: ensure path inside plugins_dir
         abs_plugins = os.path.abspath(plugins_dir) + os.sep
         abs_target = os.path.abspath(target_dir)
         if not abs_target.startswith(abs_plugins):
             return Response({"success": False, "error": "Invalid plugin path"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Remove files
-        if os.path.isdir(target_dir):
-            try:
-                shutil.rmtree(target_dir)
-            except Exception as e:
-                return Response({"success": False, "error": f"Failed to delete plugin files: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # Remove DB record
         try:
-            PluginConfig.objects.filter(key=key).delete()
-        except Exception:
-            pass
+            with transaction.atomic():
+                cfg = PluginConfig.objects.select_for_update().filter(key=key).first()
+                try:
+                    pm.stop_plugin(key, reason="delete")
+                except Exception:
+                    logger.exception("Failed to stop plugin '%s' before delete", key)
+                # Keep ownership and schedules if file removal fails. If a later
+                # DB operation fails, that retained ownership lets deletion retry
+                # even though the plugin files have already been removed.
+                if os.path.isdir(target_dir):
+                    shutil.rmtree(target_dir)
+                pm.delete_plugin_periodic_tasks(key)
+                if cfg is not None:
+                    cfg.delete()
+        except Exception as e:
+            logger.exception("Failed to delete plugin '%s'", key)
+            return Response(
+                {"success": False, "error": f"Failed to delete plugin: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         # Reload registry
         pm.discover_plugins(force_reload=True)

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import types
@@ -301,10 +302,12 @@ class PluginManager:
                 ):
                     yield key, action_id
 
-    def _own_alias(self, key: str) -> Optional[str]:
+    def _own_alias(
+        self, key: str, plugin: Optional[LoadedPlugin] = None
+    ) -> Optional[str]:
         """The plugin's folder name, if sys.modules holds a package rooted in this plugin's directory."""
         with self._lock:
-            lp = self._registry.get(key)
+            lp = plugin or self._registry.get(key)
         if not lp or not lp.folder_name or not lp.path or not self._is_valid_identifier(lp.folder_name):
             return None
         module = sys.modules.get(lp.folder_name)
@@ -313,12 +316,14 @@ class PluginManager:
             return lp.folder_name
         return None
 
-    def _registered_task_names(self, key: str) -> set:
+    def _registered_task_names(
+        self, key: str, plugin: Optional[LoadedPlugin] = None
+    ) -> set:
         """Celery tasks registered in this process whose module is in the plugin's package or its alias."""
         from dispatcharr.celery import app as celery_app
 
         roots = [self._resolve_package_name(key)]
-        alias = self._own_alias(key)
+        alias = self._own_alias(key, plugin)
         if alias:
             roots.append(alias)
         names = set()
@@ -356,6 +361,57 @@ class PluginManager:
             logger.exception("Could not read registered Celery tasks for plugin '%s'", cfg.key)
         return names
 
+    def _load_current_task_names(self, cfg: PluginConfig) -> set:
+        """Load only this plugin before deciding which schedules can resume."""
+        from dispatcharr.celery import app as celery_app
+
+        with self._lock:
+            path = self.get_plugin_path(cfg.key)
+            folder = os.path.basename(path)
+            package = self._resolve_package_name(cfg.key)
+            location = LoadedPlugin(
+                key=cfg.key, name=cfg.name, path=path, folder_name=folder
+            )
+            old_tasks = {
+                name: celery_app.tasks[name]
+                for name in self._registered_task_names(cfg.key, location)
+            }
+            # Celery retains task objects after their Python modules are unloaded.
+            # Re-import from disk without those entries to exclude removed tasks.
+            for name in old_tasks:
+                celery_app.tasks.pop(name, None)
+            self._unload_package(package)
+            self._unload_path_modules(path)
+            try:
+                # Same-size edits within one timestamp tick can leave valid-looking
+                # bytecode for removed tasks, including in imported submodules.
+                for directory, subdirs, _ in os.walk(path):
+                    if "__pycache__" in subdirs:
+                        shutil.rmtree(os.path.join(directory, "__pycache__"))
+                        subdirs.remove("__pycache__")
+                loaded, package = self._load_plugin(
+                    cfg.key, path, folder_name=folder, force_reload=True,
+                    previous_package=package,
+                )
+                if loaded is None:
+                    raise ValueError(f"Plugin '{cfg.key}' could not be loaded")
+            except Exception:
+                celery_app.tasks.update(old_tasks)
+                raise
+            loaded.loaded = True
+            loaded.trusted = True
+            self._registry[cfg.key] = loaded
+            self._package_names[cfg.key] = package
+            alias = self._own_alias(cfg.key)
+            if alias:
+                self._alias_names[cfg.key] = alias
+            else:
+                self._alias_names.pop(cfg.key, None)
+            names = self._registered_task_names(cfg.key)
+            cfg.owned_tasks = sorted(set(cfg.owned_tasks or []) | names)
+            cfg.save(update_fields=["owned_tasks", "updated_at"])
+            return names
+
     def suspend_schedules(self, cfg: PluginConfig) -> int:
         """Disable the plugin's enabled PeriodicTask rows and record their pks.
 
@@ -366,11 +422,13 @@ class PluginManager:
         with transaction.atomic():
             names = self._owned_task_names(cfg)
             pks = list(
-                PeriodicTask.objects.filter(task__in=names, enabled=True).values_list("pk", flat=True)
+                PeriodicTask.objects.select_for_update().filter(
+                    task__in=names, enabled=True
+                ).order_by("pk").values_list("pk", flat=True)
             )
             if not pks:
                 return 0
-            PeriodicTask.objects.filter(pk__in=pks).update(
+            PeriodicTask.objects.filter(pk__in=pks, task__in=names, enabled=True).update(
                 enabled=False, last_run_at=None, date_changed=timezone.now()
             )
             PeriodicTasks.update_changed()
@@ -389,9 +447,10 @@ class PluginManager:
         if not pks:
             return 0
         with transaction.atomic():
+            names = self._load_current_task_names(cfg)
             # ModelEntry uses date_changed when last_run_at is unset.
             restored = PeriodicTask.objects.filter(
-                pk__in=pks, task__in=self._owned_task_names(cfg), enabled=False
+                pk__in=pks, task__in=names, enabled=False
             ).update(enabled=True, date_changed=timezone.now())
             PeriodicTasks.update_changed()
             cfg.suspended_schedules = []
@@ -406,21 +465,22 @@ class PluginManager:
         run before its PluginConfig row is deleted.
         """
         from django_celery_beat.models import PeriodicTask
-        from core.scheduling import delete_periodic_task
 
         cfg = PluginConfig.objects.filter(key=key).first()
         names = self._owned_task_names(cfg) if cfg else self._registered_task_names(key)
         if not names:
             logger.info("No Celery tasks recorded for plugin '%s'; its schedules are left untouched", key)
             return 0
-        deleted = 0
         with transaction.atomic():
-            for pt_name in list(
-                PeriodicTask.objects.filter(task__in=names).values_list("name", flat=True)
-            ):
-                if delete_periodic_task(pt_name):
-                    deleted += 1
-        return deleted
+            pks = list(
+                PeriodicTask.objects.select_for_update().filter(
+                    task__in=names
+                ).order_by("pk").values_list("pk", flat=True)
+            )
+            # Schedule definitions may be shared with a concurrent task writer.
+            # Remove only these tasks; leave interval and crontab rows intact.
+            _, deleted = PeriodicTask.objects.filter(pk__in=pks, task__in=names).delete()
+        return deleted.get(PeriodicTask._meta.label, 0)
 
     def _load_plugin(
         self,
@@ -541,7 +601,7 @@ class PluginManager:
                     obj.description = lp.description
                     changed = True
                 if changed:
-                    obj.save()
+                    obj.save(update_fields=["name", "version", "description", "updated_at"])
 
     def list_plugins(self) -> List[Dict[str, Any]]:
         from .models import PluginConfig, PluginRepo
@@ -659,6 +719,18 @@ class PluginManager:
     def get_plugin(self, key: str) -> Optional[LoadedPlugin]:
         with self._lock:
             return self._registry.get(key)
+
+    def get_plugin_path(self, key: str) -> str:
+        with self._lock:
+            plugin = self._registry.get(key)
+            if plugin and plugin.path:
+                return plugin.path
+        path = os.path.join(self.plugins_dir, key)
+        for entry in sorted(os.listdir(self.plugins_dir)):
+            candidate = os.path.join(self.plugins_dir, entry)
+            if entry.replace(" ", "_").lower() == key and os.path.isdir(candidate):
+                path = candidate
+        return path
 
     def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
         cfg = PluginConfig.objects.get(key=key)

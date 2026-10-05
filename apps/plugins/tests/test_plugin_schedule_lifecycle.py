@@ -391,14 +391,14 @@ class PluginScheduleLifecycleTests(LifecycleFixture, TestCase):
         self.assertFalse(PeriodicTask.objects.get(pk=edited.pk).enabled)
         self.assertEqual(PluginConfig.objects.get(key="vod2mlib").suspended_schedules, [])
 
-    def test_delete_fails_cleaning_schedules_keeps_plugin_and_is_retryable(self):
+    def test_delete_fails_cleaning_schedules_keeps_ownership_and_is_retryable(self):
         self._install("vod2mlib")
         row = self._schedule("vod2mlib.auto_rescan", self._custom_name("vod2mlib"))
 
-        with patch("core.scheduling.delete_periodic_task", side_effect=RuntimeError("injected")):
+        with patch.object(PluginManager, "delete_plugin_periodic_tasks", side_effect=RuntimeError("injected")):
             self._delete("vod2mlib", status_code=500)
 
-        self.assertTrue(os.path.isdir(os.path.join(self._plugins_dir, "vod2mlib")))
+        self.assertFalse(os.path.isdir(os.path.join(self._plugins_dir, "vod2mlib")))
         cfg = PluginConfig.objects.get(key="vod2mlib")
         self.assertIn(self._custom_name("vod2mlib"), cfg.owned_tasks)
         self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
