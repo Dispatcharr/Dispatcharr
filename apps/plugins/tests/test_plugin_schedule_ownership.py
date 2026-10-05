@@ -1,6 +1,7 @@
 import io
 import importlib.util
 import os
+import sys
 import threading
 import time
 import zipfile
@@ -63,6 +64,49 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
 
     def test_upgrade_while_disabled_does_not_restore_removed_task_after_restart(self):
         self._upgrade_while_disabled(cold_registry=True)
+
+    def test_upgrade_does_not_restore_a_removed_task_imported_through_folder_name(self):
+        key = PluginScheduleLifecycleTests._install_jobs_plugin(
+            self, "AliasPlugin", "from AliasPlugin.jobs import scan"
+        )
+        old_name = f"{key}.scheduled_rescan"
+        row = self._schedule(f"{key}.auto_rescan", old_name)
+        self._set_enabled(key, False)
+        self.assertNotIn("AliasPlugin.jobs", sys.modules)
+        self.assertIn(old_name, celery_app.tasks)
+        jobs_path = os.path.join(self._plugins_dir, "AliasPlugin", "jobs.py")
+        with open(jobs_path, "w") as f:
+            f.write("def scan():\n    return 'no scheduled task'\n")
+        PluginManager._instance = None
+
+        self._set_enabled(key, True)
+
+        self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
+        self.assertNotIn(old_name, celery_app.tasks)
+        self.assertIn(old_name, PluginConfig.objects.get(key=key).owned_tasks)
+        self._delete(key)
+        self.assertFalse(PeriodicTask.objects.filter(pk=row.pk).exists())
+
+    def test_reload_keeps_a_task_name_replaced_by_an_outside_callable(self):
+        self._install("vod2mlib", custom="vod2mlib.task_v1")
+        row = self._schedule("vod2mlib.v1", "vod2mlib.task_v1")
+        self._set_enabled("vod2mlib", False)
+        old_task = celery_app.tasks["vod2mlib.task_v1"]
+
+        def outside_task():
+            return "unrelated"
+
+        old_task.run = outside_task
+        source = _PLUGIN_PY.replace("__CUSTOM__", "vod2mlib.task_v2").replace("__KEY__", "vod2mlib")
+        self._replace_plugin_from_zip("vod2mlib", source)
+        self._task_names.add("vod2mlib.task_v2")
+        PluginManager._instance = None
+
+        self._set_enabled("vod2mlib", True)
+
+        self.assertIs(celery_app.tasks["vod2mlib.task_v1"], old_task)
+        self.assertIs(old_task.run, outside_task)
+        self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
 
     def test_same_size_overwrite_does_not_use_old_plugin_bytecode(self):
         self._install("vod2mlib", custom="vod2mlib.task_v1")

@@ -1,5 +1,6 @@
 import importlib
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -302,12 +303,10 @@ class PluginManager:
                 ):
                     yield key, action_id
 
-    def _own_alias(
-        self, key: str, plugin: Optional[LoadedPlugin] = None
-    ) -> Optional[str]:
+    def _own_alias(self, key: str) -> Optional[str]:
         """The plugin's folder name, if sys.modules holds a package rooted in this plugin's directory."""
         with self._lock:
-            lp = plugin or self._registry.get(key)
+            lp = self._registry.get(key)
         if not lp or not lp.folder_name or not lp.path or not self._is_valid_identifier(lp.folder_name):
             return None
         module = sys.modules.get(lp.folder_name)
@@ -316,14 +315,12 @@ class PluginManager:
             return lp.folder_name
         return None
 
-    def _registered_task_names(
-        self, key: str, plugin: Optional[LoadedPlugin] = None
-    ) -> set:
+    def _registered_task_names(self, key: str) -> set:
         """Celery tasks registered in this process whose module is in the plugin's package or its alias."""
         from dispatcharr.celery import app as celery_app
 
         roots = [self._resolve_package_name(key)]
-        alias = self._own_alias(key, plugin)
+        alias = self._own_alias(key)
         if alias:
             roots.append(alias)
         names = set()
@@ -361,6 +358,18 @@ class PluginManager:
             logger.exception("Could not read registered Celery tasks for plugin '%s'", cfg.key)
         return names
 
+    def _task_names_from_path(self, path: str) -> set:
+        from dispatcharr.celery import app as celery_app
+
+        root = os.path.abspath(path)
+        names = set()
+        for name, task in celery_app.tasks.items():
+            run = inspect.unwrap(task.run)
+            source = getattr(run, "__globals__", {}).get("__file__")
+            if source and os.path.abspath(source).startswith(f"{root}{os.sep}"):
+                names.add(name)
+        return names
+
     def _load_current_task_names(self, cfg: PluginConfig) -> set:
         """Load only this plugin before deciding which schedules can resume."""
         from dispatcharr.celery import app as celery_app
@@ -369,15 +378,12 @@ class PluginManager:
             path = self.get_plugin_path(cfg.key)
             folder = os.path.basename(path)
             package = self._resolve_package_name(cfg.key)
-            location = LoadedPlugin(
-                key=cfg.key, name=cfg.name, path=path, folder_name=folder
-            )
             old_tasks = {
                 name: celery_app.tasks[name]
-                for name in self._registered_task_names(cfg.key, location)
+                for name in self._task_names_from_path(path)
             }
-            # Celery retains task objects after their Python modules are unloaded.
-            # Re-import from disk without those entries to exclude removed tasks.
+            # Callable globals retain the source path after alias modules unload.
+            # Remove only this plugin's task objects before importing current code.
             for name in old_tasks:
                 celery_app.tasks.pop(name, None)
             self._unload_package(package)
@@ -407,7 +413,7 @@ class PluginManager:
                 self._alias_names[cfg.key] = alias
             else:
                 self._alias_names.pop(cfg.key, None)
-            names = self._registered_task_names(cfg.key)
+            names = self._task_names_from_path(path)
             cfg.owned_tasks = sorted(set(cfg.owned_tasks or []) | names)
             cfg.save(update_fields=["owned_tasks", "updated_at"])
             return names
