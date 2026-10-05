@@ -179,7 +179,7 @@ export const useDateTimeFormat = () => {
   const [timeFormatSetting] = useBrowserStorage('time-format', '12h');
   const [dateFormatSetting] = useBrowserStorage('date-format', 'mdy');
   // Use user preference for time format
-  const timeFormat = timeFormatSetting === '12h' ? 'h:mm A' : 'HH:mm';
+  const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
   const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
 
   // Full format strings for detailed date-time displays
