@@ -152,7 +152,9 @@ describe('RecordingCardUtils', () => {
       const channel = { uuid: 'channel-123' };
       const result = getShowVideoUrl(channel, 'production');
 
-      expect(result).toBe('/proxy/ts/stream/channel-123?output_format=mpegts');
+      expect(result).toBe(
+        '/proxy/ts/stream/channel-123?output_format=mpegts&skip_redirect=true'
+      );
     });
 
     it('includes output_profile when set in player prefs', () => {
@@ -164,7 +166,7 @@ describe('RecordingCardUtils', () => {
       const result = getShowVideoUrl(channel, 'production');
 
       expect(result).toBe(
-        '/proxy/ts/stream/channel-123?output_format=mpegts&output_profile=5'
+        '/proxy/ts/stream/channel-123?output_format=mpegts&skip_redirect=true&output_profile=5'
       );
     });
 
@@ -173,7 +175,7 @@ describe('RecordingCardUtils', () => {
       const result = getShowVideoUrl(channel, 'dev');
 
       expect(result).toMatch(
-        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123\?output_format=mpegts$/
+        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123\?output_format=mpegts&skip_redirect=true$/
       );
     });
   });

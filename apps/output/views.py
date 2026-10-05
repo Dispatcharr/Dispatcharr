@@ -2,7 +2,7 @@ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidd
 import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
-from apps.channels.utils import format_channel_number, is_catchup_enabled
+from apps.channels.utils import MAX_AUTO_PREV_DAYS, format_channel_number, is_catchup_enabled
 from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
@@ -65,13 +65,24 @@ def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
 
     When ``allowed_m3u_profiles`` is set, walk streams in channel order and use
     the first stream whose M3U account has an allowed profile, applying that
-    profile's credential/URL transform. Returns ``None`` when no stream is
-    usable (caller should omit the channel).
+    profile's credential/URL transform. Returns ``(None, False, 0)`` when no
+    stream is usable (caller should omit the channel).
 
     When unrestricted (``allowed_m3u_profiles is None``), keep historical
     behavior: the first stream's stored URL, or ``None`` if missing.
+
+    Returns ``(url, is_catchup, catchup_days)`` for the stream whose URL was
+    used. The channel rollup may describe a different stream, so only this
+    stream's own XC catch-up flags are returned (``catchup="xc"`` only applies
+    to ``/live/`` URLs).
     """
+    from apps.m3u.models import M3UAccount
     from apps.proxy.live_proxy.url_utils import _resolve_live_stream_url
+
+    def _catchup(stream, account):
+        if stream.is_catchup and account and account.account_type == M3UAccount.Types.XC:
+            return True, stream.catchup_days or 0
+        return False, 0
 
     streams = list(streams)
     if allowed_m3u_profiles is not None:
@@ -85,13 +96,13 @@ def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
                 continue
             url = _resolve_live_stream_url(stream, account, profile)
             if url:
-                return url
-        return None
+                return (url, *_catchup(stream, account))
+        return None, False, 0
 
     stream = streams[0] if streams else None
     if stream and stream.url:
-        return stream.url
-    return None
+        return (stream.url, *_catchup(stream, stream.m3u_account))
+    return None, False, 0
 
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
@@ -302,8 +313,19 @@ def generate_m3u(request, profile_name=None, user=None):
         else:
             epg_url = epg_base_url
 
-    # Add x-tvg-url and url-tvg attribute for EPG URL
-    m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
+    # Add x-tvg-url and url-tvg attribute for EPG URL. catchup-timezone is the
+    # IANA zone Dispatcharr's timeshift endpoints expect for wall-clock
+    # placeholders (same as player_api server_info.timezone). Only on the XC
+    # /live/ playlist: direct provider URLs use the provider's own local time,
+    # and plain /proxy/ts/stream output does not advertise catch-up.
+    catchup_allowed = is_catchup_enabled(user=user)
+    catchup_header_attrs = ""
+    if catchup_allowed and is_xc_request and not use_direct_urls:
+        catchup_header_attrs = ' catchup-timezone="UTC"'
+    m3u_content = (
+        f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"'
+        f"{catchup_header_attrs}\n"
+    )
 
     # Host/port/scheme are constant per request; precompute URL prefixes once.
     # XC without direct has no proxy fallback; admin XC+direct may fall back.
@@ -317,13 +339,18 @@ def generate_m3u(request, profile_name=None, user=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
+    # Advertise catch-up only where the emitted URL is /live/... form that
+    # catchup="xc" can rewrite into /timeshift/. Plain proxy URLs cannot.
+
     # Start building M3U content
     channel_count = 0
     for channel in channels:
         direct_provider_url = None
+        direct_stream_is_catchup = False
+        direct_stream_catchup_days = 0
         if use_direct_urls:
-            direct_provider_url = _direct_m3u_provider_url(
-                channel.streams.all(), allowed_m3u_profiles
+            direct_provider_url, direct_stream_is_catchup, direct_stream_catchup_days = (
+                _direct_m3u_provider_url(channel.streams.all(), allowed_m3u_profiles)
             )
             # Allowlisted users only get channels they can actually open with a
             # permitted provider profile. Unrestricted direct keeps the old
@@ -374,9 +401,26 @@ def generate_m3u(request, profile_name=None, user=None):
                 f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
+        # Match the tag to the URL emitted below: stream flags for a direct
+        # provider URL, channel rollup for /live/ (same as XC tv_archive),
+        # nothing for the proxy fallback.
+        catchup_attrs = ""
+        if catchup_allowed:
+            catchup_days = 0
+            if use_direct_urls:
+                if direct_provider_url and direct_stream_is_catchup:
+                    catchup_days = direct_stream_catchup_days
+            elif is_xc_request and channel.is_catchup:
+                catchup_days = channel.catchup_days or 0
+            catchup_days = min(catchup_days, MAX_AUTO_PREV_DAYS)
+            if catchup_days > 0:
+                catchup_attrs = f'catchup="xc" catchup-days="{catchup_days}" '
+
+        radio_attr = 'radio="true" ' if channel.effective_is_radio else ""
+
         extinf_line = (
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
-            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
+            f'tvg-chno="{formatted_channel_number}" {radio_attr}{tvc_guide_stationid}{catchup_attrs}group-title="{group_title}",{effective_name}\n'
         )
 
         # Determine the stream URL based on request type
@@ -659,7 +703,7 @@ def xc_get_live_categories(user):
             # User has specific limited profiles assigned
             filters = {
                 "channels__channelprofilemembership__enabled": True,
-                "channels__user_level": 0,
+                "channels__user_level__lte": user.user_level,
                 "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
                 **hidden_exclusion,
             }
@@ -803,7 +847,7 @@ def _xc_channel_entry(
     return {
         "num": channel_num_int,
         "name": channel.effective_name,
-        "stream_type": "live",
+        "stream_type": "radio_streams" if channel.effective_is_radio else "live",
         "stream_id": channel.id,
         "stream_icon": (
             f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"

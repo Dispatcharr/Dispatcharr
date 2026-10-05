@@ -255,6 +255,33 @@ class CoreSettingsGroupCacheTests(TestCase):
                 _CACHE_BACKEND_ERROR,
             )
 
+    def test_skip_redis_cache_avoids_probe_and_warning(self):
+        """DISPATCHARR_SKIP_REDIS_CACHE skips Redis without probing or warning."""
+        CoreSettings.objects.create(
+            key=SYSTEM_SETTINGS_KEY,
+            name="System Settings",
+            value={"catchup_enabled": False},
+        )
+        cache_key = CoreSettings.group_cache_key(SYSTEM_SETTINGS_KEY)
+        cache.delete(cache_key)
+
+        with patch.dict(os.environ, {"DISPATCHARR_SKIP_REDIS_CACHE": "1"}), \
+             patch.object(cache, "get") as mock_get, \
+             patch.object(cache, "set") as mock_set:
+            # No WARNING: intentional skip, not a connection failure.
+            with self.assertNoLogs("core.models", level="WARNING"):
+                self.assertFalse(CoreSettings.get_catchup_enabled())
+                self.assertIs(
+                    CoreSettings._cache_get("any-key"),
+                    _CACHE_BACKEND_ERROR,
+                )
+                self.assertFalse(CoreSettings._cache_set("any-key", {"a": 1}))
+                self.assertFalse(CoreSettings._cache_delete("any-key"))
+
+        mock_get.assert_not_called()
+        mock_set.assert_not_called()
+        self.assertIsNone(cache.get(cache_key))
+
 
 class DispatcharrUserAgentTests(TestCase):
     @patch('version.__version__', '1.2.3')

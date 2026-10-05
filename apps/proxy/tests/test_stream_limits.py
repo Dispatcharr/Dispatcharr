@@ -283,3 +283,28 @@ class TimeshiftAdminStopTests(TestCase):
         programme_stop = RedisKeys.client_stop(self.programme_vid, self.client_id)
         self.assertEqual(self.redis.store.get(programme_stop), _STOP_REASON_ADMIN)
         self.assertIn(self.programme_vid, result["stop_channel_ids"])
+
+
+class GetUserActiveConnectionsTests(TestCase):
+    """live:channel:{id}:clients:{client} must keep dotted preview worker ids intact."""
+
+    def test_preserves_profile_scoped_preview_worker_id(self):
+        from apps.proxy.utils import get_user_active_connections
+
+        worker_id = "abcdef0123456789.p12"
+        client_id = "client_1"
+        key = f"live:channel:{worker_id}:clients:{client_id}"
+
+        redis = MagicMock()
+        redis.scan_iter.side_effect = lambda match, count=1000: (
+            [key] if match.startswith("live:") else []
+        )
+        redis.hmget.return_value = (b"7", b"1.0")
+
+        with patch("apps.proxy.utils.RedisClient.get_client", return_value=redis):
+            connections = get_user_active_connections(7)
+
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(connections[0]["media_id"], worker_id)
+        self.assertEqual(connections[0]["client_id"], client_id)
+        self.assertEqual(connections[0]["type"], "live")
