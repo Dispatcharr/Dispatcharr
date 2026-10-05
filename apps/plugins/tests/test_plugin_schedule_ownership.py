@@ -289,7 +289,7 @@ class PluginScheduleReadonlyCacheTests(LifecycleFixture, TransactionTestCase):
                 path: stat.S_IMODE(os.stat(path).st_mode)
                 for path in (plugin_dir, cache_dir, source_path, cache_path)
             }
-            child = """import django, json, os
+            child = """import django, json, os, sys
 django.setup()
 from apps.plugins.api_views import PluginEnabledAPIView
 from apps.plugins.loader import PluginManager
@@ -303,7 +303,7 @@ response = PluginEnabledAPIView.as_view()(
 )
 cfg = PluginConfig.objects.get(key='readonlyprobe')
 loaded = PluginManager.get().get_plugin('readonlyprobe')
-print('READONLY_RESULT ' + json.dumps({
+sys.stdout.write('READONLY_RESULT ' + json.dumps({
     'status': response.status_code,
     'uid': os.geteuid(),
     'old_registered': 'readonlyprobe.task_v1' in celery_app.tasks,
