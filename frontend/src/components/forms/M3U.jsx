@@ -64,7 +64,8 @@ const M3U = ({
   const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
     useState(false);
 
-  const { dateFormat, timeFormat } = useDateTimeFormat();
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+      useDateTimeFormat();
 
   // Keep expiration in sync when the default profile is edited (store refreshes).
   // Do not rebind the whole form to the live playlist or unsaved edits are wiped.
@@ -327,7 +328,7 @@ const M3U = ({
                     description="Set an expiration date to receive a warning notification"
                     placeholder="No expiration"
                     clearable
-                    valueFormat={dateFormat + ', YYYY ' + timeFormat}
+                    valueFormat={dateformat + ', YYYY ' + timeformat}
                     value={expDate}
                     onChange={(v) => setExpDate(v ? new Date(v) : null)}
                   />

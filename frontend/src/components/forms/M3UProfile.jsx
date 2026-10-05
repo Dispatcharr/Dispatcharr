@@ -57,7 +57,8 @@ const RegexFormAndView = ({
 
   const isXC = m3u?.account_type === 'XC';
 
-  const { dateFormat, timeFormat } = useDateTimeFormat();
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+      useDateTimeFormat();
 
   const defaultValues = useMemo(
     () => ({
@@ -386,7 +387,7 @@ const RegexFormAndView = ({
             description="Set an expiration date to receive a 7-day warning notification"
             placeholder="No expiration"
             clearable
-            valueFormat={dateFormat + ', YYYY ' + timeFormat}
+            valueFormat={dateformat + ', YYYY ' + timeformat}
             value={watch('exp_date')}
             onChange={(value) => setValue('exp_date', value)}
           />

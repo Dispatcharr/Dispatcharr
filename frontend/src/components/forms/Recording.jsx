@@ -53,7 +53,8 @@ const RecordingModal = ({
   const [mode, setMode] = useState('single');
   const [submitting, setSubmitting] = useState(false);
 
-  const { dateFormat, timeFormat } = useDateTimeFormat();
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+      useDateTimeFormat();
 
   const singleForm = useForm({
     mode: 'controlled',
@@ -235,7 +236,7 @@ const RecordingModal = ({
                   {...singleForm.getInputProps('start_time')}
                   key={singleForm.key('start_time')}
                   label="Start"
-                  valueFormat={dateFormat + ', YYYY ' + timeFormat}
+                  valueFormat={dateformat + ', YYYY ' + timeformat}
                   timeInputProps={{
                     format: '12',
                     withSeconds: false,
@@ -247,7 +248,7 @@ const RecordingModal = ({
                   {...singleForm.getInputProps('end_time')}
                   key={singleForm.key('end_time')}
                   label="End"
-                  valueFormat={dateFormat + ', YYYY ' + timeFormat}
+                  valueFormat={dateformat + ', YYYY ' + timeformat}
                   timeInputProps={{
                     format: '12',
                     withSeconds: false,
@@ -288,7 +289,7 @@ const RecordingModal = ({
                         value || new Date()
                       )
                     }
-                    valueFormat={dateFormat + ', YYYY'}
+                    valueFormat={dateformat + ', YYYY'}
                   />
                   <DatePickerInput
                     label="End date"
@@ -296,7 +297,7 @@ const RecordingModal = ({
                     onChange={(value) =>
                       recurringForm.setFieldValue('end_date', value)
                     }
-                    valueFormat={dateFormat + ', YYYY'}
+                    valueFormat={dateformat + ', YYYY'}
                     minDate={recurringForm.values.start_date || undefined}
                   />
                 </Group>
