@@ -243,11 +243,28 @@ class SegmenterTests(unittest.TestCase):
         seg = self.make_started(target=4.0, startup_cuts=3)
         finished = feed_stream(seg, gop_seconds=2.0, gop_count=9)
         durs = [round(s.duration, 3) for s in finished]
-        # Cold start: first segments cut every keyframe for a fast window;
-        # then the normal 4s target resumes. EXTINF uses keyframe boundary
-        # elapsed (2s GOP), not the in-segment last-PTS shortfall.
+        # Cold start: first segments cut at the first keyframe past the
+        # 1s floor (2s GOPs here); then the normal 4s target resumes.
+        # EXTINF uses keyframe boundary elapsed, not the in-segment
+        # last-PTS shortfall.
         self.assertEqual(durs[:3], [2.0, 2.0, 2.0])
         self.assertTrue(all(abs(d - 4.0) < 0.01 for d in durs[3:]), durs)
+
+    def test_fast_start_holds_sub_second_keyframes(self):
+        # IDR bursts at join must not burn starter cuts on micro-segments.
+        seg = self.make_started(target=4.0, startup_cuts=2)
+        seg.feed(make_video_pes(0.0, keyframe=True))
+        self.assertEqual(seg.feed(make_video_pes(0.033, keyframe=True)), [])
+        self.assertEqual(seg.feed(make_video_pes(0.5, keyframe=True)), [])
+        self.assertEqual(seg.feed(make_video_pes(0.999, keyframe=True)), [])
+        out = seg.feed(make_video_pes(1.0, keyframe=True))
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out[0].duration, 1.0, places=3)
+        # Next starter cut still uses the 1s floor, not the 4s target.
+        self.assertEqual(seg.feed(make_video_pes(1.5, keyframe=True)), [])
+        out2 = seg.feed(make_video_pes(2.0, keyframe=True))
+        self.assertEqual(len(out2), 1)
+        self.assertAlmostEqual(out2[0].duration, 1.0, places=3)
 
     def test_late_keyframe_under_rounding_limit_is_not_force_cut(self):
         # TARGETDURATION 6: EXTINF under 6.5 still rounds to 6. A keyframe
