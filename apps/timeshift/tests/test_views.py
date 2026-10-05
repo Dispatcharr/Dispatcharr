@@ -3134,6 +3134,10 @@ class TimeshiftSessionRedirectTests(TestCase):
             )
         self.assertEqual(response.status_code, 301)
         self.assertIn("session_id=", response["Location"])
+        self.assertEqual(
+            response["Cache-Control"],
+            f"private, max-age={views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS}",
+        )
 
     def test_missing_session_id_serves_existing_busy_pool_without_redirect(self):
         existing = "existingbusy1"

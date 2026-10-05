@@ -1593,11 +1593,31 @@ def _score_pool_fingerprint(entry, client_ip, client_user_agent):
     return score
 
 
+# How long a client may keep the session-mint 301. Same bound as VOD: long
+# enough for a programme, short enough that a stale session_id does not stick
+# forever in a browser redirect cache.
+CATCHUP_SESSION_REDIRECT_CACHE_SECONDS = 6 * 3600
+
+
 def _redirect_with_session(request, session_id):
+    """301 to the same catch-up URL with ``session_id`` in the query string.
+
+    Client-cacheable (``private, max-age=...``) so later Range requests stay on
+    this session. Auth remains on the Location (XC credentials or a native
+    ``token``), so this redirect is never ``no-store``.
+    """
     query_params = {k: request.GET.getlist(k) for k in request.GET}
     query_params["session_id"] = [session_id]
     redirect_url = f"{request.path}?{urlencode(query_params, doseq=True)}"
-    return HttpResponse(status=301, headers={"Location": redirect_url})
+    return HttpResponse(
+        status=301,
+        headers={
+            "Location": redirect_url,
+            "Cache-Control": (
+                f"private, max-age={CATCHUP_SESSION_REDIRECT_CACHE_SECONDS}"
+            ),
+        },
+    )
 
 
 def _redirect_with_new_session(request):

@@ -173,6 +173,10 @@ class CatchupRedirectViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 301)
         self.assertIn("session_id=", response["Location"])
+        self.assertEqual(
+            response["Cache-Control"],
+            f"private, max-age={views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS}",
+        )
 
     def test_channel_redirect_ignores_system_default(self):
         """Channel effective Redirect wins even when the system default is not."""
@@ -287,3 +291,49 @@ class CatchupRedirectViewTests(SimpleTestCase):
             )
 
         self.assertEqual(response.status_code, 503)
+
+
+class SessionRedirectCacheControlTests(SimpleTestCase):
+    """Catch-up session mint must be client-cacheable (same rule as VOD).
+
+    Auth stays on the Location here, so the redirect is always
+    ``private, max-age=...`` (never ``no-store``).
+    """
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_xc_path_mint_is_cacheable_by_the_client_only(self):
+        response = views._redirect_with_session(
+            self.factory.get("/timeshift/u/p/40/2026-06-08:17-00/8.ts"),
+            "sess123",
+        )
+
+        self.assertEqual(response.status_code, 301)
+        self.assertIn("session_id=sess123", response["Location"])
+        cache_control = response["Cache-Control"]
+        self.assertIn("private", cache_control)
+        self.assertIn(
+            f"max-age={views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS}",
+            cache_control,
+        )
+        self.assertNotIn("no-store", cache_control)
+        self.assertNotIn("no-cache", cache_control)
+
+    def test_token_stays_on_location_and_redirect_remains_cacheable(self):
+        """Native JWT auth is kept on the Location, unlike VOD which drops it."""
+        response = views._redirect_with_session(
+            self.factory.get(
+                "/api/catchup/channel-uuid/?token=jwt-value&start=2026-06-08:17-00"
+            ),
+            "sess123",
+        )
+
+        self.assertIn("token=jwt-value", response["Location"])
+        self.assertIn("session_id=sess123", response["Location"])
+        self.assertNotIn("no-store", response["Cache-Control"])
+        self.assertIn("private", response["Cache-Control"])
+
+    def test_lifetime_is_bounded_and_covers_a_long_programme(self):
+        self.assertGreaterEqual(views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS, 4 * 3600)
+        self.assertLessEqual(views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS, 24 * 3600)
