@@ -95,11 +95,12 @@ const ReverseProxyAuthForm = React.memo(({ active }) => {
       )}
       <Alert variant="light" color="yellow" title="Trust your proxy first">
         Anything that can reach Dispatcharr directly can send this header, so it
-        is only honored for requests coming from a proxy you have listed in
-        DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES. That variable has no default:
-        until you set it to your proxy&apos;s IP or CIDR, this setting does
-        nothing. Make sure your proxy strips the header from inbound requests
-        and sets it itself.
+        is only honored for requests coming from a proxy listed in
+        DISPATCHARR_TRUSTED_PROXIES. That variable must be set explicitly: the
+        private-network default it falls back to when unset is not trusted for
+        sign-in, so until you set it to your proxy&apos;s IP or CIDR this
+        setting does nothing. Make sure your proxy strips the header from
+        inbound requests and sets it itself.
       </Alert>
       <Switch
         label="Enable Reverse Proxy Authentication"

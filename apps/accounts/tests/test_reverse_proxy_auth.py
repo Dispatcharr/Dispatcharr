@@ -1,9 +1,10 @@
 """Reverse proxy header auth: off by default, and only trusted peers count.
 
 The configured header is client-suppliable, so security rests on two checks:
-an admin must enable the setting, and REMOTE_ADDR must be in the dedicated
-DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES allowlist. If either regresses, anyone
-who can reach the port can sign in as any user.
+an admin must enable the setting, and REMOTE_ADDR must be listed in an
+explicitly set DISPATCHARR_TRUSTED_PROXIES (its private-network default does
+not count). If either regresses, anyone who can reach the port can sign in as
+any user.
 """
 
 import os
@@ -22,11 +23,11 @@ User = get_user_model()
 PROXY_LOGIN_URL = "/api/accounts/auth/proxy-login/"
 HEADER = "X-Forwarded-User"
 UNTRUSTED_PEER = "203.0.113.7"
-ALLOWLIST_ENV = "DISPATCHARR_PROXY_AUTH_TRUSTED_PROXIES"
+TRUSTED_PROXIES_ENV = "DISPATCHARR_TRUSTED_PROXIES"
 
 
-# The test client's REMOTE_ADDR is 127.0.0.1; most cases want that allowed.
-@mock.patch.dict(os.environ, {ALLOWLIST_ENV: "127.0.0.0/8"}, clear=False)
+# The test client's REMOTE_ADDR is 127.0.0.1; most cases want that trusted.
+@mock.patch.dict(os.environ, {TRUSTED_PROXIES_ENV: "127.0.0.0/8"}, clear=False)
 class ReverseProxyAuthTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -72,7 +73,7 @@ class ReverseProxyAuthTests(TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
-    @mock.patch.dict(os.environ, {ALLOWLIST_ENV: UNTRUSTED_PEER}, clear=False)
+    @mock.patch.dict(os.environ, {TRUSTED_PROXIES_ENV: UNTRUSTED_PEER}, clear=False)
     def test_explicitly_trusted_peer_is_honored(self):
         self._configure()
         response = self._post(
@@ -80,22 +81,18 @@ class ReverseProxyAuthTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def test_allowlist_is_required_even_for_a_local_peer(self):
+    def test_unset_trusted_proxies_fails_closed_for_a_local_peer(self):
+        """Unset, the variable trusts private peers for X-Forwarded-For only."""
         self._configure()
         with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(ALLOWLIST_ENV, None)
+            os.environ.pop(TRUSTED_PROXIES_ENV, None)
             response = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"})
         self.assertEqual(response.status_code, 401)
 
-    @mock.patch.dict(
-        os.environ, {"DISPATCHARR_TRUSTED_PROXIES": "127.0.0.0/8"}, clear=False
-    )
-    def test_forwarded_header_trust_alone_does_not_grant_sign_in(self):
-        """The generic X-Forwarded-For allowlist is not a sign-in allowlist."""
+    @mock.patch.dict(os.environ, {TRUSTED_PROXIES_ENV: "none"}, clear=False)
+    def test_trusting_no_proxy_signs_nobody_in(self):
         self._configure()
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(ALLOWLIST_ENV, None)
-            response = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"})
+        response = self._post(**{"HTTP_X_FORWARDED_USER": "proxyuser"})
         self.assertEqual(response.status_code, 401)
 
     def test_missing_header_does_not_sign_anyone_in(self):
