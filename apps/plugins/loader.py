@@ -1,11 +1,11 @@
 import importlib
+import importlib.machinery
 import importlib.util
 import inspect
 import json
 import logging
 import os
 import re
-import shutil
 import sys
 import threading
 import types
@@ -18,6 +18,25 @@ from django.utils import timezone
 from .models import PluginConfig
 
 logger = logging.getLogger(__name__)
+
+
+class _PluginSourceLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self, fullname):
+        return self.source_to_code(self.get_data(self.path), self.path)
+
+
+def _use_plugin_sources(path):
+    # Same-size edits within one timestamp tick can leave valid-looking bytecode.
+    # Keep source-only finders for lazy imports too, without changing bytecode
+    # files or requiring write access to user-managed plugin files.
+    for directory, subdirs, _ in os.walk(os.path.abspath(path)):
+        subdirs[:] = [name for name in subdirs if name != "__pycache__"]
+        sys.path_importer_cache[directory] = importlib.machinery.FileFinder(
+            directory,
+            (importlib.machinery.ExtensionFileLoader, importlib.machinery.EXTENSION_SUFFIXES),
+            (_PluginSourceLoader, importlib.machinery.SOURCE_SUFFIXES),
+            (importlib.machinery.SourcelessFileLoader, importlib.machinery.BYTECODE_SUFFIXES),
+        )
 
 
 @dataclass
@@ -389,12 +408,6 @@ class PluginManager:
             self._unload_package(package)
             self._unload_path_modules(path)
             try:
-                # Same-size edits within one timestamp tick can leave valid-looking
-                # bytecode for removed tasks, including in imported submodules.
-                for directory, subdirs, _ in os.walk(path):
-                    if "__pycache__" in subdirs:
-                        shutil.rmtree(os.path.join(directory, "__pycache__"))
-                        subdirs.remove("__pycache__")
                 loaded, package = self._load_plugin(
                     cfg.key, path, folder_name=folder, force_reload=True,
                     previous_package=package,
@@ -497,6 +510,7 @@ class PluginManager:
         force_reload: bool,
         previous_package: Optional[str],
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
+        path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
         has_pkg = os.path.exists(os.path.join(path, "__init__.py"))
         has_pluginpy = os.path.exists(os.path.join(path, "plugin.py"))
@@ -504,6 +518,7 @@ class PluginManager:
             logger.debug(f"Skipping {path}: no plugin.py or package")
             return None, None
 
+        _use_plugin_sources(path)
         package_name = self._resolve_package_name(key)
         alias_name = self._resolve_alias_name(folder_name, path)
 
@@ -1001,6 +1016,7 @@ class PluginManager:
             module_name,
             path,
             submodule_search_locations=[os.path.dirname(path)] if is_package else None,
+            loader=_PluginSourceLoader(module_name, path),
         )
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load spec for {module_name} from {path}")

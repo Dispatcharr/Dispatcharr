@@ -1,6 +1,10 @@
 import io
 import importlib.util
+import json
 import os
+import py_compile
+import stat
+import subprocess
 import sys
 import threading
 import time
@@ -112,6 +116,9 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
         row = self._schedule("vod2mlib.v1", "vod2mlib.task_v1")
         self._set_enabled("vod2mlib", False)
         plugin_path = os.path.join(self._plugins_dir, "vod2mlib", "plugin.py")
+        py_compile.compile(
+            plugin_path, cfile=importlib.util.cache_from_source(plugin_path), doraise=True
+        )
         old_stat = os.stat(plugin_path)
         self.assertTrue(os.path.isfile(importlib.util.cache_from_source(plugin_path)))
         old_source = _PLUGIN_PY.replace("__CUSTOM__", "vod2mlib.task_v1").replace("__KEY__", "vod2mlib")
@@ -126,6 +133,8 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
         self._set_enabled("vod2mlib", True)
 
         self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
+        self.assertIn("vod2mlib.task_v2", celery_app.tasks)
+        self.assertNotIn("vod2mlib.task_v1", celery_app.tasks)
 
     def test_cold_restore_reads_changed_submodule_in_a_spaced_plugin_folder(self):
         key = self._install_jobs_plugin(
@@ -135,6 +144,9 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
         row = self._schedule(f"{key}.auto_rescan", old_name)
         self._set_enabled(key, False)
         jobs_path = os.path.join(self._plugins_dir, "Mixed Case", "jobs.py")
+        py_compile.compile(
+            jobs_path, cfile=importlib.util.cache_from_source(jobs_path), doraise=True
+        )
         old_stat = os.stat(jobs_path)
         self.assertTrue(os.path.isfile(importlib.util.cache_from_source(jobs_path)))
         old_source = _JOBS_PY.replace("__KEY__", key)
@@ -150,12 +162,52 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
         self._set_enabled(key, True)
 
         self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
+        self.assertIn(new_name, celery_app.tasks)
+        self.assertNotIn(old_name, celery_app.tasks)
         self.assertIn(old_name, PluginConfig.objects.get(key=key).owned_tasks)
         PluginManager._instance = None
         self._delete(key)
         self.assertFalse(os.path.exists(os.path.join(self._plugins_dir, "Mixed Case")))
         self.assertFalse(PluginConfig.objects.filter(key=key).exists())
         self.assertFalse(PeriodicTask.objects.filter(pk=row.pk).exists())
+
+    def test_reenabled_task_lazily_imports_current_helper_with_stale_cache(self):
+        key = "lazyprobe"
+        pm = self._install(key)
+        plugin_dir = os.path.join(self._plugins_dir, key)
+        plugin_path = os.path.join(plugin_dir, "plugin.py")
+        helper_path = os.path.join(plugin_dir, "helper.py")
+        with open(plugin_path, "w") as plugin:
+            plugin.write("""from celery import shared_task
+@shared_task(name='lazyprobe.scheduled_rescan')
+def rescan():
+    from .helper import VALUE
+    return VALUE
+class Plugin:
+    name = 'lazyprobe'
+""")
+        with open(helper_path, "w") as helper:
+            helper.write("VALUE = 'v1'\n")
+        cache_path = importlib.util.cache_from_source(helper_path)
+        py_compile.compile(helper_path, cfile=cache_path, doraise=True)
+        old_stat = os.stat(helper_path)
+        with open(cache_path, "rb") as cache:
+            old_cache = cache.read()
+        with open(helper_path, "w") as helper:
+            helper.write("VALUE = 'v2'\n")
+        os.utime(helper_path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+        self.assertEqual(os.stat(helper_path).st_size, old_stat.st_size)
+
+        pm.discover_plugins(force_reload=True)
+        row = self._schedule(f"{key}.row", self._custom_name(key))
+        self._set_enabled(key, False)
+        self._set_enabled(key, True)
+
+        self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+        self.assertNotIn("_dispatcharr_plugin_lazyprobe.helper", sys.modules)
+        self.assertEqual(celery_app.tasks[self._custom_name(key)].run(), "v2")
+        with open(cache_path, "rb") as cache:
+            self.assertEqual(cache.read(), old_cache)
 
     def test_upgrade_keeps_a_still_defined_task_eligible_for_restoration(self):
         self._install("vod2mlib", custom="vod2mlib.task_v1")
@@ -190,6 +242,123 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
         PluginManager._instance = None
         self._set_enabled("vod2mlib", True)
         self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+
+
+class PluginScheduleReadonlyCacheTests(LifecycleFixture, TransactionTestCase):
+    def test_readonly_plugin_loads_current_source_without_changing_cache(self):
+        if os.name != "posix":
+            self.skipTest("requires POSIX file permissions")
+        if connection.vendor != "postgresql":
+            self.skipTest("requires a shared PostgreSQL test database")
+
+        key = "readonlyprobe"
+        old_name = f"{key}.task_v1"
+        new_name = f"{key}.task_v2"
+        self._install(key, custom=old_name)
+        row = self._schedule(f"{key}.row", old_name)
+        self._set_enabled(key, False)
+        plugin_dir = os.path.join(self._plugins_dir, key)
+        source_path = os.path.join(plugin_dir, "plugin.py")
+        cache_dir = os.path.join(plugin_dir, "__pycache__")
+        cache_path = importlib.util.cache_from_source(source_path)
+        py_compile.compile(source_path, cfile=cache_path, doraise=True)
+        self.assertTrue(os.path.isfile(cache_path))
+        original_stat = os.stat(source_path)
+        old_source = _PLUGIN_PY.replace("__CUSTOM__", old_name).replace("__KEY__", key)
+        new_source = _PLUGIN_PY.replace("__CUSTOM__", new_name).replace("__KEY__", key)
+        new_source = new_source.replace('description = "test"', 'description = "live"')
+        self.assertEqual(len(old_source), len(new_source))
+        with open(source_path, "w") as source:
+            source.write(new_source)
+        os.utime(source_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        self.assertEqual(os.stat(source_path).st_mtime_ns, original_stat.st_mtime_ns)
+        with open(cache_path, "rb") as cache:
+            old_cache = cache.read()
+        cache_mtime = os.stat(cache_path).st_mtime_ns
+
+        paths = (self._plugins_dir, self._marker, plugin_dir, cache_dir, source_path, cache_path)
+        original_modes = {path: stat.S_IMODE(os.stat(path).st_mode) for path in paths}
+        try:
+            os.chmod(self._plugins_dir, 0o755)
+            os.chmod(self._marker, 0o666)
+            os.chmod(plugin_dir, 0o555)
+            os.chmod(cache_dir, 0o555)
+            os.chmod(source_path, 0o444)
+            os.chmod(cache_path, 0o444)
+            readonly_modes = {
+                path: stat.S_IMODE(os.stat(path).st_mode)
+                for path in (plugin_dir, cache_dir, source_path, cache_path)
+            }
+            child = """import django, json, os
+django.setup()
+from apps.plugins.api_views import PluginEnabledAPIView
+from apps.plugins.loader import PluginManager
+from apps.plugins.models import PluginConfig
+from django_celery_beat.models import PeriodicTask
+from dispatcharr.celery import app as celery_app
+from rest_framework.test import APIRequestFactory
+PluginEnabledAPIView.get_permissions = lambda self: []
+response = PluginEnabledAPIView.as_view()(
+    APIRequestFactory().post('/', {'enabled': True}, format='json'), key='readonlyprobe'
+)
+cfg = PluginConfig.objects.get(key='readonlyprobe')
+loaded = PluginManager.get().get_plugin('readonlyprobe')
+print('READONLY_RESULT ' + json.dumps({
+    'status': response.status_code,
+    'uid': os.geteuid(),
+    'old_registered': 'readonlyprobe.task_v1' in celery_app.tasks,
+    'new_registered': 'readonlyprobe.task_v2' in celery_app.tasks,
+    'row_enabled': PeriodicTask.objects.get(name='readonlyprobe.row').enabled,
+    'new_recorded': 'readonlyprobe.task_v2' in cfg.owned_tasks,
+    'loaded_description': loaded.instance.description if loaded else None,
+    'reported_description': response.data.get('plugin', {}).get('description'),
+    'plugin_writable': os.access(os.environ['READONLY_PLUGIN_DIR'], os.W_OK),
+    'cache_writable': os.access(os.environ['READONLY_CACHE_DIR'], os.W_OK),
+}))
+"""
+            env = dict(
+                os.environ,
+                DJANGO_SETTINGS_MODULE="dispatcharr.settings_test",
+                POSTGRES_DB=connection.settings_dict["NAME"],
+                DISPATCHARR_SKIP_PLUGIN_AUTODISCOVERY="1",
+                READONLY_PLUGIN_DIR=plugin_dir,
+                READONLY_CACHE_DIR=cache_dir,
+            )
+            identity = {"user": 65534, "group": 65534} if os.geteuid() == 0 else {}
+            result = subprocess.run(
+                [sys.executable, "-c", child], env=env,
+                capture_output=True, text=True, timeout=40, **identity,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observations = [
+                line.removeprefix("READONLY_RESULT ") for line in result.stdout.splitlines()
+                if line.startswith("READONLY_RESULT ")
+            ]
+            self.assertEqual(len(observations), 1, result.stdout + result.stderr)
+            observed = json.loads(observations[0])
+            self.assertGreater(observed["uid"], 0, observed)
+            self.assertEqual(observed["status"], 200, observed)
+            self.assertFalse(observed["old_registered"], observed)
+            self.assertTrue(observed["new_registered"], observed)
+            self.assertFalse(observed["row_enabled"], observed)
+            self.assertTrue(observed["new_recorded"], observed)
+            self.assertEqual(observed["loaded_description"], "live", observed)
+            self.assertEqual(observed["reported_description"], "live", observed)
+            self.assertFalse(observed["plugin_writable"], observed)
+            self.assertFalse(observed["cache_writable"], observed)
+            self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
+            with open(cache_path, "rb") as cache:
+                self.assertEqual(cache.read(), old_cache)
+            self.assertEqual(os.stat(cache_path).st_mtime_ns, cache_mtime)
+            self.assertEqual(os.stat(source_path).st_mtime_ns, original_stat.st_mtime_ns)
+            self.assertEqual(
+                {path: stat.S_IMODE(os.stat(path).st_mode) for path in readonly_modes},
+                readonly_modes,
+            )
+        finally:
+            for path, mode in original_modes.items():
+                if os.path.exists(path):
+                    os.chmod(path, mode)
 
 
 @skipUnless(connection.vendor == "postgresql", "requires PostgreSQL row locks")
