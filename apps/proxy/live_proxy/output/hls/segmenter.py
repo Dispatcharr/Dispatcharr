@@ -68,6 +68,11 @@ PTS_WRAP_SECONDS = PTS_WRAP / PTS_CLOCK
 # A multi-second backward jump that is not a 33-bit wrap is an encoder
 # timeline reset and must hard-cut, not be mistaken for B-frame reorder.
 PTS_RESET_BACKWARD_SECONDS = 2.0
+# Floor for fast-start keyframe cuts. Cutting at every keyframe with no
+# minimum produces micro-segments (e.g. one frame / 0.033s) when the
+# encoder bursts IDRs at join, which burn starter-cut slots without
+# helping TTFF. Mid-GOP recovery still cuts at the next keyframe.
+MIN_STARTUP_SEGMENT_SECONDS = 1.0
 
 
 class Segment:
@@ -476,9 +481,9 @@ class TSSegmenter:
             max_segment_duration if max_segment_duration else 2 * target_duration)
         # Fast-start ladder: a cold channel accumulates segments at live
         # cadence, so with a 4s target a player waits ~8-12s for enough
-        # media to start. The first N segments therefore cut at EVERY
-        # keyframe (one GOP each, typically 1-3s), which gets a playable
-        # playlist up in one GOP and 3 segments within a few seconds; the
+        # media to start. The first N segments therefore cut at the first
+        # keyframe at or after MIN_STARTUP_SEGMENT_SECONDS (typically one
+        # GOP of 1-3s), which gets a playable playlist up quickly; the
         # cut target then ramps back to normal. Steady-state output is
         # unchanged, and every starter EXTINF is well under the frozen
         # TARGETDURATION.
@@ -674,14 +679,18 @@ class TSSegmenter:
                     self._begin_segment(pts, opening_packet=packet, opening_params=found_in_packet)
                 else:
                     elapsed = self._elapsed(pts, self._segment_start_pts)
-                    # Fast-start ladder: while starter cuts remain, any
-                    # keyframe closes the segment (elapsed > 0 skips
-                    # same-PTS duplicates); afterwards the normal target
-                    # applies. A segment opened by a force-cut is not
-                    # independently decodable, so the next keyframe ends
-                    # it immediately instead of holding another 4s.
-                    if self._startup_cuts_remaining > 0 or self._opened_mid_gop:
+                    # Fast-start ladder: while starter cuts remain, close
+                    # at the first keyframe past the startup floor (not
+                    # every keyframe: IDR bursts would otherwise emit
+                    # one-frame segments). A segment opened by a force-
+                    # cut is not independently decodable, so the next
+                    # keyframe ends it immediately. Afterwards the
+                    # normal target applies. elapsed > 0 skips same-PTS
+                    # duplicates when cut_at is 0.
+                    if self._opened_mid_gop:
                         cut_at = 0.0
+                    elif self._startup_cuts_remaining > 0:
+                        cut_at = MIN_STARTUP_SEGMENT_SECONDS
                     else:
                         cut_at = self.target_duration
                     if elapsed >= cut_at and elapsed > 0:
