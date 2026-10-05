@@ -327,7 +327,7 @@ const M3U = ({
                     description="Set an expiration date to receive a warning notification"
                     placeholder="No expiration"
                     clearable
-                    valueFormat={dateFormat + ', YYYY' + timeFormat}
+                    valueFormat={dateFormat + ', YYYY ' + timeFormat}
                     value={expDate}
                     onChange={(v) => setExpDate(v ? new Date(v) : null)}
                   />

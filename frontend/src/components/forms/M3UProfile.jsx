@@ -386,7 +386,7 @@ const RegexFormAndView = ({
             description="Set an expiration date to receive a 7-day warning notification"
             placeholder="No expiration"
             clearable
-            valueFormat={dateFormat + ', YYYY' + timeFormat}
+            valueFormat={dateFormat + ', YYYY ' + timeFormat}
             value={watch('exp_date')}
             onChange={(value) => setValue('exp_date', value)}
           />

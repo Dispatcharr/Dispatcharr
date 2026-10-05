@@ -53,7 +53,7 @@ const RecordingModal = ({
   const [mode, setMode] = useState('single');
   const [submitting, setSubmitting] = useState(false);
 
-  const { dateFormat } = useDateTimeFormat();
+  const { dateFormat, timeFormat } = useDateTimeFormat();
 
   const singleForm = useForm({
     mode: 'controlled',
@@ -235,7 +235,7 @@ const RecordingModal = ({
                   {...singleForm.getInputProps('start_time')}
                   key={singleForm.key('start_time')}
                   label="Start"
-                  valueFormat={dateFormat + ', YYYY' + timeFormat}
+                  valueFormat={dateFormat + ', YYYY ' + timeFormat}
                   timeInputProps={{
                     format: '12',
                     withSeconds: false,
@@ -247,7 +247,7 @@ const RecordingModal = ({
                   {...singleForm.getInputProps('end_time')}
                   key={singleForm.key('end_time')}
                   label="End"
-                  valueFormat={dateFormat + ', YYYY' + timeFormat}
+                  valueFormat={dateFormat + ', YYYY ' + timeFormat}
                   timeInputProps={{
                     format: '12',
                     withSeconds: false,
