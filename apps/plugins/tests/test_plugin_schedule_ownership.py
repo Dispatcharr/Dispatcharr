@@ -19,7 +19,6 @@ from apps.plugins.tests.test_plugin_schedule_lifecycle import (
     LifecycleFixture,
     _JOBS_PY,
     _PLUGIN_PY,
-    PluginScheduleLifecycleTests,
 )
 from dispatcharr.celery import app as celery_app
 
@@ -66,8 +65,8 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
         self._upgrade_while_disabled(cold_registry=True)
 
     def test_upgrade_does_not_restore_a_removed_task_imported_through_folder_name(self):
-        key = PluginScheduleLifecycleTests._install_jobs_plugin(
-            self, "AliasPlugin", "from AliasPlugin.jobs import scan"
+        key = self._install_jobs_plugin(
+            "AliasPlugin", "from AliasPlugin.jobs import scan"
         )
         old_name = f"{key}.scheduled_rescan"
         row = self._schedule(f"{key}.auto_rescan", old_name)
@@ -129,8 +128,8 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
         self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
 
     def test_cold_restore_reads_changed_submodule_in_a_spaced_plugin_folder(self):
-        key = PluginScheduleLifecycleTests._install_jobs_plugin(
-            self, "Mixed Case", "from .jobs import scan"
+        key = self._install_jobs_plugin(
+            "Mixed Case", "from .jobs import scan"
         )
         old_name = f"{key}.scheduled_rescan"
         row = self._schedule(f"{key}.auto_rescan", old_name)

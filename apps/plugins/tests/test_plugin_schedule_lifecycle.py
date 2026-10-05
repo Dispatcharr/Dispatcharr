@@ -139,6 +139,29 @@ class LifecycleFixture:
         pm.discover_plugins(sync_db=False, force_reload=True)
         return pm
 
+    def _install_jobs_plugin(self, folder, import_line):
+        """A plugin in `folder` whose task lives in jobs.py, imported by `import_line`."""
+        key = folder.replace(" ", "_").lower()
+        plugin_dir = os.path.join(self._plugins_dir, folder)
+        os.makedirs(plugin_dir)
+        with open(os.path.join(plugin_dir, "jobs.py"), "w") as f:
+            f.write(_JOBS_PY.replace("__KEY__", key))
+        with open(os.path.join(plugin_dir, "plugin.py"), "w") as f:
+            f.write(_JOBS_PLUGIN_PY.replace("__IMPORT__", import_line).replace("__KEY__", key))
+        self._task_names.add(f"{key}.scheduled_rescan")
+        self.addCleanup(
+            lambda: [
+                sys.modules.pop(name)
+                for name in list(sys.modules)
+                if name == folder or name.startswith(f"{folder}.")
+            ]
+        )
+        PluginConfig.objects.create(key=key, name=key, enabled=True, ever_enabled=True)
+        pm = PluginManager.get()
+        pm.plugins_dir = self._plugins_dir
+        pm.discover_plugins(sync_db=False, force_reload=True)
+        return key
+
     def _schedule(self, name, task, enabled=True, **extra):
         return PeriodicTask.objects.create(
             name=name, task=task, crontab=self._crontab, enabled=enabled, **extra
@@ -444,29 +467,6 @@ class PluginScheduleLifecycleTests(LifecycleFixture, TestCase):
         row.refresh_from_db()
         self.assertTrue(row.enabled)
         self.assertFalse(ModelEntry(row, app=celery_app).is_due().is_due)
-
-    def _install_jobs_plugin(self, folder, import_line):
-        """A plugin in `folder` whose task lives in jobs.py, imported by `import_line`."""
-        key = folder.replace(" ", "_").lower()
-        plugin_dir = os.path.join(self._plugins_dir, folder)
-        os.makedirs(plugin_dir)
-        with open(os.path.join(plugin_dir, "jobs.py"), "w") as f:
-            f.write(_JOBS_PY.replace("__KEY__", key))
-        with open(os.path.join(plugin_dir, "plugin.py"), "w") as f:
-            f.write(_JOBS_PLUGIN_PY.replace("__IMPORT__", import_line).replace("__KEY__", key))
-        self._task_names.add(f"{key}.scheduled_rescan")
-        self.addCleanup(
-            lambda: [
-                sys.modules.pop(name)
-                for name in list(sys.modules)
-                if name == folder or name.startswith(f"{folder}.")
-            ]
-        )
-        PluginConfig.objects.create(key=key, name=key, enabled=True, ever_enabled=True)
-        pm = PluginManager.get()
-        pm.plugins_dir = self._plugins_dir
-        pm.discover_plugins(sync_db=False, force_reload=True)
-        return key
 
     def _register_foreign_task(self, name, module):
         def foreign():
