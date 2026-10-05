@@ -346,13 +346,13 @@ const RecurringRuleModal = ({
                 label="Start date"
                 value={form.values.start_date}
                 onChange={handleStartDateChange}
-                valueFormat="MMM D, YYYY"
+                valueFormat={dateformat + ', YYYY'}
               />
               <DatePickerInput
                 label="End date"
                 value={form.values.end_date}
                 onChange={handleEndDateChange}
-                valueFormat="MMM D, YYYY"
+                valueFormat={dateformat + ', YYYY'}
                 minDate={form.values.start_date || undefined}
               />
             </Group>
