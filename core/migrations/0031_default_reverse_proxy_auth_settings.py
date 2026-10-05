@@ -20,7 +20,7 @@ def remove_reverse_proxy_auth_settings(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("core", "0027_vlc_play_and_exit"),
+        ("core", "0030_rename_default_stream_profile_names"),
     ]
 
     operations = [
