@@ -4,8 +4,10 @@ Tests for VOD proxy profile connection counter fixes.
 Covers:
   1. Atomic active_streams DECR+check via Redis Lua (no session-lock gating)
   2. Non-atomic GET-then-DECR in _decrement_profile_connections() (counter could go negative)
+  3. A response closed before its body starts still releases its active_streams reservation
 """
 
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch, call
 from redis.exceptions import WatchError
 
@@ -564,7 +566,7 @@ class TestRollbackSetupReservations(TestCase):
         self.assertEqual(conn.get_active_streams_count(), 1)
 
     def test_rollback_releases_profile_when_never_reserved_active_streams(self):
-        """No active_streams stake: a private profile reservation is released directly."""
+        """No active_streams reservation: a private profile slot is released directly."""
         from apps.proxy.vod_proxy.tests.test_vod_lock_contention import (
             LockAwareFakeRedis,
             _import_vod,
@@ -1390,7 +1392,7 @@ class TestCreateRaceBindsStoredProfile(TestCase):
         )
 
         redis = LockAwareFakeRedis()
-        # Winner already created the hash under profile_winner with one stake.
+        # Winner already created the hash under profile_winner with one active_streams.
         _seed_session(
             redis, "vod_race", active_streams=1, profile_id=profile_winner.id
         )
@@ -1463,7 +1465,7 @@ class TestCreateRaceBindsStoredProfile(TestCase):
             self.assertEqual(
                 int(redis._data.get(f"profile_connections:{profile_loser.id}", 0)), 0
             )
-            # Winner's slot still held; loser joined as second stake.
+            # Winner's slot still held; loser joined as a second active_streams.
             self.assertEqual(
                 int(redis._data.get(f"profile_connections:{profile_winner.id}", 0)), 1
             )
@@ -1725,3 +1727,230 @@ class TestMidStreamUpstreamRetry(TestCase):
         self.assertEqual(body, b"abc")
         self.assertEqual(len(opens), 2 + _MAX_CONSECUTIVE_UPSTREAM_RETRIES)
         self.assertEqual(int(redis._data.get(f"profile_connections:{profile.id}", 0)), 0)
+
+
+class _InlineThread:
+    """Runs the target on start() so delayed cleanup is deterministic."""
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+
+class ResponseCloseBeforeBodyTests(TestCase):
+    """Closing a response whose body never started must drop its active_streams.
+
+    A generator closed before its first next() runs none of its body, so its
+    finally cannot be the only release point. WSGI always closes the response.
+    """
+
+    OTHER_HOLDER = 1  # an unrelated stream holding the same profile
+
+    def setUp(self):
+        from django.core import signals
+        from django.db import close_old_connections
+
+        # response.close() emits request_finished, which would drop the test
+        # database connection. Django's own test client detaches it the same way.
+        signals.request_finished.disconnect(close_old_connections)
+        self.addCleanup(signals.request_finished.connect, close_old_connections)
+
+        from apps.m3u.models import M3UAccount
+        from apps.proxy.vod_proxy.multi_worker_connection_manager import (
+            MultiWorkerVODConnectionManager,
+            RedisBackedVODConnection,
+        )
+        from apps.proxy.vod_proxy.tests.test_vod_lock_contention import (
+            LockAwareFakeRedis,
+            _import_vod,
+        )
+
+        _import_vod()
+        self.RedisBackedVODConnection = RedisBackedVODConnection
+        self.redis = LockAwareFakeRedis()
+        account = M3UAccount.objects.create(name="Close before body")
+        self.profile = account.profiles.get(is_default=True)
+        self.profile.max_streams = 2
+        self.profile.save()
+        self.counter_key = f"profile_connections:{self.profile.id}"
+        self.redis.set(self.counter_key, self.OTHER_HOLDER)
+
+        self.mgr = MultiWorkerVODConnectionManager.__new__(MultiWorkerVODConnectionManager)
+        self.mgr.redis_client = self.redis
+        self.mgr.worker_id = "test-worker"
+        self.mgr._send_vod_event = MagicMock()
+
+    def _counter(self):
+        return int(self.redis._data.get(self.counter_key, 0))
+
+    def _open(self, session_id, *, idle_match=None, seed_active=None):
+        """Open a response without reading its body.
+
+        seed_active: create the session first with that many active streams
+        (an existing session this request joins). None leaves the session to
+        be created by this request.
+        """
+        from apps.proxy.vod_proxy.tests.test_vod_lock_contention import _seed_session
+
+        content = MagicMock()
+        content.uuid = "uuid-close-before-body"
+        content.name = "Movie"
+        request = MagicMock()
+        request.META = {}
+        upstream = MagicMock()
+        upstream.iter_content.return_value = [b"x"]
+        upstream.headers = {}
+
+        def reserve(profile):
+            self.redis.incr(f"profile_connections:{profile.id}")
+            return True
+
+        if seed_active is not None:
+            _seed_session(
+                self.redis, session_id, active_streams=seed_active,
+                profile_id=self.profile.id,
+            )
+
+        module = "apps.proxy.vod_proxy.multi_worker_connection_manager"
+        with patch.object(self.mgr, "find_matching_idle_session", return_value=idle_match), \
+             patch.object(self.mgr, "_check_and_reserve_profile_slot", side_effect=reserve), \
+             patch(f"{module}.RedisBackedVODConnection.get_stream", return_value=upstream), \
+             patch(
+                 f"{module}.RedisBackedVODConnection.get_headers",
+                 return_value={"content_type": "video/mp4"},
+             ), \
+             patch(f"{module}.Movie", new=type(content)):
+            return self.mgr.stream_content_with_session(
+                session_id=session_id,
+                content_obj=content,
+                stream_url="http://example.com/m.mp4",
+                m3u_profile=self.profile,
+                client_ip="1.2.3.4",
+                client_user_agent="ua",
+                request=request,
+            )
+
+    def _inline_cleanup(self):
+        """Run the delayed-cleanup threads on the calling thread, without sleeping."""
+        module = "apps.proxy.vod_proxy.multi_worker_connection_manager"
+        stack = ExitStack()
+        stack.enter_context(patch(f"{module}.threading.Thread", _InlineThread))
+        stack.enter_context(patch(f"{module}.time.sleep"))
+        return stack
+
+    def _close(self, response):
+        with self._inline_cleanup():
+            response.close()
+
+    def _active_streams_count(self, session_id):
+        return self.RedisBackedVODConnection(
+            session_id, self.redis
+        ).get_active_streams_count()
+
+    def test_last_active_stream_on_a_reused_session_releases_the_profile_slot(self):
+        response = self._open("vod_reused", idle_match="vod_reused", seed_active=0)
+        self.assertEqual(self._active_streams_count("vod_reused"), 1)
+        self.assertEqual(self._counter(), self.OTHER_HOLDER + 1)
+
+        self._close(response)
+
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+        self.assertEqual(self._active_streams_count("vod_reused"), 0)
+        self.mgr._send_vod_event.assert_called_once()
+        self.assertEqual(self.mgr._send_vod_event.call_args.args[0], "vod_stopped")
+
+    def test_closing_twice_does_not_release_a_second_time(self):
+        response = self._open("vod_twice", idle_match="vod_twice", seed_active=0)
+
+        self._close(response)
+        self._close(response)
+
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+
+    def test_a_sibling_that_is_still_playing_keeps_the_slot(self):
+        response = self._open("vod_sibling", seed_active=1)
+        self.assertEqual(self._active_streams_count("vod_sibling"), 2)
+        # The sibling's own slot is not modeled here; the request must not
+        # reserve one of its own, and must not release it on close.
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+
+        self._close(response)
+
+        self.assertEqual(self._active_streams_count("vod_sibling"), 1)
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+        self.mgr._send_vod_event.assert_not_called()
+
+    def test_unstarted_close_closes_provider_http_while_a_sibling_keeps_the_slot(self):
+        """get_stream runs before the body. A sibling must not keep that HTTP open."""
+        with patch.object(self.RedisBackedVODConnection, "_close_local_http") as close_http:
+            response = self._open("vod_http", seed_active=1)
+            self._close(response)
+
+        close_http.assert_called_once()
+        self.assertEqual(self._active_streams_count("vod_http"), 1)
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+
+    def test_stream_closer_twice_does_not_drop_a_sibling(self):
+        """response.close() forgets its closers. The stream closer itself must not DECR twice."""
+        response = self._open("vod_closer_twice", seed_active=1)
+        self.assertEqual(self._active_streams_count("vod_closer_twice"), 2)
+        closer = response._resource_closers[0]
+
+        with self._inline_cleanup():
+            closer()
+            closer()
+
+        self.assertEqual(self._active_streams_count("vod_closer_twice"), 1)
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+
+    def test_a_session_this_request_created_sends_no_stop_event(self):
+        """vod_started only fires when the body runs, so there is nothing to stop."""
+        response = self._open("vod_created")
+        self.assertEqual(self._active_streams_count("vod_created"), 1)
+        self.assertEqual(self._counter(), self.OTHER_HOLDER + 1)
+
+        self._close(response)
+
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+        self.assertEqual(self._active_streams_count("vod_created"), 0)
+        self.mgr._send_vod_event.assert_not_called()
+
+    def test_a_body_that_ran_is_not_released_again_on_close(self):
+        response = self._open("vod_ran", idle_match="vod_ran", seed_active=0)
+
+        with self._inline_cleanup():
+            self.assertEqual(list(response.streaming_content), [b"x"])
+            self.assertEqual(self._counter(), self.OTHER_HOLDER)
+            response.close()
+
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+        self.assertEqual(self._active_streams_count("vod_ran"), 0)
+
+    def test_a_finished_body_does_not_drop_a_sibling_on_close(self):
+        """With no sibling the second DECR floors at 0. A sibling would lose its count."""
+        response = self._open("vod_ran_sibling", seed_active=1)
+        self.assertEqual(self._active_streams_count("vod_ran_sibling"), 2)
+
+        with self._inline_cleanup():
+            self.assertEqual(list(response.streaming_content), [b"x"])
+            self.assertEqual(self._active_streams_count("vod_ran_sibling"), 1)
+            response.close()
+
+        self.assertEqual(self._active_streams_count("vod_ran_sibling"), 1)
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)
+
+    def test_a_client_disconnect_mid_body_does_not_drop_a_sibling_twice(self):
+        response = self._open("vod_drop_sibling", seed_active=1)
+        self.assertEqual(self._active_streams_count("vod_drop_sibling"), 2)
+
+        with self._inline_cleanup():
+            stream = iter(response.streaming_content)
+            self.assertEqual(next(stream), b"x")
+            response.close()
+
+        self.assertEqual(self._active_streams_count("vod_drop_sibling"), 1)
+        self.assertEqual(self._counter(), self.OTHER_HOLDER)

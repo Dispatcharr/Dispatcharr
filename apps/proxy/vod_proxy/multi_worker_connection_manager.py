@@ -19,6 +19,32 @@ from apps.m3u.models import M3UAccountProfile
 
 logger = logging.getLogger("vod_proxy")
 
+
+class _ClosingVODStream:
+    """Stream iterator that also runs ``on_close`` when the response is closed.
+
+    Closing a generator that never started runs none of its body, so the
+    ``finally`` that drops this request's active_streams reservation never runs.
+    ``on_close`` covers that case; it is a no-op once the body has started.
+    """
+
+    def __init__(self, generator, on_close):
+        self._generator = generator
+        self._on_close = on_close
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._generator)
+
+    def close(self):
+        try:
+            self._generator.close()
+        finally:
+            self._on_close()
+
+
 # Mid-stream upstream failures that warrant a transparent Range reopen.
 _UPSTREAM_RETRY_EXCEPTIONS = (
     requests.exceptions.ReadTimeout,
@@ -1093,7 +1119,7 @@ class MultiWorkerVODConnectionManager:
 
         The caller whose DECR hits zero releases the shared profile slot.
         profile_reserved covers a private slot when this caller never took
-        an active_streams stake, or when DECR is a no-op (hash gone / 0).
+        an active_streams reservation, or when DECR is a no-op (hash gone / 0).
         (False, True) from DECR is a Redis-error sentinel: do not release.
 
         Hash cleanup is delayed 1s so a reconnect can join. The profile
@@ -1119,7 +1145,7 @@ class MultiWorkerVODConnectionManager:
                 )
                 release_profile = False
         elif profile_reserved:
-            # Failed before taking an active_streams stake.
+            # Failed before taking an active_streams reservation.
             release_profile = True
 
         if conn:
@@ -1217,7 +1243,7 @@ class MultiWorkerVODConnectionManager:
             existing_state = redis_connection._get_connection_state()
             if matching_session_id and not existing_state:
                 # Idle INCR succeeded but the hash is unreadable. Do not create
-                # a second active_streams stake on the same session.
+                # a second active_streams reservation on the same session.
                 logger.error(
                     f"[{client_id}] Idle session reserved but hash is missing"
                 )
@@ -1404,12 +1430,20 @@ class MultiWorkerVODConnectionManager:
             # Get connection headers
             connection_headers = redis_connection.get_headers()
 
+            # Set by the generator's first statement. If it never runs, the
+            # response closer is the only thing left to release active_streams.
+            body_started = {"value": False}
+            # close() can run more than once. The second must not DECR a sibling.
+            unstarted_released = {"done": False}
+
             # Create streaming generator
             def stream_generator():
                 stream_decremented = False
                 profile_decremented = False
                 stop_signal_detected = False
                 try:
+                    # From here the generator's own teardown owns active_streams.
+                    body_started["value"] = True
                     logger.info(f"[{client_id}] Worker {self.worker_id} - Starting Redis-backed stream")
 
                     # vod_started only for sessions this request created
@@ -1628,9 +1662,50 @@ class MultiWorkerVODConnectionManager:
                             cleanup_thread.daemon = True
                             cleanup_thread.start()
 
+            def release_unstarted_active_streams():
+                """Drop this request's active_streams when the body never ran."""
+                if body_started["value"] or unstarted_released["done"]:
+                    return
+                unstarted_released["done"] = True
+                # get_stream already opened provider HTTP. The generator finally
+                # is the usual closer, and it does not run here. This handle is
+                # local to this request, so a sibling's connection stays up.
+                redis_connection._close_local_http()
+                decremented, has_remaining = redis_connection.decrement_active_streams_and_check()
+                if not (decremented and not has_remaining):
+                    return
+                profile_id = effective_profile.id
+                if profile_id:
+                    self._decrement_profile_connections(profile_id)
+                    logger.info(
+                        f"[{client_id}] Profile counter decremented for profile "
+                        f"{profile_id} on response close before stream start"
+                    )
+
+                def delayed_cleanup():
+                    time.sleep(1)
+                    # vod_started is only sent when the body runs, so a session
+                    # this request created was never announced.
+                    if not session_is_new and not redis_connection.has_active_streams():
+                        self._send_vod_event(
+                            'vod_stopped', client_id, content_name,
+                            content_uuid, client_ip,
+                            str(user.id) if user else '0',
+                            user.username if user else None
+                        )
+                    logger.info(
+                        f"[{client_id}] Worker {self.worker_id} - "
+                        f"Checking for smart cleanup after unstarted response close"
+                    )
+                    redis_connection.cleanup(current_worker_id=self.worker_id)
+
+                threading.Thread(target=delayed_cleanup, daemon=True).start()
+
             # Create streaming response
             response = StreamingHttpResponse(
-                streaming_content=stream_generator(),
+                streaming_content=_ClosingVODStream(
+                    stream_generator(), release_unstarted_active_streams
+                ),
                 content_type=connection_headers.get('content_type', 'video/mp4')
             )
 
