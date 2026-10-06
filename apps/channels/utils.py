@@ -148,6 +148,56 @@ def get_channel_catchup_streams(channel):
     )
 
 
+def rollup_catchup_for_channels(channel_ids):
+    """Set ``is_catchup`` / ``catchup_days`` from active catch-up streams.
+
+    One UPDATE for the whole id list (Exists + Max subqueries). Used by the
+    ChannelStream signal and by bulk paths that skip ``post_save``.
+    Account-scoped import refresh uses ``rollup_channel_catchup_fields`` instead.
+    """
+    from django.db.models import (
+        BooleanField,
+        Case,
+        Exists,
+        IntegerField,
+        Max,
+        OuterRef,
+        Subquery,
+        Value,
+        When,
+    )
+    from django.db.models.functions import Coalesce
+
+    from apps.channels.models import Channel, ChannelStream
+
+    ids = list({cid for cid in channel_ids if cid is not None})
+    if not ids:
+        return
+
+    active_catchup = ChannelStream.objects.filter(
+        channel_id=OuterRef("pk"),
+        stream__is_catchup=True,
+        stream__m3u_account__is_active=True,
+    )
+    max_days = (
+        active_catchup.values("channel_id")
+        .annotate(m=Max("stream__catchup_days"))
+        .values("m")[:1]
+    )
+
+    Channel.objects.filter(pk__in=ids).update(
+        is_catchup=Case(
+            When(Exists(active_catchup), then=Value(True)),
+            default=Value(False),
+            output_field=BooleanField(),
+        ),
+        catchup_days=Coalesce(
+            Subquery(max_days, output_field=IntegerField()),
+            Value(0),
+        ),
+    )
+
+
 def increment_stream_count(account):
     with lock:
         current_usage = active_streams_map.get(account.id, 0)

@@ -4214,6 +4214,10 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                     from apps.channels.models import ChannelStream
                     ChannelStream.objects.bulk_create(channel_stream_associations, ignore_conflicts=True)
 
+                # bulk_create skips ChannelStream post_save; one batched rollup.
+                from apps.channels.utils import rollup_catchup_for_channels
+                rollup_catchup_for_channels([c.id for c in created_channels])
+
                 # Bulk create profile memberships
                 if channel_profile_memberships:
                     ChannelProfileMembership.objects.bulk_create(channel_profile_memberships, ignore_conflicts=True)
