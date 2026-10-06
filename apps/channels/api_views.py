@@ -3951,6 +3951,34 @@ class RecordingViewSet(viewsets.ModelViewSet):
         hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
         channel_uuid = str(instance.channel.uuid)
 
+        # Stop writes "stopped" before remux. remux_success is only set at finalize,
+        # so a delete in that gap still needs recording_end (cancelled).
+        _awaiting_finalize = (
+            rec_status == "recording"
+            or (rec_status == "stopped" and "remux_success" not in cp)
+        )
+        if _awaiting_finalize:
+            try:
+                from core.utils import log_system_event
+                from apps.channels.tasks import _dvr_recording_end_payload
+                user = getattr(request, "user", None)
+                log_system_event(
+                    'recording_end',
+                    channel_id=instance.channel.uuid,
+                    channel_name=channel_name,
+                    recording_id=recording_id,
+                    **_dvr_recording_end_payload(
+                        cp, None, False,
+                        start_time=instance.start_time,
+                        end_time=instance.end_time,
+                        cancelled=True,
+                        cancelled_by=getattr(user, "username", None),
+                        cancelled_by_id=getattr(user, "pk", None),
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Could not log recording end event for cancelled recording {recording_id}: {e}")
+
         # 1. Delete the DB record (also fires post_delete → revoke_task_on_delete)
         response = super().destroy(request, *args, **kwargs)
 
