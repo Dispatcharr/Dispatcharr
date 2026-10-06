@@ -891,9 +891,43 @@ class GetHostAndPortTrustedProxyTests(SimpleTestCase):
             )
             host, port = get_host_and_port(request)
             self.assertEqual(host, "dispatch.local")
+            # Bare Host means scheme default; listen port must not leak in.
+            self.assertIsNone(port)
+            uri = build_absolute_uri_with_port(request, "/output/m3u")
+            self.assertEqual(uri, "http://dispatch.local/output/m3u")
+
+    def test_untrusted_peer_keeps_explicit_host_port(self):
+        from core.utils import build_absolute_uri_with_port, get_host_and_port
+
+        with patch.dict("os.environ", {"DISPATCHARR_TRUSTED_PROXIES": "none"}):
+            request = self._request(
+                "203.0.113.99",
+                HTTP_HOST="dispatch.local:9191",
+                HTTP_X_FORWARDED_HOST="evil.example",
+                HTTP_X_FORWARDED_PROTO="https",
+                SERVER_PORT="9191",
+            )
+            host, port = get_host_and_port(request)
+            self.assertEqual(host, "dispatch.local")
             self.assertEqual(port, "9191")
             uri = build_absolute_uri_with_port(request, "/output/m3u")
-            self.assertTrue(uri.startswith("http://dispatch.local:9191/"))
+            self.assertEqual(uri, "http://dispatch.local:9191/output/m3u")
+
+    def test_bare_host_ignores_listen_port(self):
+        """Docker 80:9191 remap: client omits :80 from Host; do not bake in 9191."""
+        from core.utils import build_absolute_uri_with_port, get_host_and_port
+
+        with patch.dict("os.environ", {"DISPATCHARR_TRUSTED_PROXIES": "none"}):
+            request = self._request(
+                "192.168.1.50",
+                HTTP_HOST="dvb.example.com",
+                SERVER_PORT="9191",
+            )
+            host, port = get_host_and_port(request)
+            self.assertEqual(host, "dvb.example.com")
+            self.assertIsNone(port)
+            uri = build_absolute_uri_with_port(request, "/api/channels/logos/1/cache/")
+            self.assertEqual(uri, "http://dvb.example.com/api/channels/logos/1/cache/")
 
     def test_trusted_peer_uses_forwarded_host_and_scheme(self):
         from core.utils import build_absolute_uri_with_port, get_host_and_port
@@ -911,3 +945,21 @@ class GetHostAndPortTrustedProxyTests(SimpleTestCase):
             self.assertIsNone(port)
             uri = build_absolute_uri_with_port(request, "/output/m3u")
             self.assertEqual(uri, "https://tv.example.com/output/m3u")
+
+    def test_trusted_peer_forwarded_port_with_bare_host(self):
+        from core.utils import build_absolute_uri_with_port, get_host_and_port
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "172.18.0.1",
+                HTTP_HOST="tv.example.com",
+                HTTP_X_FORWARDED_PROTO="https",
+                HTTP_X_FORWARDED_PORT="8443",
+                SERVER_PORT="9191",
+            )
+            host, port = get_host_and_port(request)
+            self.assertEqual(host, "tv.example.com")
+            self.assertEqual(port, "8443")
+            uri = build_absolute_uri_with_port(request, "/output/m3u")
+            self.assertEqual(uri, "https://tv.example.com:8443/output/m3u")

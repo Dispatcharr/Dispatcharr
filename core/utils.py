@@ -1047,9 +1047,8 @@ def get_host_and_port(request):
     """
     Returns (host, port) for building absolute URIs.
     - Prefers X-Forwarded-Host/X-Forwarded-Port only from a trusted proxy.
-    - Falls back to Host header.
+    - Falls back to Host header (explicit port wins; bare Host means scheme default).
     - Returns None for port if using standard ports (80/443) to omit from URLs.
-    - In dev, uses 5656 as a guess if port cannot be determined.
     """
     from dispatcharr.utils import request_from_trusted_proxy
 
@@ -1093,26 +1092,13 @@ def _resolve_host_port_scheme(request, trust_forwarded):
     else:
         host = raw_host
 
-    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
+    # 3. Trusted X-Forwarded-Port when Host has no port (e.g. public :8443)
     if trust_forwarded:
         port = request.META.get("HTTP_X_FORWARDED_PORT")
         if port:
             return host, (None if port == standard_port else port), scheme
 
-        # 4. Behind a reverse proxy with no port info - assume standard port
-        if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-            return host, None, scheme
-
-    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
-    port = request.META.get("SERVER_PORT")
-    if port:
-        return host, (None if port == standard_port else port), scheme
-
-    # 6. Dev fallback
-    if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
-        return host, "5656", scheme
-
-    # 7. Final fallback: assume standard port for scheme
+    # Bare Host implies the scheme default port (80/443); omit it from URLs.
     return host, None, scheme
 
 
