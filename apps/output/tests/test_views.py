@@ -28,6 +28,7 @@ from apps.vod.models import (
     VODCategory,
     VODLogo,
 )
+import re
 import xml.etree.ElementTree as ET
 from datetime import timedelta
 
@@ -1248,7 +1249,8 @@ class XcLiveStreamsCatchupAdvertisingTests(TestCase):
 
 
 class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
-    """catchup="xc" only for /live/... URLs; plain proxy output gets none."""
+    """The XC playlist carries a catchup-source template on {utc}; the plain
+    proxy URL gets nothing."""
 
     def setUp(self):
         super().setUp()
@@ -1285,7 +1287,14 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
         content = _response_text(response)
         header = content.splitlines()[0]
         self.assertIn('catchup-timezone="UTC"', header)
-        self.assertIn('catchup="xc" catchup-days="7"', content)
+        self.assertIn('catchup="default" catchup-days="7"', content)
+        source = re.search(r'catchup-source="([^"]+)"', content).group(1)
+        self.assertEqual(
+            source,
+            "http://testserver/streaming/timeshift.php?username=x&password=y"
+            f"&stream={self.channel.id}&utc={{utc}}&duration={{duration:60}}",
+        )
+        self.assertNotIn('catchup="xc"', content)
 
     def test_catchup_omitted_for_plain_proxy_output(self):
         from apps.output.views import generate_m3u

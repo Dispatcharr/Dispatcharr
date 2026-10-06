@@ -140,10 +140,12 @@ def timeshift_proxy_query(request):
     URL shape (XC catch-up clients): ``/streaming/timeshift.php?username=...
     &password=...&stream=<Channel.id>&start=<UTC programme start>&duration=<minutes>``.
     ``duration`` is preferred over EPG when present (same as the PATH form).
+    ``utc`` is accepted in place of ``start``: the M3U ``catchup-source``
+    uses it, and "shift"-style players set ``?utc=<epoch>`` on their own.
     """
     username = request.GET.get("username", "")
     password = request.GET.get("password", "")
-    timestamp = request.GET.get("start", "")
+    timestamp = request.GET.get("start") or request.GET.get("utc", "")
     channel_id = request.GET.get("stream", "")
     if not (username and password and timestamp and channel_id):
         return _finalize_timeshift_response(

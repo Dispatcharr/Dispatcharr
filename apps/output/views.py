@@ -339,8 +339,15 @@ def generate_m3u(request, profile_name=None, user=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
-    # Advertise catch-up only where the emitted URL is /live/... form that
-    # catchup="xc" can rewrite into /timeshift/. Plain proxy URLs cannot.
+    # XC playlist: catchup="default" + catchup-source. Direct: catchup="xc".
+    # Plain proxy has no catch-up entry point.
+    _catchup_source_prefix = None
+    _catchup_source_suffix = "&utc={utc}&duration={duration:60}"
+    if catchup_allowed and is_xc_request and not use_direct_urls:
+        _catchup_qs = urlencode({"username": xc_username, "password": xc_password})
+        _catchup_source_prefix = (
+            f"{_base_url}/streaming/timeshift.php?{_catchup_qs}&stream="
+        )
 
     # Start building M3U content
     channel_count = 0
@@ -413,8 +420,18 @@ def generate_m3u(request, profile_name=None, user=None):
             elif is_xc_request and channel.is_catchup:
                 catchup_days = channel.catchup_days or 0
             catchup_days = min(catchup_days, MAX_AUTO_PREV_DAYS)
-            if catchup_days > 0:
+            if catchup_days > 0 and use_direct_urls:
                 catchup_attrs = f'catchup="xc" catchup-days="{catchup_days}" '
+            elif catchup_days > 0 and _catchup_source_prefix is not None:
+                # Wall-clock placeholders are local; {utc} is epoch seconds (UTC).
+                # Param is utc= so players that set ?utc=<epoch> themselves still match.
+                catchup_source = (
+                    f"{_catchup_source_prefix}{channel.id}{_catchup_source_suffix}"
+                )
+                catchup_attrs = (
+                    f'catchup="default" catchup-days="{catchup_days}" '
+                    f'catchup-source="{catchup_source}" '
+                )
 
         radio_attr = 'radio="true" ' if channel.effective_is_radio else ""
 

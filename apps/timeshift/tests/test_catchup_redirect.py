@@ -163,6 +163,32 @@ class CatchupRedirectViewTests(SimpleTestCase):
         self.assertIn("stream=22372", response["Location"])
         self.assertNotIn("session_id=", response["Location"])
 
+    def test_query_accepts_utc_in_place_of_start(self):
+        request = self.factory.get(
+            "/streaming/timeshift.php",
+            {"username": "u", "password": "p", "stream": "8", "utc": "1790530200"},
+        )
+        with patch.object(views, "_timeshift_proxy_impl") as impl:
+            views.timeshift_proxy_query(request)
+
+        self.assertEqual(impl.call_args.args[3], "1790530200")
+
+    def test_query_prefers_start_over_utc(self):
+        request = self.factory.get(
+            "/streaming/timeshift.php",
+            {
+                "username": "u",
+                "password": "p",
+                "stream": "8",
+                "start": "2026-06-08:17-00",
+                "utc": "1790530200",
+            },
+        )
+        with patch.object(views, "_timeshift_proxy_impl") as impl:
+            views.timeshift_proxy_query(request)
+
+        self.assertEqual(impl.call_args.args[3], "2026-06-08:17-00")
+
     def test_redirect_off_still_mints_session(self):
         request = self.factory.get(_proxy_url(session_id=None))
         with ExitStack() as stack:
