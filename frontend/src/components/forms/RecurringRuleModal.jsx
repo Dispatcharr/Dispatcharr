@@ -52,7 +52,7 @@ const RecurringRuleModal = ({
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
   const recordings = useChannelsStore((s) => s.recordings);
   const { toUserTime, userNow } = useTimeHelpers();
-  const { timeFormat: timeformat, dateFormat: dateformat } =
+  const { timeFormat: timeformat, dateYearFormat: dateyearformat } =
     useDateTimeFormat();
 
   const [saving, setSaving] = useState(false);
@@ -260,7 +260,7 @@ const RecurringRuleModal = ({
               <Group justify="space-between" align="center">
                 <Stack gap={2} flex={1}>
                   <Text fw={600} size="sm">
-                    {format(occStart, `${dateformat}, YYYY`)}
+                    {format(occStart, dateyearformat)}
                   </Text>
                   <Text size="xs" c="dimmed">
                     {format(occStart, timeformat)} –{' '}
