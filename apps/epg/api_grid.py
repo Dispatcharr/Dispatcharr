@@ -170,6 +170,10 @@ def _dummy_generation_span(now, lookback, cutoff):
     hour-aligned) generation start rather than `now`, since splitting the
     computation into separate back/forward day counts and adding them can
     under-count by up to a day when `now`'s minutes/seconds are non-zero.
+
+    Rewinds are whole days so the block grid stays anchored to the current
+    hour. Chunked guide loads (initial, forward, backward) must share that
+    anchor or adjacent standard-dummy blocks overlap.
     """
     truncated_now = now.replace(minute=0, second=0, microsecond=0)
     default_lookback = now - _DEFAULT_LOOKBACK
@@ -336,7 +340,7 @@ def _iter_real_program_dicts(lookback, cutoff, epg_ids):
 
 
 def _iter_dummy_for_channels(
-    channels, id_prefix, *, custom_source, lookback, cutoff, dummy_start, dummy_days
+    channels, id_prefix, *, custom_source, lookback, cutoff, dummy_start, dummy_days, clock
 ):
     """Yield on-demand dummy programs for a prepared channel list."""
     if custom_source:
@@ -364,6 +368,7 @@ def _iter_dummy_for_channels(
                 export_lookback=lookback,
                 export_cutoff=cutoff,
                 generation_start=dummy_start,
+                clock=clock,
             )
         except Exception:
             logger.exception(
@@ -442,6 +447,7 @@ def _iter_grid_json_chunks(
             cutoff=cutoff,
             dummy_start=dummy_start,
             dummy_days=dummy_days,
+            clock=now,
         ):
             batch.append(program)
             dummy_count += 1
@@ -459,6 +465,7 @@ def _iter_grid_json_chunks(
             cutoff=cutoff,
             dummy_start=dummy_start,
             dummy_days=dummy_days,
+            clock=now,
         ):
             batch.append(program)
             dummy_count += 1
