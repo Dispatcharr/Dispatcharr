@@ -11,7 +11,7 @@ from unittest.mock import patch
 from django.db import connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
 from django.utils import timezone
-from django_celery_beat.models import CrontabSchedule, PeriodicTask
+from django_celery_beat.models import CrontabSchedule, IntervalSchedule, PeriodicTask
 from django_celery_beat.schedulers import ModelEntry
 from rest_framework.test import APIRequestFactory
 
@@ -490,6 +490,82 @@ class PluginScheduleLifecycleTests(LifecycleFixture, TestCase):
         row.refresh_from_db()
         self.assertTrue(row.enabled)
         self.assertFalse(ModelEntry(row, app=celery_app).is_due().is_due)
+
+    def _beat_entry(self, row):
+        return ModelEntry(PeriodicTask.objects.get(pk=row.pk), app=celery_app)
+
+    def _cycle_enabled(self, key):
+        self._set_enabled(key, False)
+        self._set_enabled(key, True)
+
+    def test_reenabled_crontab_row_with_start_time_waits_for_its_next_occurrence(self):
+        self._install("vod2mlib")
+        now = timezone.now()
+        crontab = CrontabSchedule.objects.create(
+            minute="0",
+            hour=str((now - timedelta(hours=2)).hour),
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone="UTC",
+        )
+        row = PeriodicTask.objects.create(
+            name="vod2mlib.auto_rescan",
+            task=self._custom_name("vod2mlib"),
+            crontab=crontab,
+            start_time=now - timedelta(days=1),
+            last_run_at=now - timedelta(hours=1),
+        )
+        self.assertFalse(self._beat_entry(row).is_due().is_due)
+
+        self._cycle_enabled("vod2mlib")
+
+        self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+        state = self._beat_entry(row).is_due()
+        self.assertFalse(state.is_due)
+        self.assertGreater(state.next, 12 * 3600)
+
+    def test_reenabled_interval_row_with_start_time_waits_a_full_interval(self):
+        self._install("vod2mlib")
+        now = timezone.now()
+        every_hour = IntervalSchedule.objects.create(every=1, period=IntervalSchedule.HOURS)
+        row = PeriodicTask.objects.create(
+            name="vod2mlib.auto_rescan",
+            task=self._custom_name("vod2mlib"),
+            interval=every_hour,
+            start_time=now - timedelta(days=1),
+            last_run_at=now - timedelta(minutes=10),
+        )
+        self.assertFalse(self._beat_entry(row).is_due().is_due)
+
+        self._cycle_enabled("vod2mlib")
+
+        self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+        state = self._beat_entry(row).is_due()
+        self.assertFalse(state.is_due)
+        self.assertAlmostEqual(state.next, 3600, delta=10)
+
+    def test_reenabled_row_before_its_start_time_still_fires_at_start_time(self):
+        self._install("vod2mlib")
+        every_three_hours = IntervalSchedule.objects.create(every=3, period=IntervalSchedule.HOURS)
+        row = PeriodicTask.objects.create(
+            name="vod2mlib.auto_rescan",
+            task=self._custom_name("vod2mlib"),
+            interval=every_three_hours,
+            start_time=timezone.now() + timedelta(hours=2),
+        )
+
+        self._cycle_enabled("vod2mlib")
+
+        self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+        entry = self._beat_entry(row)
+        state = entry.is_due()
+        self.assertFalse(state.is_due)
+        self.assertAlmostEqual(state.next, 2 * 3600, delta=10)
+        # The first run is due at start_time, not a full interval after enable.
+        self.assertLessEqual(
+            entry.schedule.remaining_estimate(entry.last_run_at), timedelta(hours=2)
+        )
 
     def _register_foreign_task(self, name, module):
         def foreign():

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from django.db import close_old_connections, connection, transaction
+from django.db.models import Case, DateTimeField, Value, When
 from django.utils import timezone
 
 from .models import PluginConfig
@@ -468,10 +469,20 @@ class PluginManager:
             return 0
         with transaction.atomic():
             names = self._load_current_task_names(cfg)
-            # ModelEntry uses date_changed when last_run_at is unset.
+            now = timezone.now()
+            # Beat backdates an unset last_run_at when start_time is set, making the row
+            # due at once. Leave it unset only for rows that have not reached start_time.
             restored = PeriodicTask.objects.filter(
                 pk__in=pks, task__in=names, enabled=False
-            ).update(enabled=True, date_changed=timezone.now())
+            ).update(
+                enabled=True,
+                last_run_at=Case(
+                    When(start_time__gt=now, then=None),
+                    default=Value(now),
+                    output_field=DateTimeField(),
+                ),
+                date_changed=now,
+            )
             PeriodicTasks.update_changed()
             cfg.suspended_schedules = []
             cfg.save(update_fields=["suspended_schedules", "updated_at"])
