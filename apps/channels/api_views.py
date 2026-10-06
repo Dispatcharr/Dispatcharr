@@ -10,8 +10,9 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serial
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
+from django.core.paginator import Paginator
 from django.db import connection, transaction
-from django.db.models import Count, F, Prefetch, Q
+from django.db.models import Count, Prefetch, Q
 from django.db.models.functions import Coalesce
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
@@ -55,6 +56,17 @@ from .models import (
     ChannelProfileMembership,
     Recording,
     RecurringRecordingRule,
+)
+from .managers import (
+    apply_effective_channel_numbers,
+    channel_from_number_row,
+    channel_number_is_reserved,
+    effective_field_lookup_q,
+    effective_number_rows,
+    effective_related_name_lookup_q,
+    max_reserved_channel_number,
+    shift_effective_channel_numbers,
+    with_effective_values,
 )
 from .serializers import (
     StreamSerializer,
@@ -840,7 +852,32 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
 # ─────────────────────────────────────────────────────────
 # 3) Channel Management (CRUD)
 # ─────────────────────────────────────────────────────────
+class DeferredJoinPaginator(Paginator):
+    """
+    Sort a narrow id-only query, then load full rows for just that page.
+
+    Ordering by an expression (the effective channel number) cannot use the
+    column index, so the database must sort every matching row. Doing that
+    over the fully joined, select_related row set is several times slower
+    than sorting bare ids, and the page only needs a handful of rows.
+    """
+
+    def page(self, number):
+        number = self.validate_number(number)
+        bottom = (number - 1) * self.per_page
+        top = bottom + self.per_page
+        if top + self.orphans >= self.count:
+            top = self.count
+        page_ids = list(
+            self.object_list.values_list("pk", flat=True)[bottom:top]
+        )
+        return self._get_page(
+            self.object_list.filter(pk__in=page_ids), number, self
+        )
+
+
 class ChannelPagination(PageNumberPagination):
+    django_paginator_class = DeferredJoinPaginator
     page_size = 50  # Default page size to match frontend default
     page_size_query_param = "page_size"  # Allow clients to specify page size
     max_page_size = 10000  # Prevent excessive page sizes
@@ -854,8 +891,12 @@ class ChannelPagination(PageNumberPagination):
         return super().paginate_queryset(queryset, request, view)
 
     def get_paginated_response(self, data):
-        from django.db.models import Exists, OuterRef
-        has_unassigned = Channel.objects.filter(epg_data__isnull=True).exists()
+        # Match the epg=null filter: an override-only EPG assignment counts
+        # as assigned, so the "No EPG" option tracks what the table shows.
+        has_unassigned = Channel.objects.filter(
+            override__epg_data__isnull=True,
+            epg_data__isnull=True,
+        ).exists()
         response = super().get_paginated_response(data)
         response.data['has_unassigned_epg_channels'] = has_unassigned
         return response
@@ -863,7 +904,7 @@ class ChannelPagination(PageNumberPagination):
 
 class EPGFilter(django_filters.Filter):
     """
-    Filter channels by EPG source name or null (unlinked).
+    Filter channels by effective EPG source name or null (unlinked).
     """
     def filter(self, queryset, value):
         if not value:
@@ -875,20 +916,20 @@ class EPGFilter(django_filters.Filter):
 
         for val in values:
             if val == 'null':
-                # Filter for channels with no EPG data
-                query |= Q(epg_data__isnull=True)
+                # Effective EPG is null only when both override and channel
+                # epg_data are unset (no override row counts as unset).
+                query |= Q(override__epg_data__isnull=True, epg_data__isnull=True)
             else:
-                # Filter for channels with specific EPG source name
-                query |= Q(epg_data__epg_source__name__icontains=val)
+                query |= effective_related_name_lookup_q(
+                    "epg_data", val, name_path="epg_source__name"
+                )
 
         return queryset.filter(query)
 
 
 class ChannelFilter(django_filters.FilterSet):
-    name = django_filters.CharFilter(lookup_expr="icontains")
-    channel_group = OrInFilter(
-        field_name="channel_group__name", lookup_expr="icontains"
-    )
+    name = django_filters.CharFilter(method="filter_effective_name")
+    channel_group = django_filters.CharFilter(method="filter_effective_channel_group")
     epg = EPGFilter()
 
     class Meta:
@@ -899,15 +940,95 @@ class ChannelFilter(django_filters.FilterSet):
             "epg",
         ]
 
+    def filter_effective_name(self, queryset, name, value):
+        return queryset.filter(
+            effective_field_lookup_q("name", "icontains", value)
+        )
+
+    def filter_effective_channel_group(self, queryset, name, value):
+        # Same comma-OR exact match OrInFilter did, on the effective group.
+        query = Q()
+        for val in value.split(","):
+            query |= effective_related_name_lookup_q(
+                "channel_group", val, lookup="exact"
+            )
+        return queryset.filter(query)
+
+
+class EffectiveChannelSearchFilter(SearchFilter):
+    """Search the override-aware name and group name the Channels table shows."""
+
+    def filter_queryset(self, request, queryset, view):
+        search_terms = self.get_search_terms(request)
+        if not search_terms:
+            return queryset
+
+        conditions = Q()
+        for term in search_terms:
+            conditions &= (
+                effective_field_lookup_q("name", "icontains", term)
+                | effective_related_name_lookup_q("channel_group", term)
+            )
+        return queryset.filter(conditions)
+
+
+class EffectiveChannelOrderingFilter(OrderingFilter):
+    """
+    Sort by the override-aware value for fields a ChannelOverride can set.
+
+    The Channels table displays the override when one exists, so ordering
+    by the raw Channel column leaves overridden rows looking out of order.
+    Clients keep sending the existing ordering keys; each maps to a
+    query-only alias (never selected) that coalesces override over channel.
+    """
+
+    # ordering key -> (alias name, Coalesce args)
+    EFFECTIVE_ORDER_MAP = {
+        "channel_number": ("sort_channel_number", ("override__channel_number", "channel_number")),
+        "name": ("sort_name", ("override__name", "name")),
+        "channel_group__name": (
+            "sort_channel_group_name",
+            ("override__channel_group__name", "channel_group__name"),
+        ),
+        "epg_data__name": (
+            "sort_epg_data_name",
+            ("override__epg_data__name", "epg_data__name"),
+        ),
+    }
+
+    def filter_queryset(self, request, queryset, view):
+        ordering = self.get_ordering(request, queryset, view)
+        if not ordering:
+            return queryset
+
+        aliases = {}
+        terms = []
+        for term in ordering:
+            prefix = "-" if term.startswith("-") else ""
+            field = term.lstrip("-")
+            mapped = self.EFFECTIVE_ORDER_MAP.get(field)
+            if mapped:
+                alias, coalesce_args = mapped
+                aliases[alias] = Coalesce(*coalesce_args)
+                field = alias
+            terms.append(f"{prefix}{field}")
+
+        if aliases:
+            queryset = queryset.alias(**aliases)
+        return queryset.order_by(*terms)
+
 
 class ChannelViewSet(viewsets.ModelViewSet):
     queryset = Channel.objects.all()
     serializer_class = ChannelSerializer
     pagination_class = ChannelPagination
 
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        EffectiveChannelSearchFilter,
+        EffectiveChannelOrderingFilter,
+    ]
     filterset_class = ChannelFilter
-    search_fields = ["name", "channel_group__name"]
     ordering_fields = ["channel_number", "name", "channel_group__name", "epg_data__name"]
     ordering = ["-channel_number"]
 
@@ -1050,11 +1171,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     ).order_by("order"),
                 ),
             )
-
-        channel_group = self.request.query_params.get("channel_group")
-        if channel_group:
-            group_names = channel_group.split(",")
-            qs = qs.filter(channel_group__name__in=group_names)
 
         filters = {}
         q_filters = Q()
@@ -1820,8 +1936,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
         back to the raw field names on the way out so the response
         shape stays unchanged for the frontend.
         """
-        from .managers import with_effective_values
-
         queryset = with_effective_values(
             self.filter_queryset(self.get_queryset())
         )
@@ -1890,8 +2004,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=["get"], url_path="numbers-in-range")
     def numbers_in_range(self, request, *args, **kwargs):
-        from .managers import with_effective_values
-
         raw_start = request.query_params.get("start")
         raw_end = request.query_params.get("end")
         if raw_start is None or raw_start == "":
@@ -2013,16 +2125,43 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="assign")
     def assign(self, request):
         with transaction.atomic():
-            channel_ids = request.data.get("channel_ids", [])
+            raw_ids = request.data.get("channel_ids", [])
+            if not isinstance(raw_ids, list):
+                return Response(
+                    {"error": "channel_ids must be a list"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            channel_ids = []
+            for cid in raw_ids:
+                try:
+                    channel_ids.append(int(cid))
+                except (TypeError, ValueError):
+                    return Response(
+                        {"error": f"Invalid channel id: {cid!r}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             # Ensure starting_number is processed as a float
             try:
                 channel_num = float(request.data.get("starting_number", 1))
             except (ValueError, TypeError):
                 channel_num = 1.0
 
+            # Preserve request order; write through override for auto-synced
+            # channels so assign changes what the UI actually shows.
+            channels_by_id = {
+                channel.id: channel
+                for channel in Channel.objects.filter(
+                    id__in=channel_ids
+                ).select_related("override")
+            }
+            assignments = []
             for channel_id in channel_ids:
-                Channel.objects.filter(id=channel_id).update(channel_number=channel_num)
-                channel_num = channel_num + 1
+                channel = channels_by_id.get(channel_id)
+                if channel is None:
+                    continue
+                assignments.append((channel, channel_num))
+                channel_num += 1
+            apply_effective_channel_numbers(assignments)
 
         return Response(
             {"message": "Channels have been auto-assigned!"}, status=status.HTTP_200_OK
@@ -2083,7 +2222,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel_number = None
         elif channel_number == -1:
             # Special case: -1 means assign the number after the current highest
-            highest = Channel.objects.order_by('-channel_number').values_list('channel_number', flat=True).first()
+            # (raw numbers and override pins both count).
+            highest = max_reserved_channel_number()
             channel_number = (int(highest) + 1) if highest is not None else 1
 
         if channel_number is None:
@@ -2098,8 +2238,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 {"error": "channel_number must be an integer."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # If the provided number is already used, return an error.
-        if Channel.objects.filter(channel_number=channel_number).exists():
+        # Reserve both raw and override pins so we never hand out a number
+        # that is already visible via ChannelOverride.
+        if channel_number_is_reserved(channel_number):
             channel_number = Channel.get_next_available_channel_number(channel_number)
         # Get the tvc_guide_stationid from custom properties if it exists
         stream_custom_props = stream.custom_properties or {}
@@ -2400,64 +2541,93 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="reorder")
     def reorder(self, request, pk=None):
         """
-        Reorder a channel by moving it after another channel (or to the start if insert_after_id is null).
-        Shifts other channels as needed to maintain contiguous ordering.
+        Reorder a channel by moving it after another channel (or to the start
+        if insert_after_id is null). Operates on effective channel numbers so
+        drag-reorder matches the override-aware table order, writing pins to
+        ChannelOverride for auto-synced rows.
         """
         channel = self.get_object()
         insert_after_id = request.data.get("insert_after_id")
-        old_channel_number = channel.channel_number
 
         with transaction.atomic():
+            moved_row = effective_number_rows(
+                Channel.objects.filter(pk=channel.pk)
+            ).first()
+            if moved_row is None:
+                return Response(
+                    {"error": "Channel not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            old_number = moved_row["_eff"]
+
             if insert_after_id is None:
-                # Move to the beginning (channel_number = 1)
-                target_number = 0
-                desired_number = 1
+                desired_number = 1.0
             else:
                 try:
-                    target_channel = Channel.objects.get(id=insert_after_id)
-                    target_number = target_channel.channel_number or 0
-                    desired_number = int(target_number) + 1
-                except Channel.DoesNotExist:
+                    target_row = effective_number_rows(
+                        Channel.objects.filter(pk=insert_after_id)
+                    ).first()
+                except (TypeError, ValueError):
+                    target_row = None
+                if target_row is None:
                     return Response(
                         {"error": "Target channel not found"},
                         status=status.HTTP_404_NOT_FOUND,
                     )
+                target_number = target_row["_eff"] or 0
+                desired_number = float(int(target_number) + 1)
 
-            if desired_number == old_channel_number:
-                # No change needed
+            if old_number is not None and float(old_number) == float(desired_number):
                 return Response(
                     {
-                        "message": f"Channel {channel.name} already at position {desired_number}",
+                        "message": (
+                            f"Channel {channel.name} already at position "
+                            f"{desired_number}"
+                        ),
                         "channel": self.get_serializer(channel).data,
                     },
                     status=status.HTTP_200_OK,
                 )
 
-            if desired_number < old_channel_number:
-                # Moving up: increment all channels between desired_number and old_channel_number-1
-                Channel.objects.filter(
-                    channel_number__gte=desired_number,
-                    channel_number__lt=old_channel_number
-                ).update(channel_number=F('channel_number') + 1)
-                channel.channel_number = desired_number
-                channel.save(update_fields=['channel_number'])
-            elif desired_number > old_channel_number:
-                # Moving down: shift down channels between old+1 and desired-1, then set to desired-1
-                if desired_number > old_channel_number + 1:
-                    Channel.objects.filter(
-                        channel_number__gt=old_channel_number,
-                        channel_number__lt=desired_number
-                    ).update(channel_number=F('channel_number') - 1)
-                channel.channel_number = desired_number - 1
-                channel.save(update_fields=['channel_number'])
+            # Shift the affected range with SQL F() updates on both the
+            # channel and override tables (same cost class as the old
+            # single-table UPDATE), then write only the moved channel's
+            # new effective number through the override-aware helper.
+            if old_number is None:
+                shift_effective_channel_numbers(
+                    exclude_channel_id=channel.pk,
+                    delta=1,
+                    gte=desired_number,
+                )
+                final_number = desired_number
+            elif desired_number < old_number:
+                shift_effective_channel_numbers(
+                    exclude_channel_id=channel.pk,
+                    delta=1,
+                    gte=desired_number,
+                    lt=old_number,
+                )
+                final_number = desired_number
             else:
-                # No move or same position
-                channel.channel_number = desired_number
-                channel.save(update_fields=['channel_number'])
+                final_number = desired_number - 1
+                if desired_number > old_number + 1:
+                    shift_effective_channel_numbers(
+                        exclude_channel_id=channel.pk,
+                        delta=-1,
+                        gt=old_number,
+                        lt=desired_number,
+                    )
 
+            apply_effective_channel_numbers(
+                [(channel_from_number_row(moved_row), final_number)]
+            )
+
+        channel.refresh_from_db()
         return Response(
             {
-                "message": f"Channel {channel.name} moved to position {desired_number}",
+                "message": (
+                    f"Channel {channel.name} moved to position {final_number}"
+                ),
                 "channel": self.get_serializer(channel).data,
             },
             status=status.HTTP_200_OK,

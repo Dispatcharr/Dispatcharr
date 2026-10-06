@@ -3969,8 +3969,11 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
             'message': f'Starting bulk creation of {total_streams} channels...'
         })
 
-        # Gather current used numbers once
-        used_numbers = set(Channel.objects.all().values_list("channel_number", flat=True))
+        # Reserve both raw and override pins so auto-assign never hands out
+        # a number that is already visible via ChannelOverride.
+        from apps.channels.compact_numbering import build_reserved_set
+
+        used_numbers = build_reserved_set()
 
         # Initialize next_number based on starting_channel_number mode
         if starting_channel_number is None:
@@ -3980,8 +3983,9 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
             # Mode 2: Start from lowest available number
             next_number = 1
         elif starting_channel_number == -1:
-            # Mode 4: Start after the current highest channel number
-            highest = Channel.objects.order_by('-channel_number').values_list('channel_number', flat=True).first()
+            # Mode 4: Start after the current highest reserved number.
+            # used_numbers already includes raw values and override pins.
+            highest = max(used_numbers) if used_numbers else None
             next_number = (int(highest) + 1) if highest is not None else 1
         else:
             # Mode 3: Start from specified number
@@ -4043,10 +4047,7 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                         tvc_guide_stationid = stream_custom_props["tvc-guide-stationid"]
 
                     # Check if the determined/provider number is available
-                    if channel_number is not None and (
-                        channel_number in used_numbers
-                        or Channel.objects.filter(channel_number=channel_number).exists()
-                    ):
+                    if channel_number is not None and channel_number in used_numbers:
                         # Provider number is taken, use auto-assignment
                         channel_number = get_auto_number()
                     elif channel_number is not None:

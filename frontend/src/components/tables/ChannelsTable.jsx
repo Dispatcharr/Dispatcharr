@@ -1841,8 +1841,8 @@ const ChannelsTable = ({ onReady }) => {
             <div style={{ whiteSpace: 'pre-line' }}>
               {`Are you sure you want to delete the following channel?
 
-Name: ${channelToDelete.name}
-Channel Number: ${channelToDelete.channel_number}
+Name: ${channelToDelete.effective_name ?? channelToDelete.name}
+Channel Number: ${channelToDelete.effective_channel_number ?? channelToDelete.channel_number}
 
 This action cannot be undone.`}
             </div>
