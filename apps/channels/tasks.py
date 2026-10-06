@@ -3012,8 +3012,8 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         # Removed: local thumbnail generation. We rely on EPG/VOD/TMDB/OMDb/keyless providers only.
 
         # Final cancellation guard: destroy() may have deleted the record while
-        # remuxing.  If it's gone now, skip saving "interrupted" status and
-        # skip the notification — destroy() already sent recording_cancelled.
+        # remuxing. If it's gone now, skip saving status and skip recording_end;
+        # destroy() already emitted recording_end with outcome "cancelled".
         if not Recording.objects.filter(id=recording_id).exists():
             logger.info(
                 f"Recording {recording_id} was deleted during post-processing — skipping final save."
@@ -3036,6 +3036,16 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 f"DVR recording {recording_id}: final metadata save failed ({save_e}); "
                 f"emitting recording_end from in-memory state"
             )
+
+        # Re-check after the save: destroy() can delete between the guard above
+        # and here, and has already emitted cancelled. Do not emit a second
+        # success/failed recording_end for the same recording.
+        if not Recording.objects.filter(id=recording_id).exists():
+            logger.info(
+                f"Recording {recording_id} was deleted before recording_end emit; "
+                f"destroy() already closed the event."
+            )
+            return
 
         _dvr_emit_recording_end(
             recording_obj, channel, cp, final_path, remux_success,

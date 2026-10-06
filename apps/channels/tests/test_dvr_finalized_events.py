@@ -173,19 +173,21 @@ class DvrEmitRecordingEndTests(SimpleTestCase):
 class DvrCancelEmitsRecordingEndTests(SimpleTestCase):
     """Deleting an in-progress recording closes the recording_start pair."""
 
-    def _destroy(self, status):
+    def _destroy(self, status, **extra_cp):
         from datetime import datetime, timezone
         from types import SimpleNamespace
         from unittest import mock
 
         from apps.channels.api_views import RecordingViewSet
 
+        cp = {"status": status, "file_path": None, "_hls_dir": None}
+        cp.update(extra_cp)
         instance = SimpleNamespace(
             pk=11,
             start_time=datetime(2026, 9, 15, 4, 0, tzinfo=timezone.utc),
             end_time=datetime(2026, 9, 15, 4, 30, tzinfo=timezone.utc),
             channel=SimpleNamespace(uuid="c-uuid", name="Ten"),
-            custom_properties={"status": status, "file_path": None, "_hls_dir": None},
+            custom_properties=cp,
         )
         view = RecordingViewSet()
         request = SimpleNamespace(user=SimpleNamespace(username="admin", pk=3))
@@ -212,6 +214,18 @@ class DvrCancelEmitsRecordingEndTests(SimpleTestCase):
         self.assertEqual(kwargs["cancelled_by_id"], 3)
         self.assertEqual(kwargs["start_time"], "2026-09-15T04:00:00+00:00")
 
+    def test_delete_after_stop_before_finalize_emits_cancelled(self):
+        """Stop writes status=stopped immediately; remux_success comes later."""
+        emit = self._destroy("stopped")
+        emit.assert_called_once()
+        kwargs = emit.call_args.kwargs
+        self.assertEqual(kwargs["outcome"], "cancelled")
+        self.assertEqual(kwargs["cancelled_by"], "admin")
+
     def test_deleting_a_finished_recording_emits_nothing(self):
         emit = self._destroy("completed")
+        emit.assert_not_called()
+
+    def test_deleting_a_finalized_stopped_recording_emits_nothing(self):
+        emit = self._destroy("stopped", remux_success=True)
         emit.assert_not_called()

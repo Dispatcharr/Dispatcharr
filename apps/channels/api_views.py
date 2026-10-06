@@ -3939,7 +3939,13 @@ class RecordingViewSet(viewsets.ModelViewSet):
         hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
         channel_uuid = str(instance.channel.uuid)
 
-        if rec_status == "recording":
+        # Stop writes "stopped" before remux. remux_success is only set at finalize,
+        # so a delete in that gap still needs recording_end (cancelled).
+        _awaiting_finalize = (
+            rec_status == "recording"
+            or (rec_status == "stopped" and "remux_success" not in cp)
+        )
+        if _awaiting_finalize:
             try:
                 from core.utils import log_system_event
                 from apps.channels.tasks import _dvr_recording_end_payload
