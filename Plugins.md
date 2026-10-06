@@ -179,7 +179,7 @@ Export a `Plugin` class. Supported attributes and behavior:
 - `fields` (list): Settings schema used by the UI to render controls.
 - `actions` (list): Available actions; the UI renders a button for each (defaults to Run).
 - `run(action, params, context)` (callable): Invoked when a user clicks an action.
-- `stop(context)` (optional callable): Invoked when the plugin is disabled, deleted, or reloaded so you can gracefully shut down any processes you started. If `stop()` is not defined but you have an action with id `stop`, Dispatcharr will call `run("stop", {}, context)` as a fallback. On disable, `stop()` runs inside the enable/disable database transaction while the plugin's row is locked, so keep it short and do not close database connections in it.
+- `stop(context)` (optional callable): Invoked when the plugin is disabled, deleted, or reloaded so you can gracefully shut down any processes you started. If `stop()` is not defined but you have an action with id `stop`, Dispatcharr will call `run("stop", {}, context)` as a fallback. On disable and delete, `stop()` runs inside the database transaction while the plugin's row is locked, so keep it short and do not close database connections in it. If `stop()` hits a database error, its database changes are rolled back and the disable or delete still completes.
 
 ### Scheduled Celery tasks
 Dispatcharr records the Celery tasks your plugin registers in its own modules (`@shared_task`, with or without `name=`) each time it loads while enabled, and keeps names from earlier versions for deletion. django-celery-beat `PeriodicTask` rows whose `task` is a recorded name are disabled when the plugin is disabled and deleted with it. On enable, Dispatcharr reloads the installed plugin and restores only previously enabled rows whose tasks are still present. Removed tasks stay disabled. A plugin that has not been loaded while enabled since this behavior was introduced has no recorded task names, so its schedules are left untouched.
@@ -316,7 +316,7 @@ Prefer Celery tasks (`.delay()`) to keep `run` fast and non-blocking.
 
 Dispatcharr uses `django-db-geventpool` with a bounded per-uWSGI-worker pool (`MAX_CONNS=8`). Each greenlet or OS thread that runs ORM code checks out a connection until Django closes it.
 
-`PluginManager.run_action()` and `stop_plugin()` call `close_old_connections()` in a `finally` block after your plugin returns (success or error), except that `stop_plugin()` skips it when called inside a transaction, as on disable. That returns the current greenlet's checkout to the pool. **You do not need to call `close_old_connections()` yourself for normal inline ORM inside `run()` or `stop()`.**
+`PluginManager.run_action()` and `stop_plugin()` call `close_old_connections()` in a `finally` block after your plugin returns (success or error), except that `stop_plugin()` skips it when called inside a transaction, as on disable and delete. That returns the current greenlet's checkout to the pool. **You do not need to call `close_old_connections()` yourself for normal inline ORM inside `run()` or `stop()`.**
 
 Still follow these rules:
 

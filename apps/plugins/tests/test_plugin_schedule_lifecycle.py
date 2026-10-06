@@ -8,7 +8,7 @@ import types
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.db import connections, transaction
+from django.db import connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
 from django.utils import timezone
 from django_celery_beat.models import CrontabSchedule, PeriodicTask
@@ -45,6 +45,29 @@ class Plugin:
     def run(self, action, params, context):
         return {"status": "ok"}
 """
+
+_STOP_QUERY = """
+        from django.db import connection
+
+        with open(os.environ["PLUGIN_IMPORT_MARKER"], "a") as marker:
+            marker.write("stop-ran\\n")
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM plugin_stop_missing_table")
+        except Exception:
+            with open(os.environ["PLUGIN_IMPORT_MARKER"], "a") as marker:
+                marker.write("stop-db-error\\n")
+            __AFTER_ERROR__
+"""
+
+_STOP_ACTION = """
+    actions = [{"id": "stop", "label": "Stop"}]
+"""
+
+
+def _stop_callback(signature, propagate):
+    after_error = "raise" if propagate else "pass"
+    return f"\n    def {signature}:" + _STOP_QUERY.replace("__AFTER_ERROR__", after_error)
 
 
 _JOBS_PY = """
@@ -121,13 +144,13 @@ class LifecycleFixture:
     def _default_name(self, key):
         return f"_dispatcharr_plugin_{key}.plugin.default_named"
 
-    def _install(self, key, enabled=True, custom=None):
+    def _install(self, key, enabled=True, custom=None, class_body=""):
         plugin_dir = os.path.join(self._plugins_dir, key)
         os.makedirs(plugin_dir, exist_ok=True)
         with open(os.path.join(plugin_dir, "plugin.json"), "w") as f:
             json.dump({"name": key, "version": "1.0", "description": "test", "actions": []}, f)
         custom = custom or self._custom_name(key)
-        source = _PLUGIN_PY.replace("__CUSTOM__", custom).replace("__KEY__", key)
+        source = _PLUGIN_PY.replace("__CUSTOM__", custom).replace("__KEY__", key) + class_body
         with open(os.path.join(plugin_dir, "plugin.py"), "w") as f:
             f.write(source)
         self._task_names |= {custom, self._default_name(key)}
@@ -796,3 +819,70 @@ class PluginScheduleConcurrencyTests(LifecycleFixture, TransactionTestCase):
             self._set_enabled("vod2mlib", False)
 
         self.assertEqual(seen, [(True, 0)])
+
+
+class PluginStopDatabaseErrorTests(LifecycleFixture, TransactionTestCase):
+    def setUp(self):
+        super().setUp()
+        # Real connection cleanup must run around the plugin callbacks.
+        self._close_conns.stop()
+
+    def _assert_stop_database_error_does_not_block_disable_or_delete(self, key, class_body):
+        self._install(key, class_body=class_body)
+        row = self._schedule(f"{key}.auto_rescan", self._custom_name(key))
+        self.assertIn(self._custom_name(key), PluginConfig.objects.get(key=key).owned_tasks)
+        self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+
+        self._set_enabled(key, False)
+
+        self.assertEqual(self._import_count("stop-ran"), 1)
+        self.assertEqual(self._import_count("stop-db-error"), 1)
+        cfg = PluginConfig.objects.get(key=key)
+        self.assertFalse(cfg.enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
+        self.assertEqual(cfg.suspended_schedules, [row.pk])
+        self._set_enabled(key, False)
+        self._set_enabled(key, True)
+        self.assertTrue(PluginConfig.objects.get(key=key).enabled)
+        self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+
+        self._assert_delete_completes_after_stop_database_error(key, row, stops=2)
+
+    def _assert_delete_completes_after_stop_database_error(self, key, row, stops):
+        self._delete(key)
+
+        self.assertEqual(self._import_count("stop-ran"), stops)
+        self.assertEqual(self._import_count("stop-db-error"), stops)
+        self.assertFalse(os.path.isdir(os.path.join(self._plugins_dir, key)))
+        self.assertFalse(PluginConfig.objects.filter(key=key).exists())
+        self.assertFalse(PeriodicTask.objects.filter(pk=row.pk).exists())
+        self._delete(key)
+        self.assertFalse(connection.in_atomic_block)
+        self.assertEqual(PluginConfig.objects.filter(key=key).count(), 0)
+
+    def test_delete_of_an_enabled_plugin_whose_stop_handles_its_database_error(self):
+        self._install("stopdelete", class_body=_stop_callback("stop(self, context)", propagate=False))
+        row = self._schedule("stopdelete.auto_rescan", self._custom_name("stopdelete"))
+
+        self._assert_delete_completes_after_stop_database_error("stopdelete", row, stops=1)
+
+    def test_stop_that_handles_its_database_error_does_not_block_disable_or_delete(self):
+        self._assert_stop_database_error_does_not_block_disable_or_delete(
+            "stophandled", _stop_callback("stop(self, context)", propagate=False)
+        )
+
+    def test_stop_that_raises_its_database_error_does_not_block_disable_or_delete(self):
+        self._assert_stop_database_error_does_not_block_disable_or_delete(
+            "stopraised", _stop_callback("stop(self, context)", propagate=True)
+        )
+
+    def test_legacy_stop_without_context_database_error_does_not_block_disable_or_delete(self):
+        self._assert_stop_database_error_does_not_block_disable_or_delete(
+            "stoplegacy", _stop_callback("stop(self)", propagate=True)
+        )
+
+    def test_stop_action_database_error_does_not_block_disable_or_delete(self):
+        self._assert_stop_database_error_does_not_block_disable_or_delete(
+            "stopaction",
+            _STOP_ACTION + _stop_callback("run(self, action, params, context)", propagate=True),
+        )

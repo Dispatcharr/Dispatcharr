@@ -1,3 +1,4 @@
+import contextlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -810,14 +811,19 @@ class PluginManager:
             if reason:
                 context["reason"] = reason
 
+            # A savepoint keeps a database error in plugin code from aborting the caller's transaction.
+            savepoint = transaction.atomic if connection.in_atomic_block else contextlib.nullcontext
+
             stop_method = getattr(lp.instance, "stop", None)
             if callable(stop_method):
                 try:
-                    stop_method(context)
+                    with savepoint():
+                        stop_method(context)
                     return True
                 except TypeError:
                     try:
-                        stop_method()
+                        with savepoint():
+                            stop_method()
                         return True
                     except Exception:
                         logger.exception("Plugin '%s' stop() failed", key)
@@ -831,7 +837,8 @@ class PluginManager:
                 actions = {a.get("id") for a in (lp.actions or []) if isinstance(a, dict)}
                 if "stop" in actions:
                     try:
-                        run_method("stop", {}, context)
+                        with savepoint():
+                            run_method("stop", {}, context)
                         return True
                     except Exception:
                         logger.exception("Plugin '%s' stop action failed", key)
