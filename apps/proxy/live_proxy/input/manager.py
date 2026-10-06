@@ -12,7 +12,7 @@ from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
 from .buffer import StreamBuffer
-from ..utils import detect_stream_type, get_logger
+from ..utils import detect_stream_type, get_logger, signal_process_tree
 from ..redis_keys import RedisKeys
 from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from ..config_helper import ConfigHelper
@@ -856,6 +856,10 @@ class StreamManager:
                 # fork()-based approaches (subprocess.Popen, whether called
                 # from the greenlet or a threadpool thread) hang in gevent's
                 # _before_fork atfork handler indefinitely under gevent+uWSGI.
+                #
+                # setsid=True puts the child in its own session/process group
+                # so stop can signal the whole tree (profile scripts that start
+                # ffmpeg/vlc, etc.) without touching Dispatcharr's process group.
                 _executable = _shutil.which(self.transcode_cmd[0]) or self.transcode_cmd[0]
                 _pid = _os.posix_spawn(
                     _executable,
@@ -868,6 +872,7 @@ class StreamManager:
                         (_os.POSIX_SPAWN_CLOSE, relay_write),
                         (_os.POSIX_SPAWN_CLOSE, stderr_write),
                     ],
+                    setsid=True,
                 )
                 logger.debug(
                     f"posix_spawn completed in {_time.monotonic() - _t0:.3f}s "
@@ -925,16 +930,10 @@ class StreamManager:
                             _gevent.sleep(0.01)
 
                     def kill(self):
-                        try:
-                            _os.kill(self.pid, _signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
+                        signal_process_tree(self.pid, _signal.SIGKILL)
 
                     def terminate(self):
-                        try:
-                            _os.kill(self.pid, _signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
+                        signal_process_tree(self.pid, _signal.SIGTERM)
 
                 self.transcode_process = _SpawnedProcess()
             except Exception:

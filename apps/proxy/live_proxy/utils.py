@@ -127,6 +127,30 @@ def get_logger(component_name=None):
     return logging.getLogger(logger_name)
 
 
+def signal_process_tree(pid, sig):
+    """
+    Deliver sig to a spawned process, including its descendants when safe.
+
+    Live-proxy spawns use posix_spawn(..., setsid=True), so the child is a
+    session and process-group leader (pgid == pid). Signaling that process
+    group terminates shell wrappers and any children they started (for example
+    ffmpeg/vlc under a custom stream profile).
+
+    If pid is not the group leader, only that pid is signaled. This avoids
+    broadcasting into Dispatcharr's own process group when isolation was not
+    established.
+    """
+    import os
+
+    try:
+        if os.getpgid(pid) == pid:
+            os.killpg(pid, sig)
+        else:
+            os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+
+
 def posix_spawn_proc(cmd):
     """
     Spawn a subprocess using os.posix_spawn() with stdin, stdout, and stderr piped.
@@ -136,6 +160,9 @@ def posix_spawn_proc(cmd):
     in gevent's _before_fork atfork handler regardless of whether it is called
     from a hub greenlet or a threadpool thread.  os.posix_spawn() is explicitly
     defined by POSIX to not call pthread_atfork handlers.
+
+    The child is started in a new session (setsid=True) so kill()/terminate()
+    can signal the whole process group and reap multi-process stream profiles.
     """
     import os
     import shutil
@@ -160,6 +187,7 @@ def posix_spawn_proc(cmd):
                 (os.POSIX_SPAWN_CLOSE, stdout_w),
                 (os.POSIX_SPAWN_CLOSE, stderr_w),
             ],
+            setsid=True,
         )
 
         import fcntl
@@ -218,16 +246,10 @@ def posix_spawn_proc(cmd):
                     _gevent.sleep(0.01)
 
             def kill(self):
-                try:
-                    os.kill(self.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                signal_process_tree(self.pid, signal.SIGKILL)
 
             def terminate(self):
-                try:
-                    os.kill(self.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                signal_process_tree(self.pid, signal.SIGTERM)
 
         return _Proc()
 
