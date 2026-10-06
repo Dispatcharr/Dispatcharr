@@ -339,11 +339,15 @@ def generate_m3u(request, profile_name=None, user=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
-    # Catch-up is advertised only where the player can reach a timeshift
-    # endpoint: the XC playlist (catchup="xc" rewrites /live/... into
-    # /timeshift/) and direct provider URLs. The plain proxy URL has no
-    # catch-up entry point. catchup_allowed is computed above, for the
-    # playlist header.
+    # XC playlist: catchup="default" + catchup-source. Direct: catchup="xc".
+    # Plain proxy has no catch-up entry point.
+    _catchup_source_prefix = None
+    _catchup_source_suffix = "&utc={utc}&duration={duration:60}"
+    if catchup_allowed and is_xc_request and not use_direct_urls:
+        _catchup_qs = urlencode({"username": xc_username, "password": xc_password})
+        _catchup_source_prefix = (
+            f"{_base_url}/streaming/timeshift.php?{_catchup_qs}&stream="
+        )
 
     # Start building M3U content
     channel_count = 0
@@ -418,18 +422,11 @@ def generate_m3u(request, profile_name=None, user=None):
             catchup_days = min(catchup_days, MAX_AUTO_PREV_DAYS)
             if catchup_days > 0 and use_direct_urls:
                 catchup_attrs = f'catchup="xc" catchup-days="{catchup_days}" '
-            elif catchup_days > 0:
-                # Players fill {Y}/{H}/... (and catchup="xc") with their own
-                # local time, but the timeshift endpoints expect UTC. {utc} is
-                # the programme start as epoch seconds, which is always UTC.
-                # Named utc= because players that ignore placeholders (e.g.
-                # IPTVnator) set ?utc=<epoch> on the source URL themselves.
-                catchup_query = urlencode(
-                    {"username": xc_username, "password": xc_password, "stream": channel.id}
-                )
+            elif catchup_days > 0 and _catchup_source_prefix is not None:
+                # Wall-clock placeholders are local; {utc} is epoch seconds (UTC).
+                # Param is utc= so players that set ?utc=<epoch> themselves still match.
                 catchup_source = (
-                    f"{_base_url}/streaming/timeshift.php?{catchup_query}"
-                    "&utc={utc}&duration={duration:60}"
+                    f"{_catchup_source_prefix}{channel.id}{_catchup_source_suffix}"
                 )
                 catchup_attrs = (
                     f'catchup="default" catchup-days="{catchup_days}" '
