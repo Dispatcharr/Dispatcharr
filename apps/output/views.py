@@ -322,10 +322,10 @@ def generate_m3u(request, profile_name=None, user=None):
     catchup_header_attrs = ""
     if catchup_allowed and is_xc_request and not use_direct_urls:
         catchup_header_attrs = ' catchup-timezone="UTC"'
-    m3u_content = (
+    m3u_lines = [
         f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"'
         f"{catchup_header_attrs}\n"
-    )
+    ]
 
     # Host/port/scheme are constant per request; precompute URL prefixes once.
     # XC without direct has no proxy fallback; admin XC+direct may fall back.
@@ -443,7 +443,9 @@ def generate_m3u(request, profile_name=None, user=None):
             # Standard behavior - use proxy URL
             stream_url = f"{_stream_url_prefix}{channel.uuid}{proxy_qs_suffix}"
 
-        m3u_content += extinf_line + stream_url + "\n"
+        m3u_lines.append(extinf_line + stream_url + "\n")
+
+    m3u_content = "".join(m3u_lines)
 
     # Cache the generated content for 2 seconds to handle double-GET requests
     cache.set(content_cache_key, m3u_content, 2)

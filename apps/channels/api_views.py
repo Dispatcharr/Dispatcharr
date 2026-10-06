@@ -1025,8 +1025,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # get_ids and summary only need the filter conditions, not the full
-        # object graph. Skipping the 5 select_related joins and 2 prefetch
-        # queries for those actions cuts their DB cost significantly.
+        # object graph. Skipping the select_related joins and the channelstream
+        # prefetch for those actions cuts their DB cost significantly.
         action = getattr(self, "action", None)
         qs = super().get_queryset()
 
@@ -1039,9 +1039,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "override",
                 "auto_created_by",
             ).prefetch_related(
-                "streams",
                 # Default-attr prefetch shares the cache with M2M writes;
                 # a named `to_attr` would isolate it and trigger N+1.
+                # Stream ids and include_streams both read this cache, so a
+                # second prefetch of the streams M2M would load the same rows.
                 Prefetch(
                     "channelstream_set",
                     queryset=ChannelStream.objects.select_related(
