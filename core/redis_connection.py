@@ -10,7 +10,7 @@ import ssl
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import redis
-from redis.connection import BlockingConnectionPool
+from redis.connection import BlockingConnectionPool, SSLConnection
 
 
 class RedisUrlError(ValueError):
@@ -41,6 +41,10 @@ def build_redis_client(
     stay under our control (timeouts, keepalive, decode_responses) are stripped
     from a URL so they cannot override the arguments above. socket_keepalive
     is omitted for unix sockets, which reject it.
+
+    ssl_params may include ssl=True (as REDIS_SSL_PARAMS does for redis.Redis).
+    BlockingConnectionPool does not accept that flag; it is translated to
+    connection_class=SSLConnection and the remaining ssl_* kwargs are kept.
     """
     ssl_params = ssl_params or {}
     sockargs = {
@@ -72,13 +76,18 @@ def build_redis_client(
             sockargs.pop("socket_keepalive", None)
         pool = BlockingConnectionPool.from_url(url, **pool_kwargs, **sockargs)
     else:
+        # redis.Redis(ssl=True) selects SSLConnection; ConnectionPool does not.
+        # Pop ssl so it is not forwarded into AbstractConnection.__init__.
+        pool_ssl = dict(ssl_params)
+        use_ssl = bool(pool_ssl.pop("ssl", False))
         pool = BlockingConnectionPool(
             host=host,
             port=int(port),
             db=int(db),
             username=username,
             password=password,
-            **ssl_params,
+            **({"connection_class": SSLConnection} if use_ssl else {}),
+            **pool_ssl,
             **sockargs,
             **pool_kwargs,
         )
