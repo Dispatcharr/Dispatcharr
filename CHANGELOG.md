@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live channels can be served as native HLS.** Settings → Stream Settings → Default Output Format and the per-user Output Format Override include HLS alongside MPEG-TS and fMP4. A tune with `?output_format=hls`, an XC live URL ending in `.m3u8`, or an M3U generated with `output_format=hls` starts the shared channel buffer and redirects to an opaque `/proxy/hls/<token>/index.m3u8` playlist of MPEG-TS segments cut on keyframes (no per-client remux). XC `player_api` advertises `m3u8` in `allowed_output_formats`. The first playlist is held until about 4 seconds of media are ready. The first few segments close at the first keyframe at or after 1 second, so an IDR burst at join does not emit one-frame segments, then cutting returns to the normal ~4 second target. `#EXT-X-TARGETDURATION` stays fixed for the playlist lifetime, and a provider switch emits `#EXT-X-DISCONTINUITY` from the shared buffer mark described below. When the new-client join offset is set and the window is deep enough, the playlist includes `#EXT-X-START` at that same offset. Playlist and segment polls keep the client alive. A player that leaves before the first playlist is published is stopped after a half-second reconnect grace. After publish, clients that stop polling are reaped as ghosts. `DELETE /api/proxy/hls/sessions/<token>/` stops the session for the user who opened it. (Closes #1003) - Thanks [@jonzey231](https://github.com/jonzey231)
+
+### Changed
+
+- **Live proxy stream switches mark a discontinuity in the shared buffer.** On a URL or stream switch, the last complete packets from the old source are flushed to Redis, then the first packet of each PID from the new source gets `discontinuity_indicator` set (the same bit FFmpeg writes with `initial_discontinuity`). MPEG-TS clients receive that bit in the live stream. HLS uses the same mark to cut before the new source and emit `#EXT-X-DISCONTINUITY`.
+
 ## [0.32.0] - 2026-10-07
 
 ### Added
