@@ -21,6 +21,8 @@ from .input.manager import StreamManager
 from .input.buffer import StreamBuffer
 from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
+from .output.hls.manager import HLSOutputManager
+from .output.hls.waiters import notify_playlist_ready
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, ChannelMetadataField, REDIS_TTL_DEFAULT
@@ -207,6 +209,15 @@ class ProxyServer:
                             channel_id = data.get("channel_id")
 
                             if channel_id and event_type:
+                                # Any worker may be holding a cold-start playlist
+                                # request for this channel. Wake them as soon as
+                                # the segmenter publishes, not on the next poll.
+                                if event_type == EventType.HLS_PLAYLIST_READY:
+                                    notify_playlist_ready(
+                                        channel_id, data.get("fmt") or "hls"
+                                    )
+                                    continue
+
                                 # For owner, update client status immediately
                                 if self.am_i_owner(channel_id):
                                     if event_type == EventType.CLIENT_CONNECTED:
@@ -1103,6 +1114,14 @@ class ProxyServer:
             client_set_key = RedisKeys.clients(channel_id)
             total = self.redis_client.scard(client_set_key) or 0
 
+            if total:
+                # Drop set entries whose metadata hash has expired. Pull-based
+                # clients (HLS) never report a disconnect; when one stops
+                # polling, its hash lapses, and the stale set entry must not
+                # keep the channel or an output manager alive.
+                if ClientManager.remove_ghost_clients(self.redis_client, channel_id):
+                    total = self.redis_client.scard(client_set_key) or 0
+
             logger.debug(
                 f"handle_client_disconnect: channel={channel_id[:8]} total={total} "
                 f"profile_managers={list(self.profile_managers.get(channel_id, {}).keys())} "
@@ -1299,6 +1318,7 @@ class ProxyServer:
 
         _OUTPUT_FORMAT_MANAGERS = {
             'fmp4': FMP4RemuxManager,
+            'hls': HLSOutputManager,
         }
         base_fmt, _ = self._parse_output_key(fmt)
         manager_cls = _OUTPUT_FORMAT_MANAGERS.get(base_fmt)
