@@ -25,12 +25,19 @@ def _direct_children(pid):
     return children
 
 
-def _pid_exists(pid):
+def _pid_is_alive(pid):
+    """True only for a runnable process. Zombies count as gone.
+
+    After killpg, shell children become zombies reparented to PID 1. os.kill(pid, 0)
+    still succeeds for those entries, and CI containers without a reaping init leave
+    them until the job ends. Treat state Z as terminated so the assertion matches
+    "not orphaned and still running."
+    """
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
+        state = (pathlib.Path("/proc") / str(pid) / "stat").read_text().split()[2]
+    except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
         return False
+    return state != "Z"
 
 
 class SignalProcessTreeTests(SimpleTestCase):
@@ -92,9 +99,10 @@ class PosixSpawnProcProcessGroupTests(SimpleTestCase):
             proc.kill()
             proc.wait(timeout=2)
 
-            # Direct child is gone; former grandchildren must not survive as orphans.
+            # Former shell children must not keep running after the group is killed.
+            # Zombies (killed, waiting for init to reap) are not survivors.
             time.sleep(0.1)
-            survivors = [pid for pid in children if _pid_exists(pid)]
+            survivors = [pid for pid in children if _pid_is_alive(pid)]
             self.assertEqual(
                 survivors,
                 [],
