@@ -244,29 +244,41 @@ def get_user_active_connections(user_id):
             ("timeshift:channel:*:clients:*", "timeshift"),
         ):
             for key in redis_client.scan_iter(match=pattern, count=1000):
-                parts = key.split(':')
-                if len(parts) >= 5:
-                    channel_id = parts[2]
-                    client_id = parts[4]
+                if isinstance(key, bytes):
+                    key = key.decode("utf-8", errors="replace")
+                # Keys are ``{ns}:channel:{channel_id}:clients:{client_id}``.
+                # Slice around the fixed markers so channel ids with dots
+                # (profile-scoped stream previews) are preserved.
+                prefix = pattern.split("*", 1)[0]  # live:channel: or timeshift:channel:
+                marker = ":clients:"
+                if not key.startswith(prefix):
+                    continue
+                marker_idx = key.find(marker, len(prefix))
+                if marker_idx == -1:
+                    continue
+                channel_id = key[len(prefix):marker_idx]
+                client_id = key[marker_idx + len(marker):]
+                if not channel_id or not client_id:
+                    continue
 
-                    client_user_id, connected_at = redis_client.hmget(key, 'user_id', 'connected_at')
+                client_user_id, connected_at = redis_client.hmget(key, 'user_id', 'connected_at')
 
-                    logger.debug(f"[stream limits] user_id = {user_id}")
-                    logger.debug(f"[stream limits] channel_id = {channel_id}")
-                    logger.debug(f"[stream limits] client_id = {client_id}")
+                logger.debug(f"[stream limits] user_id = {user_id}")
+                logger.debug(f"[stream limits] channel_id = {channel_id}")
+                logger.debug(f"[stream limits] client_id = {client_id}")
 
-                    if user_id is None or (client_user_id and int(client_user_id) == user_id):
-                        try:
-                            logger.debug(f"[stream limits] Found {conn_type.upper()} connection for user {user_id} on channel {channel_id} with client ID {client_id}")
-                            connected_at = float(connected_at) if connected_at else 0
-                            connections.append({
-                                'media_id': channel_id,
-                                'client_id': client_id,
-                                'connected_at': connected_at,
-                                'type': conn_type,
-                            })
-                        except (ValueError, TypeError):
-                            pass
+                if user_id is None or (client_user_id and int(client_user_id) == user_id):
+                    try:
+                        logger.debug(f"[stream limits] Found {conn_type.upper()} connection for user {user_id} on channel {channel_id} with client ID {client_id}")
+                        connected_at = float(connected_at) if connected_at else 0
+                        connections.append({
+                            'media_id': channel_id,
+                            'client_id': client_id,
+                            'connected_at': connected_at,
+                            'type': conn_type,
+                        })
+                    except (ValueError, TypeError):
+                        pass
 
         # Grab VOD
         for key in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):

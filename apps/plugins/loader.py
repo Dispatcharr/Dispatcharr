@@ -264,7 +264,9 @@ class PluginManager:
                     self._last_reload_token = token
                 self._discovery_completed = True
 
-            logger.info(f"Discovered {len(new_registry)} plugin(s)")
+            (logger.info if new_registry else logger.debug)(
+                f"Discovered {len(new_registry)} plugin(s)"
+            )
         except FileNotFoundError:
             logger.warning(f"Plugins directory not found: {self.plugins_dir}")
 

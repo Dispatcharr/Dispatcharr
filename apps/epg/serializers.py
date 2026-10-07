@@ -6,7 +6,7 @@ from apps.epg.utils import sd_poster_proxy_path
 from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
-from apps.channels.models import Channel, Stream
+from apps.channels.models import Stream
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -252,13 +252,32 @@ class EPGDataSerializer(serializers.ModelSerializer):
         ]
 
 
-class ProgramSearchChannelSerializer(serializers.ModelSerializer):
-    """Lightweight channel info for search results."""
-    channel_group = serializers.CharField(source='channel_group.name', default=None)
+class ProgramSearchChannelSerializer(serializers.Serializer):
+    """Lightweight channel info for search results (override-aware)."""
 
-    class Meta:
-        model = Channel
-        fields = ['id', 'name', 'channel_number', 'channel_group', 'tvg_id']
+    id = serializers.IntegerField()
+    name = serializers.SerializerMethodField()
+    channel_number = serializers.SerializerMethodField()
+    channel_group = serializers.SerializerMethodField()
+    tvg_id = serializers.SerializerMethodField()
+
+    def get_name(self, obj):
+        value = getattr(obj, "effective_name", None)
+        return obj.name if value is None else value
+
+    def get_channel_number(self, obj):
+        value = getattr(obj, "effective_channel_number", None)
+        return value if value is not None else obj.channel_number
+
+    def get_channel_group(self, obj):
+        group = getattr(obj, "effective_channel_group_obj", None)
+        if group is None:
+            group = getattr(obj, "channel_group", None)
+        return group.name if group is not None else None
+
+    def get_tvg_id(self, obj):
+        value = getattr(obj, "effective_tvg_id", None)
+        return value if value is not None else obj.tvg_id
 
 
 class ProgramSearchStreamSerializer(serializers.ModelSerializer):
@@ -289,7 +308,16 @@ class ProgramSearchResultSerializer(serializers.ModelSerializer):
         ]
 
     def _accessible_channels(self, obj):
-        """Return prefetched channels filtered to those the requesting user can access."""
+        """Return channels effectively mapped to this program's EPG.
+
+        Prefer the bulk map built by the search view (includes override-only
+        EPG assignments and applies user access once). Fall back to the
+        reverse FK for callers that do not supply the map.
+        """
+        by_epg = self.context.get("channels_by_epg_id")
+        if by_epg is not None:
+            return by_epg.get(obj.epg_id, [])
+
         channels = list(obj.epg.channels.all()) if obj.epg else []
         user = self.context.get('user')
         if user is None or user.user_level >= 10:

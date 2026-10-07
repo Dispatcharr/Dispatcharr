@@ -518,3 +518,86 @@ class StreamTsEarlyOwnershipTests(SimpleTestCase):
             self.channel_id, signal_stopping=False
         )
         mock_create_generator.assert_not_called()
+
+
+class CheckIfChannelExistsOwnerWithoutMetadataTests(SimpleTestCase):
+    """A live worker's owner lock without metadata is mid-init, not an orphan."""
+
+    OTHER_WORKER = "other-host:2"
+
+    def _server(self, existing_keys=(), owner=None):
+        """Server over a fake Redis holding `existing_keys` and an optional owner lock."""
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+        owner_key = RedisKeys.channel_owner(CHANNEL_ID)
+        keys = set(existing_keys)
+        if owner is not None:
+            keys.add(owner_key)
+
+        redis = MagicMock()
+        redis.exists.side_effect = lambda key: key in keys
+        redis.get.side_effect = lambda key: owner if key == owner_key else None
+        server = make_proxy_server(redis)
+        server._clean_redis_keys = MagicMock()
+        return server, redis
+
+    def test_owner_lock_of_live_worker_without_metadata_is_not_cleaned(self):
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+        server, _redis = self._server(
+            existing_keys={RedisKeys.worker_heartbeat(self.OTHER_WORKER)},
+            owner=self.OTHER_WORKER,
+        )
+
+        self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
+        server._clean_redis_keys.assert_not_called()
+
+    def test_live_owner_is_spared_even_with_leftover_client_keys(self):
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+        server, _redis = self._server(
+            existing_keys={
+                RedisKeys.worker_heartbeat(self.OTHER_WORKER),
+                RedisKeys.clients(CHANNEL_ID),
+                RedisKeys.buffer_index(CHANNEL_ID),
+            },
+            owner=self.OTHER_WORKER,
+        )
+
+        self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
+        server._clean_redis_keys.assert_not_called()
+
+    def test_own_owner_lock_without_metadata_is_not_cleaned(self):
+        # No heartbeat key: a worker never treats its own in-flight claim as stale.
+        server, _redis = self._server(owner="test-host:1")
+
+        self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
+        server._clean_redis_keys.assert_not_called()
+
+    def test_stale_owner_lock_of_dead_worker_is_cleaned(self):
+        server, _redis = self._server(owner=self.OTHER_WORKER)
+
+        self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)
+
+    def test_orphan_clients_without_owner_or_metadata_are_cleaned(self):
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+        server, _redis = self._server(existing_keys={RedisKeys.clients(CHANNEL_ID)})
+
+        self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)
+
+    def test_orphan_buffer_index_without_owner_or_metadata_are_cleaned(self):
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+        server, _redis = self._server(existing_keys={RedisKeys.buffer_index(CHANNEL_ID)})
+
+        self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)
+
+    def test_no_keys_at_all_does_nothing(self):
+        server, _redis = self._server()
+
+        self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
+        server._clean_redis_keys.assert_not_called()

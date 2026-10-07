@@ -19,9 +19,9 @@ from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
 from dispatcharr.utils import get_client_ip, network_access_allowed
 from .redis_keys import RedisKeys
-from apps.channels.models import Channel
+from apps.channels.models import Channel, Stream
 from apps.accounts.models import User
-from core.models import CoreSettings, PROXY_PROFILE_NAME
+from core.models import CoreSettings, PROXY_PROFILE_NAME, StreamProfile
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -37,13 +37,180 @@ from .url_utils import (
     generate_stream_url,
     get_stream_info_for_switch,
     get_stream_object,
+    parse_preview_worker_id,
+    pick_channel_preview_target,
+    pick_stream_m3u_profile_id,
+    preview_worker_id,
+    release_worker_stream,
 )
 from .utils import get_logger
-from uuid import UUID
 import gevent
 from apps.proxy.utils import check_user_stream_limits
 
 logger = get_logger()
+
+
+def _is_skip_redirect_requested(request, user, client_id):
+    """True only for skip_redirect=true.
+
+    A Standard or Admin user hitting /proxy/ts/stream/ directly may opt a
+    Redirect-mode channel or stream into a profile-scoped stream preview
+    worker instead of a 302. false, empty, or any other value leaves Redirect
+    behavior unchanged. Ignored for XC requests and for Streamer-level users.
+    """
+    if request.GET.get('skip_redirect', '').lower() != 'true':
+        return False
+    if not request.path.startswith('/proxy/ts/stream/'):
+        logger.warning(
+            f"[{client_id}] skip_redirect requested on a non-direct route; ignoring"
+        )
+        return False
+    if not user or getattr(user, 'user_level', 0) < User.UserLevel.STANDARD:
+        logger.warning(
+            f"[{client_id}] skip_redirect requested by a disallowed user; ignoring"
+        )
+        return False
+    return True
+
+
+def _stream_limit_response(user):
+    return JsonResponse(
+        {
+            "error": (
+                f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"
+            )
+        },
+        status=429,
+    )
+
+
+def _resolve_proxy_profile_id(client_id):
+    """The locked Proxy StreamProfile's id, used so a skip_redirect preview
+    starts the same way a real Proxy channel starts (transcode=False).
+    """
+    try:
+        return StreamProfile.objects.get(name=PROXY_PROFILE_NAME, locked=True).id
+    except StreamProfile.DoesNotExist:
+        logger.error(
+            f"[{client_id}] Proxy stream profile not found; cannot honor skip_redirect"
+        )
+        return None
+
+
+def _obtain_stream_with_retries(
+    channel_id,
+    client_id,
+    user,
+    allowed_m3u_profiles,
+    override_stream_profile_id=None,
+):
+    """Call generate_stream_url, retrying when the failure is connection limits.
+
+    Returns:
+        (stream_url, stream_user_agent, transcode, profile_value, slot_reserved,
+         error_reason, resolved_stream_id, attempt, wait_start_time)
+    """
+    retry_timeout = 3
+    retry_interval = 0.1
+    wait_start_time = time.time()
+
+    stream_url = None
+    stream_user_agent = None
+    transcode = False
+    profile_value = None
+    slot_reserved = False
+    error_reason = None
+    resolved_stream_id = None
+    attempt = 0
+    should_retry = True
+
+    while should_retry and time.time() - wait_start_time < retry_timeout:
+        attempt += 1
+        (
+            stream_url,
+            stream_user_agent,
+            transcode,
+            profile_value,
+            slot_reserved,
+            error_reason,
+            resolved_stream_id,
+        ) = generate_stream_url(
+            channel_id,
+            user,
+            allowed_m3u_profiles,
+            override_stream_profile_id=override_stream_profile_id,
+        )
+
+        if stream_url is not None:
+            logger.info(
+                f"[{client_id}] Successfully obtained stream for channel "
+                f"{channel_id} after {attempt} attempts"
+            )
+            break
+
+        if attempt == 1:
+            if error_reason and "maximum connection limits" not in error_reason:
+                logger.warning(
+                    f"[{client_id}] Can't retry - error not related to "
+                    f"connection limits: {error_reason}"
+                )
+                should_retry = False
+                break
+
+        elapsed_time = time.time() - wait_start_time
+        remaining_time = retry_timeout - elapsed_time
+        if remaining_time <= retry_interval:
+            logger.info(
+                f"[{client_id}] Insufficient time ({remaining_time:.1f}s) for "
+                f"another sleep cycle, will make one final attempt"
+            )
+            break
+
+        logger.info(
+            f"[{client_id}] Waiting {retry_interval*1000:.0f}ms for a connection "
+            f"to become available (attempt {attempt}, {remaining_time:.1f}s remaining)"
+        )
+        gevent.sleep(retry_interval)
+        retry_interval += 0.025
+
+    if (
+        stream_url is None
+        and should_retry
+        and time.time() - wait_start_time < retry_timeout
+    ):
+        attempt += 1
+        logger.info(f"[{client_id}] Making final attempt {attempt} at timeout boundary")
+        (
+            stream_url,
+            stream_user_agent,
+            transcode,
+            profile_value,
+            slot_reserved,
+            error_reason,
+            resolved_stream_id,
+        ) = generate_stream_url(
+            channel_id,
+            user,
+            allowed_m3u_profiles,
+            override_stream_profile_id=override_stream_profile_id,
+        )
+        if stream_url is not None:
+            logger.info(
+                f"[{client_id}] Successfully obtained stream on final attempt "
+                f"for channel {channel_id}"
+            )
+
+    return (
+        stream_url,
+        stream_user_agent,
+        transcode,
+        profile_value,
+        slot_reserved,
+        error_reason,
+        resolved_stream_id,
+        attempt,
+        wait_start_time,
+    )
 
 
 def _channel_stopping_response():
@@ -151,6 +318,112 @@ def _resolve_output_profile(request, user):
     return None
 
 
+def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_profiles):
+    """Resolve a Redirect-mode channel to a provider URL and hand the client a
+    redirect. Runs whenever the channel's saved profile is Redirect and the
+    request did not opt out via skip_redirect, independent of whether a channel
+    worker is already running (e.g. from a concurrent override), so a normal
+    viewer is never attached to that worker's buffer.
+    """
+    from apps.proxy.config import TSConfig
+
+    (
+        stream_url,
+        stream_user_agent,
+        _transcode,
+        _profile_value,
+        slot_reserved,
+        error_reason,
+        resolved_stream_id,
+        attempt,
+        wait_start_time,
+    ) = _obtain_stream_with_retries(
+        channel_id, client_id, user, allowed_m3u_profiles
+    )
+
+    if stream_url is None:
+        if slot_reserved and not channel.release_stream():
+            logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
+        wait_duration = f"{int(time.time() - wait_start_time)}s"
+        error_msg = error_reason if error_reason else "No available streams for this channel"
+        logger.info(
+            f"[{client_id}] Failed to obtain stream after {attempt} attempts over {wait_duration}: {error_msg}"
+        )
+        return JsonResponse({"error": error_msg, "waited": wait_duration}, status=503)
+
+    def _redirect_response(url):
+        if url.startswith(("rtsp://", "rtp://", "udp://")):
+            logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
+            response = HttpResponse(status=301)
+            response["Location"] = url
+            return response
+        return HttpResponseRedirect(url)
+
+    # The reserved slot is released once the decision is made (before the client
+    # follows the redirect), including when validation or alternate lookup raises.
+    try:
+        # Optional pre-check (Settings → Proxy → Validate Redirect URLs). Some
+        # providers abort HEAD/GET probes and waste a connection slot; disabling
+        # skips failover probing and redirects immediately.
+        if not TSConfig.get_validate_redirect_urls():
+            logger.info(f"[{client_id}] Redirect URL validation disabled; handing off to {stream_url}")
+            return _redirect_response(stream_url)
+
+        from .url_utils import validate_stream_url, get_alternate_streams
+
+        logger.info(f"[{client_id}] Validating redirect URL: {stream_url}")
+        is_valid, final_url, status_code, message = validate_stream_url(
+            stream_url, user_agent=stream_user_agent, timeout=(5, 5)
+        )
+
+        if not is_valid:
+            logger.warning(f"[{client_id}] Primary stream URL failed validation: {message}")
+
+            # Track tried streams to avoid loops. Use the stream actually chosen
+            # for this request (not Redis channel_stream), since Redirect
+            # allowlist selection does not write a shared assignment.
+            tried_streams = {resolved_stream_id}
+
+            alternates = get_alternate_streams(channel_id, resolved_stream_id, allowed_m3u_profiles)
+
+            for alt in alternates:
+                if alt["stream_id"] in tried_streams:
+                    continue
+                tried_streams.add(alt["stream_id"])
+
+                alt_info = get_stream_info_for_switch(channel_id, alt["stream_id"], alt["profile_id"])
+                if "error" in alt_info:
+                    logger.warning(
+                        f"[{client_id}] Error getting alternate stream info: {alt_info['error']}"
+                    )
+                    continue
+
+                logger.info(
+                    f"[{client_id}] Trying alternate stream #{alt['stream_id']}: {alt_info['url']}"
+                )
+                is_valid, final_url, status_code, message = validate_stream_url(
+                    alt_info["url"], user_agent=alt_info["user_agent"], timeout=(5, 5)
+                )
+
+                if is_valid:
+                    logger.info(f"[{client_id}] Alternate stream #{alt['stream_id']} validated successfully")
+                    break
+                logger.warning(
+                    f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
+                )
+
+        if is_valid:
+            logger.info(f"[{client_id}] Redirecting to validated URL: {final_url} ({message})")
+            return _redirect_response(final_url)
+        logger.error(f"[{client_id}] All available redirect URLs failed validation")
+        return JsonResponse(
+            {"error": "All available streams failed validation"}, status=502
+        )
+    finally:
+        if slot_reserved and not channel.release_stream():
+            logger.warning(f"[{client_id}] Failed to release stream before redirect")
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_ts(request, channel_id, user=None, force_output_format=None):
@@ -172,16 +445,26 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
     channel_display_name = None
 
     try:
+        # Profile-scoped preview worker ids are minted server-side only.
+        if parse_preview_worker_id(channel_id)[1] is not None:
+            return JsonResponse({"error": "Not found"}, status=404)
+
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
+
+        # Generate a unique client ID
+        client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+
+        stream_profile = channel.get_stream_profile()
+        skip_redirect_requested = _is_skip_redirect_requested(request, user, client_id)
+        override_stream_profile_id = None
+
         allowed_m3u_profiles = None
-        if user and channel.get_stream_profile().is_redirect():
+        if user and (stream_profile.is_redirect() or skip_redirect_requested):
             from apps.m3u.utils import get_allowed_m3u_profiles
 
             allowed_m3u_profiles = get_allowed_m3u_profiles(user)
 
-        # Generate a unique client ID
-        client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
         client_ip = get_client_ip(request)
         logger.info(f"[{client_id}] Requested stream for channel {channel_id}")
 
@@ -194,12 +477,86 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 )
                 break
 
-        if user:
-            if not check_user_stream_limits(user, client_id, media_id=channel_id):
-                return JsonResponse(
-                    {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
-                    status=429
+        # Redirect-vs-preview decision before any running-worker check so a
+        # normal Redirect viewer never attaches to a skip_redirect preview.
+        # Stream limits use the id that will actually be registered: the channel
+        # UUID for a plain redirect, the profile-scoped worker id after remap.
+        if isinstance(channel, Channel) and stream_profile.is_redirect():
+            if not skip_redirect_requested:
+                if user and not check_user_stream_limits(
+                    user, client_id, media_id=channel_id
+                ):
+                    return _stream_limit_response(user)
+                if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                    return _channel_stopping_response()
+                return _handle_redirect_stream(
+                    channel, channel_id, client_id, user, allowed_m3u_profiles
                 )
+
+            proxy_profile_id = _resolve_proxy_profile_id(client_id)
+            if proxy_profile_id is None:
+                if user and not check_user_stream_limits(
+                    user, client_id, media_id=channel_id
+                ):
+                    return _stream_limit_response(user)
+                return _handle_redirect_stream(
+                    channel, channel_id, client_id, user, allowed_m3u_profiles
+                )
+
+            preview_stream, m3u_profile_id = pick_channel_preview_target(
+                channel, allowed_m3u_profiles
+            )
+            if preview_stream is None or m3u_profile_id is None:
+                return JsonResponse(
+                    {"error": "No compatible streams available for preview"},
+                    status=503,
+                )
+            if not preview_stream.stream_hash:
+                return JsonResponse(
+                    {"error": "Stream has no preview id"},
+                    status=503,
+                )
+
+            channel_id = preview_worker_id(preview_stream.stream_hash, m3u_profile_id)
+            channel = preview_stream
+            channel_display_name = getattr(preview_stream, "name", channel_display_name)
+            override_stream_profile_id = proxy_profile_id
+            logger.info(
+                f"[{client_id}] skip_redirect channel preview remapped to "
+                f"stream worker {channel_id}"
+            )
+
+        elif isinstance(channel, Stream) and skip_redirect_requested:
+            if not channel.stream_hash:
+                return JsonResponse(
+                    {"error": "Stream has no preview id"},
+                    status=503,
+                )
+            m3u_profile_id = pick_stream_m3u_profile_id(channel, allowed_m3u_profiles)
+            if m3u_profile_id is None:
+                return JsonResponse(
+                    {"error": "No compatible M3U profile available for preview"},
+                    status=503,
+                )
+            channel_id = preview_worker_id(channel.stream_hash, m3u_profile_id)
+            logger.info(
+                f"[{client_id}] skip_redirect stream preview scoped to "
+                f"worker {channel_id}"
+            )
+
+            if stream_profile.is_redirect():
+                proxy_profile_id = _resolve_proxy_profile_id(client_id)
+                if proxy_profile_id is None:
+                    return JsonResponse(
+                        {"error": "Proxy stream profile not found"},
+                        status=500,
+                    )
+                override_stream_profile_id = proxy_profile_id
+
+        if user and not check_user_stream_limits(
+            user, client_id, media_id=channel_id
+        ):
+            return _stream_limit_response(user)
 
         if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
             logger.info(
@@ -297,94 +654,26 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
             if perform_setup:
                 try:
-                    # Use fixed retry interval and timeout
-                    retry_timeout = 3  # 3 seconds total timeout
-                    retry_interval = 0.1  # 100ms between attempts
-                    wait_start_time = time.time()
-
-                    stream_url = None
-                    stream_user_agent = None
-                    transcode = False
-                    profile_value = None
-                    slot_reserved = False
-                    error_reason = None
-                    resolved_stream_id = None
-                    attempt = 0
-                    should_retry = True
-
-                    # Try to get a stream with fixed interval retries
-                    while should_retry and time.time() - wait_start_time < retry_timeout:
-                        attempt += 1
-                        (
-                            stream_url,
-                            stream_user_agent,
-                            transcode,
-                            profile_value,
-                            slot_reserved,
-                            error_reason,
-                            resolved_stream_id,
-                        ) = generate_stream_url(
-                            channel_id, user, allowed_m3u_profiles
-                        )
-
-                        if stream_url is not None:
-                            logger.info(
-                                f"[{client_id}] Successfully obtained stream for channel {channel_id} after {attempt} attempts"
-                            )
-                            break
-
-                        # On first failure, check if the error is retryable
-                        if attempt == 1:
-                            if error_reason and "maximum connection limits" not in error_reason:
-                                logger.warning(
-                                    f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
-                                )
-                                should_retry = False
-                                break
-
-                        # Check if we have time remaining for another sleep cycle
-                        elapsed_time = time.time() - wait_start_time
-                        remaining_time = retry_timeout - elapsed_time
-
-                        # If we don't have enough time for the next sleep interval, break
-                        # but only after we've already made an attempt (the while condition will try one more time)
-                        if remaining_time <= retry_interval:
-                            logger.info(
-                                f"[{client_id}] Insufficient time ({remaining_time:.1f}s) for another sleep cycle, will make one final attempt"
-                            )
-                            break
-
-                        # Wait before retrying
-                        logger.info(
-                            f"[{client_id}] Waiting {retry_interval*1000:.0f}ms for a connection to become available (attempt {attempt}, {remaining_time:.1f}s remaining)"
-                        )
-                        gevent.sleep(retry_interval)
-                        retry_interval += 0.025  # Increase wait time by 25ms for next attempt
-
-                    # Make one final attempt if we still don't have a stream, should retry, and haven't exceeded timeout
-                    if stream_url is None and should_retry and time.time() - wait_start_time < retry_timeout:
-                        attempt += 1
-                        logger.info(
-                            f"[{client_id}] Making final attempt {attempt} at timeout boundary"
-                        )
-                        (
-                            stream_url,
-                            stream_user_agent,
-                            transcode,
-                            profile_value,
-                            slot_reserved,
-                            error_reason,
-                            resolved_stream_id,
-                        ) = generate_stream_url(
-                            channel_id, user, allowed_m3u_profiles
-                        )
-                        if stream_url is not None:
-                            logger.info(
-                                f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
-                            )
+                    (
+                        stream_url,
+                        stream_user_agent,
+                        transcode,
+                        profile_value,
+                        slot_reserved,
+                        error_reason,
+                        resolved_stream_id,
+                        attempt,
+                        wait_start_time,
+                    ) = _obtain_stream_with_retries(
+                        channel_id,
+                        client_id,
+                        user,
+                        allowed_m3u_profiles,
+                        override_stream_profile_id=override_stream_profile_id,
+                    )
 
                     if stream_url is None:
-                        if slot_reserved and not channel.release_stream():
+                        if slot_reserved and not release_worker_stream(channel_id):
                             logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                         # Get the specific error message if available
@@ -406,146 +695,33 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     if needs_initialization and slot_reserved:
                         connection_allocated = True
 
-                    # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
-                    # Avoid calling get_stream() again (INCR profile counter)
-                    # It could double-allocate if the keys were cleared by a concurrent release.
-                    stream_id = None
-                    m3u_profile_id = None
-                    if proxy_server.redis_client:
-                        stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
-                        if stream_id_bytes:
-                            stream_id = int(stream_id_bytes)
-                            profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
-                            if profile_id_bytes:
-                                m3u_profile_id = int(profile_id_bytes)
+                    # generate_stream_url already resolved the stream. Scoped previews
+                    # carry the M3U profile in the worker id; otherwise read it from
+                    # the assignment (channel_stream is keyed by channel pk, and a
+                    # bare Stream has no channel assignment to look up).
+                    stream_id = resolved_stream_id
+                    _stream_key, m3u_profile_id = parse_preview_worker_id(channel_id)
+                    if m3u_profile_id is None and proxy_server.redis_client:
+                        if isinstance(channel, Channel):
+                            stream_id_bytes = proxy_server.redis_client.get(
+                                f"channel_stream:{channel.id}"
+                            )
+                            if stream_id_bytes:
+                                stream_id = int(stream_id_bytes)
+                        profile_id_bytes = proxy_server.redis_client.get(
+                            f"stream_profile:{stream_id}"
+                        )
+                        if profile_id_bytes:
+                            m3u_profile_id = int(profile_id_bytes)
                     logger.info(
                         f"Channel {channel_id} using stream ID {stream_id}, m3u account profile ID {m3u_profile_id}"
                     )
 
-                    # Generate transcode command if needed
-                    stream_profile = channel.get_stream_profile()
-                    if stream_profile.is_redirect():
-                        from apps.proxy.config import TSConfig
-
-                        def _redirect_response(url):
-                            """Hand the client the provider URL (HTTP or non-HTTP)."""
-                            if url.startswith(("rtsp://", "rtp://", "udp://")):
-                                logger.info(
-                                    f"[{client_id}] Using manual redirect for non-HTTP protocol"
-                                )
-                                response = HttpResponse(status=301)
-                                response["Location"] = url
-                                return response
-                            return HttpResponseRedirect(url)
-
-                        def _release_redirect_slot():
-                            nonlocal connection_allocated
-                            if connection_allocated and not channel.release_stream():
-                                logger.warning(
-                                    f"[{client_id}] Failed to release stream before redirect"
-                                )
-                            connection_allocated = False
-
-                        # Optional pre-check (Settings → Proxy → Validate Redirect URLs).
-                        # Some providers abort HEAD/GET probes and waste a connection
-                        # slot; disabling skips failover probing and redirects immediately.
-                        if not TSConfig.get_validate_redirect_urls():
-                            logger.info(
-                                f"[{client_id}] Redirect URL validation disabled; "
-                                f"handing off to {stream_url}"
-                            )
-                            _release_redirect_slot()
-                            return _redirect_response(stream_url)
-
-                        # Validate the stream URL before redirecting
-                        from .url_utils import (
-                            validate_stream_url,
-                            get_alternate_streams,
-                            get_stream_info_for_switch,
-                        )
-
-                        # Try initial URL
-                        logger.info(f"[{client_id}] Validating redirect URL: {stream_url}")
-                        is_valid, final_url, status_code, message = validate_stream_url(
-                            stream_url, user_agent=stream_user_agent, timeout=(5, 5)
-                        )
-
-                        # If first URL doesn't validate, try alternates
-                        if not is_valid:
-                            logger.warning(
-                                f"[{client_id}] Primary stream URL failed validation: {message}"
-                            )
-
-                            # Track tried streams to avoid loops. Use the stream
-                            # actually chosen for this request (not Redis
-                            # channel_stream), since Redirect allowlist selection
-                            # does not write a shared assignment.
-                            tried_streams = {resolved_stream_id}
-
-                            alternates = get_alternate_streams(
-                                channel_id,
-                                resolved_stream_id,
-                                allowed_m3u_profiles,
-                            )
-
-                            # Try each alternate until one works
-                            for alt in alternates:
-                                if alt["stream_id"] in tried_streams:
-                                    continue
-
-                                tried_streams.add(alt["stream_id"])
-
-                                # Get stream info
-                                alt_info = get_stream_info_for_switch(
-                                    channel_id, alt["stream_id"], alt["profile_id"]
-                                )
-                                if "error" in alt_info:
-                                    logger.warning(
-                                        f"[{client_id}] Error getting alternate stream info: {alt_info['error']}"
-                                    )
-                                    continue
-
-                                # Validate the alternate URL
-                                logger.info(
-                                    f"[{client_id}] Trying alternate stream #{alt['stream_id']}: {alt_info['url']}"
-                                )
-                                is_valid, final_url, status_code, message = validate_stream_url(
-                                    alt_info["url"],
-                                    user_agent=alt_info["user_agent"],
-                                    timeout=(5, 5),
-                                )
-
-                                if is_valid:
-                                    logger.info(
-                                        f"[{client_id}] Alternate stream #{alt['stream_id']} validated successfully"
-                                    )
-                                    break
-                                else:
-                                    logger.warning(
-                                        f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
-                                    )
-                        # Release stream lock before redirecting only if we reserved a slot
-                        _release_redirect_slot()
-                        # Final decision based on validation results
-                        if is_valid:
-                            logger.info(
-                                f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
-                            )
-                            return _redirect_response(final_url)
-                        else:
-                            logger.error(
-                                f"[{client_id}] All available redirect URLs failed validation"
-                            )
-                            return JsonResponse(
-                                {"error": "All available streams failed validation"}, status=502
-                            )  # 502 Bad Gateway
-
-                    # Initialize channel with the stream's user agent (not the client's)
+                    # Initialize channel with the stream's user agent (not the client's).
                     if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
-                        if connection_allocated:
-                            if not channel.release_stream():
-                                logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
-                            connection_allocated = False
+                        if connection_allocated and not release_worker_stream(channel_id):
+                            logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
+                        connection_allocated = False
                         logger.info(
                             f"[{client_id}] Channel {channel_id} unavailable before init call, rejecting"
                         )
@@ -563,10 +739,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     )
 
                     if not success:
-                        if connection_allocated:
-                            if not channel.release_stream():
-                                logger.warning(f"[{client_id}] Failed to release stream after init failure")
-                            connection_allocated = False
+                        if connection_allocated and not release_worker_stream(channel_id):
+                            logger.warning(f"[{client_id}] Failed to release stream after init failure")
+                        connection_allocated = False
                         return JsonResponse(
                             {"error": "Failed to initialize channel"}, status=500
                         )
@@ -789,7 +964,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
         if connection_allocated and channel is not None:
             try:
-                if not channel.release_stream():
+                if not release_worker_stream(channel_id):
                     logger.warning(f"[{client_id}] Failed to release stream in exception handler")
             except Exception:
                 pass

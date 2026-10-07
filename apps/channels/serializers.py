@@ -161,6 +161,7 @@ class StreamSerializer(serializers.ModelSerializer):
             "stream_chno",
             "is_catchup",
             "catchup_days",
+            "is_radio",
         ]
 
     def get_fields(self):
@@ -384,11 +385,13 @@ class ChannelOverrideSerializer(serializers.ModelSerializer):
             "tvc_guide_stationid",
             "epg_data_id",
             "stream_profile_id",
+            "is_radio",
         ]
         extra_kwargs = {
             "name": {"allow_null": True, "required": False},
             "tvg_id": {"allow_null": True, "required": False},
             "tvc_guide_stationid": {"allow_null": True, "required": False},
+            "is_radio": {"allow_null": True, "required": False},
         }
 
 
@@ -458,6 +461,7 @@ class ChannelSerializer(serializers.ModelSerializer):
     effective_tvc_guide_stationid = serializers.SerializerMethodField()
     effective_epg_data_id = serializers.SerializerMethodField()
     effective_stream_profile_id = serializers.SerializerMethodField()
+    effective_is_radio = serializers.SerializerMethodField()
 
     class Meta:
         model = Channel
@@ -477,6 +481,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "is_adult",
             "is_catchup",
             "catchup_days",
+            "is_radio",
             "hidden_from_output",
             "auto_created",
             "auto_created_by",
@@ -491,6 +496,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "effective_tvc_guide_stationid",
             "effective_epg_data_id",
             "effective_stream_profile_id",
+            "effective_is_radio",
         ]
 
     def _effective_value(self, obj, field_name):
@@ -531,6 +537,9 @@ class ChannelSerializer(serializers.ModelSerializer):
     def get_effective_stream_profile_id(self, obj):
         return self._effective_value(obj, "stream_profile_id")
 
+    def get_effective_is_radio(self, obj):
+        return self._effective_value(obj, "is_radio")
+
     def get_source_stream(self, obj):
         """
         Return the originating provider stream for an auto-created channel.
@@ -560,21 +569,31 @@ class ChannelSerializer(serializers.ModelSerializer):
         }
 
     def to_representation(self, instance):
+        # `streams` stays a writable M2M field for create/update. Output must
+        # not evaluate that relation: the declared field would query it once
+        # per channel. Swap in a method field once; doing it per row rebinds
+        # and throws away the cached readable-field list.
         include_streams = self.context.get("include_streams", False)
+        attr = (
+            "_streams_output_field_full"
+            if include_streams
+            else "_streams_output_field_ids"
+        )
+        field = getattr(self, attr, None)
+        if field is None:
+            if include_streams:
+                field = serializers.SerializerMethodField()
+            else:
+                field = serializers.SerializerMethodField(
+                    method_name="get_stream_ids"
+                )
+            setattr(self, attr, field)
+            self.fields["streams"] = field
+            self.__dict__.pop("_readable_fields", None)
+        return super().to_representation(instance)
 
-        if include_streams:
-            self.fields["streams"] = serializers.SerializerMethodField()
-            return super().to_representation(instance)
-        else:
-            # Read from the prefetched channelstream_set (ordered by the
-            # viewset's Prefetch); chaining .order_by() rebuilds the
-            # queryset and fires one SELECT per row in list responses.
-            representation = super().to_representation(instance)
-            if "streams" in representation:
-                representation["streams"] = [
-                    cs.stream_id for cs in instance.channelstream_set.all()
-                ]
-            return representation
+    def get_stream_ids(self, obj):
+        return [cs.stream_id for cs in obj.channelstream_set.all()]
 
     def get_logo(self, obj):
         return LogoSerializer(obj.logo).data

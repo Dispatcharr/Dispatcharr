@@ -4,6 +4,7 @@ from datetime import timezone as dt_timezone
 from datetime import timedelta
 from unittest.mock import patch
 
+import pytz
 from django.test import SimpleTestCase, TestCase, Client
 from django.urls import reverse
 from uuid import uuid4
@@ -226,6 +227,111 @@ class CustomDummyEpgTest(TestCase):
         self.assertTrue(all(p["end_time"] >= lookback for p in programs))
         self.assertTrue(all(p["start_time"] < cutoff for p in programs))
         self.assertTrue(all("Ended" in (p.get("description") or "") for p in programs))
+
+    def test_time_only_multi_day_keeps_a_single_main_event(self):
+        """Default multi-day XMLTV export still has one live block, then ended filler."""
+        epg_source = self._epg_source(
+            name="Daily Recurring",
+            custom_properties={
+                **NHL_PROPS,
+                "date_pattern": "",
+                "timezone": "UTC",
+                "title_template": "LIVE | {team1}",
+                "upcoming_title_template": "UPCOMING | {team1}",
+                "ended_title_template": "ENDED | {team1}",
+                "description_template": "Live",
+                "upcoming_description_template": "Upcoming",
+                "ended_description_template": "Ended",
+                "program_duration": 180,
+            },
+        )
+        fixed_now = timezone.datetime(2026, 1, 15, 12, 0, 0, tzinfo=dt_timezone.utc)
+        channel_name = "NHL 01: Capitals vs Flyers @ 07:00 PM ET"
+
+        with patch("apps.output.dummy_epg.django_timezone.now", return_value=fixed_now):
+            programs = generate_custom_dummy_programs(
+                channel_id="nhl01",
+                channel_name=channel_name,
+                now=fixed_now,
+                num_days=3,
+                custom_properties=epg_source.custom_properties,
+                export_lookback=fixed_now,
+                export_cutoff=fixed_now + timedelta(days=3),
+            )
+
+        live = [p for p in programs if p["title"].startswith("LIVE |")]
+        self.assertEqual(len(live), 1)
+        self.assertEqual(live[0]["start_time"].day, 15)
+        later = [p for p in programs if p["start_time"] >= live[0]["end_time"]]
+        self.assertTrue(later)
+        self.assertTrue(all(p["title"].startswith("ENDED |") for p in later))
+
+    def test_time_only_keeps_today_event_when_lookback_crosses_midnight(self):
+        """Generation starting yesterday must still place today's upcoming kickoff."""
+        epg_source = self._epg_source(
+            name="Midnight Cross",
+            custom_properties={
+                **NHL_PROPS,
+                "date_pattern": "",
+                "timezone": "US/Eastern",
+                "upcoming_title_template": "02 UPCOMING | {team1}",
+                "title_template": "01 LIVE | {team1}",
+                "ended_title_template": "03 ENDED | {team1}",
+                "upcoming_description_template": "Upcoming",
+                "description_template": "Live",
+                "ended_description_template": "Ended",
+                "program_duration": 240,
+            },
+        )
+        # 00:30 ET on Sep 20: guide lookback is still Sep 19 ET, kickoff is 1pm ET today.
+        fixed_now = timezone.datetime(2026, 9, 20, 4, 30, 0, tzinfo=dt_timezone.utc)
+        lookback = fixed_now - timedelta(hours=1, seconds=5)
+        cutoff = fixed_now + timedelta(hours=24)
+        gen_start = lookback.replace(minute=0, second=0, microsecond=0)
+        channel_name = "NHL 01: Browns vs Buccaneers @ 01:00 PM ET"
+
+        eastern = pytz.timezone("US/Eastern")
+        self.assertEqual(gen_start.astimezone(eastern).date().isoformat(), "2026-09-19")
+        self.assertEqual(fixed_now.astimezone(eastern).date().isoformat(), "2026-09-20")
+        with patch("apps.output.dummy_epg.django_timezone.now", return_value=fixed_now):
+            programs = generate_custom_dummy_programs(
+                channel_id="nfl01",
+                channel_name=channel_name,
+                now=gen_start,
+                num_days=3,
+                custom_properties=epg_source.custom_properties,
+                export_lookback=lookback,
+                export_cutoff=cutoff,
+            )
+
+        titles = [p["title"] for p in programs]
+        self.assertTrue(
+            any(t.startswith("02 UPCOMING") for t in titles),
+            f"expected upcoming before kickoff, got {titles}",
+        )
+        self.assertTrue(
+            any(t.startswith("01 LIVE") for t in titles),
+            f"expected today's live event, got {titles}",
+        )
+        self.assertFalse(
+            all(t.startswith("03 ENDED") for t in titles),
+            f"entire window was ended: {titles}",
+        )
+        live = [p for p in programs if p["title"].startswith("01 LIVE")]
+        self.assertEqual(len(live), 1)
+        self.assertEqual(live[0]["start_time"].day, 20)
+        self.assertEqual(live[0]["start_time"].hour, 17)  # 1pm ET in EDT
+        for earlier in programs:
+            for later in programs:
+                if earlier is later:
+                    continue
+                self.assertFalse(
+                    earlier["start_time"] < later["end_time"]
+                    and later["start_time"] < earlier["end_time"]
+                )
+        upcoming = [p for p in programs if p["title"].startswith("02 UPCOMING")]
+        self.assertTrue(upcoming)
+        self.assertLessEqual(upcoming[-1]["end_time"], live[0]["start_time"])
 
     def test_no_time_pattern_fills_day_blocks(self):
         epg_source = self._epg_source(

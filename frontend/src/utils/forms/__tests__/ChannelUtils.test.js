@@ -148,6 +148,7 @@ describe('ChannelUtils', () => {
         logo_id: '10',
         user_level: '1',
         is_adult: false,
+        is_radio: false,
         hidden_from_output: false,
       });
     });
@@ -226,6 +227,15 @@ describe('ChannelUtils', () => {
       expect(result.user_level).toBe('0');
     });
 
+    it('uses the effective is_radio so an override loads into the form', () => {
+      const channel = makeChannel({
+        is_radio: true,
+        effective_is_radio: false,
+      });
+      const result = getChannelFormDefaultValues(channel, makeChannelGroups());
+      expect(result.is_radio).toBe(false);
+    });
+
     it('defaults is_adult to false when channel is null', () => {
       const result = getChannelFormDefaultValues(null, makeChannelGroups());
       expect(result.is_adult).toBe(false);
@@ -245,6 +255,7 @@ describe('ChannelUtils', () => {
         logo_id: '',
         user_level: '0',
         is_adult: false,
+        is_radio: false,
         hidden_from_output: false,
       });
     });
@@ -791,6 +802,24 @@ describe('ChannelUtils', () => {
         stream_profile_id: ch.stream_profile_id,
       };
       expect(buildOverridePayload(ch, formattedValues)).toBeNull();
+    });
+
+    it('keeps an is_radio override of false instead of clearing it', () => {
+      const ch = makeChannel({ is_radio: true });
+      const formattedValues = {
+        name: ch.name,
+        channel_number: ch.channel_number,
+        channel_group_id: ch.channel_group_id,
+        logo_id: ch.logo_id,
+        tvg_id: ch.tvg_id,
+        tvc_guide_stationid: ch.tvc_guide_stationid,
+        epg_data_id: ch.epg_data_id,
+        stream_profile_id: ch.stream_profile_id,
+        is_radio: false,
+      };
+      const payload = buildOverridePayload(ch, formattedValues);
+      expect(payload).not.toBeNull();
+      expect(payload.is_radio).toBe(false);
     });
 
     it('emits the diverging field with form value, others as null (clear)', () => {

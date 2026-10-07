@@ -300,6 +300,607 @@ class ChannelSummaryEffectiveValuesTests(TestCase):
         self.assertEqual(row["channel_group_id"], self.other_group.id)
 
 
+class ChannelListEffectiveOrderingTests(TestCase):
+    """
+    Channels tab sorting uses ?ordering=channel_number / name, but the
+    table displays effective_* values. Ordering must follow the override
+    coalesced numbers and names, not the raw provider columns.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="order_admin", password="x"
+        )
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.group = ChannelGroup.objects.create(name="Order Group")
+        # Raw order would be B (2), C (10), A (500). Effective order is
+        # A (1), B (2), C (3).
+        self.channel_a = Channel.objects.create(
+            channel_number=500.0,
+            name="Zebra Provider",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=self.channel_a,
+            channel_number=1.0,
+            name="Alpha Override",
+        )
+        self.channel_b = Channel.objects.create(
+            channel_number=2.0,
+            name="Beta Channel",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        self.channel_c = Channel.objects.create(
+            channel_number=10.0,
+            name="Y Provider",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=self.channel_c,
+            channel_number=3.0,
+            name="Charlie Override",
+        )
+
+    def test_list_orders_by_effective_channel_number(self):
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"ordering": "channel_number", "page_size": 50},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.data["results"]
+        ordered_ids = [row["id"] for row in rows]
+        self.assertEqual(
+            ordered_ids,
+            [self.channel_a.id, self.channel_b.id, self.channel_c.id],
+        )
+        self.assertEqual(
+            [row["effective_channel_number"] for row in rows],
+            [1.0, 2.0, 3.0],
+        )
+
+    def test_list_orders_by_effective_name(self):
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"ordering": "name", "page_size": 50},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.data["results"]
+        self.assertEqual(
+            [row["id"] for row in rows],
+            [self.channel_a.id, self.channel_b.id, self.channel_c.id],
+        )
+        self.assertEqual(
+            [row["effective_name"] for row in rows],
+            ["Alpha Override", "Beta Channel", "Charlie Override"],
+        )
+
+    def test_get_ids_orders_by_effective_channel_number(self):
+        response = self.client.get(
+            "/api/channels/channels/ids/",
+            {"ordering": "channel_number"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            [self.channel_a.id, self.channel_b.id, self.channel_c.id],
+        )
+
+    def _page_ids(self, **params):
+        response = self.client.get("/api/channels/channels/", params)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return [row["id"] for row in response.data["results"]]
+
+    def test_pages_follow_effective_order_across_page_boundary(self):
+        base = {"ordering": "channel_number", "page_size": 2}
+        self.assertEqual(
+            self._page_ids(page=1, **base),
+            [self.channel_a.id, self.channel_b.id],
+        )
+        self.assertEqual(
+            self._page_ids(page=2, **base), [self.channel_c.id]
+        )
+
+    def test_descending_effective_order(self):
+        self.assertEqual(
+            self._page_ids(ordering="-channel_number", page_size=50),
+            [self.channel_c.id, self.channel_b.id, self.channel_a.id],
+        )
+
+    def test_default_order_is_descending_effective_number(self):
+        self.assertEqual(
+            self._page_ids(page_size=50),
+            [self.channel_c.id, self.channel_b.id, self.channel_a.id],
+        )
+
+    def test_effective_order_with_profile_filter_has_no_duplicates(self):
+        from apps.channels.models import ChannelProfile
+
+        profile = ChannelProfile.objects.create(name="Order Profile")
+        base = {
+            "ordering": "channel_number",
+            "channel_profile_id": profile.id,
+            "page_size": 2,
+        }
+        first = self._page_ids(page=1, **base)
+        second = self._page_ids(page=2, **base)
+        self.assertEqual(
+            first + second,
+            [self.channel_a.id, self.channel_b.id, self.channel_c.id],
+        )
+
+    def test_unsortable_field_is_ignored(self):
+        self.assertEqual(
+            self._page_ids(ordering="uuid", page_size=50),
+            [self.channel_c.id, self.channel_b.id, self.channel_a.id],
+        )
+
+    def test_other_ordering_fields_still_work(self):
+        self.assertEqual(
+            len(self._page_ids(ordering="channel_group__name", page_size=50)),
+            3,
+        )
+
+    def test_list_orders_by_effective_group_name(self):
+        # Raw group names would put A last (ZZZ), but its override pin lands
+        # in AAA, so effective group order must put A first.
+        early = ChannelGroup.objects.create(name="AAA Override Group")
+        mid = ChannelGroup.objects.create(name="MMM Provider Group")
+        late = ChannelGroup.objects.create(name="ZZZ Provider Group")
+        self.channel_a.channel_group = late
+        self.channel_a.save(update_fields=["channel_group"])
+        self.channel_b.channel_group = mid
+        self.channel_b.save(update_fields=["channel_group"])
+        self.channel_c.channel_group = late
+        self.channel_c.save(update_fields=["channel_group"])
+        ChannelOverride.objects.filter(channel=self.channel_a).update(
+            channel_group=early
+        )
+
+        self.assertEqual(
+            self._page_ids(ordering="channel_group__name", page_size=50),
+            [self.channel_a.id, self.channel_b.id, self.channel_c.id],
+        )
+
+
+class ChannelEffectiveWriteAPITests(TestCase):
+    """
+    Drag-reorder, assign, and from-stream must operate on effective
+    channel numbers so override pins stay consistent with the UI.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="write_admin", password="x"
+        )
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.group = ChannelGroup.objects.create(name="Write Group")
+
+    def test_reorder_moves_using_effective_numbers(self):
+        # Visible order by effective #: A(1), B(2), C(3). Raw would be
+        # B(2), C(10), A(500). Drag A after C should place A at 3 and
+        # shift C to 2; A is auto-synced so the new pin lands on override.
+        channel_a = Channel.objects.create(
+            channel_number=500.0,
+            name="A",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel_a, channel_number=1.0)
+        channel_b = Channel.objects.create(
+            channel_number=2.0,
+            name="B",
+            channel_group=self.group,
+        )
+        channel_c = Channel.objects.create(
+            channel_number=10.0,
+            name="C",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel_c, channel_number=3.0)
+
+        response = self.client.post(
+            f"/api/channels/channels/{channel_a.id}/reorder/",
+            {"insert_after_id": channel_c.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["channel"]["effective_channel_number"], 3.0)
+
+        channel_a.refresh_from_db()
+        channel_b.refresh_from_db()
+        channel_c.refresh_from_db()
+        # Provider raw numbers for auto-synced rows stay put; visible
+        # order becomes B(1), C(2), A(3).
+        self.assertEqual(channel_a.channel_number, 500.0)
+        self.assertEqual(
+            ChannelOverride.objects.get(channel=channel_a).channel_number, 3.0
+        )
+        self.assertEqual(
+            ChannelOverride.objects.get(channel=channel_c).channel_number, 2.0
+        )
+        self.assertEqual(channel_b.channel_number, 1.0)
+
+        ordered = self.client.get(
+            "/api/channels/channels/",
+            {"ordering": "channel_number", "page_size": 50},
+        )
+        self.assertEqual(
+            [row["id"] for row in ordered.data["results"]],
+            [channel_b.id, channel_c.id, channel_a.id],
+        )
+
+    def test_reorder_leaves_pinned_raw_number_outside_the_visible_gap(self):
+        # Visible order is A(1), B(2), C(3). Spectator's raw 2 sits in the
+        # numeric window, but its pin is 100, so the drag must not move it.
+        channel_a = Channel.objects.create(
+            channel_number=500.0,
+            name="A",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel_a, channel_number=1.0)
+        Channel.objects.create(
+            channel_number=2.0, name="B", channel_group=self.group
+        )
+        channel_c = Channel.objects.create(
+            channel_number=10.0,
+            name="C",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel_c, channel_number=3.0)
+        spectator = Channel.objects.create(
+            channel_number=2.0,
+            name="Spectator",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=spectator, channel_number=100.0)
+
+        response = self.client.post(
+            f"/api/channels/channels/{channel_a.id}/reorder/",
+            {"insert_after_id": channel_c.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+        spectator.refresh_from_db()
+        self.assertEqual(spectator.channel_number, 2.0)
+        self.assertEqual(
+            ChannelOverride.objects.get(channel=spectator).channel_number, 100.0
+        )
+
+    def test_reorder_creates_override_for_auto_created_without_one(self):
+        first = Channel.objects.create(
+            channel_number=1.0, name="First", channel_group=self.group
+        )
+        second = Channel.objects.create(
+            channel_number=2.0, name="Second", channel_group=self.group
+        )
+        synced = Channel.objects.create(
+            channel_number=3.0,
+            name="Synced",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        self.assertFalse(ChannelOverride.objects.filter(channel=synced).exists())
+
+        response = self.client.post(
+            f"/api/channels/channels/{synced.id}/reorder/",
+            {"insert_after_id": None},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["channel"]["effective_channel_number"], 1.0)
+
+        synced.refresh_from_db()
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(synced.channel_number, 3.0)
+        self.assertEqual(
+            ChannelOverride.objects.get(channel=synced).channel_number, 1.0
+        )
+        self.assertEqual((first.channel_number, second.channel_number), (2.0, 3.0))
+
+    def test_reorder_rejects_unknown_target(self):
+        channel = Channel.objects.create(
+            channel_number=1.0, name="Only", channel_group=self.group
+        )
+        for bad_target in (999999, "not-an-id", ""):
+            response = self.client.post(
+                f"/api/channels/channels/{channel.id}/reorder/",
+                {"insert_after_id": bad_target},
+                format="json",
+            )
+            self.assertEqual(
+                response.status_code, status.HTTP_404_NOT_FOUND, bad_target
+            )
+
+    def test_assign_rejects_invalid_channel_ids(self):
+        response = self.client.post(
+            "/api/channels/channels/assign/",
+            {"channel_ids": ["nope"], "starting_number": 1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_assign_duplicate_ids_do_not_crash(self):
+        auto = Channel.objects.create(
+            channel_number=50.0,
+            name="Dup Auto",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        response = self.client.post(
+            "/api/channels/channels/assign/",
+            {"channel_ids": [auto.id, auto.id], "starting_number": 7},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            ChannelOverride.objects.get(channel=auto).channel_number, 8.0
+        )
+
+    def test_assign_writes_override_for_auto_created(self):
+        auto = Channel.objects.create(
+            channel_number=50.0,
+            name="Auto",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=auto, channel_number=9.0)
+        manual = Channel.objects.create(
+            channel_number=2.0,
+            name="Manual",
+            channel_group=self.group,
+        )
+
+        response = self.client.post(
+            "/api/channels/channels/assign/",
+            {"channel_ids": [auto.id, manual.id], "starting_number": 100},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        auto.refresh_from_db()
+        manual.refresh_from_db()
+        self.assertEqual(auto.channel_number, 50.0)
+        self.assertEqual(
+            ChannelOverride.objects.get(channel=auto).channel_number, 100.0
+        )
+        self.assertEqual(manual.channel_number, 101.0)
+
+    def test_assign_matching_provider_number_keeps_other_overrides(self):
+        auto = Channel.objects.create(
+            channel_number=5.0,
+            name="Provider",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=auto,
+            name="Kept Name",
+            channel_number=9.0,
+        )
+
+        response = self.client.post(
+            "/api/channels/channels/assign/",
+            {"channel_ids": [auto.id], "starting_number": 5},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        override = ChannelOverride.objects.get(channel=auto)
+        self.assertEqual(override.name, "Kept Name")
+        self.assertIsNone(override.channel_number)
+
+    def test_from_stream_highest_and_collision_use_overrides(self):
+        from apps.channels.models import Stream
+        from apps.m3u.models import M3UAccount
+
+        Channel.objects.create(
+            channel_number=1.0,
+            name="Low raw",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        pinned = Channel.objects.create(
+            channel_number=2.0,
+            name="Pinned high",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=pinned, channel_number=50.0)
+
+        account = M3UAccount.objects.create(
+            name="from-stream-acct",
+            account_type="STD",
+        )
+        stream = Stream.objects.create(
+            name="New Stream",
+            url="http://example.com/new.ts",
+            m3u_account=account,
+            channel_group=self.group,
+            stream_chno=50.0,
+        )
+
+        # Provider #50 is reserved by override; from-stream should skip it.
+        response = self.client.post(
+            "/api/channels/channels/from-stream/",
+            {"stream_id": stream.id, "channel_number": 50},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotEqual(response.data["channel_number"], 50.0)
+
+        stream2 = Stream.objects.create(
+            name="Highest Stream",
+            url="http://example.com/high.ts",
+            m3u_account=account,
+            channel_group=self.group,
+        )
+        response = self.client.post(
+            "/api/channels/channels/from-stream/",
+            {"stream_id": stream2.id, "channel_number": -1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        # Highest effective is at least 50; new channel should be > 50.
+        self.assertGreater(response.data["channel_number"], 50.0)
+
+    def test_search_matches_override_name(self):
+        channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Provider Name",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel, name="UniqueOverrideLabel")
+
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"search": "UniqueOverrideLabel", "page_size": 50},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row["id"] for row in response.data["results"]]
+        self.assertEqual(ids, [channel.id])
+
+        ordered = self.client.get(
+            "/api/channels/channels/",
+            {"search": "UniqueOverrideLabel", "ordering": "channel_number", "page_size": 50},
+        )
+        self.assertEqual(ordered.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [row["id"] for row in ordered.data["results"]],
+            [channel.id],
+        )
+
+    def test_bulk_create_reserves_override_pins(self):
+        from apps.channels.models import Stream
+        from apps.channels.tasks import bulk_create_channels_from_streams
+        from apps.m3u.models import M3UAccount
+
+        pinned = Channel.objects.create(
+            channel_number=1.0,
+            name="Pinned",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=pinned, channel_number=7.0)
+        account = M3UAccount.objects.create(
+            name="bulk-reserve-acct", account_type="STD"
+        )
+        stream = Stream.objects.create(
+            name="Bulk Stream",
+            url="http://example.com/bulk.ts",
+            m3u_account=account,
+            channel_group=self.group,
+            stream_chno=7.0,
+        )
+
+        result = bulk_create_channels_from_streams.run(
+            [stream.id], starting_channel_number=None
+        )
+        self.assertEqual(result["created_count"], 1)
+        created = Channel.objects.exclude(id=pinned.id).get(name="Bulk Stream")
+        self.assertNotEqual(created.channel_number, 7.0)
+
+
+class ChannelListEffectiveFilterTests(TestCase):
+    """
+    Name, group, and EPG filters must match what the Channels table
+    displays (override first, provider value as fallback).
+    """
+
+    def setUp(self):
+        from apps.epg.models import EPGData, EPGSource
+
+        self.user = User.objects.create_user(
+            username="filter_admin", password="x"
+        )
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.provider_group = ChannelGroup.objects.create(name="Provider Group")
+        self.override_group = ChannelGroup.objects.create(name="Override Group")
+        source = EPGSource.objects.create(name="Filter Src", source_type="xmltv")
+        self.epg = EPGData.objects.create(
+            tvg_id="filter.epg", name="Filter EPG", epg_source=source
+        )
+
+        self.overridden = Channel.objects.create(
+            channel_number=1.0,
+            name="Provider Name",
+            channel_group=self.provider_group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=self.overridden,
+            name="Shown Name",
+            channel_group=self.override_group,
+            epg_data=self.epg,
+        )
+        self.plain = Channel.objects.create(
+            channel_number=2.0,
+            name="Plain Channel",
+            channel_group=self.provider_group,
+        )
+
+    def _ids(self, **params):
+        response = self.client.get(
+            "/api/channels/channels/", {"page_size": 50, **params}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {row["id"] for row in response.data["results"]}
+
+    def test_name_filter_uses_override_not_provider_name(self):
+        self.assertEqual(self._ids(name="Shown"), {self.overridden.id})
+        self.assertEqual(self._ids(name="Provider Name"), set())
+        self.assertEqual(self._ids(name="Plain"), {self.plain.id})
+
+    def test_channel_group_filter_uses_override_group(self):
+        self.assertEqual(
+            self._ids(channel_group="Override Group"), {self.overridden.id}
+        )
+        self.assertEqual(
+            self._ids(channel_group="Provider Group"), {self.plain.id}
+        )
+        self.assertEqual(
+            self._ids(channel_group="Override Group,Provider Group"),
+            {self.overridden.id, self.plain.id},
+        )
+
+    def test_epg_filter_uses_override_epg(self):
+        self.assertEqual(self._ids(epg="Filter Src"), {self.overridden.id})
+        self.assertEqual(self._ids(epg="null"), {self.plain.id})
+
+    def test_unassigned_epg_flag_ignores_override_only_assignment(self):
+        self.plain.epg_data = self.epg
+        self.plain.save(update_fields=["epg_data"])
+        response = self.client.get("/api/channels/channels/", {"page_size": 50})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["has_unassigned_epg_channels"])
+
+    def test_search_covers_effective_name_and_group(self):
+        self.assertEqual(self._ids(search="Shown"), {self.overridden.id})
+        self.assertEqual(self._ids(search="Override Group"), {self.overridden.id})
+        self.assertEqual(
+            self._ids(search="Provider Group"), {self.plain.id}
+        )
+
+
 class ChannelManagerEffectiveValuesTests(TestCase):
     """
     The chainable ``Channel.objects.with_effective_values()`` shortcut
@@ -975,3 +1576,145 @@ class ChannelListOnlyCatchupFilterTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         sql = " ".join(q["sql"] for q in ctx.captured_queries).upper()
         self.assertNotIn("DISTINCT", sql)
+
+
+class ChannelListOnlyRadioFilterTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="radio_filter", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.radio_channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Radio Channel",
+            is_radio=True,
+        )
+        self.tv_channel = Channel.objects.create(
+            channel_number=2.0,
+            name="TV Channel",
+            is_radio=False,
+        )
+
+    def test_only_radio_returns_radio_channels(self):
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"only_radio": "true", "page": 1, "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.radio_channel.id})
+
+    def test_only_radio_uses_override(self):
+        ChannelOverride.objects.create(channel=self.radio_channel, is_radio=False)
+        ChannelOverride.objects.create(channel=self.tv_channel, is_radio=True)
+
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"only_radio": "true", "page": 1, "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.tv_channel.id})
+
+
+class ChannelRadioEditTests(TestCase):
+    """Radio edits: override row on auto-synced channels, column on manual ones."""
+
+    def setUp(self):
+        from apps.m3u.models import M3UAccount
+
+        self.user = User.objects.create_user(username="radio_edit", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.account = M3UAccount.objects.create(
+            name="radio-edit-account",
+            server_url="http://example.com/list.m3u",
+        )
+
+    def _stream(self, is_radio):
+        from apps.channels.models import Stream
+
+        return Stream.objects.create(
+            name="Radio Stream",
+            url="http://example.com/radio.ts",
+            m3u_account=self.account,
+            is_radio=is_radio,
+        )
+
+    def test_from_stream_copies_radio(self):
+        stream = self._stream(is_radio=True)
+
+        response = self.client.post(
+            "/api/channels/channels/from-stream/",
+            {"stream_id": stream.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(Channel.objects.get(pk=response.data["id"]).is_radio)
+
+    def test_override_false_is_stored_and_reported(self):
+        channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Auto Radio",
+            auto_created=True,
+            auto_created_by=self.account,
+            is_radio=True,
+        )
+
+        response = self.client.patch(
+            f"/api/channels/channels/{channel.id}/",
+            {"override": {"is_radio": False}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIs(ChannelOverride.objects.get(channel=channel).is_radio, False)
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_radio)
+        detail = self.client.get(f"/api/channels/channels/{channel.id}/")
+        self.assertIs(detail.data["effective_is_radio"], False)
+
+    def test_bulk_edit_routes_radio_like_the_editor(self):
+        auto = Channel.objects.create(
+            channel_number=3.0,
+            name="Auto Bulk",
+            auto_created=True,
+            auto_created_by=self.account,
+            is_radio=True,
+        )
+        manual = Channel.objects.create(channel_number=4.0, name="Manual Bulk")
+
+        response = self.client.patch(
+            "/api/channels/channels/edit/bulk/",
+            [
+                {"id": auto.id, "override": {"is_radio": False}},
+                {"id": manual.id, "is_radio": True},
+            ],
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertIs(ChannelOverride.objects.get(channel=auto).is_radio, False)
+        manual.refresh_from_db()
+        self.assertTrue(manual.is_radio)
+
+    def test_manual_channel_saves_column(self):
+        channel = Channel.objects.create(channel_number=2.0, name="Manual")
+
+        response = self.client.patch(
+            f"/api/channels/channels/{channel.id}/",
+            {"is_radio": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_radio)
+        self.assertFalse(ChannelOverride.objects.filter(channel=channel).exists())

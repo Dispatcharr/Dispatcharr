@@ -69,6 +69,102 @@ NHL_PROPS = {
 FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=dt_timezone.utc)
 
 
+class EPGGridDummyChunkContinuityTests(TestCase):
+    """Initial, forward, and backward guide loads must tile without overlap.
+
+    The guide sends ``start`` a few milliseconds before the server's
+    ``now - 1h`` (latency / clock skew) and then pages 12h chunks. Every chunk
+    has to anchor dummy blocks to the same grid or adjacent loads overlap.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="chunkuser", password="testpass123"
+        )
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.group = ChannelGroup.objects.create(name="Chunk Group")
+
+    def _session(self, client_now, latency=timedelta(milliseconds=250)):
+        hour = timedelta(hours=1)
+        init_start, init_end = client_now - hour, client_now + 24 * hour
+        requests = [
+            (client_now + latency, init_start, init_end),
+            (client_now + latency + timedelta(seconds=30), init_end, init_end + 12 * hour),
+            (
+                client_now + latency + timedelta(seconds=60),
+                init_start - 12 * hour,
+                init_start,
+            ),
+        ]
+        merged = {}
+        for server_now, start, end in requests:
+            with mock.patch.object(timezone, "now", return_value=server_now):
+                response = self.client.get(
+                    GRID_URL, {"start": start.isoformat(), "end": end.isoformat()}
+                )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            for program in _grid_programs(response):
+                merged.setdefault(program["tvg_id"], {})[
+                    (program["start_time"], program["end_time"])
+                ] = program["title"]
+        return merged
+
+    @staticmethod
+    def _overlaps(blocks):
+        spans = sorted(
+            (
+                timezone.datetime.fromisoformat(start),
+                timezone.datetime.fromisoformat(end),
+            )
+            for start, end in blocks
+        )
+        return [
+            (a, b) for a, b in zip(spans, spans[1:]) if b[0] < a[1]
+        ]
+
+    def test_standard_dummy_chunks_do_not_overlap(self):
+        channel = Channel.objects.create(
+            channel_number=1.0, name="Plain Channel", channel_group=self.group
+        )
+        client_now = datetime(2026, 9, 19, 15, 8, 0, tzinfo=dt_timezone.utc)
+
+        merged = self._session(client_now)
+
+        self.assertEqual(self._overlaps(merged[str(channel.uuid)]), [])
+
+    def test_time_only_dummy_chunks_do_not_overlap_and_keep_one_live_block(self):
+        source = EPGSource.objects.create(
+            name="Chunk Time Only",
+            source_type="dummy",
+            custom_properties={
+                **NHL_PROPS,
+                "date_pattern": "",
+                "program_duration": 240,
+                "title_template": "LIVE",
+                "upcoming_title_template": "UPCOMING",
+                "ended_title_template": "ENDED",
+            },
+        )
+        channel = Channel.objects.create(
+            channel_number=2.0,
+            name="NHL 01: Browns vs Buccaneers @ 05:00 PM ET",
+            channel_group=self.group,
+            epg_data=EPGData.objects.get(epg_source=source),
+        )
+        client_now = datetime(2026, 9, 19, 15, 8, 0, tzinfo=dt_timezone.utc)
+
+        merged = self._session(client_now)
+
+        blocks = merged[str(channel.uuid)]
+        self.assertEqual(self._overlaps(blocks), [])
+        titles = list(blocks.values())
+        self.assertEqual(titles.count("LIVE"), 1)
+        self.assertIn("UPCOMING", titles)
+
+
 class EPGGridDummyProgramTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -232,6 +328,87 @@ class EPGGridDummyProgramTests(TestCase):
             end = timezone.datetime.fromisoformat(program["end_time"])
             self.assertLess(start, FIXED_NOW + timedelta(hours=24))
             self.assertGreater(end, FIXED_NOW - timedelta(hours=1, minutes=5))
+
+    def test_time_only_dummy_keeps_upcoming_with_early_client_start(self):
+        """Guide start slightly before now-1h must not mark today's event ended."""
+        _, epg_data = self._dummy_source(
+            {
+                **NHL_PROPS,
+                "date_pattern": "",
+                "upcoming_title_template": "02 UPCOMING | {team1}",
+                "title_template": "01 LIVE | {team1}",
+                "ended_title_template": "03 ENDED | {team1}",
+            }
+        )
+        channel = Channel.objects.create(
+            channel_number=15.0,
+            name="NHL 01: Browns vs Buccaneers @ 01:00 PM ET",
+            channel_group=self.group,
+            epg_data=epg_data,
+        )
+        # 10:08 UTC, kickoff 13:00 UTC; client start 5s earlier than server now-1h.
+        guide_now = datetime(2026, 9, 19, 10, 8, 0, tzinfo=dt_timezone.utc)
+        start = (guide_now - timedelta(hours=1, seconds=5)).isoformat()
+        end = (guide_now + timedelta(hours=24)).isoformat()
+
+        with mock.patch.object(timezone, "now", return_value=guide_now):
+            response = self.client.get(GRID_URL, {"start": start, "end": end})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        programs = self._for_channel(_grid_programs(response), channel)
+        titles = {p["title"] for p in programs}
+        self.assertTrue(
+            any(t.startswith("02 UPCOMING") for t in titles),
+            f"expected upcoming titles, got {titles}",
+        )
+        self.assertTrue(
+            any(t.startswith("01 LIVE") for t in titles),
+            f"expected live titles, got {titles}",
+        )
+        self.assertFalse(
+            titles and all(t.startswith("03 ENDED") for t in titles),
+            f"entire window was ended: {titles}",
+        )
+
+    def test_time_only_dummy_survives_lookback_across_midnight(self):
+        """Early-morning guide lookback on the prior day still shows today's kickoff."""
+        _, epg_data = self._dummy_source(
+            {
+                **NHL_PROPS,
+                "date_pattern": "",
+                "timezone": "US/Eastern",
+                "upcoming_title_template": "02 UPCOMING | {team1}",
+                "title_template": "01 LIVE | {team1}",
+                "ended_title_template": "03 ENDED | {team1}",
+            }
+        )
+        channel = Channel.objects.create(
+            channel_number=16.0,
+            name="NHL 01: Browns vs Buccaneers @ 01:00 PM ET",
+            channel_group=self.group,
+            epg_data=epg_data,
+        )
+        # 00:30 ET; client start slightly before now-1h lands on the previous ET day.
+        guide_now = datetime(2026, 9, 20, 4, 30, 0, tzinfo=dt_timezone.utc)
+        start = (guide_now - timedelta(hours=1, seconds=5)).isoformat()
+        end = (guide_now + timedelta(hours=24)).isoformat()
+
+        with mock.patch.object(timezone, "now", return_value=guide_now):
+            response = self.client.get(GRID_URL, {"start": start, "end": end})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        programs = self._for_channel(_grid_programs(response), channel)
+        titles = {p["title"] for p in programs}
+        self.assertTrue(
+            any(t.startswith("02 UPCOMING") for t in titles),
+            f"expected upcoming titles, got {titles}",
+        )
+        self.assertTrue(
+            any(t.startswith("01 LIVE") for t in titles),
+            f"expected live titles, got {titles}",
+        )
+        live = [p for p in programs if p["title"].startswith("01 LIVE")]
+        self.assertEqual(len(live), 1)
+        live_start = timezone.datetime.fromisoformat(live[0]["start_time"])
+        self.assertEqual(live_start.day, 20)
 
     def test_stream_name_source_resolves_by_channelstream_order(self):
         """stream_index must follow channelstream order, not Stream's own ordering.

@@ -405,12 +405,10 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
         if rec_status not in ("recording", "completed", "stopped", "interrupted"):
             try:
                 prefetch_recording_artwork.apply_async(args=[instance.id], countdown=1)
-            except Exception as e:
-                print("Error scheduling artwork prefetch:", e)
-    except Exception as e:
-        import traceback
-        print("Error in post_save signal:", e)
-        traceback.print_exc()
+            except Exception:
+                logger.exception("Error scheduling artwork prefetch")
+    except Exception:
+        logger.exception("Error scheduling recording on save")
 
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
@@ -420,15 +418,6 @@ def revoke_task_on_delete(sender, instance, **kwargs):
 @receiver([post_save, post_delete], sender=ChannelStream)
 def update_channel_catchup_fields(sender, instance, **kwargs):
     """Roll up catch-up flags from active streams (UI path; import uses SQL rollup)."""
-    from django.db.models import Max
+    from apps.channels.utils import rollup_catchup_for_channels
 
-    channel = instance.channel
-    catchup_qs = channel.streams.filter(
-        is_catchup=True,
-        m3u_account__is_active=True,
-    )
-    max_days = catchup_qs.aggregate(max_days=Max("catchup_days"))["max_days"]
-    Channel.objects.filter(pk=channel.pk).update(
-        is_catchup=catchup_qs.exists(),
-        catchup_days=max_days or 0,
-    )
+    rollup_catchup_for_channels([instance.channel_id])
