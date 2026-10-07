@@ -412,6 +412,7 @@ describe('Guide', () => {
     dateTimeUtils.useDateTimeFormat.mockReturnValue({
       timeFormat: '12h',
       dateFormat: 'MM/DD/YYYY',
+      dateYearFormat: 'MMM D, YYYY',
     });
 
     guideUtils.fetchPrograms.mockResolvedValue([

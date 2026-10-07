@@ -447,6 +447,7 @@ describe('dateTimeUtils', () => {
 
       expect(result.current.timeFormat).toBe('h:mma');
       expect(result.current.dateFormat).toBe('MMM D');
+      expect(result.current.dateYearFormat).toBe('MMM D, YYYY');
     });
 
     it('should return 24h format when set', () => {
@@ -467,6 +468,7 @@ describe('dateTimeUtils', () => {
       const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
 
       expect(result.current.dateFormat).toBe('D MMM');
+      expect(result.current.dateYearFormat).toBe('D MMM YYYY');
     });
   });
 
