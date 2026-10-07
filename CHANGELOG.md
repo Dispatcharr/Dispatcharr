@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-10-07
+
 ### Added
 
 - **Optional reverse-proxy header authentication.** Admins can enable Settings → System → Reverse Proxy Auth to exchange a configured identity header, such as `X-Forwarded-User`, `X-Auth-Request-User`, or `Cf-Access-Authenticated-User-Email`, for standard JWT tokens. The feature stays disabled until `DISPATCHARR_TRUSTED_PROXIES` explicitly names the proxy, and the proxy must strip client-supplied identity headers. (Closes #1644) - Thanks [@benjitobz](https://github.com/benjitobz)
