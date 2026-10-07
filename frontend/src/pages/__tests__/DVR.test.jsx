@@ -84,6 +84,12 @@ vi.mock('@mantine/core', () => ({
   Group: ({ children }) => <div data-testid="group">{children}</div>,
   Stack: ({ children }) => <div data-testid="stack">{children}</div>,
   Divider: () => <hr data-testid="divider" />,
+  Progress: ({ value }) => <div data-testid="progress" data-value={value} />,
+  Tooltip: ({ children, label }) => (
+    <div data-testid="tooltip" aria-label={label}>
+      {children}
+    </div>
+  ),
   useMantineTheme: () => ({
     tailwind: {
       green: { 5: '#22c55e' },
@@ -225,6 +231,12 @@ describe('DVRPage', () => {
 
     // Default: API.getChannelsSummary returns empty array
     API.getChannelsSummary.mockResolvedValue([]);
+    // Default: 100GB total, 40GB free on the DVR storage root
+    API.getDvrDiskUsage.mockResolvedValue({
+      total_bytes: 100 * 1024 * 1024 * 1024,
+      used_bytes: 60 * 1024 * 1024 * 1024,
+      free_bytes: 40 * 1024 * 1024 * 1024,
+    });
 
     isAfter.mockImplementation((a, b) => new Date(a) > new Date(b));
     isBefore.mockImplementation((a, b) => new Date(a) < new Date(b));
@@ -299,6 +311,88 @@ describe('DVRPage', () => {
       });
 
       expect(screen.getByText('No upcoming recordings.')).toBeInTheDocument();
+    });
+
+    it('does not show a quota indicator for admins', async () => {
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.queryByText('DVR quota')).not.toBeInTheDocument();
+    });
+
+    it('shows server storage to admins', async () => {
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.getByText('Server storage')).toBeInTheDocument();
+      expect(screen.getByText('40 GB free')).toBeInTheDocument();
+    });
+
+    it('shows a quota indicator for a request-tier user with a quota set, but hides server storage (avoids implying more room than their quota allows)', async () => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          user: {
+            id: 2,
+            user_level: USER_LEVELS.STANDARD,
+            custom_properties: { dvr_access: 'request', dvr_quota_mb: 500 },
+          },
+        };
+        return selector ? selector(state) : state;
+      });
+
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.getByText('DVR quota')).toBeInTheDocument();
+      expect(screen.getByText('0/500 MB')).toBeInTheDocument();
+      expect(screen.queryByText('Server storage')).not.toBeInTheDocument();
+    });
+
+    it('shows usage as unlimited for a request-tier user with no quota set', async () => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          user: {
+            id: 2,
+            user_level: USER_LEVELS.STANDARD,
+            custom_properties: { dvr_access: 'request' },
+          },
+        };
+        return selector ? selector(state) : state;
+      });
+
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.getByText('DVR quota')).toBeInTheDocument();
+      expect(screen.getByText('0 MB used (unlimited)')).toBeInTheDocument();
+      // Unlimited accounts aren't capped below server-wide free space, so
+      // showing it isn't misleading for them the way it would be for a
+      // user with a set quota.
+      expect(screen.getByText('Server storage')).toBeInTheDocument();
+    });
+
+    it('hides both indicators for a view-tier user', async () => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          user: {
+            id: 2,
+            user_level: USER_LEVELS.STANDARD,
+            custom_properties: { dvr_access: 'view' },
+          },
+        };
+        return selector ? selector(state) : state;
+      });
+
+      await act(async () => {
+        render(<DVRPage />);
+      });
+
+      expect(screen.queryByText('DVR quota')).not.toBeInTheDocument();
+      expect(screen.queryByText('Server storage')).not.toBeInTheDocument();
     });
   });
 
