@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Live proxy stream switches mark a discontinuity in the shared buffer.** On a URL or stream switch, the last complete packets from the old source are flushed to Redis, then the first packet of each PID from the new source gets `discontinuity_indicator` set (the same bit FFmpeg writes with `initial_discontinuity`). MPEG-TS clients receive that bit in the live stream. HLS uses the same mark to cut before the new source and emit `#EXT-X-DISCONTINUITY`.
 
+### Security
+
+- **Custom VOD logo and M3U account actions require admin.** VOD logo `bulk-delete` and `cleanup`, and M3U account `group-settings`, `repack-group`, `refresh-vod`, and `auto-created-channels-count`, accepted any authenticated user because those actions are not in the shared REST permission map and fell through to "logged in". They now require admin, matching create, update, and delete on the same viewsets. Related M3U viewsets fail closed to admin for any unlisted action. Standard list and retrieve, VOD browsing, and the public logo cache are unchanged. Reported by [@cqliuke](https://github.com/cqliuke).
+
 ## [0.32.0] - 2026-10-07
 
 ### Added

@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.accounts.permissions import (
-    Authenticated,
+    IsAdmin,
     permission_classes_by_action,
     permission_classes_by_method,
 )
@@ -52,7 +52,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -584,7 +584,7 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         m3u_account_id = self.kwargs["account_id"]
@@ -614,7 +614,7 @@ class ServerGroupViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
 
 class RefreshM3UAPIView(APIView):
@@ -626,7 +626,7 @@ class RefreshM3UAPIView(APIView):
                 perm() for perm in permission_classes_by_method[self.request.method]
             ]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     @extend_schema(
         description="Triggers a refresh of all active M3U accounts",
@@ -648,7 +648,7 @@ class RefreshSingleM3UAPIView(APIView):
                 perm() for perm in permission_classes_by_method[self.request.method]
             ]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     @extend_schema(
         description="Triggers a refresh of a single M3U account",
@@ -673,7 +673,7 @@ class RefreshAccountInfoAPIView(APIView):
                 perm() for perm in permission_classes_by_method[self.request.method]
             ]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     @extend_schema(
         description="Triggers a refresh of account information for a specific M3U profile",
@@ -721,7 +721,7 @@ class UserAgentViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
 
 class M3UAccountProfileViewSet(viewsets.ModelViewSet):
@@ -732,7 +732,7 @@ class M3UAccountProfileViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         m3u_account_id = self.kwargs["account_id"]

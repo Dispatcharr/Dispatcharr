@@ -11,6 +11,7 @@ import logging
 from types import SimpleNamespace
 from apps.accounts.permissions import (
     Authenticated,
+    IsAdmin,
     permission_classes_by_action,
 )
 from .models import (
@@ -1125,7 +1126,7 @@ class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
         except KeyError:
             if self.action == 'cache':
                 return [AllowAny()]
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""
