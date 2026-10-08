@@ -1375,8 +1375,8 @@ class ChannelListIncludeStreamsQueryTests(TestCase):
 
 
 class ChannelAssignedProfileScopeTests(TestCase):
-    """Non-admin with assigned profiles: list/summary/get_ids are limited to
-    enabled memberships in those profiles; retrieve by id is not.
+    """Non-admin with assigned profiles: list, summary, get_ids, and retrieve
+    by id are limited to enabled memberships in those profiles.
     """
 
     def setUp(self):
@@ -1419,12 +1419,49 @@ class ChannelAssignedProfileScopeTests(TestCase):
         ids = {row["id"] for row in response.data["results"]}
         self.assertEqual(ids, {self.in_profile.id})
 
-    def test_retrieve_reaches_channel_outside_assigned_profile(self):
+    def test_retrieve_reaches_channel_inside_assigned_profile(self):
+        response = self.client.get(f"/api/channels/channels/{self.in_profile.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.in_profile.id)
+
+    def test_retrieve_hides_channel_outside_assigned_profile(self):
         response = self.client.get(
             f"/api/channels/channels/{self.out_of_profile.id}/"
         )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_retrieve_with_streams_does_not_expose_provider_urls_outside_profile(self):
+        from apps.channels.models import Stream
+
+        stream = Stream.objects.create(
+            name="Provider", url="http://provider.example/live/secret"
+        )
+        self.out_of_profile.streams.add(stream)
+        response = self.client.get(
+            f"/api/channels/channels/{self.out_of_profile.id}/",
+            {"include_streams": "true"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn(b"provider.example", response.content)
+
+    def test_unassigned_profile_id_returns_nothing(self):
+        from apps.channels.models import ChannelProfile
+
+        other = ChannelProfile.objects.create(name="Not Assigned")
+        response = self.client.get(
+            "/api/channels/channels/summary/", {"channel_profile_id": other.id}
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["id"], self.out_of_profile.id)
+        self.assertEqual(response.json(), [])
+
+    def test_show_disabled_does_not_escape_assigned_profiles(self):
+        response = self.client.get(
+            "/api/channels/channels/summary/",
+            {"channel_profile_id": self.profile.id, "show_disabled": "true"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
 
     def test_explicit_profile_id_still_scopes_by_membership(self):
         response = self.client.get(

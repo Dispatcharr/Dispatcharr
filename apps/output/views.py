@@ -1,6 +1,7 @@
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
 import json
 from django.urls import reverse
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import MAX_AUTO_PREV_DAYS, format_channel_number, is_catchup_enabled
 from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
@@ -188,30 +189,11 @@ def generate_m3u(request, profile_name=None, user=None):
         return response
 
     if user is not None:
-        if user.user_level < 10:
-            user_profile_count = user.channel_profiles.count()
-
-            # If user has ALL profiles or NO profiles, give unrestricted access
-            if user_profile_count == 0:
-                # No profile filtering - user sees all channels based on user_level
-                filters = {"user_level__lte": user.user_level}
-                # Hide adult content if user preference is set
-                if (user.custom_properties or {}).get('hide_adult_content', False):
-                    filters["is_adult"] = False
-                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
-            else:
-                # User has specific limited profiles assigned
-                filters = {
-                    "channelprofilemembership__enabled": True,
-                    "user_level__lte": user.user_level,
-                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                }
-                # Hide adult content if user preference is set
-                if (user.custom_properties or {}).get('hide_adult_content', False):
-                    filters["is_adult"] = False
-                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
-        else:
-            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
+        base_qs = channels_queryset_for_user(
+            Channel.objects.all(),
+            user,
+            level_cap_admins=True,
+        ).select_related("channel_group", "logo")
 
     else:
         if profile_name is not None:
@@ -707,32 +689,21 @@ def xc_get_live_categories(user):
     )
     hidden_exclusion = {"channels__hidden_from_output": False}
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
-
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channel groups
-            channel_groups = ChannelGroup.objects.filter(
-                channels__isnull=False,
-                channels__user_level__lte=user.user_level,
-                **hidden_exclusion,
-            ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "channels__channelprofilemembership__enabled": True,
-                "channels__user_level__lte": user.user_level,
-                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
-                **hidden_exclusion,
-            }
-            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
-    else:
-        channel_groups = ChannelGroup.objects.filter(
+    visible_channel_ids = channels_queryset_for_user(
+        Channel.objects.all(),
+        user,
+        level_cap_admins=True,
+    ).values("pk")
+    channel_groups = (
+        ChannelGroup.objects.filter(
             channels__isnull=False,
-            channels__user_level__lte=user.user_level,
+            channels__id__in=visible_channel_ids,
             **hidden_exclusion,
-        ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
+        )
+        .distinct()
+        .annotate(min_channel_number=effective_min)
+        .order_by("min_channel_number")
+    )
 
     for group in channel_groups:
         response.append(
@@ -749,39 +720,13 @@ def xc_get_live_categories(user):
 def _xc_live_streams_setup(request, user, category_id):
     from apps.channels.managers import with_effective_values
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
-
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {"user_level__lte": user.user_level}
-            if category_id is not None:
-                filters["channel_group__id"] = category_id
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            if category_id is not None:
-                filters["channel_group__id"] = category_id
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
-    else:
-        if not category_id:
-            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
-        else:
-            base_qs = Channel.objects.filter(
-                channel_group__id=category_id, user_level__lte=user.user_level
-            ).select_related('channel_group', 'logo')
+    base_qs = channels_queryset_for_user(
+        Channel.objects.all(),
+        user,
+        level_cap_admins=True,
+    ).select_related("channel_group", "logo")
+    if category_id is not None:
+        base_qs = base_qs.filter(channel_group__id=category_id)
 
     channels = (
         with_effective_values(base_qs, select_related_fks=True)
@@ -934,40 +879,12 @@ def xc_get_epg(request, user, short=False):
             .select_related('epg_data__epg_source', 'override__epg_data__epg_source')
         )
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
-
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {
-                "id": resolved_channel_id,
-                "user_level__lte": user.user_level
-            }
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channel = _annotate(Channel.objects.filter(**filters)).first()
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "id": resolved_channel_id,
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channel = _annotate(Channel.objects.filter(**filters).distinct()).first()
-
-        if not channel:
-            raise Http404()
-    else:
-        channel = _annotate(Channel.objects.filter(id=resolved_channel_id)).first()
-        if not channel:
-            raise Http404()
-
+    channel = _annotate(
+        channels_queryset_for_user(
+            Channel.objects.filter(id=resolved_channel_id),
+            user,
+        )
+    ).first()
     if not channel:
         raise Http404()
 

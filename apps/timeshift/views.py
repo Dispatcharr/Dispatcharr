@@ -30,7 +30,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.accounts.models import User
-from apps.channels.models import Channel
+from apps.channels.access import get_channel_for_user
 from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from apps.m3u.connection_pool import (
     pool_has_capacity_for_profile,
@@ -170,13 +170,16 @@ def _timeshift_proxy_impl(
         return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
     try:
-        channel = Channel.objects.get(id=int(raw_id))
-    except (Channel.DoesNotExist, ValueError, TypeError):
+        channel_pk = int(raw_id)
+    except (ValueError, TypeError):
         close_old_connections()
         raise Http404("Channel not found") from None
 
-    if not _user_can_access_channel(user, channel):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
+    channel = get_channel_for_user(user, id=channel_pk)
+    if channel is None:
+        # Same as XC live: missing and inaccessible both look like not found.
+        close_old_connections()
+        raise Http404("Channel not found")
 
     return _serve_catchup(
         request, user, channel, timestamp,
@@ -270,7 +273,8 @@ def _timeshift_proxy_impl(
             ),
         },
         401: {"description": "Missing or expired authentication / session."},
-        403: {"description": "Access denied or session/channel mismatch."},
+        403: {"description": "Network denied or session/user mismatch."},
+        404: {"description": "Channel not found or not accessible."},
         503: {
             "description": (
                 "No capacity or provider URL available (including Redirect "
@@ -326,14 +330,11 @@ def catchup_proxy(request, channel_id):
             JsonResponse({"error": "Authentication required"}, status=401)
         )
 
-    try:
-        channel = Channel.objects.get(uuid=channel_id)
-    except Channel.DoesNotExist:
+    channel = get_channel_for_user(user, uuid=channel_id)
+    if channel is None:
+        # Same as XC live: missing and inaccessible both look like not found.
         close_old_connections()
-        raise Http404("Channel not found") from None
-
-    if not _user_can_access_channel(user, channel):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
+        raise Http404("Channel not found")
 
     if not timestamp:
         return _finalize_timeshift_response(HttpResponseBadRequest("Missing start parameter"))
@@ -770,24 +771,6 @@ def _authenticate_user(username, password):
     if not hmac.compare_digest(str(expected), str(password)):
         return None
     return user
-
-
-def _user_can_access_channel(user, channel):
-    if user.user_level < channel.user_level:
-        return False
-    if user.user_level >= User.UserLevel.ADMIN:
-        return True
-    profile_count = user.channel_profiles.count()
-    if profile_count == 0:
-        return True
-    return (
-        type(channel).objects.filter(
-            id=channel.id,
-            channelprofilemembership__enabled=True,
-            channelprofilemembership__channel_profile__in=user.channel_profiles.all(),
-        )
-        .exists()
-    )
 
 
 # Per-client pool (session_id from 301 redirect or inline adopt when ?session_id=

@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `POST /api/channels/channels/by-uuids/` is now allowed for Standard users like the other channel read helpers (its allowlist name never matched, so it was admin-only by accident).
 
   A regression test fails the suite if a view reads the raw permission maps, catches exceptions inside `get_permissions`, adds a custom `@action` with no declared permission, or puts `permission_classes` on an action whose viewset ignores it.
+- **Channel access rules now apply the same way on every path.** A channel's user level, the hide-adult-content preference, and the user's assigned channel profiles were enforced on some paths and skipped on others, so a restricted user could reach a channel by guessing its integer id. All of them now share one rule in `apps/channels/access.py`. Admins are unchanged. Authenticated M3U, EPG XML, XC live stream lists, and the EPG grid already applied the same filters and now call the shared helper.
+  - XC live categories, XC live channel lookup, and catch-up now honor hide-adult-content, matching the XC live stream list and M3U. Catch-up playback and catch-up session create return 404 (not 403) for channels the user cannot access, same as XC live.
+  - Channel retrieve by id, `GET /api/channels/channels/<id>/streams/` and `streams/stats/`, `POST /api/channels/channels/by-uuids/`, and `GET /api/channels/channels/numbers-in-range/` only return channels the user can access. Channel retrieve and the streams endpoints used to return provider stream URLs (`include_streams=true`) for channels outside the user's profiles.
+  - `channel_profile_id` on the channel list and EPG grid is honored only for a profile the user is assigned to, and `show_disabled` no longer lists channels beyond the user's profiles.
+  - A DVR manager (a Standard user with `dvr_access=manage`) can no longer list, play, stop, delete, or schedule recordings, or create recurring rules, on channels they cannot access. Create and update reject inaccessible channel ids, and bulk delete of upcoming recordings only removes recordings they can see. Previously managers could do all of this on any channel id, including admin-only and adult channels.
+  - `GET /api/epg/programs/search/` now also respects assigned channel profiles, and each result only lists channels the user can access.
 
 ## [0.32.0] - 2026-10-07
 

@@ -26,8 +26,13 @@ from apps.accounts.permissions import (
     permissions_for_action,
     permissions_for_method,
 )
+from apps.channels.access import (
+    channels_queryset_for_user,
+    is_admin_user,
+    scope_by_channel_access,
+    user_may_use_profile,
+)
 from apps.channels.dvr_access import (
-    is_dvr_manage_enabled,
     is_dvr_view_enabled,
     recordings_queryset_for_user,
 )
@@ -696,12 +701,12 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         self._visible_group_counts = None
 
         # Non-admins only see groups that contain at least one channel they
-        # can activate (user_level + optional adult hide).
+        # can activate (user_level + optional adult hide). Groups themselves are
+        # not profile-scoped, so profile membership is left out here.
         if user is not None and getattr(user, 'user_level', 10) < 10:
-            visible = Channel.objects.filter(user_level__lte=user.user_level)
-            custom_props = getattr(user, 'custom_properties', None) or {}
-            if custom_props.get('hide_adult_content', False):
-                visible = visible.filter(is_adult=False)
+            visible = channels_queryset_for_user(
+                Channel.objects.all(), user, profiles=False
+            )
             rows = (
                 visible.annotate(
                     gid=Coalesce(
@@ -1184,6 +1189,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if channel_profile_id:
             try:
                 profile_id_int = int(channel_profile_id)
+            except (ValueError, TypeError):
+                # Ignore invalid profile id values
+                profile_id_int = None
+
+            if profile_id_int is not None:
+                # A user limited to assigned profiles can only scope to one of them.
+                if not user_may_use_profile(self.request.user, profile_id_int):
+                    return qs.none()
 
                 if show_disabled_param is None:
                     # Show only enabled channels: channels that have a membership
@@ -1191,11 +1204,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     # Default is DISABLED (channels without membership are hidden)
                     filters["channelprofilemembership__channel_profile_id"] = profile_id_int
                     filters["channelprofilemembership__enabled"] = True
-                # If show_disabled is True, show all channels (no filtering needed)
-
-            except (ValueError, TypeError):
-                # Ignore invalid profile id values
-                pass
+                # With show_disabled there is no explicit-profile filter. The
+                # user's own profile scoping below still applies.
 
         if only_streamless:
             q_filters &= Q(streams__isnull=True)
@@ -1212,9 +1222,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 override__is_radio__isnull=True, is_radio=True
             )
 
-        # Visibility filter applies to list-style reads only; retrieve /
-        # update / delete must still reach a hidden channel by id so the
-        # frontend can unhide. Summary powers the TV Guide and follows
+        # The hidden-from-output filter applies to list-style reads only;
+        # retrieve / update / delete must still reach a hidden channel by id so
+        # the frontend can unhide. Summary powers the TV Guide and follows
         # the same hidden semantic as downstream clients.
         if self.action in ("list", "get_ids", "summary"):
             if visibility_filter == "hidden":
@@ -1222,36 +1232,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
             elif visibility_filter != "all":
                 q_filters &= Q(hidden_from_output=False)
 
-        profile_union_applied = False
-        if self.request.user.user_level < 10:
-            filters["user_level__lte"] = self.request.user.user_level
-            # Hide adult content if user preference is set
-            custom_props = self.request.user.custom_properties or {}
-            if custom_props.get('hide_adult_content', False):
-                filters["is_adult"] = False
-            # Without an explicit profile, list/summary/get_ids are limited to
-            # enabled memberships in the user's assigned profiles. Retrieve /
-            # update / destroy remain reachable by channel id.
-            if (
-                self.action in ("list", "get_ids", "summary")
-                and not channel_profile_id
-                and self.request.user.channel_profiles.exists()
-            ):
-                q_filters &= Q(
-                    channelprofilemembership__channel_profile__in=(
-                        self.request.user.channel_profiles.all()
-                    ),
-                    channelprofilemembership__enabled=True,
-                )
-                profile_union_applied = True
-
         if filters:
             qs = qs.filter(**filters)
         if q_filters:
             qs = qs.filter(q_filters)
 
-        # DISTINCT when a join can duplicate channel rows.
-        if channel_profile_id or only_stale or profile_union_applied:
+        # Level, adult preference, and assigned profiles apply to every action,
+        # lookups by id included. Admins are never restricted.
+        qs = channels_queryset_for_user(qs, self.request.user)
+
+        # DISTINCT when a join (explicit profile filter or stale streams) can
+        # duplicate channel rows. The shared Exists profile filter does not.
+        if channel_profile_id or only_stale:
             return qs.distinct()
         return qs
 
@@ -2020,7 +2012,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         queryset = (
             with_effective_values(
-                Channel.objects.all(), select_related_fks=True
+                channels_queryset_for_user(Channel.objects.all(), request.user),
+                select_related_fks=True,
             )
             .filter(
                 effective_channel_number__gte=start,
@@ -2094,7 +2087,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        channels = Channel.objects.filter(uuid__in=uuids)
+        channels = channels_queryset_for_user(
+            Channel.objects.filter(uuid__in=uuids), request.user
+        )
         serializer = self.get_serializer(channels, many=True)
         return Response(serializer.data)
 
@@ -3170,7 +3165,10 @@ class GetChannelStreamsAPIView(APIView):
         return permissions_for_method(self.request)
 
     def get(self, request, channel_id):
-        channel = get_object_or_404(Channel, id=channel_id)
+        channel = get_object_or_404(
+            channels_queryset_for_user(Channel.objects.all(), request.user),
+            id=channel_id,
+        )
         # Order the streams by channelstream__order to match the order in the channel view
         streams = channel.streams.all().order_by("channelstream__order")
         serializer = StreamSerializer(streams, many=True)
@@ -3234,7 +3232,10 @@ class GetChannelStreamStatsAPIView(APIView):
     def get(self, request, channel_id):
         from django.utils.dateparse import parse_datetime
 
-        get_object_or_404(Channel, id=channel_id)
+        get_object_or_404(
+            channels_queryset_for_user(Channel.objects.all(), request.user),
+            id=channel_id,
+        )
 
         qs = Stream.objects.filter(channels=channel_id)
 
@@ -3394,6 +3395,9 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return [IsAdminOrDVRManager()]
 
+    def get_queryset(self):
+        return scope_by_channel_access(super().get_queryset(), self.request.user)
+
     def perform_create(self, serializer):
         rule = serializer.save()
         try:
@@ -3472,7 +3476,7 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
 
 # QueryParamJWTAuthentication supports native <video src> clients that cannot
 # send Authorization headers. Authorization still requires an authenticated
-# user via _user_can_play_recording; these classes only populate request.user.
+# user via _playable_recording; these classes only populate request.user.
 RECORDING_PLAYBACK_AUTHENTICATORS = [
     JWTAuthentication,
     ApiKeyAuthentication,
@@ -3518,7 +3522,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         # file/hls use AllowAny so DRF does not reject requests before auth
-        # classes run; _user_can_play_recording enforces authenticated access.
+        # classes run; _playable_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
         if self.action in ('list', 'retrieve'):
@@ -3537,46 +3541,35 @@ class RecordingViewSet(viewsets.ModelViewSet):
             return [IsAdminOrDVRManager()]
         return permissions_for_action(self, default=IsAdminOrDVRManager)
 
-    def _user_can_play_recording(self, request, recording):
-        """Authorization gate for recording playback (file/hls actions).
+    def _playable_recording(self, request, pk):
+        """Return a recording the caller may play, or raise/return an error response.
 
-        Mirrors how live stream endpoints authorize non-admin users, but
-        unlike the XC-style endpoints these URLs carry no credentials of
-        their own, so we require an authenticated session/JWT:
-          * Unauthenticated requests → denied.
-          * Admins and DVR managers → allowed.
-          * View-only users → allowed only if the recording's source
-            channel is visible under their channel-profile assignments
-            and within their user_level.
-          * Users without DVR view/manage → denied.
-
-        The network_access_allowed(request, "STREAMS") check applied
-        before this is a network-perimeter gate (e.g. block external IPs
-        from streaming at all); it is not a substitute for per-user
-        authorization.
+        Cheap gates (auth, DVR view) run in memory. The scoped queryset load is
+        one SQL round trip on the success path (admins are unscoped). Missing
+        vs forbidden is distinguished only when the scoped lookup misses.
         """
         user = getattr(request, "user", None)
         if not user or not getattr(user, "is_authenticated", False):
-            return False
+            return None, JsonResponse({"error": "Forbidden"}, status=403)
         if not is_dvr_view_enabled(user=user):
-            return False
-        if is_dvr_manage_enabled(user=user):
-            return True
+            return None, JsonResponse({"error": "Forbidden"}, status=403)
 
-        channel = getattr(recording, "channel", None)
-        if channel is None:
-            # Recording with no source channel, only admins/managers can play.
-            return False
-
-        return recordings_queryset_for_user(
-            Recording.objects.filter(pk=recording.pk), user
-        ).exists()
+        recording = recordings_queryset_for_user(
+            Recording.objects.filter(pk=pk), user
+        ).first()
+        if recording is not None:
+            return recording, None
+        # Admins are unscoped, so a miss is absence. Everyone else needs one
+        # more lookup to tell a hidden recording (403) from a missing one (404).
+        if not is_admin_user(user) and Recording.objects.filter(pk=pk).exists():
+            return None, JsonResponse({"error": "Forbidden"}, status=403)
+        raise Http404
 
     @action(detail=True, methods=["post"], url_path="comskip")
     def comskip(self, request, pk=None):
         """Trigger comskip processing for this recording."""
         from .tasks import comskip_process_recording
-        rec = get_object_or_404(Recording, pk=pk)
+        rec = self.get_object()
         try:
             comskip_process_recording.delay(rec.id)
             return Response({"success": True, "queued": True})
@@ -3599,9 +3592,9 @@ class RecordingViewSet(viewsets.ModelViewSet):
         """
         if not network_access_allowed(request, "STREAMS"):
             return JsonResponse({"error": "Forbidden"}, status=403)
-        recording = get_object_or_404(Recording, pk=pk)
-        if not self._user_can_play_recording(request, recording):
-            return JsonResponse({"error": "Forbidden"}, status=403)
+        recording, denied = self._playable_recording(request, pk)
+        if denied is not None:
+            return denied
         cp = recording.custom_properties or {}
         file_path = _resolve_recording_storage_path(cp.get("file_path"))
         file_name = cp.get("file_name") or "recording"
@@ -3692,9 +3685,9 @@ class RecordingViewSet(viewsets.ModelViewSet):
         """
         if not network_access_allowed(request, "STREAMS"):
             return JsonResponse({"error": "Forbidden"}, status=403)
-        recording = get_object_or_404(Recording, pk=pk)
-        if not self._user_can_play_recording(request, recording):
-            return JsonResponse({"error": "Forbidden"}, status=403)
+        recording, denied = self._playable_recording(request, pk)
+        if denied is not None:
+            return denied
         cp = recording.custom_properties or {}
         hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
 
@@ -4239,7 +4232,9 @@ class BulkDeleteUpcomingRecordingsAPIView(APIView):
 
     def post(self, request):
         now = timezone.now()
-        qs = Recording.objects.filter(start_time__gt=now)
+        qs = recordings_queryset_for_user(
+            Recording.objects.filter(start_time__gt=now), request.user
+        )
         removed = qs.count()
         qs.delete()
         try:

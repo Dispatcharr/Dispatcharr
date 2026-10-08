@@ -19,6 +19,7 @@ from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
 from dispatcharr.utils import get_client_ip, network_access_allowed
 from .redis_keys import RedisKeys
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, Stream
 from apps.accounts.models import User
 from core.models import CoreSettings, PROXY_PROFILE_NAME, StreamProfile
@@ -1043,32 +1044,15 @@ def _resolve_xc_live_channel(user, channel_id):
     except (TypeError, ValueError):
         return None, JsonResponse({"error": "Not found"}, status=404)
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
-
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {
-                "id": channel_pk,
-                "user_level__lte": user.user_level
-            }
-            channel = Channel.objects.filter(**filters).first()
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "id": channel_pk,
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            channel = Channel.objects.filter(**filters).distinct().first()
-
-        if not channel:
-            return None, JsonResponse({"error": "Not found"}, status=404)
-        return channel, None
-
-    return get_object_or_404(Channel, id=channel_pk), None
+    channel = channels_queryset_for_user(
+        Channel.objects.filter(id=channel_pk),
+        user,
+    ).first()
+    if not channel:
+        if user.user_level >= 10:
+            raise Http404()
+        return None, JsonResponse({"error": "Not found"}, status=404)
+    return channel, None
 
 
 def _xc_live_channel_or_error(request, username, password, channel_id):

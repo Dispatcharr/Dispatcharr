@@ -28,6 +28,7 @@ from .serializers import (
 )
 from .tasks import refresh_epg_data, find_current_program_for_tvg_id
 from .query_utils import parse_text_query
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.managers import (
     effective_field_lookup_q,
     effective_related_name_lookup_q,
@@ -377,10 +378,7 @@ class ProgramViewSet(
         # including override-only EPG mappings.
         user = request.user
         if user.user_level < 10:
-            access_qs = Channel.objects.filter(user_level__lte=user.user_level)
-            custom_props = user.custom_properties or {}
-            if custom_props.get('hide_adult_content', False):
-                access_qs = access_qs.filter(is_adult=False)
+            access_qs = channels_queryset_for_user(Channel.objects.all(), user)
             accessible_epg_ids = effective_epg_ids(access_qs)
             queryset = queryset.filter(epg_id__in=accessible_epg_ids)
 
@@ -412,10 +410,7 @@ class ProgramViewSet(
                     )
                 ).select_related("channel_group", "override__channel_group")
                 if user.user_level < 10:
-                    mapped = mapped.filter(user_level__lte=user.user_level)
-                    custom_props = user.custom_properties or {}
-                    if custom_props.get("hide_adult_content", False):
-                        mapped = mapped.filter(is_adult=False)
+                    mapped = channels_queryset_for_user(mapped, user)
                 if allowed is None or "streams" in allowed:
                     mapped = mapped.prefetch_related(
                         "streams",

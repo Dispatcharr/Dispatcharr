@@ -24,7 +24,22 @@ from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
 from core.utils import validate_flexible_url, build_absolute_uri_with_port, truncate_with_warning
+from apps.channels.access import user_can_access_channel
 from apps.channels.utils import coerce_channel_profile_ids
+
+
+def _require_accessible_channel(context, channel):
+    """Reject a channel the requesting user may not access.
+
+    The error matches an unknown id so a restricted user cannot tell a
+    channel they may not use from one that does not exist. Serializers used
+    without a request (internal callers) are not restricted.
+    """
+    user = getattr(context.get("request"), "user", None)
+    if user is not None and not user_can_access_channel(user, channel):
+        raise serializers.ValidationError(
+            f'Invalid pk "{channel.pk}" - object does not exist.'
+        )
 
 
 class LogoSerializer(serializers.ModelSerializer):
@@ -808,6 +823,10 @@ class RecordingSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["task_id"]
 
+    def validate_channel(self, channel):
+        _require_accessible_channel(self.context, channel)
+        return channel
+
     def validate_custom_properties(self, value):
         if value is None:
             return value
@@ -893,6 +912,10 @@ class RecurringRecordingRuleSerializer(serializers.ModelSerializer):
         model = RecurringRecordingRule
         fields = "__all__"
         read_only_fields = ["created_at", "updated_at"]
+
+    def validate_channel(self, channel):
+        _require_accessible_channel(self.context, channel)
+        return channel
 
     def validate_days_of_week(self, value):
         if not value:

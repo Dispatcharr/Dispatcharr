@@ -451,14 +451,13 @@ class CatchupProxySessionAuthTests(TestCase):
     @patch.object(views, "resolve_catchup_playback")
     @patch.object(views, "network_access_allowed", return_value=True)
     @patch.object(views, "_serve_catchup", return_value=HttpResponse("ok"))
-    @patch.object(views, "_user_can_access_channel", return_value=True)
-    @patch.object(views, "Channel")
+    @patch.object(views, "get_channel_for_user")
     def test_session_auth_without_jwt(
-        self, channel_cls, _access, serve, _net, resolve_mock,
+        self, channel_lookup, serve, _net, resolve_mock,
     ):
         user = MagicMock(id=42, is_authenticated=False)
         resolve_mock.return_value = (user, "2026-06-08T17:00:00Z", None)
-        channel_cls.objects.get.return_value = MagicMock(
+        channel_lookup.return_value = MagicMock(
             id=8, uuid=self.channel_uuid,
         )
         request = self.factory.get(
@@ -493,11 +492,10 @@ class CatchupProxySessionAuthTests(TestCase):
 
     @patch.object(views, "network_access_allowed", return_value=True)
     @patch.object(views, "_serve_catchup", return_value=HttpResponse("ok"))
-    @patch.object(views, "_user_can_access_channel", return_value=True)
-    @patch.object(views, "Channel")
-    def test_legacy_jwt_start_still_works(self, channel_cls, _access, serve, _net):
+    @patch.object(views, "get_channel_for_user")
+    def test_legacy_jwt_start_still_works(self, channel_lookup, serve, _net):
         user = MagicMock(id=1, is_authenticated=True)
-        channel_cls.objects.get.return_value = MagicMock(
+        channel_lookup.return_value = MagicMock(
             id=8, uuid=self.channel_uuid,
         )
         request = self.factory.get(
@@ -512,10 +510,9 @@ class CatchupProxySessionAuthTests(TestCase):
         request = self.factory.get(_proxy_url())
         with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
              patch.object(views, "network_access_allowed", return_value=True), \
-             patch.object(views, "Channel") as channel_cls, \
-             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_for_user") as channel_lookup, \
              patch.object(views, "_serve_catchup", return_value=HttpResponse("ok")) as serve:
-            channel_cls.objects.get.return_value = MagicMock(id=8)
+            channel_lookup.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
                 request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )

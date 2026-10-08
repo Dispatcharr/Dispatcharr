@@ -28,6 +28,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import permissions_for_method
+from apps.channels.access import channels_queryset_for_user, user_may_use_profile
 from apps.channels.managers import with_effective_values
 from apps.channels.models import Channel
 from apps.epg.models import ProgramData
@@ -225,27 +226,15 @@ def _visible_channels_queryset(user, profile_id=None):
     channels with an enabled membership in that profile are returned.
     """
     qs = Channel.objects.filter(hidden_from_output=False)
-    assigned_profiles = None
-    if user is not None and getattr(user, 'user_level', 10) < 10:
-        qs = qs.filter(user_level__lte=user.user_level)
-        custom_props = getattr(user, 'custom_properties', None) or {}
-        if custom_props.get('hide_adult_content', False):
-            qs = qs.filter(is_adult=False)
-        if user.channel_profiles.exists():
-            assigned_profiles = user.channel_profiles.all()
+    if user is not None and getattr(user, "is_authenticated", False):
+        # An explicit profile_id applies its own membership filter below.
+        qs = channels_queryset_for_user(qs, user, profiles=profile_id is None)
+        if profile_id is not None and not user_may_use_profile(user, profile_id):
+            return qs.none()
 
     if profile_id is not None:
-        if assigned_profiles is not None and not assigned_profiles.filter(
-            pk=profile_id
-        ).exists():
-            return qs.none()
         qs = qs.filter(
             channelprofilemembership__channel_profile_id=profile_id,
-            channelprofilemembership__enabled=True,
-        ).distinct()
-    elif assigned_profiles is not None:
-        qs = qs.filter(
-            channelprofilemembership__channel_profile__in=assigned_profiles,
             channelprofilemembership__enabled=True,
         ).distinct()
 
