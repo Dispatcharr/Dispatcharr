@@ -27,7 +27,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import Authenticated, permission_classes_by_method
+from apps.accounts.permissions import permissions_for_method
 from apps.channels.managers import with_effective_values
 from apps.channels.models import Channel
 from apps.epg.models import ProgramData
@@ -499,12 +499,7 @@ class EPGGridAPIView(APIView):
     """Programs overlapping a time window, plus on-demand dummy programmes."""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description=(

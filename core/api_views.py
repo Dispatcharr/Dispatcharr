@@ -39,8 +39,7 @@ from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
-    IsStandardUser,
-    permission_classes_by_action,
+    permissions_for_action,
 )
 from dispatcharr.utils import get_client_ip
 
@@ -57,10 +56,7 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     serializer_class = UserAgentSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class LockedProfileViewSet(viewsets.ModelViewSet):
@@ -82,10 +78,7 @@ class StreamProfileViewSet(LockedProfileViewSet):
     serializer_class = StreamProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class OutputProfileViewSet(LockedProfileViewSet):
@@ -97,10 +90,7 @@ class OutputProfileViewSet(LockedProfileViewSet):
     serializer_class = OutputProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
@@ -113,10 +103,7 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     serializer_class = CoreSettingsSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -170,7 +157,12 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
         return response
-    @action(detail=False, methods=["post"], url_path="check")
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="check",
+        permission_classes=[IsAdmin],
+    )
     def check(self, request, *args, **kwargs):
         data = request.data
 
@@ -221,9 +213,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
     serializer_class = ProxySettingsSerializer
 
     def get_permissions(self):
-        if self.action in ('list', 'retrieve'):
-            return [IsStandardUser()]
-        return [IsAdmin()]
+        return permissions_for_action(self)
 
     def _get_or_create_settings(self):
         """Get or create the proxy settings CoreSettings entry"""
@@ -290,7 +280,11 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 
         return Response(serializer.validated_data)
 
-    @action(detail=False, methods=['get', 'patch'])
+    @action(
+        detail=False,
+        methods=['get', 'patch'],
+        permission_classes=[IsAdmin],
+    )
     def settings(self, request):
         """Get or update the proxy settings."""
         if request.method == 'GET':
@@ -613,15 +607,18 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
     serializer_class = SystemNotificationSerializer
 
     def get_permissions(self):
+        # Every signed-in user can read and dismiss their own notifications.
+        # Anything not listed here (create, update, partial_update, destroy,
+        # and any action added later) is admin only.
         if self.action in (
-            "create",
-            "update",
-            "partial_update",
-            "destroy",
+            "list",
+            "retrieve",
+            "dismiss",
+            "dismiss_all",
+            "unread_count",
         ):
-            return [IsAdmin()]
-        # list, retrieve, dismiss, dismiss_all, unread_count
-        return [IsAuthenticated()]
+            return [IsAuthenticated()]
+        return [IsAdmin()]
 
     def get_queryset(self):
         """

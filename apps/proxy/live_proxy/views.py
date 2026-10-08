@@ -25,11 +25,7 @@ from core.models import CoreSettings, PROXY_PROFILE_NAME, StreamProfile
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from apps.accounts.permissions import (
-    IsAdmin,
-    permission_classes_by_method,
-    permission_classes_by_action,
-)
+from apps.accounts.permissions import IsAdmin
 from .constants import ChannelState, ChannelMetadataField
 from .services.channel_service import ChannelService
 from core.utils import send_websocket_update

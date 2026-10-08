@@ -23,8 +23,8 @@ from apps.accounts.permissions import (
     IsAdminOrDVRManager,
     IsDVRViewer,
     IsStandardUser,
-    permission_classes_by_action,
-    permission_classes_by_method,
+    permissions_for_action,
+    permissions_for_method,
 )
 from apps.channels.dvr_access import (
     is_dvr_manage_enabled,
@@ -195,12 +195,7 @@ class StreamViewSet(viewsets.ModelViewSet):
     ordering = ["-name"]
 
     def get_permissions(self):
-        if self.action == "duplicate":
-            return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -246,7 +241,12 @@ class StreamViewSet(viewsets.ModelViewSet):
 
         return super().list(request, *args, **kwargs)
 
-    @action(detail=False, methods=["get"], url_path="ids")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="ids",
+        permission_classes=[IsStandardUser],
+    )
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
         queryset = self.get_queryset()
@@ -352,7 +352,12 @@ class StreamViewSet(viewsets.ModelViewSet):
             "scan_limit_hit so users know whether the preview is complete."
         ),
     )
-    @action(detail=False, methods=["get"], url_path="regex-preview")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="regex-preview",
+        permission_classes=[IsStandardUser],
+    )
     def regex_preview(self, request, *args, **kwargs):
         # `regex` (third-party) supports a per-call timeout that bounds
         # catastrophic backtracking; paired with PATTERN_MAX_LEN to keep
@@ -514,7 +519,12 @@ class StreamViewSet(viewsets.ModelViewSet):
                 response_payload["exclude_error"] = exclude_error
         return Response(response_payload)
 
-    @action(detail=False, methods=["get"], url_path="groups")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="groups",
+        permission_classes=[IsStandardUser],
+    )
     def get_groups(self, request, *args, **kwargs):
         # Get unique ChannelGroup names that are linked to streams
         group_names = (
@@ -527,7 +537,12 @@ class StreamViewSet(viewsets.ModelViewSet):
         # Return the response with the list of unique group names
         return Response(list(group_names))
 
-    @action(detail=False, methods=["get"], url_path="filter-options")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="filter-options",
+        permission_classes=[IsStandardUser],
+    )
     def get_filter_options(self, request, *args, **kwargs):
         """
         Get available filter options based on current filter state.
@@ -642,7 +657,12 @@ class StreamViewSet(viewsets.ModelViewSet):
         ),
         responses={200: StreamSerializer(many=True)},
     )
-    @action(detail=False, methods=["post"], url_path="by-ids")
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="by-ids",
+        permission_classes=[IsStandardUser],
+    )
     def get_by_ids(self, request, *args, **kwargs):
         ids = request.data.get("ids", [])
         if not isinstance(ids, list):
@@ -664,12 +684,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ChannelGroupSerializer
 
     def get_permissions(self):
-        if self.action == "cleanup_unused_groups":
-            return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [IsAdmin()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         # Annotate both counts at the SQL level so the serializer methods
@@ -797,7 +812,12 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         methods=["POST"],
         description="Delete all channel groups that have no associations (no channels or M3U accounts)",
     )
-    @action(detail=False, methods=["post"], url_path="cleanup")
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="cleanup",
+        permission_classes=[IsAdmin],
+    )
     def cleanup_unused_groups(self, request):
         """Delete all channel groups with no channels or M3U account associations"""
         from django.db.models import Q, Exists, OuterRef
@@ -1115,34 +1135,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     def get_permissions(self):
-        if self.action in [
-            "edit_bulk",
-            "assign",
-            "from_stream",
-            "from_stream_bulk",
-            "match_epg",
-            "set_epg",
-            "batch_set_epg",
-            "bulk_regex_rename",
-            "set_names_from_epg",
-            "set_logos_from_epg",
-            "set_tvg_ids_from_epg",
-            "reorder",
-        ]:
-            return [IsAdmin()]
-
-        if self.action in (
-            "get_ids",
-            "summary",
-            "numbers_in_range",
-            "by_uuids",
-        ):
-            return [IsStandardUser()]
-
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [IsAdmin()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         # get_ids and summary only need the filter conditions, not the full
@@ -1325,7 +1318,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             ),
         },
     )
-    @action(detail=False, methods=["patch"], url_path="edit/bulk")
+    @action(detail=False, methods=["patch"], url_path="edit/bulk", permission_classes=[IsAdmin])
     def edit_bulk(self, request):
         """
         Bulk edit channels efficiently.
@@ -1718,7 +1711,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="edit/bulk-regex")
+    @action(detail=False, methods=["post"], url_path="edit/bulk-regex", permission_classes=[IsAdmin])
     def bulk_regex_rename(self, request):
         """
         Efficiently apply a regex find/replace to the `name` field of multiple channels.
@@ -1799,7 +1792,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "updated_count": updated_count,
         }, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=["post"], url_path="set-names-from-epg")
+    @action(detail=False, methods=["post"], url_path="set-names-from-epg", permission_classes=[IsAdmin])
     def set_names_from_epg(self, request):
         """
         Trigger a Celery task to set channel names from EPG data
@@ -1830,7 +1823,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channel_count": len(channel_ids)
         })
 
-    @action(detail=False, methods=["post"], url_path="set-logos-from-epg")
+    @action(detail=False, methods=["post"], url_path="set-logos-from-epg", permission_classes=[IsAdmin])
     def set_logos_from_epg(self, request):
         """
         Trigger a Celery task to set channel logos from EPG data.
@@ -1881,7 +1874,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channel_count": channel_count,
         })
 
-    @action(detail=False, methods=["post"], url_path="set-tvg-ids-from-epg")
+    @action(detail=False, methods=["post"], url_path="set-tvg-ids-from-epg", permission_classes=[IsAdmin])
     def set_tvg_ids_from_epg(self, request):
         """
         Trigger a Celery task to set channel TVG-IDs from EPG data
@@ -1912,7 +1905,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channel_count": len(channel_ids)
         })
 
-    @action(detail=False, methods=["get"], url_path="ids")
+    @action(detail=False, methods=["get"], url_path="ids", permission_classes=[IsStandardUser])
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
         queryset = self.get_queryset()
@@ -1926,7 +1919,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # JsonResponse skips DRF's renderer pipeline for a flat int list.
         return JsonResponse(list(channel_ids), safe=False)
 
-    @action(detail=False, methods=["get"], url_path="summary")
+    @action(detail=False, methods=["get"], url_path="summary", permission_classes=[IsStandardUser])
     def summary(self, request, *args, **kwargs):
         """Return a lightweight list of channels with only the fields needed by the TV Guide.
 
@@ -2002,7 +1995,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "exist after filtering, not the entire list."
         ),
     )
-    @action(detail=False, methods=["get"], url_path="numbers-in-range")
+    @action(detail=False, methods=["get"], url_path="numbers-in-range", permission_classes=[IsStandardUser])
     def numbers_in_range(self, request, *args, **kwargs):
         raw_start = request.query_params.get("start")
         raw_end = request.query_params.get("end")
@@ -2092,7 +2085,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         ),
         responses={200: ChannelSerializer(many=True)},
     )
-    @action(detail=False, methods=["post"], url_path="by-uuids")
+    @action(detail=False, methods=["post"], url_path="by-uuids", permission_classes=[IsStandardUser])
     def get_by_uuids(self, request, *args, **kwargs):
         uuids = request.data.get("uuids", [])
         if not isinstance(uuids, list):
@@ -2122,7 +2115,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="assign")
+    @action(detail=False, methods=["post"], url_path="assign", permission_classes=[IsAdmin])
     def assign(self, request):
         with transaction.atomic():
             raw_ids = request.data.get("channel_ids", [])
@@ -2194,7 +2187,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         ),
         responses={201: ChannelSerializer()},
     )
-    @action(detail=False, methods=["post"], url_path="from-stream")
+    @action(detail=False, methods=["post"], url_path="from-stream", permission_classes=[IsAdmin])
     def from_stream(self, request):
         stream_id = request.data.get("stream_id")
         if not stream_id:
@@ -2375,7 +2368,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="from-stream/bulk")
+    @action(detail=False, methods=["post"], url_path="from-stream/bulk", permission_classes=[IsAdmin])
     def from_stream_bulk(self, request):
         from .tasks import bulk_create_channels_from_streams
 
@@ -2427,7 +2420,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             }
         ),
     )
-    @action(detail=False, methods=["post"], url_path="match-epg")
+    @action(detail=False, methods=["post"], url_path="match-epg", permission_classes=[IsAdmin])
     def match_epg(self, request):
         # Get channel IDs from request body if provided
         channel_ids = request.data.get('channel_ids', [])
@@ -2450,7 +2443,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         methods=["POST"],
         description="Try to auto-match this specific channel with EPG data.",
     )
-    @action(detail=True, methods=["post"], url_path="match-epg")
+    @action(detail=True, methods=["post"], url_path="match-epg", permission_classes=[IsAdmin])
     def match_channel_epg(self, request, pk=None):
         channel = self.get_object()
 
@@ -2478,7 +2471,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         ),
         responses={200: "EPG data linked and refresh triggered"},
     )
-    @action(detail=True, methods=["post"], url_path="set-epg")
+    @action(detail=True, methods=["post"], url_path="set-epg", permission_classes=[IsAdmin])
     def set_epg(self, request, pk=None):
         channel = self.get_object()
         epg_data_id = request.data.get("epg_data_id")
@@ -2538,7 +2531,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=True, methods=["post"], url_path="reorder")
+    @action(detail=True, methods=["post"], url_path="reorder", permission_classes=[IsAdmin])
     def reorder(self, request, pk=None):
         """
         Reorder a channel by moving it after another channel (or to the start
@@ -2655,7 +2648,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="batch-set-epg")
+    @action(detail=False, methods=["post"], url_path="batch-set-epg", permission_classes=[IsAdmin])
     def batch_set_epg(self, request):
         """Efficiently associate multiple channels with EPG data at once."""
         associations = request.data.get("associations", [])
@@ -2729,12 +2722,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
 # ─────────────────────────────────────────────────────────
 class BulkDeleteStreamsAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Bulk delete streams by ID",
@@ -2762,12 +2750,7 @@ class BulkDeleteStreamsAPIView(APIView):
 # ─────────────────────────────────────────────────────────
 class BulkDeleteChannelsAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description=(
@@ -2809,12 +2792,7 @@ class BulkDeleteChannelsAPIView(APIView):
 # ─────────────────────────────────────────────────────────
 class BulkDeleteLogosAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Bulk delete logos by ID",
@@ -2881,12 +2859,7 @@ class BulkDeleteLogosAPIView(APIView):
 
 class CleanupUnusedLogosAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Delete all channel logos that are not used by any channels",
@@ -2962,16 +2935,7 @@ class LogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     def get_permissions(self):
-        if self.action in ["upload"]:
-            return [IsAdmin()]
-
-        if self.action in ["cache"]:
-            return [AllowAny()]
-
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""
@@ -3053,7 +3017,7 @@ class LogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
 
         return super().destroy(request, *args, **kwargs)
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], permission_classes=[IsAdmin])
     def upload(self, request):
         if "file" not in request.FILES:
             return Response(
@@ -3153,12 +3117,7 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
         return self.request.user.channel_profiles.prefetch_related(enabled_memberships_prefetch)
 
     def get_permissions(self):
-        if self.action == "duplicate":
-            return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     @action(detail=True, methods=["post"], url_path="duplicate", permission_classes=[IsAdmin])
     def duplicate(self, request, pk=None):
@@ -3208,12 +3167,7 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
 
 class GetChannelStreamsAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     def get(self, request, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
@@ -3229,12 +3183,7 @@ class GetChannelStreamStatsAPIView(APIView):
     (comma-separated) query params."""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description=(
@@ -3355,12 +3304,7 @@ class UpdateChannelMembershipAPIView(APIView):
 
 class BulkUpdateChannelMembershipAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Bulk enable or disable channels for a specific profile. Creates membership records if they don't exist.",
@@ -3591,10 +3535,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
             'update_metadata',
         ):
             return [IsAdminOrDVRManager()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [IsAdminOrDVRManager()]
+        return permissions_for_action(self, default=IsAdminOrDVRManager)
 
     def _user_can_play_recording(self, request, recording):
         """Authorization gate for recording playback (file/hls actions).

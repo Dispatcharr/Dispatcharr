@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Custom VOD logo and M3U account actions require admin.** VOD logo `bulk-delete` and `cleanup`, and M3U account `group-settings`, `repack-group`, `refresh-vod`, and `auto-created-channels-count`, accepted any authenticated user because those actions are not in the shared REST permission map and fell through to "logged in". They now require admin, matching create, update, and delete on the same viewsets. Related M3U viewsets fail closed to admin for any unlisted action. Standard list and retrieve, VOD browsing, and the public logo cache are unchanged. Reported by [@cqliuke](https://github.com/cqliuke).
+- **REST viewsets and API views now fail closed to admin for any action or method that is not explicitly permissioned.** About forty views resolved permissions with a copied `try/except KeyError` that fell back to "any logged-in user", which is how the custom action exposure above happened. They now share `permissions_for_action` / `permissions_for_method` in `apps/accounts/permissions.py`: an `@action(permission_classes=...)` is honored, then the shared CRUD map, then admin. Because the old fallback was wider than that, some requests that used to succeed for non-admin users are now denied:
+  - Stream helper reads (`ids`, `groups`, `filter-options`, `regex-preview`, `by-ids`) and `GET /api/epg/programs/search/` require a Standard user, matching stream and program list. Streamer accounts no longer get them. The web UI already blocks Streamer accounts.
+  - `POST /api/core/settings/check/` (the Network Access CIDR check) is admin-only. It is only used from the admin Settings page.
+  - `OPTIONS` requests on viewsets that previously accepted any logged-in user now require admin (browser CORS preflight is answered earlier and is unaffected). `HEAD` on method-mapped API views is authorized the same as `GET`.
+  - `POST /api/channels/channels/by-uuids/` is now allowed for Standard users like the other channel read helpers (its allowlist name never matched, so it was admin-only by accident).
+
+  A regression test fails the suite if a view reads the raw permission maps, catches exceptions inside `get_permissions`, adds a custom `@action` with no declared permission, or puts `permission_classes` on an action whose viewset ignores it.
 
 ## [0.32.0] - 2026-10-07
 
