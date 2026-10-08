@@ -16,6 +16,8 @@ DEFAULT_LOCK_TTL = 120
 DEFAULT_POLL_INTERVAL = 0.05
 DEFAULT_MAX_FOLLOWER_WAIT = 600
 
+EPG_CACHE_GENERATION_KEY = "epg_content_generation"
+
 
 def _chunks_key(base_key):
     return f"{base_key}:chunks"
@@ -201,6 +203,7 @@ def stream_cached_response(
     poll_interval=DEFAULT_POLL_INTERVAL,
     max_follower_wait=DEFAULT_MAX_FOLLOWER_WAIT,
     redis=None,
+    generation_key=None,
 ):
     """
     Stream a large response with single-flight Redis chunk caching.
@@ -208,9 +211,17 @@ def stream_cached_response(
     ``source`` must be a callable returning a chunk iterator. Only the leader
     invokes it; concurrent followers replay chunks already written to Redis, so
     the expensive ``source`` runs at most once per ``cache_key``.
+
+    If ``generation_key`` is given, the current value of that Redis counter is
+    appended to ``cache_key``; incrementing the counter retires every entry
+    without touching builds or reads that are still in flight.
     """
     if redis is None:
         redis = _get_redis()
+
+    if generation_key:
+        generation = _decode_chunk(redis.get(generation_key)) or "0"
+        cache_key = f"{cache_key}:g={generation}"
 
     if redis.get(_ready_key(cache_key)):
         logger.debug("Serving response from chunk cache")
@@ -244,23 +255,22 @@ def stream_cached_response(
 
 def invalidate_epg_chunk_cache():
     """
-    Drop all XMLTV /output/epg chunk-cache entries.
+    Retire all XMLTV /output/epg chunk-cache entries.
 
     EPG assignment changes (channel or override), programme imports, and
     finished EPG refreshes (XMLTV and Schedules Direct) do not change the
-    cache key, so without this the next /output/epg can keep serving stale
+    cache params, so without this the next /output/epg can keep serving stale
     programmes for up to DEFAULT_CACHE_TTL while the in-app guide (uncached)
     is already correct. M3U refreshes that rewrite channels also call this so
     channel names, numbers, and logos in the XMLTV channel list stay current.
+
+    Advances the cache generation instead of deleting keys: a build that is
+    still streaming keeps writing to its own (now unreachable) key, so it can
+    never publish a partial chunk list, and in-flight readers are not cut off.
+    Retired entries expire on their existing TTLs.
     """
     try:
-        redis = _get_redis()
-        deleted = 0
-        for key in redis.scan_iter(match="epg_content:*", count=200):
-            redis.delete(key)
-            deleted += 1
-        if deleted:
-            logger.debug("Invalidated %s epg_content cache key(s)", deleted)
+        _get_redis().incr(EPG_CACHE_GENERATION_KEY)
     except Exception:
         logger.warning("Failed to invalidate EPG chunk cache", exc_info=True)
 
