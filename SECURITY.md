@@ -25,6 +25,8 @@ Include as much of the following as possible:
 
 ### Coordinated Disclosure
 
-Maintainers will review the report, assess its impact, and may contact you for additional information or to validate a fix.
+Maintainers will review each report, assess its impact, and may contact you for additional information or to validate a fix. We will work with reporters to coordinate disclosure after a fix or mitigation is available.
 
-__Public disclosure is your choice.__ We ask that you give maintainers a reasonable opportunity to investigate and address the issue before sharing details publicly. We will work with reporters to coordinate disclosure after a fix or mitigation is available.
+Whether to publish a security advisory is determined case by case. Reports that are not published as advisories may instead credit the reporter in a security entry in the [changelog](CHANGELOG.md).
+
+__Public disclosure is your choice.__ We ask that you give maintainers a reasonable opportunity to investigate and address the issue before sharing details publicly.
