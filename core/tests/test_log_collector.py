@@ -86,6 +86,8 @@ class ConfTests(SimpleTestCase):
     def test_missing_conf_gives_defaults(self):
         self.assertEqual(log_collector.read_conf(self.log_dir), log_collector._DEFAULT_CONF)
 
+
+class CollectorTests(SimpleTestCase):
     def setUp(self):
         self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
