@@ -224,7 +224,7 @@ def _select_vod_stream(
         if not profile_result or not profile_result[0]:
             logger.warning(
                 "[VOD-FAILOVER] Account %s at capacity or has no profile, trying next",
-                cand_account.name,
+                cand_account.id,
             )
             continue
 
@@ -236,7 +236,7 @@ def _select_vod_stream(
             if final_stream_url:
                 logger.warning(
                     "[VOD-FAILOVER] Invalid stream URL from account %s profile %s: %s",
-                    cand_account.name,
+                    cand_account.id,
                     getattr(m3u_profile, "id", None),
                     final_stream_url,
                 )
@@ -244,7 +244,7 @@ def _select_vod_stream(
 
         logger.info(
             "[VOD-FAILOVER] Selected account %s (priority %s)",
-            cand_account.name,
+            cand_account.id,
             cand_account.priority,
         )
         return {
@@ -304,7 +304,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         f"found; resolved via stream_id "
                         f"{preferred_stream_id} -> movie uuid "
                         f"{content_obj.uuid} (provider: "
-                        f"{rel.m3u_account.name})"
+                        f"#{rel.m3u_account.id})"
                     )
             if content_obj is None:
                 raise Http404(
@@ -327,7 +327,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 specific_relation = next(
                     (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
                 if specific_relation:
-                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
+                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: #{specific_relation.m3u_account.id}")
                     return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
@@ -336,14 +336,14 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 specific_relation = next(
                     (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
                 if specific_relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
+                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: #{specific_relation.m3u_account.id}")
                     return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
             relation = candidates[0] if candidates else None
             if relation:
-                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
+                logger.info(f"[PROVIDER-SELECTED] Using provider: #{relation.m3u_account.id} (priority: {relation.m3u_account.priority})")
 
             return content_obj, relation, candidates
 
@@ -379,7 +379,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         f"found; resolved via stream_id "
                         f"{preferred_stream_id} -> episode uuid "
                         f"{content_obj.uuid} (provider: "
-                        f"{rel.m3u_account.name})"
+                        f"#{rel.m3u_account.id})"
                     )
             if content_obj is None:
                 raise Http404(
@@ -402,7 +402,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 specific_relation = next(
                     (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
                 if specific_relation:
-                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
+                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: #{specific_relation.m3u_account.id}")
                     return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
@@ -411,14 +411,14 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 specific_relation = next(
                     (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
                 if specific_relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
+                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: #{specific_relation.m3u_account.id}")
                     return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
             relation = candidates[0] if candidates else None
             if relation:
-                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
+                logger.info(f"[PROVIDER-SELECTED] Using provider: #{relation.m3u_account.id} (priority: {relation.m3u_account.priority})")
 
             return content_obj, relation, candidates
 
@@ -445,7 +445,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 specific_relation = next(
                     (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
                 if specific_relation:
-                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
+                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: #{specific_relation.m3u_account.id}")
                     return episode, specific_relation, candidates
                 else:
                     logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
@@ -454,14 +454,14 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 specific_relation = next(
                     (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
                 if specific_relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
+                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: #{specific_relation.m3u_account.id}")
                     return episode, specific_relation, candidates
                 else:
                     logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
             relation = candidates[0] if candidates else None
             if relation:
-                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
+                logger.info(f"[PROVIDER-SELECTED] Using provider: #{relation.m3u_account.id} (priority: {relation.m3u_account.priority})")
 
             return episode, relation, candidates
         else:
@@ -879,7 +879,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         final_stream_url = selected["final_stream_url"]
 
         logger.info(f"[VOD-CONTENT] Found content: {getattr(content_obj, 'name', 'Unknown')}")
-        logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
+        logger.info(f"[VOD-ACCOUNT] Using M3U account: #{m3u_account.id}")
         logger.info(f"[VOD-URL] Final stream URL: {final_stream_url}")
         logger.info(
             f"[VOD-PROFILE] Using M3U profile: {m3u_profile.id} "
