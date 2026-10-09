@@ -12,6 +12,7 @@ vi.mock('../../../utils/dateTimeUtils.js', () => ({
     { value: 'tue', label: 'Tuesday' },
   ],
   toTimeString: vi.fn((val) => val),
+  useDateTimeFormat: vi.fn(),
 }));
 
 vi.mock('../../../utils/notificationUtils.js', () => ({
@@ -199,6 +200,7 @@ vi.mock('lucide-react', () => ({
 import useChannelsStore from '../../../store/channels';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import * as RecordingUtils from '../../../utils/forms/RecordingUtils.js';
+import { useDateTimeFormat}  from '../../../utils/dateTimeUtils.js';
 
 const setupStoreMock = () => {
   const mockFetchRecordings = vi.fn().mockResolvedValue(undefined);
@@ -227,6 +229,10 @@ const makeChannel = () => ({ id: 'ch-1', name: 'HBO', channel_number: 501 });
 describe('RecordingModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useDateTimeFormat).mockReturnValue({
+      timeFormat: 'HH:mm',
+      dateFormat: 'MM/DD',
+    })
     vi.mocked(RecordingUtils.getChannelsSummary).mockResolvedValue([
       { id: 'ch-1', name: 'HBO', channel_number: 501 },
     ]);

@@ -39,6 +39,7 @@ import {
   updatePlaylist,
 } from '../../utils/forms/M3uUtils.js';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
+import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 
 const M3U = ({
   m3uAccount = null,
@@ -62,6 +63,9 @@ const M3U = ({
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
   const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
     useState(false);
+
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+      useDateTimeFormat();
 
   // Keep expiration in sync when the default profile is edited (store refreshes).
   // Do not rebind the whole form to the live playlist or unsaved edits are wiped.
@@ -324,7 +328,7 @@ const M3U = ({
                     description="Set an expiration date to receive a warning notification"
                     placeholder="No expiration"
                     clearable
-                    valueFormat="MMM D, YYYY h:mm A"
+                    valueFormat={dateformat + ', YYYY ' + timeformat}
                     value={expDate}
                     onChange={(v) => setExpDate(v ? new Date(v) : null)}
                   />

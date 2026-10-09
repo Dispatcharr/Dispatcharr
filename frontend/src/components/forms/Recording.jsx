@@ -35,6 +35,7 @@ import {
   timeChange,
   updateRecording,
 } from '../../utils/forms/RecordingUtils.js';
+import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 
 const RecordingModal = ({
   recording = null,
@@ -51,6 +52,9 @@ const RecordingModal = ({
 
   const [mode, setMode] = useState('single');
   const [submitting, setSubmitting] = useState(false);
+
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+      useDateTimeFormat();
 
   const singleForm = useForm({
     mode: 'controlled',
@@ -232,7 +236,7 @@ const RecordingModal = ({
                   {...singleForm.getInputProps('start_time')}
                   key={singleForm.key('start_time')}
                   label="Start"
-                  valueFormat="MMM D, YYYY h:mm A"
+                  valueFormat={dateformat + ', YYYY ' + timeformat}
                   timeInputProps={{
                     format: '12',
                     withSeconds: false,
@@ -244,7 +248,7 @@ const RecordingModal = ({
                   {...singleForm.getInputProps('end_time')}
                   key={singleForm.key('end_time')}
                   label="End"
-                  valueFormat="MMM D, YYYY h:mm A"
+                  valueFormat={dateformat + ', YYYY ' + timeformat}
                   timeInputProps={{
                     format: '12',
                     withSeconds: false,
@@ -285,7 +289,7 @@ const RecordingModal = ({
                         value || new Date()
                       )
                     }
-                    valueFormat="MMM D, YYYY"
+                    valueFormat={dateformat + ', YYYY'}
                   />
                   <DatePickerInput
                     label="End date"
@@ -293,7 +297,7 @@ const RecordingModal = ({
                     onChange={(value) =>
                       recurringForm.setFieldValue('end_date', value)
                     }
-                    valueFormat="MMM D, YYYY"
+                    valueFormat={dateformat + ', YYYY'}
                     minDate={recurringForm.values.start_date || undefined}
                   />
                 </Group>
