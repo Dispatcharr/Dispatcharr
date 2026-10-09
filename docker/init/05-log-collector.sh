@@ -72,8 +72,17 @@ wait_log_collector() {
     done
 }
 
+# The battery alone, with no file sink: what the collector degrades to.
+start_masked_passthrough() {
+    if [ -z "$1" ]; then
+        (cd /app && exec "$2" /app/dispatcharr/log_redaction.py)
+    else
+        su - "$1" -c 'cd /app && exec "$0" /app/dispatcharr/log_redaction.py' "$2"
+    fi
+}
+
 # docker logs must outlive any collector fault: three rapid failures degrade to
-# a plain cat passthrough rather than a restart loop that drops the stream.
+# a masked passthrough, and only if that cannot run either, to plain cat.
 supervise_log_collector() {
     local user="$1" python="$2" dir="$3"
     local failures=0 started
@@ -84,7 +93,9 @@ supervise_log_collector() {
         if [ $((SECONDS - started)) -ge 30 ]; then failures=0; fi
         failures=$((failures + 1))
         if [ "$failures" -ge 3 ]; then
-            echo "log collector failing repeatedly; falling back to passthrough"
+            echo "log collector failing repeatedly; falling back to masked passthrough"
+            start_masked_passthrough "$user" "$python" && return
+            echo "masked passthrough failed; falling back to unmasked passthrough"
             exec cat
         fi
         echo "log collector exited abnormally; restarting"
