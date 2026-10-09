@@ -7,6 +7,7 @@ _VOD_SERIES_ENABLED = "vod_series_enabled"
 QUALITY_ORDER = ("4K", "1080p", "720p", "480p", "SD")
 
 _LANGUAGE_CODE_RE = re.compile(r"[A-Za-z]{2}")
+_LANG_SUFFIX_RE = re.compile(r"\[([A-Za-z]{2})\]\s*$")
 
 
 def _is_vod_access_enabled(*, prop_key, user=None):
@@ -43,7 +44,11 @@ def validate_category_custom_properties(props):
 
     Raises ``ValueError`` with a message safe to return to the API caller.
     """
-    props = dict(props or {})
+    if props is None:
+        props = {}
+    elif not isinstance(props, dict):
+        raise ValueError("custom_properties must be an object.")
+    props = dict(props)
 
     language = props.get("language")
     if language is not None:
@@ -65,6 +70,17 @@ def category_language(category_relation):
     props = category_relation.custom_properties or {}
     language = props.get("language")
     return language.lower() if isinstance(language, str) else ''
+
+
+def xc_language_suffix(name, language):
+    """Append ``[XX]`` for XC display. Empty language and an existing matching tag are unchanged."""
+    if not language or not name:
+        return name
+    tag = language.upper()
+    match = _LANG_SUFFIX_RE.search(name)
+    if match and match.group(1).upper() == tag:
+        return name
+    return f"{name} [{tag}]"
 
 
 def parse_category_filter_value(value, valid_types):

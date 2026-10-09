@@ -117,7 +117,6 @@ class Series(models.Model):
         max_length=2,
         blank=True,
         default='',
-        db_index=True,
         help_text="ISO 639-1 language assigned by the source category; empty when untagged",
     )
 
@@ -175,7 +174,6 @@ class Movie(models.Model):
         max_length=2,
         blank=True,
         default='',
-        db_index=True,
         help_text="ISO 639-1 language assigned by the source category; empty when untagged",
     )
 

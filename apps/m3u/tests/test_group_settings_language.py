@@ -98,6 +98,13 @@ class GroupSettingsCategoryLanguageTests(TestCase):
         ])
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_rejects_non_object_custom_properties(self):
+        response = self._patch([
+            {"id": self.category.id, "enabled": True, "custom_properties": "language=es"}
+        ])
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("must be an object", response.data["error"])
+
     def test_batch_of_categories_in_one_patch(self):
         other_category = VODCategory.objects.create(name="French", category_type="movie")
 

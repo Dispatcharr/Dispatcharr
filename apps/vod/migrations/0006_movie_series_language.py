@@ -21,12 +21,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='movie',
             name='language',
-            field=models.CharField(blank=True, db_index=True, default='', help_text='ISO 639-1 language assigned by the source category; empty when untagged', max_length=2),
+            field=models.CharField(blank=True, default='', help_text='ISO 639-1 language assigned by the source category; empty when untagged', max_length=2),
         ),
         migrations.AddField(
             model_name='series',
             name='language',
-            field=models.CharField(blank=True, db_index=True, default='', help_text='ISO 639-1 language assigned by the source category; empty when untagged', max_length=2),
+            field=models.CharField(blank=True, default='', help_text='ISO 639-1 language assigned by the source category; empty when untagged', max_length=2),
         ),
         migrations.AlterField(
             model_name='movie',

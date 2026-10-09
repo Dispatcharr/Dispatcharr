@@ -3,7 +3,7 @@ import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number, is_catchup_enabled
-from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
+from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled, xc_language_suffix
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -1093,7 +1093,7 @@ def xc_get_epg(request, user, short=False):
 
 XC_MOVIE_VALUE_FIELDS = (
     'id', 'movie_id', 'category_id', 'container_extension',
-    'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
+    'movie__id', 'movie__name', 'movie__language', 'movie__rating', 'movie__created_at',
     'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
     'movie__year', 'movie__is_adult', 'movie__custom_properties', 'movie__logo_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
@@ -1102,7 +1102,7 @@ XC_MOVIE_VALUE_FIELDS = (
 
 XC_SERIES_VALUE_FIELDS = (
     'id', 'series_id', 'category_id', 'updated_at',
-    'series__id', 'series__name', 'series__description', 'series__genre',
+    'series__id', 'series__name', 'series__language', 'series__description', 'series__genre',
     'series__year', 'series__rating', 'series__custom_properties', 'series__logo_id',
     'series__tmdb_id', 'series__imdb_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
@@ -1323,7 +1323,7 @@ def xc_get_vod_streams(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": row['movie__name'],
+            "name": xc_language_suffix(row['movie__name'], row['movie__language']),
             "stream_type": "movie",
             "stream_id": row['movie__id'],
             "stream_icon": _xc_cover_or_logo(
@@ -1418,7 +1418,7 @@ def xc_get_series(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": row['series__name'],
+            "name": xc_language_suffix(row['series__name'], row['series__language']),
             "series_id": row['series__id'],
             "cover": _xc_cover_or_logo(
                 request,
@@ -1697,7 +1697,7 @@ def xc_get_series_info(request, user, series_id):
     info = {
         'seasons': seasons_list,
         "info": {
-            "name": series_data['name'],
+            "name": xc_language_suffix(series_data['name'], series.language),
             "cover": series_cover,
             "plot": series_data['description'],
             "cast": series_data['cast'],
@@ -1853,8 +1853,8 @@ def xc_get_vod_info(request, user, vod_id):
     # Transform API response to XtreamCodes format
     info = {
         "info": {
-            "name": movie_data.get('name', movie.name),
-            "o_name": movie_data.get('name', movie.name),
+            "name": xc_language_suffix(movie_data.get('name', movie.name), movie.language),
+            "o_name": xc_language_suffix(movie_data.get('name', movie.name), movie.language),
             "cover_big": movie_cover,
             "movie_image": movie_cover,
             'description': movie_data.get('description', ''),
@@ -1883,7 +1883,7 @@ def xc_get_vod_info(request, user, vod_id):
         },
         "movie_data": {
             "stream_id": movie.id,
-            "name": movie.name,
+            "name": xc_language_suffix(movie.name, movie.language),
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
