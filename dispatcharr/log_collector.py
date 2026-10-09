@@ -8,7 +8,9 @@ instant and touches only stdout, so a dead /data can never back-pressure the
 producers; bounded memory with drop-oldest and an explicit dropped-lines
 marker absorbs disk stalls (markers are file-only: the forwarded stream never
 dropped anything). Every line is rewritten into the canonical
-"stamp [offset] LEVEL source rest" grammar. Owns rotation and pruning.
+"stamp [offset] LEVEL source rest" grammar and swept for provider
+credentials -- which is why uwsgi, postgres, redis and the entrypoint are
+masked here and not by any Python formatter. Owns rotation and pruning.
 Django-free; configured via <logdir>/config/collector.conf from apply_settings().
 """
 
@@ -22,6 +24,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+try:
+    # Started by path, so siblings import but the package does not: importing
+    # it would pull celery and django into a process built to have neither.
+    from log_redaction import redact_text
+except ImportError:
+    from dispatcharr.log_redaction import redact_text
 
 
 def _role_suffix():
@@ -305,6 +314,7 @@ class Collector:
         self._in_traceback = False
         self._pg_level = b"INFO"
         self.conf = dict(_DEFAULT_CONF)
+        self._redact_failed_at = float("-inf")
         self._display_zone = _boot_display_zone()
         self._container_zone = timezone.utc
         self._pid1_zone = timezone.utc
@@ -326,9 +336,9 @@ class Collector:
             # Continuation chunks of an oversize line must not be stamped.
             tail = mid_line
             if mid_line:
-                line = chunk
+                line = self._filter(chunk)
             else:
-                line = self._normalize(chunk)
+                line = self._filter(self._normalize(chunk))
                 # One runaway record can evict a rotation of history, so only the
                 # file copy is capped; docker logs takes the record whole.
                 overrun = len(line) > _MAX_RECORD_BYTES
@@ -521,6 +531,35 @@ class Collector:
                 view = view[os.write(self.out_fd, view) :]
         except OSError:
             pass
+
+    def _filter(self, raw):
+        """Mask credentials in every line, on the way to both sinks.
+
+        A fixed stage, not a configurable one: nothing can turn it off.
+        Undecodable bytes round-trip through surrogateescape, so masking
+        changes nothing but the masked values.
+        """
+        try:
+            text = raw.decode("utf-8", "surrogateescape")
+            masked = redact_text(text)
+            if masked == text:
+                return raw
+            return masked.encode("utf-8", "surrogateescape")
+        except Exception as exc:
+            # Redaction must never lose the stream: keep the line, and say so
+            # on stderr at most once a minute.
+            now = time.monotonic()
+            if now - self._redact_failed_at >= 60:
+                self._redact_failed_at = now
+                try:
+                    sys.stderr.write(
+                        f"log collector: masking failed ({type(exc).__name__}); "
+                        "line passed unmasked\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+            return raw
 
     # ── writer thread: batches, markers, rotation ─────────────────────────
 
