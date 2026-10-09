@@ -16,12 +16,21 @@ Lifecycle:
   * **User resolution**: prefer ``timeshift:pool:{session_id}.user_id`` while
     the provider pool entry exists; fall back to the API session record when the
     pool is idle/expired (pause gaps between HTTP range requests).
+
+Authz for playback: channel visibility is checked when the session is minted.
+A valid ``session_id`` bound to the URL channel is enough to play; playback
+loads that channel by the id stored at mint (no profile/level re-check) and
+still loads the User row so stream limits, catch-up enablement, and
+``is_active`` stay current. Because playback refreshes the idle TTL, a
+permission change reaches an already-playing session only after the viewer
+stops for ``SESSION_IDLE_TTL_SECONDS`` or the session is deleted.
 """
 
 import logging
 import time
 
 from apps.accounts.models import User
+from apps.channels.access import user_can_access_channel
 from apps.channels.models import Channel
 from apps.timeshift.redis_keys import TimeshiftRedisKeys, mint_session_id
 from core.utils import RedisClient
@@ -43,6 +52,10 @@ def create_catchup_session(*, user, channel, start, duration=None):
 
     ``duration`` is an optional programme length in minutes. When supplied it is
     preferred over EPG at playback time (see ``resolve_catchup_duration``).
+
+    Channel visibility was already checked by the caller before minting. The
+    session stores the channel id so playback can load that row without
+    repeating the profile filter. Stream limits stay on the User row.
     """
     redis_client = RedisClient.get_client()
     if redis_client is None:
@@ -159,12 +172,21 @@ def _user_id_from_pool(session_id):
 
 
 def resolve_catchup_playback(session_id, channel_uuid):
-    """Resolve user and programme start for a tokenless playback request.
+    """Resolve user, programme, and channel for a tokenless playback request.
 
     Returns:
-        ``(user, start, duration)`` on success, or ``None`` if the session is
-        invalid, expired, or bound to a different channel. ``duration`` is the
-        stored client programme length in minutes, or ``None`` when unset.
+        ``(user, start, duration, channel)`` on success, or ``None`` if the
+        session is invalid, expired, bound to a different channel, or the
+        channel row is gone. ``duration`` is the stored client programme
+        length in minutes, or ``None`` when unset.
+
+    Channel visibility is decided when the session is minted and is not
+    re-checked for the user who minted it. That makes a session a capability:
+    a permission change (profile, user level, hide-adult) applies to that
+    user's next session, not to one that is already playing. The channel is
+    loaded by the stored primary key and must still match *channel_uuid*. The
+    User row is always loaded so deactivation, stream limits, and the
+    catch-up flag stay current.
     """
     record = get_catchup_session(session_id)
     if not record:
@@ -173,24 +195,39 @@ def resolve_catchup_playback(session_id, channel_uuid):
     if str(record.get("channel_uuid") or "") != str(channel_uuid):
         return None
 
-    touch_catchup_session(session_id)
-
-    user_id = _user_id_from_pool(session_id)
-    if user_id is None:
-        try:
-            user_id = int(record.get("user_id") or "")
-        except (TypeError, ValueError):
-            return None
-
-    user = User.objects.filter(id=user_id, is_active=True).first()
-    if user is None:
-        return None
-
+    # Validate the whole record before any database work.
     start = record.get("start")
+    try:
+        owner_id = int(record.get("user_id") or "")
+        channel_pk = int(record.get("channel_id") or "")
+    except (TypeError, ValueError):
+        return None
     if not start:
         return None
 
-    return user, str(start), record.get("duration")
+    pool_user_id = _user_id_from_pool(session_id)
+    user = User.objects.filter(
+        id=owner_id if pool_user_id is None else pool_user_id,
+        is_active=True,
+    ).first()
+    if user is None:
+        return None
+
+    # Plain PK + uuid fetch: no visibility subquery (authorized at mint).
+    channel = Channel.objects.filter(pk=channel_pk, uuid=channel_uuid).first()
+    if channel is None:
+        return None
+
+    if user.id != owner_id and not user_can_access_channel(user, channel):
+        # The live pool entry names someone other than the minting user, so the
+        # mint-time authorization does not cover them.
+        return None
+
+    # Refresh idle TTL only after the request is authorized to play. Touching
+    # earlier would let a deactivated user keep a session alive by probing.
+    touch_catchup_session(session_id)
+
+    return user, str(start), record.get("duration"), channel
 
 
 def user_owns_catchup_session(session_id, user_id):

@@ -306,6 +306,8 @@ def catchup_proxy(request, channel_id):
     # Direct-auth clients may pass ?duration=; API sessions store their own.
     client_duration_hint = request.GET.get("duration")
 
+    # Valid API session already authorized this user+channel at mint time.
+    session_channel = None
     if session_id:
         resolved = resolve_catchup_playback(session_id, channel_id)
         if resolved is None:
@@ -317,7 +319,7 @@ def catchup_proxy(request, channel_id):
                     )
                 )
         else:
-            session_user, bound_start, bound_duration = resolved
+            session_user, bound_start, bound_duration, session_channel = resolved
             if auth_user is not None and auth_user.id != session_user.id:
                 return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
             user = session_user
@@ -330,11 +332,15 @@ def catchup_proxy(request, channel_id):
             JsonResponse({"error": "Authentication required"}, status=401)
         )
 
-    channel = get_channel_for_user(user, uuid=channel_id)
-    if channel is None:
-        # Same as XC live: missing and inaccessible both look like not found.
-        close_old_connections()
-        raise Http404("Channel not found")
+    if session_channel is not None:
+        channel = session_channel
+    else:
+        # JWT / direct-auth path: visibility still applies every request.
+        channel = get_channel_for_user(user, uuid=channel_id)
+        if channel is None:
+            # Same as XC live: missing and inaccessible both look like not found.
+            close_old_connections()
+            raise Http404("Channel not found")
 
     if not timestamp:
         return _finalize_timeshift_response(HttpResponseBadRequest("Missing start parameter"))

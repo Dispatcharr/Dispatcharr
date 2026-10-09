@@ -390,6 +390,7 @@ class CatchupSessionResolveTests(TestCase):
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved[0].id, self.user.id)
         self.assertEqual(resolved[1], "2026-06-08T17:00:00Z")
+        self.assertEqual(resolved[3].id, self.channel.id)
         self.assertEqual(
             self.redis.ttl[TimeshiftRedisKeys.api_session(session_id)],
             sessions.SESSION_IDLE_TTL_SECONDS,
@@ -427,6 +428,7 @@ class CatchupSessionResolveTests(TestCase):
         )
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved[2], "30")
+        self.assertEqual(resolved[3].id, self.channel.id)
 
     @patch.object(sessions.RedisClient, "get_client")
     def test_create_without_duration_resolves_none(self, redis_mock):
@@ -439,6 +441,157 @@ class CatchupSessionResolveTests(TestCase):
             payload["session_id"], self.channel.uuid,
         )
         self.assertIsNone(resolved[2])
+
+    @patch.object(sessions.RedisClient, "get_client")
+    def test_resolve_loads_current_user_and_channel(self, redis_mock):
+        # Visibility is not re-checked, but the User row is: stream limits and
+        # is_active must not be frozen at mint time. Two queries: user, channel.
+        redis_mock.return_value = self.redis
+        self.user.stream_limit = 2
+        self.user.save(update_fields=["stream_limit"])
+        payload = sessions.create_catchup_session(
+            user=self.user, channel=self.channel, start="2026-06-08T17:00:00Z",
+        )
+        self.user.stream_limit = 4
+        self.user.save(update_fields=["stream_limit"])
+        with self.assertNumQueries(2):
+            resolved = sessions.resolve_catchup_playback(
+                payload["session_id"], self.channel.uuid,
+            )
+        self.assertEqual(resolved[0].id, self.user.id)
+        self.assertEqual(resolved[0].stream_limit, 4)
+        self.assertEqual(resolved[3].id, self.channel.id)
+
+    @patch.object(sessions.RedisClient, "get_client")
+    def test_resolve_does_not_recheck_visibility_for_the_session_owner(self, redis_mock):
+        # Access is decided when the session is minted. A permission change
+        # applies to the user's next session, not to one already playing.
+        redis_mock.return_value = self.redis
+        payload = sessions.create_catchup_session(
+            user=self.user, channel=self.channel, start="2026-06-08T17:00:00Z",
+        )
+        Channel.objects.filter(pk=self.channel.pk).update(
+            user_level=User.UserLevel.ADMIN
+        )
+        resolved = sessions.resolve_catchup_playback(
+            payload["session_id"], self.channel.uuid,
+        )
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved[3].id, self.channel.id)
+
+    @patch.object(sessions.RedisClient, "get_client")
+    def test_resolve_rechecks_access_when_pool_names_another_user(self, redis_mock):
+        # The mint-time authorization covers only the user who minted the
+        # session. A live pool entry naming someone else must pass visibility.
+        redis_mock.return_value = self.redis
+        restricted = User.objects.create(
+            username="catchup-pool-restricted", user_level=User.UserLevel.STANDARD,
+        )
+        admin_only = Channel.objects.create(
+            name="resolve-admin-only",
+            is_catchup=True,
+            user_level=User.UserLevel.ADMIN,
+        )
+        session_id = sessions.mint_catchup_session_id()
+        self.redis.hset(
+            TimeshiftRedisKeys.api_session(session_id),
+            mapping={
+                "user_id": str(self.user.id),
+                "channel_uuid": str(admin_only.uuid),
+                "channel_id": str(admin_only.id),
+                "start": "2026-06-08T17:00:00Z",
+                "created_at": "1",
+            },
+        )
+        self.redis.hset(
+            TimeshiftRedisKeys.pool(session_id),
+            mapping={"user_id": str(restricted.id)},
+        )
+        self.assertIsNone(
+            sessions.resolve_catchup_playback(session_id, admin_only.uuid)
+        )
+
+    @patch.object(sessions.RedisClient, "get_client")
+    def test_resolve_rejects_malformed_record_without_touching_the_database(
+        self, redis_mock,
+    ):
+        redis_mock.return_value = self.redis
+        session_id = sessions.mint_catchup_session_id()
+        self.redis.hset(
+            TimeshiftRedisKeys.api_session(session_id),
+            mapping={
+                "user_id": str(self.user.id),
+                "channel_uuid": str(self.channel.uuid),
+                "channel_id": "not-a-number",
+                "start": "2026-06-08T17:00:00Z",
+                "created_at": "1",
+            },
+        )
+        with self.assertNumQueries(0):
+            self.assertIsNone(
+                sessions.resolve_catchup_playback(session_id, self.channel.uuid)
+            )
+
+    @patch.object(sessions.RedisClient, "get_client")
+    def test_resolve_rejects_inactive_user(self, redis_mock):
+        redis_mock.return_value = self.redis
+        payload = sessions.create_catchup_session(
+            user=self.user, channel=self.channel, start="2026-06-08T17:00:00Z",
+        )
+        session_key = TimeshiftRedisKeys.api_session(payload["session_id"])
+        self.assertEqual(
+            self.redis.ttl[session_key], sessions.HANDSHAKE_TTL_SECONDS,
+        )
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        self.assertIsNone(
+            sessions.resolve_catchup_playback(
+                payload["session_id"], self.channel.uuid,
+            )
+        )
+        # Failed authz must not refresh the idle window (probing would
+        # otherwise keep a deactivated user's session alive).
+        self.assertEqual(
+            self.redis.ttl[session_key], sessions.HANDSHAKE_TTL_SECONDS,
+        )
+
+    @patch.object(sessions.RedisClient, "get_client")
+    def test_resolve_does_not_touch_when_pool_user_fails_access(
+        self, redis_mock,
+    ):
+        redis_mock.return_value = self.redis
+        restricted = User.objects.create(
+            username="catchup-pool-no-touch",
+            user_level=User.UserLevel.STANDARD,
+        )
+        admin_only = Channel.objects.create(
+            name="resolve-admin-only-no-touch",
+            is_catchup=True,
+            user_level=User.UserLevel.ADMIN,
+        )
+        session_id = sessions.mint_catchup_session_id()
+        session_key = TimeshiftRedisKeys.api_session(session_id)
+        self.redis.hset(
+            session_key,
+            mapping={
+                "user_id": str(self.user.id),
+                "channel_uuid": str(admin_only.uuid),
+                "channel_id": str(admin_only.id),
+                "start": "2026-06-08T17:00:00Z",
+                "created_at": "1",
+            },
+        )
+        self.redis.expire(session_key, sessions.HANDSHAKE_TTL_SECONDS)
+        self.redis.hset(
+            TimeshiftRedisKeys.pool(session_id),
+            mapping={"user_id": str(restricted.id)},
+        )
+        self.assertIsNone(
+            sessions.resolve_catchup_playback(session_id, admin_only.uuid)
+        )
+        self.assertEqual(
+            self.redis.ttl[session_key], sessions.HANDSHAKE_TTL_SECONDS,
+        )
 
 
 class CatchupProxySessionAuthTests(TestCase):
@@ -456,17 +609,17 @@ class CatchupProxySessionAuthTests(TestCase):
         self, channel_lookup, serve, _net, resolve_mock,
     ):
         user = MagicMock(id=42, is_authenticated=False)
-        resolve_mock.return_value = (user, "2026-06-08T17:00:00Z", None)
-        channel_lookup.return_value = MagicMock(
-            id=8, uuid=self.channel_uuid,
-        )
+        channel = MagicMock(id=8, uuid=self.channel_uuid)
+        resolve_mock.return_value = (user, "2026-06-08T17:00:00Z", None, channel)
         request = self.factory.get(
             f"/proxy/catchup/{self.channel_uuid}?session_id=test",
         )
         response = views.catchup_proxy(request, self.channel_uuid)
         self.assertEqual(response.status_code, 200)
         serve.assert_called_once()
+        channel_lookup.assert_not_called()
         _args, kwargs = serve.call_args
+        self.assertEqual(_args[2], channel)
         self.assertEqual(_args[3], "2026-06-08T17:00:00Z")
 
     @patch.object(views, "resolve_catchup_playback", return_value=None)
@@ -481,7 +634,12 @@ class CatchupProxySessionAuthTests(TestCase):
     @patch.object(views, "resolve_catchup_playback")
     @patch.object(views, "network_access_allowed", return_value=True)
     def test_mismatched_jwt_and_session_returns_403(self, _net, resolve_mock):
-        resolve_mock.return_value = (MagicMock(id=1), "2026-06-08T17:00:00Z", None)
+        resolve_mock.return_value = (
+            MagicMock(id=1),
+            "2026-06-08T17:00:00Z",
+            None,
+            MagicMock(id=8),
+        )
         request = self.factory.get(
             f"/proxy/catchup/{self.channel_uuid}?session_id=test",
         )
