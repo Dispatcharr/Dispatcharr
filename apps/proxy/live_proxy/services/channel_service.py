@@ -244,7 +244,7 @@ class ChannelService:
         except (TypeError, ValueError):
             buffer_index = 0
 
-        chunks_needed = ConfigHelper.initial_behind_chunks()
+        chunks_needed = ConfigHelper.initial_chunks_needed(redis_client, channel_id)
         if buffer_index < chunks_needed:
             return None
 
