@@ -225,7 +225,7 @@ const setupMocks = ({
 
   vi.mocked(useDateTimeFormat).mockReturnValue({
     timeFormat: 'HH:mm',
-    dateFormat: 'MM/DD',
+    dateYearFormat: 'MMM D, YYYY',
   });
 
   vi.mocked(format).mockImplementation((moment, fmt) => moment.format(fmt));
