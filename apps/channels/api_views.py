@@ -10,8 +10,9 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serial
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
+from django.core.paginator import Paginator
 from django.db import connection, transaction
-from django.db.models import Count, F, Prefetch, Q
+from django.db.models import Count, Prefetch, Q
 from django.db.models.functions import Coalesce
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
@@ -22,11 +23,16 @@ from apps.accounts.permissions import (
     IsAdminOrDVRManager,
     IsDVRViewer,
     IsStandardUser,
-    permission_classes_by_action,
-    permission_classes_by_method,
+    permissions_for_action,
+    permissions_for_method,
+)
+from apps.channels.access import (
+    channels_queryset_for_user,
+    is_admin_user,
+    scope_by_channel_access,
+    user_may_use_profile,
 )
 from apps.channels.dvr_access import (
-    is_dvr_manage_enabled,
     is_dvr_view_enabled,
     recordings_queryset_for_user,
 )
@@ -55,6 +61,17 @@ from .models import (
     ChannelProfileMembership,
     Recording,
     RecurringRecordingRule,
+)
+from .managers import (
+    apply_effective_channel_numbers,
+    channel_from_number_row,
+    channel_number_is_reserved,
+    effective_field_lookup_q,
+    effective_number_rows,
+    effective_related_name_lookup_q,
+    max_reserved_channel_number,
+    shift_effective_channel_numbers,
+    with_effective_values,
 )
 from .serializers import (
     StreamSerializer,
@@ -183,12 +200,7 @@ class StreamViewSet(viewsets.ModelViewSet):
     ordering = ["-name"]
 
     def get_permissions(self):
-        if self.action == "duplicate":
-            return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -218,6 +230,10 @@ class StreamViewSet(viewsets.ModelViewSet):
         if is_catchup and str(is_catchup).lower() in ("1", "true", "yes", "on"):
             qs = qs.filter(is_catchup=True)
 
+        is_radio = self.request.query_params.get("is_radio")
+        if is_radio and str(is_radio).lower() in ("1", "true", "yes", "on"):
+            qs = qs.filter(is_radio=True)
+
         return qs
 
     def list(self, request, *args, **kwargs):
@@ -230,7 +246,12 @@ class StreamViewSet(viewsets.ModelViewSet):
 
         return super().list(request, *args, **kwargs)
 
-    @action(detail=False, methods=["get"], url_path="ids")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="ids",
+        permission_classes=[IsStandardUser],
+    )
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
         queryset = self.get_queryset()
@@ -336,7 +357,12 @@ class StreamViewSet(viewsets.ModelViewSet):
             "scan_limit_hit so users know whether the preview is complete."
         ),
     )
-    @action(detail=False, methods=["get"], url_path="regex-preview")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="regex-preview",
+        permission_classes=[IsStandardUser],
+    )
     def regex_preview(self, request, *args, **kwargs):
         # `regex` (third-party) supports a per-call timeout that bounds
         # catastrophic backtracking; paired with PATTERN_MAX_LEN to keep
@@ -498,7 +524,12 @@ class StreamViewSet(viewsets.ModelViewSet):
                 response_payload["exclude_error"] = exclude_error
         return Response(response_payload)
 
-    @action(detail=False, methods=["get"], url_path="groups")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="groups",
+        permission_classes=[IsStandardUser],
+    )
     def get_groups(self, request, *args, **kwargs):
         # Get unique ChannelGroup names that are linked to streams
         group_names = (
@@ -511,7 +542,12 @@ class StreamViewSet(viewsets.ModelViewSet):
         # Return the response with the list of unique group names
         return Response(list(group_names))
 
-    @action(detail=False, methods=["get"], url_path="filter-options")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="filter-options",
+        permission_classes=[IsStandardUser],
+    )
     def get_filter_options(self, request, *args, **kwargs):
         """
         Get available filter options based on current filter state.
@@ -626,7 +662,12 @@ class StreamViewSet(viewsets.ModelViewSet):
         ),
         responses={200: StreamSerializer(many=True)},
     )
-    @action(detail=False, methods=["post"], url_path="by-ids")
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="by-ids",
+        permission_classes=[IsStandardUser],
+    )
     def get_by_ids(self, request, *args, **kwargs):
         ids = request.data.get("ids", [])
         if not isinstance(ids, list):
@@ -648,12 +689,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ChannelGroupSerializer
 
     def get_permissions(self):
-        if self.action == "cleanup_unused_groups":
-            return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [IsAdmin()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         # Annotate both counts at the SQL level so the serializer methods
@@ -665,12 +701,12 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         self._visible_group_counts = None
 
         # Non-admins only see groups that contain at least one channel they
-        # can activate (user_level + optional adult hide).
+        # can activate (user_level + optional adult hide). Groups themselves are
+        # not profile-scoped, so profile membership is left out here.
         if user is not None and getattr(user, 'user_level', 10) < 10:
-            visible = Channel.objects.filter(user_level__lte=user.user_level)
-            custom_props = getattr(user, 'custom_properties', None) or {}
-            if custom_props.get('hide_adult_content', False):
-                visible = visible.filter(is_adult=False)
+            visible = channels_queryset_for_user(
+                Channel.objects.all(), user, profiles=False
+            )
             rows = (
                 visible.annotate(
                     gid=Coalesce(
@@ -781,7 +817,12 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         methods=["POST"],
         description="Delete all channel groups that have no associations (no channels or M3U accounts)",
     )
-    @action(detail=False, methods=["post"], url_path="cleanup")
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="cleanup",
+        permission_classes=[IsAdmin],
+    )
     def cleanup_unused_groups(self, request):
         """Delete all channel groups with no channels or M3U account associations"""
         from django.db.models import Q, Exists, OuterRef
@@ -836,7 +877,32 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
 # ─────────────────────────────────────────────────────────
 # 3) Channel Management (CRUD)
 # ─────────────────────────────────────────────────────────
+class DeferredJoinPaginator(Paginator):
+    """
+    Sort a narrow id-only query, then load full rows for just that page.
+
+    Ordering by an expression (the effective channel number) cannot use the
+    column index, so the database must sort every matching row. Doing that
+    over the fully joined, select_related row set is several times slower
+    than sorting bare ids, and the page only needs a handful of rows.
+    """
+
+    def page(self, number):
+        number = self.validate_number(number)
+        bottom = (number - 1) * self.per_page
+        top = bottom + self.per_page
+        if top + self.orphans >= self.count:
+            top = self.count
+        page_ids = list(
+            self.object_list.values_list("pk", flat=True)[bottom:top]
+        )
+        return self._get_page(
+            self.object_list.filter(pk__in=page_ids), number, self
+        )
+
+
 class ChannelPagination(PageNumberPagination):
+    django_paginator_class = DeferredJoinPaginator
     page_size = 50  # Default page size to match frontend default
     page_size_query_param = "page_size"  # Allow clients to specify page size
     max_page_size = 10000  # Prevent excessive page sizes
@@ -850,8 +916,12 @@ class ChannelPagination(PageNumberPagination):
         return super().paginate_queryset(queryset, request, view)
 
     def get_paginated_response(self, data):
-        from django.db.models import Exists, OuterRef
-        has_unassigned = Channel.objects.filter(epg_data__isnull=True).exists()
+        # Match the epg=null filter: an override-only EPG assignment counts
+        # as assigned, so the "No EPG" option tracks what the table shows.
+        has_unassigned = Channel.objects.filter(
+            override__epg_data__isnull=True,
+            epg_data__isnull=True,
+        ).exists()
         response = super().get_paginated_response(data)
         response.data['has_unassigned_epg_channels'] = has_unassigned
         return response
@@ -859,7 +929,7 @@ class ChannelPagination(PageNumberPagination):
 
 class EPGFilter(django_filters.Filter):
     """
-    Filter channels by EPG source name or null (unlinked).
+    Filter channels by effective EPG source name or null (unlinked).
     """
     def filter(self, queryset, value):
         if not value:
@@ -871,20 +941,20 @@ class EPGFilter(django_filters.Filter):
 
         for val in values:
             if val == 'null':
-                # Filter for channels with no EPG data
-                query |= Q(epg_data__isnull=True)
+                # Effective EPG is null only when both override and channel
+                # epg_data are unset (no override row counts as unset).
+                query |= Q(override__epg_data__isnull=True, epg_data__isnull=True)
             else:
-                # Filter for channels with specific EPG source name
-                query |= Q(epg_data__epg_source__name__icontains=val)
+                query |= effective_related_name_lookup_q(
+                    "epg_data", val, name_path="epg_source__name"
+                )
 
         return queryset.filter(query)
 
 
 class ChannelFilter(django_filters.FilterSet):
-    name = django_filters.CharFilter(lookup_expr="icontains")
-    channel_group = OrInFilter(
-        field_name="channel_group__name", lookup_expr="icontains"
-    )
+    name = django_filters.CharFilter(method="filter_effective_name")
+    channel_group = django_filters.CharFilter(method="filter_effective_channel_group")
     epg = EPGFilter()
 
     class Meta:
@@ -895,15 +965,95 @@ class ChannelFilter(django_filters.FilterSet):
             "epg",
         ]
 
+    def filter_effective_name(self, queryset, name, value):
+        return queryset.filter(
+            effective_field_lookup_q("name", "icontains", value)
+        )
+
+    def filter_effective_channel_group(self, queryset, name, value):
+        # Same comma-OR exact match OrInFilter did, on the effective group.
+        query = Q()
+        for val in value.split(","):
+            query |= effective_related_name_lookup_q(
+                "channel_group", val, lookup="exact"
+            )
+        return queryset.filter(query)
+
+
+class EffectiveChannelSearchFilter(SearchFilter):
+    """Search the override-aware name and group name the Channels table shows."""
+
+    def filter_queryset(self, request, queryset, view):
+        search_terms = self.get_search_terms(request)
+        if not search_terms:
+            return queryset
+
+        conditions = Q()
+        for term in search_terms:
+            conditions &= (
+                effective_field_lookup_q("name", "icontains", term)
+                | effective_related_name_lookup_q("channel_group", term)
+            )
+        return queryset.filter(conditions)
+
+
+class EffectiveChannelOrderingFilter(OrderingFilter):
+    """
+    Sort by the override-aware value for fields a ChannelOverride can set.
+
+    The Channels table displays the override when one exists, so ordering
+    by the raw Channel column leaves overridden rows looking out of order.
+    Clients keep sending the existing ordering keys; each maps to a
+    query-only alias (never selected) that coalesces override over channel.
+    """
+
+    # ordering key -> (alias name, Coalesce args)
+    EFFECTIVE_ORDER_MAP = {
+        "channel_number": ("sort_channel_number", ("override__channel_number", "channel_number")),
+        "name": ("sort_name", ("override__name", "name")),
+        "channel_group__name": (
+            "sort_channel_group_name",
+            ("override__channel_group__name", "channel_group__name"),
+        ),
+        "epg_data__name": (
+            "sort_epg_data_name",
+            ("override__epg_data__name", "epg_data__name"),
+        ),
+    }
+
+    def filter_queryset(self, request, queryset, view):
+        ordering = self.get_ordering(request, queryset, view)
+        if not ordering:
+            return queryset
+
+        aliases = {}
+        terms = []
+        for term in ordering:
+            prefix = "-" if term.startswith("-") else ""
+            field = term.lstrip("-")
+            mapped = self.EFFECTIVE_ORDER_MAP.get(field)
+            if mapped:
+                alias, coalesce_args = mapped
+                aliases[alias] = Coalesce(*coalesce_args)
+                field = alias
+            terms.append(f"{prefix}{field}")
+
+        if aliases:
+            queryset = queryset.alias(**aliases)
+        return queryset.order_by(*terms)
+
 
 class ChannelViewSet(viewsets.ModelViewSet):
     queryset = Channel.objects.all()
     serializer_class = ChannelSerializer
     pagination_class = ChannelPagination
 
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        EffectiveChannelSearchFilter,
+        EffectiveChannelOrderingFilter,
+    ]
     filterset_class = ChannelFilter
-    search_fields = ["name", "channel_group__name"]
     ordering_fields = ["channel_number", "name", "channel_group__name", "epg_data__name"]
     ordering = ["-channel_number"]
 
@@ -990,39 +1140,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     def get_permissions(self):
-        if self.action in [
-            "edit_bulk",
-            "assign",
-            "from_stream",
-            "from_stream_bulk",
-            "match_epg",
-            "set_epg",
-            "batch_set_epg",
-            "bulk_regex_rename",
-            "set_names_from_epg",
-            "set_logos_from_epg",
-            "set_tvg_ids_from_epg",
-            "reorder",
-        ]:
-            return [IsAdmin()]
-
-        if self.action in (
-            "get_ids",
-            "summary",
-            "numbers_in_range",
-            "by_uuids",
-        ):
-            return [IsStandardUser()]
-
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [IsAdmin()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         # get_ids and summary only need the filter conditions, not the full
-        # object graph. Skipping the 5 select_related joins and 2 prefetch
-        # queries for those actions cuts their DB cost significantly.
+        # object graph. Skipping the select_related joins and the channelstream
+        # prefetch for those actions cuts their DB cost significantly.
         action = getattr(self, "action", None)
         qs = super().get_queryset()
 
@@ -1035,9 +1158,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "override",
                 "auto_created_by",
             ).prefetch_related(
-                "streams",
                 # Default-attr prefetch shares the cache with M2M writes;
                 # a named `to_attr` would isolate it and trigger N+1.
+                # Stream ids and include_streams both read this cache, so a
+                # second prefetch of the streams M2M would load the same rows.
                 Prefetch(
                     "channelstream_set",
                     queryset=ChannelStream.objects.select_related(
@@ -1045,11 +1169,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     ).order_by("order"),
                 ),
             )
-
-        channel_group = self.request.query_params.get("channel_group")
-        if channel_group:
-            group_names = channel_group.split(",")
-            qs = qs.filter(channel_group__name__in=group_names)
 
         filters = {}
         q_filters = Q()
@@ -1064,11 +1183,20 @@ class ChannelViewSet(viewsets.ModelViewSet):
         only_stale = self.request.query_params.get("only_stale", None)
         only_has_overrides = self.request.query_params.get("only_has_overrides", None)
         only_catchup = self.request.query_params.get("only_catchup", None)
+        only_radio = self.request.query_params.get("only_radio", None)
         visibility_filter = self.request.query_params.get("visibility_filter", "active")
 
         if channel_profile_id:
             try:
                 profile_id_int = int(channel_profile_id)
+            except (ValueError, TypeError):
+                # Ignore invalid profile id values
+                profile_id_int = None
+
+            if profile_id_int is not None:
+                # A user limited to assigned profiles can only scope to one of them.
+                if not user_may_use_profile(self.request.user, profile_id_int):
+                    return qs.none()
 
                 if show_disabled_param is None:
                     # Show only enabled channels: channels that have a membership
@@ -1076,11 +1204,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     # Default is DISABLED (channels without membership are hidden)
                     filters["channelprofilemembership__channel_profile_id"] = profile_id_int
                     filters["channelprofilemembership__enabled"] = True
-                # If show_disabled is True, show all channels (no filtering needed)
-
-            except (ValueError, TypeError):
-                # Ignore invalid profile id values
-                pass
+                # With show_disabled there is no explicit-profile filter. The
+                # user's own profile scoping below still applies.
 
         if only_streamless:
             q_filters &= Q(streams__isnull=True)
@@ -1091,10 +1216,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
             q_filters &= Q(override__isnull=False)
         if only_catchup:
             q_filters &= Q(is_catchup=True)
+        if only_radio:
+            # Effective value: the override wins when set.
+            q_filters &= Q(override__is_radio=True) | Q(
+                override__is_radio__isnull=True, is_radio=True
+            )
 
-        # Visibility filter applies to list-style reads only; retrieve /
-        # update / delete must still reach a hidden channel by id so the
-        # frontend can unhide. Summary powers the TV Guide and follows
+        # The hidden-from-output filter applies to list-style reads only;
+        # retrieve / update / delete must still reach a hidden channel by id so
+        # the frontend can unhide. Summary powers the TV Guide and follows
         # the same hidden semantic as downstream clients.
         if self.action in ("list", "get_ids", "summary"):
             if visibility_filter == "hidden":
@@ -1102,36 +1232,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
             elif visibility_filter != "all":
                 q_filters &= Q(hidden_from_output=False)
 
-        profile_union_applied = False
-        if self.request.user.user_level < 10:
-            filters["user_level__lte"] = self.request.user.user_level
-            # Hide adult content if user preference is set
-            custom_props = self.request.user.custom_properties or {}
-            if custom_props.get('hide_adult_content', False):
-                filters["is_adult"] = False
-            # Without an explicit profile, list/summary/get_ids are limited to
-            # enabled memberships in the user's assigned profiles. Retrieve /
-            # update / destroy remain reachable by channel id.
-            if (
-                self.action in ("list", "get_ids", "summary")
-                and not channel_profile_id
-                and self.request.user.channel_profiles.exists()
-            ):
-                q_filters &= Q(
-                    channelprofilemembership__channel_profile__in=(
-                        self.request.user.channel_profiles.all()
-                    ),
-                    channelprofilemembership__enabled=True,
-                )
-                profile_union_applied = True
-
         if filters:
             qs = qs.filter(**filters)
         if q_filters:
             qs = qs.filter(q_filters)
 
-        # DISTINCT when a join can duplicate channel rows.
-        if channel_profile_id or only_stale or profile_union_applied:
+        # Level, adult preference, and assigned profiles apply to every action,
+        # lookups by id included. Admins are never restricted.
+        qs = channels_queryset_for_user(qs, self.request.user)
+
+        # DISTINCT when a join (explicit profile filter or stale streams) can
+        # duplicate channel rows. The shared Exists profile filter does not.
+        if channel_profile_id or only_stale:
             return qs.distinct()
         return qs
 
@@ -1198,7 +1310,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             ),
         },
     )
-    @action(detail=False, methods=["patch"], url_path="edit/bulk")
+    @action(detail=False, methods=["patch"], url_path="edit/bulk", permission_classes=[IsAdmin])
     def edit_bulk(self, request):
         """
         Bulk edit channels efficiently.
@@ -1591,7 +1703,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="edit/bulk-regex")
+    @action(detail=False, methods=["post"], url_path="edit/bulk-regex", permission_classes=[IsAdmin])
     def bulk_regex_rename(self, request):
         """
         Efficiently apply a regex find/replace to the `name` field of multiple channels.
@@ -1672,7 +1784,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "updated_count": updated_count,
         }, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=["post"], url_path="set-names-from-epg")
+    @action(detail=False, methods=["post"], url_path="set-names-from-epg", permission_classes=[IsAdmin])
     def set_names_from_epg(self, request):
         """
         Trigger a Celery task to set channel names from EPG data
@@ -1703,7 +1815,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channel_count": len(channel_ids)
         })
 
-    @action(detail=False, methods=["post"], url_path="set-logos-from-epg")
+    @action(detail=False, methods=["post"], url_path="set-logos-from-epg", permission_classes=[IsAdmin])
     def set_logos_from_epg(self, request):
         """
         Trigger a Celery task to set channel logos from EPG data.
@@ -1754,7 +1866,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channel_count": channel_count,
         })
 
-    @action(detail=False, methods=["post"], url_path="set-tvg-ids-from-epg")
+    @action(detail=False, methods=["post"], url_path="set-tvg-ids-from-epg", permission_classes=[IsAdmin])
     def set_tvg_ids_from_epg(self, request):
         """
         Trigger a Celery task to set channel TVG-IDs from EPG data
@@ -1785,7 +1897,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channel_count": len(channel_ids)
         })
 
-    @action(detail=False, methods=["get"], url_path="ids")
+    @action(detail=False, methods=["get"], url_path="ids", permission_classes=[IsStandardUser])
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
         queryset = self.get_queryset()
@@ -1799,7 +1911,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # JsonResponse skips DRF's renderer pipeline for a flat int list.
         return JsonResponse(list(channel_ids), safe=False)
 
-    @action(detail=False, methods=["get"], url_path="summary")
+    @action(detail=False, methods=["get"], url_path="summary", permission_classes=[IsStandardUser])
     def summary(self, request, *args, **kwargs):
         """Return a lightweight list of channels with only the fields needed by the TV Guide.
 
@@ -1809,8 +1921,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
         back to the raw field names on the way out so the response
         shape stays unchanged for the frontend.
         """
-        from .managers import with_effective_values
-
         queryset = with_effective_values(
             self.filter_queryset(self.get_queryset())
         )
@@ -1877,10 +1987,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "exist after filtering, not the entire list."
         ),
     )
-    @action(detail=False, methods=["get"], url_path="numbers-in-range")
+    @action(detail=False, methods=["get"], url_path="numbers-in-range", permission_classes=[IsStandardUser])
     def numbers_in_range(self, request, *args, **kwargs):
-        from .managers import with_effective_values
-
         raw_start = request.query_params.get("start")
         raw_end = request.query_params.get("end")
         if raw_start is None or raw_start == "":
@@ -1904,7 +2012,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         queryset = (
             with_effective_values(
-                Channel.objects.all(), select_related_fks=True
+                channels_queryset_for_user(Channel.objects.all(), request.user),
+                select_related_fks=True,
             )
             .filter(
                 effective_channel_number__gte=start,
@@ -1969,7 +2078,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         ),
         responses={200: ChannelSerializer(many=True)},
     )
-    @action(detail=False, methods=["post"], url_path="by-uuids")
+    @action(detail=False, methods=["post"], url_path="by-uuids", permission_classes=[IsStandardUser])
     def get_by_uuids(self, request, *args, **kwargs):
         uuids = request.data.get("uuids", [])
         if not isinstance(uuids, list):
@@ -1978,7 +2087,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        channels = Channel.objects.filter(uuid__in=uuids)
+        channels = channels_queryset_for_user(
+            Channel.objects.filter(uuid__in=uuids), request.user
+        )
         serializer = self.get_serializer(channels, many=True)
         return Response(serializer.data)
 
@@ -1999,19 +2110,46 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="assign")
+    @action(detail=False, methods=["post"], url_path="assign", permission_classes=[IsAdmin])
     def assign(self, request):
         with transaction.atomic():
-            channel_ids = request.data.get("channel_ids", [])
+            raw_ids = request.data.get("channel_ids", [])
+            if not isinstance(raw_ids, list):
+                return Response(
+                    {"error": "channel_ids must be a list"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            channel_ids = []
+            for cid in raw_ids:
+                try:
+                    channel_ids.append(int(cid))
+                except (TypeError, ValueError):
+                    return Response(
+                        {"error": f"Invalid channel id: {cid!r}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             # Ensure starting_number is processed as a float
             try:
                 channel_num = float(request.data.get("starting_number", 1))
             except (ValueError, TypeError):
                 channel_num = 1.0
 
+            # Preserve request order; write through override for auto-synced
+            # channels so assign changes what the UI actually shows.
+            channels_by_id = {
+                channel.id: channel
+                for channel in Channel.objects.filter(
+                    id__in=channel_ids
+                ).select_related("override")
+            }
+            assignments = []
             for channel_id in channel_ids:
-                Channel.objects.filter(id=channel_id).update(channel_number=channel_num)
-                channel_num = channel_num + 1
+                channel = channels_by_id.get(channel_id)
+                if channel is None:
+                    continue
+                assignments.append((channel, channel_num))
+                channel_num += 1
+            apply_effective_channel_numbers(assignments)
 
         return Response(
             {"message": "Channels have been auto-assigned!"}, status=status.HTTP_200_OK
@@ -2044,7 +2182,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         ),
         responses={201: ChannelSerializer()},
     )
-    @action(detail=False, methods=["post"], url_path="from-stream")
+    @action(detail=False, methods=["post"], url_path="from-stream", permission_classes=[IsAdmin])
     def from_stream(self, request):
         stream_id = request.data.get("stream_id")
         if not stream_id:
@@ -2072,7 +2210,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel_number = None
         elif channel_number == -1:
             # Special case: -1 means assign the number after the current highest
-            highest = Channel.objects.order_by('-channel_number').values_list('channel_number', flat=True).first()
+            # (raw numbers and override pins both count).
+            highest = max_reserved_channel_number()
             channel_number = (int(highest) + 1) if highest is not None else 1
 
         if channel_number is None:
@@ -2087,8 +2226,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 {"error": "channel_number must be an integer."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # If the provided number is already used, return an error.
-        if Channel.objects.filter(channel_number=channel_number).exists():
+        # Reserve both raw and override pins so we never hand out a number
+        # that is already visible via ChannelOverride.
+        if channel_number_is_reserved(channel_number):
             channel_number = Channel.get_next_available_channel_number(channel_number)
         # Get the tvc_guide_stationid from custom properties if it exists
         stream_custom_props = stream.custom_properties or {}
@@ -2101,6 +2241,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "tvc_guide_stationid": tvc_guide_stationid,
             "streams": [stream_id],
             "is_adult": stream.is_adult,
+            "is_radio": stream.is_radio,
         }
 
         # Only add channel_group_id if the stream has a channel group
@@ -2222,7 +2363,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="from-stream/bulk")
+    @action(detail=False, methods=["post"], url_path="from-stream/bulk", permission_classes=[IsAdmin])
     def from_stream_bulk(self, request):
         from .tasks import bulk_create_channels_from_streams
 
@@ -2274,7 +2415,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             }
         ),
     )
-    @action(detail=False, methods=["post"], url_path="match-epg")
+    @action(detail=False, methods=["post"], url_path="match-epg", permission_classes=[IsAdmin])
     def match_epg(self, request):
         # Get channel IDs from request body if provided
         channel_ids = request.data.get('channel_ids', [])
@@ -2297,7 +2438,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         methods=["POST"],
         description="Try to auto-match this specific channel with EPG data.",
     )
-    @action(detail=True, methods=["post"], url_path="match-epg")
+    @action(detail=True, methods=["post"], url_path="match-epg", permission_classes=[IsAdmin])
     def match_channel_epg(self, request, pk=None):
         channel = self.get_object()
 
@@ -2325,7 +2466,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         ),
         responses={200: "EPG data linked and refresh triggered"},
     )
-    @action(detail=True, methods=["post"], url_path="set-epg")
+    @action(detail=True, methods=["post"], url_path="set-epg", permission_classes=[IsAdmin])
     def set_epg(self, request, pk=None):
         channel = self.get_object()
         epg_data_id = request.data.get("epg_data_id")
@@ -2385,67 +2526,96 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=True, methods=["post"], url_path="reorder")
+    @action(detail=True, methods=["post"], url_path="reorder", permission_classes=[IsAdmin])
     def reorder(self, request, pk=None):
         """
-        Reorder a channel by moving it after another channel (or to the start if insert_after_id is null).
-        Shifts other channels as needed to maintain contiguous ordering.
+        Reorder a channel by moving it after another channel (or to the start
+        if insert_after_id is null). Operates on effective channel numbers so
+        drag-reorder matches the override-aware table order, writing pins to
+        ChannelOverride for auto-synced rows.
         """
         channel = self.get_object()
         insert_after_id = request.data.get("insert_after_id")
-        old_channel_number = channel.channel_number
 
         with transaction.atomic():
+            moved_row = effective_number_rows(
+                Channel.objects.filter(pk=channel.pk)
+            ).first()
+            if moved_row is None:
+                return Response(
+                    {"error": "Channel not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            old_number = moved_row["_eff"]
+
             if insert_after_id is None:
-                # Move to the beginning (channel_number = 1)
-                target_number = 0
-                desired_number = 1
+                desired_number = 1.0
             else:
                 try:
-                    target_channel = Channel.objects.get(id=insert_after_id)
-                    target_number = target_channel.channel_number or 0
-                    desired_number = int(target_number) + 1
-                except Channel.DoesNotExist:
+                    target_row = effective_number_rows(
+                        Channel.objects.filter(pk=insert_after_id)
+                    ).first()
+                except (TypeError, ValueError):
+                    target_row = None
+                if target_row is None:
                     return Response(
                         {"error": "Target channel not found"},
                         status=status.HTTP_404_NOT_FOUND,
                     )
+                target_number = target_row["_eff"] or 0
+                desired_number = float(int(target_number) + 1)
 
-            if desired_number == old_channel_number:
-                # No change needed
+            if old_number is not None and float(old_number) == float(desired_number):
                 return Response(
                     {
-                        "message": f"Channel {channel.name} already at position {desired_number}",
+                        "message": (
+                            f"Channel {channel.name} already at position "
+                            f"{desired_number}"
+                        ),
                         "channel": self.get_serializer(channel).data,
                     },
                     status=status.HTTP_200_OK,
                 )
 
-            if desired_number < old_channel_number:
-                # Moving up: increment all channels between desired_number and old_channel_number-1
-                Channel.objects.filter(
-                    channel_number__gte=desired_number,
-                    channel_number__lt=old_channel_number
-                ).update(channel_number=F('channel_number') + 1)
-                channel.channel_number = desired_number
-                channel.save(update_fields=['channel_number'])
-            elif desired_number > old_channel_number:
-                # Moving down: shift down channels between old+1 and desired-1, then set to desired-1
-                if desired_number > old_channel_number + 1:
-                    Channel.objects.filter(
-                        channel_number__gt=old_channel_number,
-                        channel_number__lt=desired_number
-                    ).update(channel_number=F('channel_number') - 1)
-                channel.channel_number = desired_number - 1
-                channel.save(update_fields=['channel_number'])
+            # Shift the affected range with SQL F() updates on both the
+            # channel and override tables (same cost class as the old
+            # single-table UPDATE), then write only the moved channel's
+            # new effective number through the override-aware helper.
+            if old_number is None:
+                shift_effective_channel_numbers(
+                    exclude_channel_id=channel.pk,
+                    delta=1,
+                    gte=desired_number,
+                )
+                final_number = desired_number
+            elif desired_number < old_number:
+                shift_effective_channel_numbers(
+                    exclude_channel_id=channel.pk,
+                    delta=1,
+                    gte=desired_number,
+                    lt=old_number,
+                )
+                final_number = desired_number
             else:
-                # No move or same position
-                channel.channel_number = desired_number
-                channel.save(update_fields=['channel_number'])
+                final_number = desired_number - 1
+                if desired_number > old_number + 1:
+                    shift_effective_channel_numbers(
+                        exclude_channel_id=channel.pk,
+                        delta=-1,
+                        gt=old_number,
+                        lt=desired_number,
+                    )
 
+            apply_effective_channel_numbers(
+                [(channel_from_number_row(moved_row), final_number)]
+            )
+
+        channel.refresh_from_db()
         return Response(
             {
-                "message": f"Channel {channel.name} moved to position {desired_number}",
+                "message": (
+                    f"Channel {channel.name} moved to position {final_number}"
+                ),
                 "channel": self.get_serializer(channel).data,
             },
             status=status.HTTP_200_OK,
@@ -2473,7 +2643,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             },
         ),
     )
-    @action(detail=False, methods=["post"], url_path="batch-set-epg")
+    @action(detail=False, methods=["post"], url_path="batch-set-epg", permission_classes=[IsAdmin])
     def batch_set_epg(self, request):
         """Efficiently associate multiple channels with EPG data at once."""
         associations = request.data.get("associations", [])
@@ -2547,12 +2717,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
 # ─────────────────────────────────────────────────────────
 class BulkDeleteStreamsAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Bulk delete streams by ID",
@@ -2580,12 +2745,7 @@ class BulkDeleteStreamsAPIView(APIView):
 # ─────────────────────────────────────────────────────────
 class BulkDeleteChannelsAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description=(
@@ -2627,12 +2787,7 @@ class BulkDeleteChannelsAPIView(APIView):
 # ─────────────────────────────────────────────────────────
 class BulkDeleteLogosAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Bulk delete logos by ID",
@@ -2699,12 +2854,7 @@ class BulkDeleteLogosAPIView(APIView):
 
 class CleanupUnusedLogosAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Delete all channel logos that are not used by any channels",
@@ -2780,16 +2930,7 @@ class LogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     def get_permissions(self):
-        if self.action in ["upload"]:
-            return [IsAdmin()]
-
-        if self.action in ["cache"]:
-            return [AllowAny()]
-
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""
@@ -2871,7 +3012,7 @@ class LogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
 
         return super().destroy(request, *args, **kwargs)
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], permission_classes=[IsAdmin])
     def upload(self, request):
         if "file" not in request.FILES:
             return Response(
@@ -2971,12 +3112,7 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
         return self.request.user.channel_profiles.prefetch_related(enabled_memberships_prefetch)
 
     def get_permissions(self):
-        if self.action == "duplicate":
-            return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     @action(detail=True, methods=["post"], url_path="duplicate", permission_classes=[IsAdmin])
     def duplicate(self, request, pk=None):
@@ -3026,15 +3162,13 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
 
 class GetChannelStreamsAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     def get(self, request, channel_id):
-        channel = get_object_or_404(Channel, id=channel_id)
+        channel = get_object_or_404(
+            channels_queryset_for_user(Channel.objects.all(), request.user),
+            id=channel_id,
+        )
         # Order the streams by channelstream__order to match the order in the channel view
         streams = channel.streams.all().order_by("channelstream__order")
         serializer = StreamSerializer(streams, many=True)
@@ -3047,12 +3181,7 @@ class GetChannelStreamStatsAPIView(APIView):
     (comma-separated) query params."""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description=(
@@ -3103,7 +3232,10 @@ class GetChannelStreamStatsAPIView(APIView):
     def get(self, request, channel_id):
         from django.utils.dateparse import parse_datetime
 
-        get_object_or_404(Channel, id=channel_id)
+        get_object_or_404(
+            channels_queryset_for_user(Channel.objects.all(), request.user),
+            id=channel_id,
+        )
 
         qs = Stream.objects.filter(channels=channel_id)
 
@@ -3173,12 +3305,7 @@ class UpdateChannelMembershipAPIView(APIView):
 
 class BulkUpdateChannelMembershipAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Bulk enable or disable channels for a specific profile. Creates membership records if they don't exist.",
@@ -3268,6 +3395,9 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return [IsAdminOrDVRManager()]
 
+    def get_queryset(self):
+        return scope_by_channel_access(super().get_queryset(), self.request.user)
+
     def perform_create(self, serializer):
         rule = serializer.save()
         try:
@@ -3346,7 +3476,7 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
 
 # QueryParamJWTAuthentication supports native <video src> clients that cannot
 # send Authorization headers. Authorization still requires an authenticated
-# user via _user_can_play_recording; these classes only populate request.user.
+# user via _playable_recording; these classes only populate request.user.
 RECORDING_PLAYBACK_AUTHENTICATORS = [
     JWTAuthentication,
     ApiKeyAuthentication,
@@ -3392,7 +3522,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         # file/hls use AllowAny so DRF does not reject requests before auth
-        # classes run; _user_can_play_recording enforces authenticated access.
+        # classes run; _playable_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
         if self.action in ('list', 'retrieve'):
@@ -3409,51 +3539,37 @@ class RecordingViewSet(viewsets.ModelViewSet):
             'update_metadata',
         ):
             return [IsAdminOrDVRManager()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [IsAdminOrDVRManager()]
+        return permissions_for_action(self, default=IsAdminOrDVRManager)
 
-    def _user_can_play_recording(self, request, recording):
-        """Authorization gate for recording playback (file/hls actions).
+    def _playable_recording(self, request, pk):
+        """Return a recording the caller may play, or raise/return an error response.
 
-        Mirrors how live stream endpoints authorize non-admin users, but
-        unlike the XC-style endpoints these URLs carry no credentials of
-        their own, so we require an authenticated session/JWT:
-          * Unauthenticated requests → denied.
-          * Admins and DVR managers → allowed.
-          * View-only users → allowed only if the recording's source
-            channel is visible under their channel-profile assignments
-            and within their user_level.
-          * Users without DVR view/manage → denied.
-
-        The network_access_allowed(request, "STREAMS") check applied
-        before this is a network-perimeter gate (e.g. block external IPs
-        from streaming at all); it is not a substitute for per-user
-        authorization.
+        Cheap gates (auth, DVR view) run in memory. The scoped queryset load is
+        one SQL round trip on the success path (admins are unscoped). Missing
+        vs forbidden is distinguished only when the scoped lookup misses.
         """
         user = getattr(request, "user", None)
         if not user or not getattr(user, "is_authenticated", False):
-            return False
+            return None, JsonResponse({"error": "Forbidden"}, status=403)
         if not is_dvr_view_enabled(user=user):
-            return False
-        if is_dvr_manage_enabled(user=user):
-            return True
+            return None, JsonResponse({"error": "Forbidden"}, status=403)
 
-        channel = getattr(recording, "channel", None)
-        if channel is None:
-            # Recording with no source channel, only admins/managers can play.
-            return False
-
-        return recordings_queryset_for_user(
-            Recording.objects.filter(pk=recording.pk), user
-        ).exists()
+        recording = recordings_queryset_for_user(
+            Recording.objects.filter(pk=pk), user
+        ).first()
+        if recording is not None:
+            return recording, None
+        # Admins are unscoped, so a miss is absence. Everyone else needs one
+        # more lookup to tell a hidden recording (403) from a missing one (404).
+        if not is_admin_user(user) and Recording.objects.filter(pk=pk).exists():
+            return None, JsonResponse({"error": "Forbidden"}, status=403)
+        raise Http404
 
     @action(detail=True, methods=["post"], url_path="comskip")
     def comskip(self, request, pk=None):
         """Trigger comskip processing for this recording."""
         from .tasks import comskip_process_recording
-        rec = get_object_or_404(Recording, pk=pk)
+        rec = self.get_object()
         try:
             comskip_process_recording.delay(rec.id)
             return Response({"success": True, "queued": True})
@@ -3476,9 +3592,9 @@ class RecordingViewSet(viewsets.ModelViewSet):
         """
         if not network_access_allowed(request, "STREAMS"):
             return JsonResponse({"error": "Forbidden"}, status=403)
-        recording = get_object_or_404(Recording, pk=pk)
-        if not self._user_can_play_recording(request, recording):
-            return JsonResponse({"error": "Forbidden"}, status=403)
+        recording, denied = self._playable_recording(request, pk)
+        if denied is not None:
+            return denied
         cp = recording.custom_properties or {}
         file_path = _resolve_recording_storage_path(cp.get("file_path"))
         file_name = cp.get("file_name") or "recording"
@@ -3569,9 +3685,9 @@ class RecordingViewSet(viewsets.ModelViewSet):
         """
         if not network_access_allowed(request, "STREAMS"):
             return JsonResponse({"error": "Forbidden"}, status=403)
-        recording = get_object_or_404(Recording, pk=pk)
-        if not self._user_can_play_recording(request, recording):
-            return JsonResponse({"error": "Forbidden"}, status=403)
+        recording, denied = self._playable_recording(request, pk)
+        if denied is not None:
+            return denied
         cp = recording.custom_properties or {}
         hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
 
@@ -3611,7 +3727,10 @@ class RecordingViewSet(viewsets.ModelViewSet):
                         lines.append(f"{base_url}{stripped}{auth_suffix}\n")
                     else:
                         lines.append(line)
-            return HttpResponse("".join(lines), content_type="application/x-mpegURL")
+
+            resp = HttpResponse("".join(lines), content_type="application/x-mpegURL")
+            resp["Cache-Control"] = "no-cache"
+            return resp
 
         if seg_path.endswith(".ts"):
             # Refresh the viewer heartbeat in Redis so the Celery task knows an
@@ -3936,6 +4055,34 @@ class RecordingViewSet(viewsets.ModelViewSet):
         hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
         channel_uuid = str(instance.channel.uuid)
 
+        # Stop writes "stopped" before remux. remux_success is only set at finalize,
+        # so a delete in that gap still needs recording_end (cancelled).
+        _awaiting_finalize = (
+            rec_status == "recording"
+            or (rec_status == "stopped" and "remux_success" not in cp)
+        )
+        if _awaiting_finalize:
+            try:
+                from core.utils import log_system_event
+                from apps.channels.tasks import _dvr_recording_end_payload
+                user = getattr(request, "user", None)
+                log_system_event(
+                    'recording_end',
+                    channel_id=instance.channel.uuid,
+                    channel_name=channel_name,
+                    recording_id=recording_id,
+                    **_dvr_recording_end_payload(
+                        cp, None, False,
+                        start_time=instance.start_time,
+                        end_time=instance.end_time,
+                        cancelled=True,
+                        cancelled_by=getattr(user, "username", None),
+                        cancelled_by_id=getattr(user, "pk", None),
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Could not log recording end event for cancelled recording {recording_id}: {e}")
+
         # 1. Delete the DB record (also fires post_delete → revoke_task_on_delete)
         response = super().destroy(request, *args, **kwargs)
 
@@ -4085,7 +4232,9 @@ class BulkDeleteUpcomingRecordingsAPIView(APIView):
 
     def post(self, request):
         now = timezone.now()
-        qs = Recording.objects.filter(start_time__gt=now)
+        qs = recordings_queryset_for_user(
+            Recording.objects.filter(start_time__gt=now), request.user
+        )
         removed = qs.count()
         qs.delete()
         try:

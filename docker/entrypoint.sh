@@ -110,6 +110,12 @@ configure_celery_autoscale_workers() {
     export CELERY_MAX_WORKERS CELERY_MIN_WORKERS
 }
 
+# Report a shell event with a severity. The offset is explicit so the stamp is
+# unambiguous wherever the container's clock sits: log_line WARNING "message".
+log_line() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S,000 %z') $1 entrypoint $2"
+}
+
 # Set PostgreSQL environment variables
 export POSTGRES_DB=${POSTGRES_DB:-dispatcharr}
 export POSTGRES_USER=${POSTGRES_USER:-dispatch}
@@ -234,19 +240,21 @@ export POSTGRES_DIR=/data/db
 # pick up the new values (not stale ones from a previous run).
 # Define all variables to process
 variables=(
-    PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
+    PATH VIRTUAL_ENV
     POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
-    DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
+    DISPATCHARR_ENV DISPATCHARR_LOG_LEVEL
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
-    DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
+    DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LD_LIBRARY_PATH
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL CELERY_MAX_WORKERS CELERY_MIN_WORKERS UWSGI_WORKERS
-    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR
+    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
 for _opt_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
                 REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY \
-                DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES; do
+                DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES \
+                DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE \
+                DISPATCHARR_DEBUG DISPATCHARR_ENABLE_IP_LOOKUP LIBVA_DRIVER_NAME DISPATCHARR_LOG_DIR; do
     if [ -n "${!_opt_var+x}" ]; then
         variables+=("$_opt_var")
     fi
@@ -299,7 +307,11 @@ LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
 archive_previous_log "$LOG_FILE_DIR"
 # Non-recursive: an operator-set DISPATCHARR_LOG_DIR could point at a data
 # tree (e.g. /data/db). Tolerant: root_squash mounts must not block boot.
-chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log \
+# Include config/ so the web collector (app user) can write collector.pid after
+# celery created that directory as root on a shared volume.
+mkdir -p "$LOG_FILE_DIR/config" 2>/dev/null || true
+chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/config \
+    "$LOG_FILE_DIR"/dispatcharr.log \
     "$LOG_FILE_DIR"/dispatcharr.log.[0-9]* 2>/dev/null || true
 exec 3>&1
 exec > >({ supervise_log_collector \
@@ -334,7 +346,8 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     prepare_pg_socket_dir
     su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
-    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    # Name a role and database that exist, so the probe logs no FATAL.
+    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER} -d template1" >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL to be ready..."
         sleep 1
     done
@@ -350,7 +363,7 @@ else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
     # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
     echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -q >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
         sleep 1
     done
@@ -404,8 +417,17 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     fi
 fi
 
-# Run Django commands as non-root user to prevent permission issues
-su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
+# Run Django commands as non-root user to prevent permission issues.
+# AIO has no Redis while migrate runs (uWSGI starts it later), and a fresh
+# install's data migrations read settings through the cache. Skip the cache
+# there so boot does not log a connection-refused warning; the Postgres read
+# is the same either way. Modular has a live shared Redis, so it keeps the
+# normal cache path.
+migrate_env=""
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    migrate_env="DISPATCHARR_SKIP_REDIS_CACHE=1 "
+fi
+su - "$POSTGRES_USER" -c "cd /app && ${migrate_env}python manage.py migrate --noinput"
 su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
 
 # Select proper uwsgi config based on environment
@@ -457,17 +479,17 @@ if [ ${#pids[@]} -gt 0 ]; then
     # Only report unexpected exits — skip if cleanup was already triggered by
     # the trap (i.e. docker stop sent SIGTERM and we shut down intentionally)
     if ! $_cleanup_done; then
-        echo "🚨 One of the processes exited unexpectedly! Checking which one..."
+        log_line ERROR "🚨 One of the processes exited unexpectedly! Checking which one..."
 
         for pid in "${pids[@]}"; do
             if ! kill -0 "$pid" 2>/dev/null; then
                 process_name=${pid_names[$pid]:-unknown}
-                echo "❌ Process $process_name (PID: $pid) has exited!"
+                log_line ERROR "❌ Process $process_name (PID: $pid) has exited!"
             fi
         done
     fi
 else
-    echo "❌ No processes started. Exiting."
+    log_line ERROR "❌ No processes started. Exiting."
     exit 1
 fi
 

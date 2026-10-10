@@ -1,6 +1,7 @@
 # core/models.py
 
 import logging
+import os
 import time
 from shlex import split as shlex_split
 
@@ -47,6 +48,32 @@ class UserAgent(models.Model):
 
 PROXY_PROFILE_NAME = "Proxy"
 REDIRECT_PROFILE_NAME = "Redirect"
+FFMPEG_PROFILE_NAME = "FFmpeg"
+
+
+def _enforce_locked_profile(instance, allowed_fields):
+    """Reject edits to a locked profile, except the named fields.
+
+    QuerySet.update() does not call save(), so migrations can still refresh
+    seeded commands. API writes and instance.save() go through this check.
+    """
+    if not instance.pk:
+        return
+    orig = type(instance).objects.get(pk=instance.pk)
+    if not orig.locked:
+        return
+    for field in instance._meta.fields:
+        field_name = field.name
+        orig_value = getattr(orig, field_name)
+        new_value = getattr(instance, field_name)
+        if isinstance(orig_value, models.Model):
+            orig_value = orig_value.pk
+        if isinstance(new_value, models.Model):
+            new_value = new_value.pk
+        if field_name not in allowed_fields and orig_value != new_value:
+            raise ValidationError(
+                f"Cannot modify {field_name} on a protected profile."
+            )
 
 
 class StreamProfile(models.Model):
@@ -78,36 +105,21 @@ class StreamProfile(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        if self.pk:  # Only check existing records
-            orig = StreamProfile.objects.get(pk=self.pk)
-            if orig.locked:
-                allowed_fields = {"user_agent_id"}  # Only allow this field to change
-                for field in self._meta.fields:
-                    field_name = field.name
-
-                    # Convert user_agent to user_agent_id for comparison
-                    orig_value = getattr(orig, field_name)
-                    new_value = getattr(self, field_name)
-
-                    # Ensure that ForeignKey fields compare their ID values
-                    if isinstance(orig_value, models.Model):
-                        orig_value = orig_value.pk
-                    if isinstance(new_value, models.Model):
-                        new_value = new_value.pk
-
-                    if field_name not in allowed_fields and orig_value != new_value:
-                        raise ValidationError(
-                            f"Cannot modify {field_name} on a protected profile."
-                        )
-
+        # user_agent is the profile's request header, not the stream command.
+        _enforce_locked_profile(self, {"user_agent"})
         super().save(*args, **kwargs)
+
+    @classmethod
+    def get_locked(cls, name):
+        """Return the locked profile whose display name matches case-insensitively."""
+        return cls.objects.get(name__iexact=name, locked=True)
 
     @classmethod
     def update(cls, pk, **kwargs):
         instance = cls.objects.get(pk=pk)
 
         if instance.locked:
-            allowed_fields = {"user_agent_id"}  # Only allow updating this field
+            allowed_fields = {"user_agent", "user_agent_id"}
 
             for field_name, new_value in kwargs.items():
                 if field_name not in allowed_fields:
@@ -193,6 +205,10 @@ class OutputProfile(models.Model):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        _enforce_locked_profile(self, set())
+        super().save(*args, **kwargs)
+
     def build_command(self):
         """Return the full command as a list suitable for subprocess.Popen."""
         from shlex import split as shlex_split
@@ -263,6 +279,7 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+REVERSE_PROXY_AUTH_KEY = "reverse_proxy_auth"
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
@@ -299,6 +316,20 @@ _CACHE_BACKEND_ERROR = object()
 
 _GROUP_CACHE_ERROR_LOG_INTERVAL_SECONDS = 60
 _last_group_cache_error_log_at = 0.0
+
+# Opt out of the settings Redis cache and read Postgres instead. The AIO
+# entrypoint sets this for migrate (Redis is not up yet); other callers can
+# set it whenever they need the same bypass.
+_SKIP_REDIS_CACHE_ENV = "DISPATCHARR_SKIP_REDIS_CACHE"
+
+
+def _skip_redis_cache():
+    """True when Redis settings-cache access is explicitly disabled."""
+    return os.environ.get(_SKIP_REDIS_CACHE_ENV, "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _log_group_cache_backend_error(operation, key, exc):
@@ -350,8 +381,11 @@ class CoreSettings(models.Model):
         distinguish that from a normal miss. AIO starts Redis via uWSGI after
         ``migrate``, so settings reads during data migrations must not
         hard-require Redis. Local connection refused fails immediately (no
-        connect-timeout wait).
+        connect-timeout wait). When ``DISPATCHARR_SKIP_REDIS_CACHE`` is
+        set, skip Redis without probing or warning.
         """
+        if _skip_redis_cache():
+            return _CACHE_BACKEND_ERROR
         try:
             return cache.get(key, default)
         except _GROUP_CACHE_RERAISE_ERRORS:
@@ -362,7 +396,9 @@ class CoreSettings(models.Model):
 
     @classmethod
     def _cache_set(cls, key, value, timeout=None):
-        """Write to Django cache; no-op if Redis is unreachable."""
+        """Write to Django cache; no-op if Redis is unreachable or skipped."""
+        if _skip_redis_cache():
+            return False
         try:
             cache.set(key, value, timeout=timeout)
             return True
@@ -374,7 +410,9 @@ class CoreSettings(models.Model):
 
     @classmethod
     def _cache_delete(cls, key):
-        """Delete from Django cache; no-op if Redis is unreachable."""
+        """Delete from Django cache; no-op if Redis is unreachable or skipped."""
+        if _skip_redis_cache():
+            return False
         try:
             cache.delete(key)
             return True
@@ -774,6 +812,15 @@ class CoreSettings(models.Model):
         """CIDR allowlists per endpoint type (UI, STREAMS, XC_API, M3U_EPG, ...)."""
         return cls._get_group(NETWORK_ACCESS_KEY, {})
 
+    # Reverse Proxy Auth
+    @classmethod
+    def get_reverse_proxy_auth_settings(cls):
+        """Header-based sign-in handed off by a trusted reverse proxy."""
+        return cls._get_group(REVERSE_PROXY_AUTH_KEY, {
+            "enabled": False,
+            "header": "",
+        })
+
     # System Settings
     @classmethod
     def get_system_settings(cls):
@@ -852,8 +899,10 @@ class SystemEvent(models.Model):
         ('stream_switch', 'Stream Switched'),
         ('m3u_refresh', 'M3U Refreshed'),
         ('m3u_download', 'M3U Downloaded'),
+        ('m3u_error', 'M3U Error'),
         ('epg_refresh', 'EPG Refreshed'),
         ('epg_download', 'EPG Downloaded'),
+        ('epg_error', 'EPG Error'),
         ('login_success', 'Login Successful'),
         ('login_failed', 'Login Failed'),
         ('logout', 'User Logged Out'),

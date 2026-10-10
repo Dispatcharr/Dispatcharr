@@ -303,8 +303,8 @@ describe('Sidebar', () => {
     });
   });
 
-  describe('Navigation Links - No log collector', () => {
-    it('shows Logs while the collector flag is true or absent', async () => {
+  describe('Navigation Links - Log persistence', () => {
+    it('shows Logs while persist is on or unset', async () => {
       renderSidebar();
       fireEvent.click(screen.getByText('System'));
       await waitFor(() => {
@@ -312,11 +312,14 @@ describe('Sidebar', () => {
       });
     });
 
-    it('hides Logs when no collector runs in this deployment', async () => {
+    it('hides Logs when log persistence is off', async () => {
       useSettingsStore.mockImplementation((selector) =>
         selector({
-          environment: { ...mockEnvironment, log_collector_running: false },
+          environment: mockEnvironment,
           version: mockVersion,
+          settings: {
+            system_settings: { value: { log_persist: false } },
+          },
         })
       );
       renderSidebar();

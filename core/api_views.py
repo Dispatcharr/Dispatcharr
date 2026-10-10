@@ -4,8 +4,8 @@ import ipaddress
 import logging
 from django.conf import settings as django_settings
 from django.db import models
-from dispatcharr.log_collector import collector_running
 from rest_framework import viewsets, status
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -39,8 +39,7 @@ from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
-    IsStandardUser,
-    permission_classes_by_action,
+    permissions_for_action,
 )
 from dispatcharr.utils import get_client_ip
 
@@ -57,13 +56,20 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     serializer_class = UserAgentSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
-class StreamProfileViewSet(viewsets.ModelViewSet):
+class LockedProfileViewSet(viewsets.ModelViewSet):
+    """ModelViewSet that refuses to delete a locked profile."""
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.locked:
+            raise DRFValidationError("This profile is locked and cannot be deleted.")
+        return super().destroy(request, *args, **kwargs)
+
+
+class StreamProfileViewSet(LockedProfileViewSet):
     """
     API endpoint that allows stream profiles to be viewed, created, edited, or deleted.
     """
@@ -72,13 +78,10 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
     serializer_class = StreamProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
-class OutputProfileViewSet(viewsets.ModelViewSet):
+class OutputProfileViewSet(LockedProfileViewSet):
     """
     API endpoint that allows output profiles to be viewed, created, edited, or deleted.
     """
@@ -87,10 +90,7 @@ class OutputProfileViewSet(viewsets.ModelViewSet):
     serializer_class = OutputProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
@@ -103,10 +103,7 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     serializer_class = CoreSettingsSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -160,7 +157,12 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
         return response
-    @action(detail=False, methods=["post"], url_path="check")
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="check",
+        permission_classes=[IsAdmin],
+    )
     def check(self, request, *args, **kwargs):
         data = request.data
 
@@ -211,9 +213,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
     serializer_class = ProxySettingsSerializer
 
     def get_permissions(self):
-        if self.action in ('list', 'retrieve'):
-            return [IsStandardUser()]
-        return [IsAdmin()]
+        return permissions_for_action(self)
 
     def _get_or_create_settings(self):
         """Get or create the proxy settings CoreSettings entry"""
@@ -280,7 +280,11 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 
         return Response(serializer.validated_data)
 
-    @action(detail=False, methods=['get', 'patch'])
+    @action(
+        detail=False,
+        methods=['get', 'patch'],
+        permission_classes=[IsAdmin],
+    )
     def settings(self, request):
         """Get or update the proxy settings."""
         if request.method == 'GET':
@@ -416,14 +420,11 @@ def environment(request):
             "ip_lookup_env_disabled": ip_lookup_env_disabled,
             "ip_lookup_pending": ip_lookup_pending,
             "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
-            "log_collector_running": collector_running(
-                getattr(django_settings, "LOG_FILE_DIR", None)
+            "redis_tls": getattr(
+                django_settings,
+                "REDIS_TLS_STATUS",
+                {"enabled": False, "verify": False, "mtls": False},
             ),
-            "redis_tls": {
-                "enabled": getattr(django_settings, "REDIS_SSL", False),
-                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
-                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
-            },
             "postgres_tls": {
                 "enabled": postgres_ssl,
                 "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,
@@ -606,15 +607,18 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
     serializer_class = SystemNotificationSerializer
 
     def get_permissions(self):
+        # Every signed-in user can read and dismiss their own notifications.
+        # Anything not listed here (create, update, partial_update, destroy,
+        # and any action added later) is admin only.
         if self.action in (
-            "create",
-            "update",
-            "partial_update",
-            "destroy",
+            "list",
+            "retrieve",
+            "dismiss",
+            "dismiss_all",
+            "unread_count",
         ):
-            return [IsAdmin()]
-        # list, retrieve, dismiss, dismiss_all, unread_count
-        return [IsAuthenticated()]
+            return [IsAuthenticated()]
+        return [IsAdmin()]
 
     def get_queryset(self):
         """

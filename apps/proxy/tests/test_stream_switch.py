@@ -95,7 +95,7 @@ class OwnerPathTests(TestCase):
     def test_owner_switch_persists_stream_id_metadata(self):
         result, redis, manager = self._run()
 
-        manager.update_url.assert_called_once_with(NEW_URL, 144065, 7)
+        manager.update_url.assert_called_once_with(NEW_URL, 144065, 7, reason='manual')
         manager.reset_failover_rotation_state.assert_called_once()
         self.assertTrue(result["success"])
         self.assertTrue(result["direct_update"])
@@ -105,6 +105,7 @@ class OwnerPathTests(TestCase):
         self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "144065")
         self.assertEqual(metadata[ChannelMetadataField.M3U_PROFILE], "7")
         self.assertEqual(metadata[ChannelMetadataField.STREAM_NAME], "Alt Feed")
+        self.assertEqual(metadata[ChannelMetadataField.STREAM_SWITCH_REASON], "manual")
 
     def test_owner_same_url_is_success_and_repairs_metadata(self):
         result, redis, manager = self._run(manager_url=NEW_URL)
@@ -114,6 +115,7 @@ class OwnerPathTests(TestCase):
 
         metadata = redis.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
         self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "144065")
+        self.assertNotIn(ChannelMetadataField.STREAM_SWITCH_REASON, metadata)
 
 
 class NonOwnerPathTests(TestCase):

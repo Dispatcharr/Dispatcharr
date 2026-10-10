@@ -116,6 +116,7 @@ def _set_m3u_account_status(
     status,
     last_message=None,
     *,
+    account_name=None,
     notify_error=False,
     ws_action="parsing",
     ws_error=None,
@@ -128,12 +129,19 @@ def _set_m3u_account_status(
     try:
         M3UAccount.objects.filter(id=account_id).update(**update)
         if notify_error:
+            error_msg = ws_error or last_message
             send_m3u_update(
                 account_id,
                 ws_action,
                 100,
                 status="error",
-                error=ws_error or last_message,
+                error=error_msg,
+            )
+            name = account_name or str(account_id)
+            log_system_event(
+                event_type="m3u_error",
+                account_name=name,
+                message=error_msg,
             )
     except Exception as e:
         logger.error(
@@ -145,19 +153,20 @@ def _ensure_m3u_refresh_terminal_status(account_id):
     """Mark refresh as failed when the task exits while still in progress."""
     _release_task_db_connection()
     try:
-        current_status = (
+        account_data = (
             M3UAccount.objects.filter(id=account_id)
-            .values_list("status", flat=True)
+            .values("status", "name")
             .first()
         )
-        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
+        if account_data and account_data.get("status") in _NON_TERMINAL_REFRESH_STATUSES:
             message = "Refresh did not complete successfully"
-            M3UAccount.objects.filter(id=account_id).update(
-                status=M3UAccount.Status.ERROR,
-                last_message=message,
-            )
-            send_m3u_update(
-                account_id, "parsing", 100, status="error", error=message
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                message,
+                account_name=account_data.get("name") or None,
+                notify_error=True,
+                ws_error=message,
             )
     except Exception as e:
         logger.debug(
@@ -245,15 +254,14 @@ def fetch_m3u_lines(account, use_cache=False):
                         error_msg = f"HTTP error ({response.status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
 
                     logger.error(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
+                    _set_m3u_account_status(
                         account.id,
-                        "downloading",
-                        100,
-                        status="error",
-                        error=error_msg,
+                        M3UAccount.Status.ERROR,
+                        error_msg,
+                        account_name=account.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                        ws_error=error_msg,
                     )
                     return None, False
 
@@ -320,15 +328,14 @@ def fetch_m3u_lines(account, use_cache=False):
                     if not has_content or downloaded == 0:
                         error_msg = f"Server responded successfully (HTTP {response.status_code}) but provided empty M3U file from URL: {account.server_url}"
                         logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
+                        _set_m3u_account_status(
                             account.id,
-                            "downloading",
-                            100,
-                            status="error",
-                            error=error_msg,
+                            M3UAccount.Status.ERROR,
+                            error_msg,
+                            account_name=account.name,
+                            notify_error=True,
+                            ws_action="downloading",
+                            ws_error=error_msg,
                         )
                         return None, False
 
@@ -392,15 +399,14 @@ def fetch_m3u_lines(account, use_cache=False):
                             else:
                                 error_msg = f"Server provided invalid M3U content from URL: {account.server_url}. Content does not appear to be a valid M3U file."
                             logger.error(error_msg)
-                            account.status = M3UAccount.Status.ERROR
-                            account.last_message = error_msg
-                            account.save(update_fields=["status", "last_message"])
-                            send_m3u_update(
+                            _set_m3u_account_status(
                                 account.id,
-                                "downloading",
-                                100,
-                                status="error",
-                                error=error_msg,
+                                M3UAccount.Status.ERROR,
+                                error_msg,
+                                account_name=account.name,
+                                notify_error=True,
+                                ws_action="downloading",
+                                ws_error=error_msg,
                             )
                             return None, False
 
@@ -410,15 +416,14 @@ def fetch_m3u_lines(account, use_cache=False):
                         logger.error(f"Non-text content received. First 200 bytes: {first_bytes!r}")
                         error_msg = f"Server provided non-text content from URL: {account.server_url}. Unable to process as M3U file."
                         logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
+                        _set_m3u_account_status(
                             account.id,
-                            "downloading",
-                            100,
-                            status="error",
-                            error=error_msg,
+                            M3UAccount.Status.ERROR,
+                            error_msg,
+                            account_name=account.name,
+                            notify_error=True,
+                            ws_action="downloading",
+                            ws_error=error_msg,
                         )
                         return None, False
 
@@ -465,15 +470,14 @@ def fetch_m3u_lines(account, use_cache=False):
                     error_msg = f"HTTP error ({status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
 
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error=error_msg,
                 )
                 return None, False
             except requests.exceptions.RequestException as e:
@@ -486,30 +490,28 @@ def fetch_m3u_lines(account, use_cache=False):
                     error_msg = f"Network error while fetching M3U file from URL: {account.server_url} - {str(e)}"
 
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error=error_msg,
                 )
                 return None, False
             except Exception as e:
                 # Handle any other unexpected errors
                 error_msg = f"Unexpected error while fetching M3U file from URL: {account.server_url} - {str(e)}"
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error=error_msg,
                 )
                 return None, False
 
@@ -517,11 +519,14 @@ def fetch_m3u_lines(account, use_cache=False):
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             error_msg = f"M3U file is unexpectedly missing or empty after validation: {file_path}"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account.id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="downloading",
+                ws_error=error_msg,
             )
             return None, False
 
@@ -548,11 +553,14 @@ def fetch_m3u_lines(account, use_cache=False):
                         f"No .m3u file found in ZIP archive: {account.file_path}"
                     )
                     logger.warning(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
-                        account.id, "downloading", 100, status="error", error=error_msg
+                    _set_m3u_account_status(
+                        account.id,
+                        M3UAccount.Status.ERROR,
+                        error_msg,
+                        account_name=account.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                        ws_error=error_msg,
                     )
                     return None, False
 
@@ -562,21 +570,29 @@ def fetch_m3u_lines(account, use_cache=False):
         except (IOError, OSError, zipfile.BadZipFile, gzip.BadGzipFile, lzma.LZMAError) as e:
             error_msg = f"Error opening file {account.file_path}: {e}"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account.id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="downloading",
+                ws_error=error_msg,
             )
             return None, False
 
     # Neither server_url nor uploaded_file is available
     error_msg = "No M3U source available (missing URL and file)"
     logger.error(error_msg)
-    account.status = M3UAccount.Status.ERROR
-    account.last_message = error_msg
-    account.save(update_fields=["status", "last_message"])
-    send_m3u_update(account.id, "downloading", 100, status="error", error=error_msg)
+    _set_m3u_account_status(
+        account.id,
+        M3UAccount.Status.ERROR,
+        error_msg,
+        account_name=account.name,
+        notify_error=True,
+        ws_action="downloading",
+        ws_error=error_msg,
+    )
     return None, False
 
 
@@ -1044,7 +1060,7 @@ _STREAM_TOUCH_FIELDS = ("last_seen", "is_stale")
 _STREAM_CHANGED_FIELDS = (
     "name", "url", "logo_url", "tvg_id", "custom_properties", "is_adult",
     "last_seen", "updated_at", "is_stale", "stream_id", "stream_chno",
-    "channel_group_id", "is_catchup", "catchup_days",
+    "channel_group_id", "is_catchup", "catchup_days", "is_radio",
 )
 
 
@@ -1387,6 +1403,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 _catchup_days_m3u = int(_attrs.get("tv_archive_duration", 0) or 0)
             except (TypeError, ValueError):
                 _catchup_days_m3u = 0
+            _is_radio_m3u = (
+                str(get_case_insensitive_attr(_attrs, "radio", "")).lower() in ("1", "true")
+                or str(_attrs.get("stream_type", "")).lower() == "radio_streams"
+            )
 
             stream_props = {
                 "name": name,
@@ -1403,6 +1423,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 "stream_chno": channel_num,
                 "is_catchup": _is_catchup_m3u,
                 "catchup_days": _catchup_days_m3u,
+                "is_radio": _is_radio_m3u,
             }
 
             if stream_hash not in stream_hashes:
@@ -1414,7 +1435,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days', 'is_radio'
         )
     }
 
@@ -1433,7 +1454,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 obj.stream_chno != stream_props["stream_chno"] or
                 obj.channel_group_id != stream_props["channel_group_id"] or
                 obj.is_catchup != stream_props["is_catchup"] or
-                obj.catchup_days != stream_props["catchup_days"]
+                obj.catchup_days != stream_props["catchup_days"] or
+                obj.is_radio != stream_props["is_radio"]
             )
 
             obj.last_seen = timezone.now()
@@ -1451,6 +1473,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 obj.channel_group_id = stream_props["channel_group_id"]
                 obj.is_catchup = stream_props["is_catchup"]
                 obj.catchup_days = stream_props["catchup_days"]
+                obj.is_radio = stream_props["is_radio"]
                 obj.updated_at = timezone.now()
                 streams_to_update.append(obj)
             else:
@@ -1471,7 +1494,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 streams_to_update, streams_to_touch, batch_size=200,
             )
     except Exception as e:
+        # The batch rolled back, so none of its streams got a fresh last_seen;
+        # the refresh must not treat it as processed.
         logger.error(f"Bulk operation failed: {str(e)}")
+        connections.close_all()
+        raise
 
     retval = (
         f"M3U account: {account_id}, Batch processed: "
@@ -1490,6 +1517,124 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     gc.collect()
 
     return retval
+
+
+def _retry_failed_batches(account_id, failed_batches, groups, hash_keys, compiled_filters):
+    """Retry batches that failed in the thread pool once, sequentially.
+
+    Returns (created, updated, unchanged, failed) counts.
+    """
+    created = updated = unchanged = failed = 0
+    for batch_idx, batch in failed_batches:
+        try:
+            result = process_m3u_batch_direct(
+                account_id, batch, groups, hash_keys, compiled_filters
+            )
+        except Exception as e:
+            logger.error(f"Batch {batch_idx} failed again on retry: {str(e)}")
+            failed += 1
+            continue
+        created_count, updated_count, unchanged_count = _parse_batch_stream_counts(result)
+        created += created_count
+        updated += updated_count
+        unchanged += unchanged_count
+        logger.info(f"Batch {batch_idx} succeeded on retry")
+    return created, updated, unchanged, failed
+
+
+def _process_stream_batches_with_retry(
+    account_id,
+    batches,
+    groups,
+    hash_keys,
+    compiled_filters,
+    *,
+    max_workers,
+    start_time,
+    error_label="thread batch",
+    progress_label="Thread batch",
+):
+    """Run stream batches in a thread pool, then retry write failures once.
+
+    Batches that raise before returning a result are queued for one sequential
+    retry after the pool finishes. A failure after a successful write (for
+    example a progress notification) does not requeue that committed batch.
+
+    Returns (created, updated, unchanged, failed_batch_count).
+    """
+    streams_created = streams_updated = streams_unchanged = 0
+    failed_batches = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_batch = {
+            executor.submit(
+                process_m3u_batch_direct,
+                account_id,
+                batch,
+                groups,
+                hash_keys,
+                compiled_filters,
+            ): i
+            for i, batch in enumerate(batches)
+        }
+
+        completed_batches = 0
+        total_batches = len(batches)
+
+        for future in as_completed(future_to_batch):
+            batch_idx = future_to_batch[future]
+            result = None
+            try:
+                result = future.result()
+                completed_batches += 1
+
+                created_count, updated_count, unchanged_count = (
+                    _parse_batch_stream_counts(result)
+                )
+                if created_count or updated_count or unchanged_count:
+                    streams_created += created_count
+                    streams_updated += updated_count
+                    streams_unchanged += unchanged_count
+
+                progress = int((completed_batches / total_batches) * 100)
+                current_elapsed = time.time() - start_time
+
+                if progress > 0:
+                    estimated_total = (current_elapsed / progress) * 100
+                    time_remaining = max(0, estimated_total - current_elapsed)
+                else:
+                    time_remaining = 0
+
+                send_m3u_update(
+                    account_id,
+                    "parsing",
+                    progress,
+                    elapsed_time=current_elapsed,
+                    time_remaining=time_remaining,
+                    streams_processed=streams_created + streams_updated + streams_unchanged,
+                )
+
+                logger.debug(
+                    f"{progress_label} {completed_batches}/{total_batches} completed"
+                )
+
+            except Exception as e:
+                logger.error(f"Error in {error_label} {batch_idx}: {str(e)}")
+                if result is None:
+                    completed_batches += 1  # Still count it to avoid hanging
+                    failed_batches.append((batch_idx, batches[batch_idx]))
+            finally:
+                batches[batch_idx] = None
+
+    created_count, updated_count, unchanged_count, failed_batch_count = (
+        _retry_failed_batches(
+            account_id, failed_batches, groups, hash_keys, compiled_filters,
+        )
+    )
+    streams_created += created_count
+    streams_updated += updated_count
+    streams_unchanged += unchanged_count
+    return streams_created, streams_updated, streams_unchanged, failed_batch_count
 
 
 def cleanup_streams(account_id, scan_start_time=timezone.now):
@@ -1572,11 +1717,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
         if not account.server_url:
             error_msg = "Missing server URL for Xtream Codes account"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="processing_groups",
+                ws_error=error_msg,
             )
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1585,11 +1733,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
         if not account.username or not account.password:
             error_msg = "Missing username or password for Xtream Codes account"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="processing_groups",
+                ws_error=error_msg,
             )
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1651,15 +1802,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                                 f"Unexpected response from XC server: {xc_categories}"
                             )
                             logger.error(error_msg)
-                            account.status = M3UAccount.Status.ERROR
-                            account.last_message = error_msg
-                            account.save(update_fields=["status", "last_message"])
-                            send_m3u_update(
+                            _set_m3u_account_status(
                                 account_id,
-                                "processing_groups",
-                                100,
-                                status="error",
-                                error=error_msg,
+                                M3UAccount.Status.ERROR,
+                                error_msg,
+                                account_name=account.name,
+                                notify_error=True,
+                                ws_action="processing_groups",
+                                ws_error=error_msg,
                             )
                             lock_renewer.stop()
                             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1690,15 +1840,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                             error_msg = f"Failed to get categories from XC server: {str(e)}"
 
                         logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
+                        _set_m3u_account_status(
                             account_id,
-                            "processing_groups",
-                            100,
-                            status="error",
-                            error=error_msg,
+                            M3UAccount.Status.ERROR,
+                            error_msg,
+                            account_name=account.name,
+                            notify_error=True,
+                            ws_action="processing_groups",
+                            ws_error=error_msg,
                         )
                         lock_renewer.stop()
                         release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1707,15 +1856,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             except Exception as e:
                 error_msg = f"Failed to create XC Client: {str(e)}"
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account_id,
-                    "processing_groups",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="processing_groups",
+                    ws_error=error_msg,
                 )
                 lock_renewer.stop()
                 release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1723,11 +1871,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
         except Exception as e:
             error_msg = f"Unexpected error occurred in XC Client: {str(e)}"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="processing_groups",
+                ws_error=error_msg,
             )
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1738,7 +1889,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             # If fetch failed, don't continue processing
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
-            return f"Failed to fetch M3U data for account_id={account_id}.", None
+            return account.last_message or f"Failed to fetch M3U data for account_id={account_id}.", None
 
         valid_stream_count = 0
 
@@ -2740,6 +2891,10 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             existing_channel.stream_profile = stream_profile_to_assign
                             dirty_fields.append("stream_profile")
 
+                        if existing_channel.is_radio != stream.is_radio:
+                            existing_channel.is_radio = stream.is_radio
+                            dirty_fields.append("is_radio")
+
                         if dirty_fields:
                             # Multi-stream channels appear once per stream;
                             # dedupe by id so bulk_update does not double-fire
@@ -2808,6 +2963,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                                     logo=new_logo,
                                     epg_data=new_epg_data,
                                     stream_profile=stream_profile_to_assign,
+                                    is_radio=stream.is_radio,
                                 ),
                                 stream,
                             )
@@ -3348,10 +3504,20 @@ def refresh_single_m3u_account(account_id):
             f"refresh_single_m3u_account failed for account {account_id}: {e}",
             exc_info=True,
         )
+        account_name = None
+        try:
+            account_name = (
+                M3UAccount.objects.filter(id=account_id)
+                .values_list("name", flat=True)
+                .first()
+            )
+        except Exception:
+            pass
         _set_m3u_account_status(
             account_id,
             M3UAccount.Status.ERROR,
             f"Error processing M3U: {str(e)[:500]}",
+            account_name=account_name,
             notify_error=True,
             ws_error=str(e)[:500],
         )
@@ -3384,6 +3550,7 @@ def _refresh_single_m3u_account_impl(account_id):
             account_id,
             M3UAccount.Status.FETCHING,
             "Refresh in progress...",
+            account_name=account.name,
         )
         account = _get_active_m3u_account(account_id)
 
@@ -3466,16 +3633,29 @@ def _refresh_single_m3u_account_impl(account_id):
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
-                error_msg = (
-                    "Failed to refresh M3U groups - download failed or other error"
+                real_error = (
+                    result[0]
+                    if (result and isinstance(result[0], str) and result[0])
+                    else None
                 )
-                _set_m3u_account_status(
-                    account_id,
-                    M3UAccount.Status.ERROR,
-                    error_msg,
-                    notify_error=True,
-                    ws_error=error_msg,
+                current_status = (
+                    M3UAccount.objects.filter(id=account_id)
+                    .values_list("status", flat=True)
+                    .first()
                 )
+                if current_status != M3UAccount.Status.ERROR:
+                    error_msg = (
+                        real_error
+                        or "Failed to refresh M3U groups - download failed or other error"
+                    )
+                    _set_m3u_account_status(
+                        account_id,
+                        M3UAccount.Status.ERROR,
+                        error_msg,
+                        account_name=account.name,
+                        notify_error=True,
+                        ws_error=error_msg,
+                    )
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -3495,9 +3675,11 @@ def _refresh_single_m3u_account_impl(account_id):
                     account_id,
                     M3UAccount.Status.ERROR,
                     error_msg,
+                    account_name=account.name,
                     notify_error=True,
                     ws_error=error_msg,
                 )
+                return "Failed to update m3u account, no streams found"
         except Exception as e:
             logger.error(f"Exception in refresh_m3u_groups: {str(e)}", exc_info=True)
             error_msg = f"Error refreshing M3U groups: {str(e)[:500]}"
@@ -3505,6 +3687,7 @@ def _refresh_single_m3u_account_impl(account_id):
                 account_id,
                 M3UAccount.Status.ERROR,
                 error_msg,
+                account_name=account.name,
                 notify_error=True,
                 ws_error=error_msg,
             )
@@ -3517,17 +3700,26 @@ def _refresh_single_m3u_account_impl(account_id):
     except Exception:
         is_xc_account = False
 
-    # Modified validation logic for different account types
+    # Modified validation logic for different account types.
+    # Empty non-XC streams already returned above; this covers missing groups
+    # and other empty-data cases without emitting a second m3u_error.
     if (not groups) or (not is_xc_account and not extinf_data):
         logger.error(f"No data to process for account {account_id}")
         error_msg = "No data available for processing"
-        _set_m3u_account_status(
-            account_id,
-            M3UAccount.Status.ERROR,
-            error_msg,
-            notify_error=True,
-            ws_error=error_msg,
+        current_status = (
+            M3UAccount.objects.filter(id=account_id)
+            .values_list("status", flat=True)
+            .first()
         )
+        if current_status != M3UAccount.Status.ERROR:
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_error=error_msg,
+            )
         return "Failed to update m3u account, no data available"
 
     hash_keys = CoreSettings.get_m3u_hash_key().split(",")
@@ -3553,6 +3745,7 @@ def _refresh_single_m3u_account_impl(account_id):
         streams_created = 0
         streams_updated = 0
         streams_unchanged = 0
+        failed_batch_count = 0
 
         if account.account_type == M3UAccount.Types.STADNARD:
             logger.debug(
@@ -3570,65 +3763,17 @@ def _refresh_single_m3u_account_impl(account_id):
             max_workers = min(2, len(batches))
             logger.debug(f"Using {max_workers} threads for processing")
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit batch processing tasks using direct functions (now thread-safe)
-                future_to_batch = {
-                    executor.submit(
-                        process_m3u_batch_direct,
-                        account_id,
-                        batch,
-                        existing_groups,
-                        hash_keys,
-                        compiled_stream_filters,
-                    ): i
-                    for i, batch in enumerate(batches)
-                }
-
-                completed_batches = 0
-                total_batches = len(batches)
-
-                # Process completed batches as they finish
-                for future in as_completed(future_to_batch):
-                    batch_idx = future_to_batch[future]
-                    try:
-                        result = future.result()
-                        completed_batches += 1
-
-                        # Extract stream counts from result
-                        created_count, updated_count, unchanged_count = (
-                            _parse_batch_stream_counts(result)
-                        )
-                        if created_count or updated_count or unchanged_count:
-                            streams_created += created_count
-                            streams_updated += updated_count
-                            streams_unchanged += unchanged_count
-
-                        # Send progress update
-                        progress = int((completed_batches / total_batches) * 100)
-                        current_elapsed = time.time() - start_time
-
-                        if progress > 0:
-                            estimated_total = (current_elapsed / progress) * 100
-                            time_remaining = max(0, estimated_total - current_elapsed)
-                        else:
-                            time_remaining = 0
-
-                        send_m3u_update(
-                            account_id,
-                            "parsing",
-                            progress,
-                            elapsed_time=current_elapsed,
-                            time_remaining=time_remaining,
-                            streams_processed=streams_created + streams_updated + streams_unchanged,
-                        )
-
-                        logger.debug(f"Thread batch {completed_batches}/{total_batches} completed")
-
-                    except Exception as e:
-                        logger.error(f"Error in thread batch {batch_idx}: {str(e)}")
-                        completed_batches += 1  # Still count it to avoid hanging
-                    finally:
-                        batches[batch_idx] = None
+            streams_created, streams_updated, streams_unchanged, failed_batch_count = (
+                _process_stream_batches_with_retry(
+                    account_id,
+                    batches,
+                    existing_groups,
+                    hash_keys,
+                    compiled_stream_filters,
+                    max_workers=max_workers,
+                    start_time=start_time,
+                )
+            )
 
             logger.info(f"Thread-based processing completed for account {account_id}")
 
@@ -3688,6 +3833,7 @@ def _refresh_single_m3u_account_impl(account_id):
                     account_id,
                     M3UAccount.Status.ERROR,
                     error_msg,
+                    account_name=account.name,
                     notify_error=True,
                     ws_error=error_msg,
                 )
@@ -3708,70 +3854,53 @@ def _refresh_single_m3u_account_impl(account_id):
                 max_workers = min(4, len(batches))
                 logger.debug(f"Using {max_workers} threads for XC stream processing")
 
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit stream batch processing tasks (reuse standard M3U processing)
-                    future_to_batch = {
-                        executor.submit(
-                            process_m3u_batch_direct,
-                            account_id,
-                            batch,
-                            existing_groups,
-                            hash_keys,
-                            compiled_stream_filters,
-                        ): i
-                        for i, batch in enumerate(batches)
-                    }
-
-                    completed_batches = 0
-                    total_batches = len(batches)
-
-                    # Process completed batches as they finish
-                    for future in as_completed(future_to_batch):
-                        batch_idx = future_to_batch[future]
-                        try:
-                            result = future.result()
-                            completed_batches += 1
-
-                            # Extract stream counts from result
-                            created_count, updated_count, unchanged_count = (
-                                _parse_batch_stream_counts(result)
-                            )
-                            if created_count or updated_count or unchanged_count:
-                                streams_created += created_count
-                                streams_updated += updated_count
-                                streams_unchanged += unchanged_count
-
-                            # Send progress update
-                            progress = int((completed_batches / total_batches) * 100)
-                            current_elapsed = time.time() - start_time
-
-                            if progress > 0:
-                                estimated_total = (current_elapsed / progress) * 100
-                                time_remaining = max(0, estimated_total - current_elapsed)
-                            else:
-                                time_remaining = 0
-
-                            send_m3u_update(
-                                account_id,
-                                "parsing",
-                                progress,
-                                elapsed_time=current_elapsed,
-                                time_remaining=time_remaining,
-                                streams_processed=streams_created + streams_updated + streams_unchanged,
-                            )
-
-                            logger.debug(f"XC thread batch {completed_batches}/{total_batches} completed")
-
-                        except Exception as e:
-                            logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
-                            completed_batches += 1  # Still count it to avoid hanging
-                        finally:
-                            batches[batch_idx] = None
+                streams_created, streams_updated, streams_unchanged, failed_batch_count = (
+                    _process_stream_batches_with_retry(
+                        account_id,
+                        batches,
+                        existing_groups,
+                        hash_keys,
+                        compiled_stream_filters,
+                        max_workers=max_workers,
+                        start_time=start_time,
+                        error_label="XC thread batch",
+                        progress_label="XC thread batch",
+                    )
+                )
 
                 logger.info(f"XC thread-based processing completed for account {account_id}")
 
                 del batches
                 gc.collect()
+
+        if failed_batch_count:
+            # Stale marking and auto-sync compare last_seen against this
+            # refresh, so they would treat the failed batches' streams as gone.
+            logger.error(
+                f"{failed_batch_count} batch(es) failed for account {account_id}; "
+                f"skipping stale marking and cleanup for this incomplete refresh."
+            )
+            error_msg = (
+                f"Refresh incomplete: {failed_batch_count} batch(es) failed to process."
+            )
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_error=error_msg,
+            )
+            # Committed batches already changed Stream rows.
+            try:
+                rollup_channel_catchup_fields(account_id)
+            except Exception as e:
+                logger.error(f"Error rolling up catch-up fields for account {account_id}: {str(e)}")
+            from apps.output.streaming_chunk_cache import (
+                invalidate_output_caches_after_m3u_refresh,
+            )
+            invalidate_output_caches_after_m3u_refresh()
+            return "Failed to update m3u account, one or more batches failed to process"
 
         # Ensure all database transactions are committed before cleanup
         logger.info(

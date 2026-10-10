@@ -41,6 +41,23 @@ describe('updateChannelsWithOverrideRouting (manual finding #4)', () => {
     ]);
   });
 
+  it('routes is_radio to the override on auto-created and raw on manual channels', async () => {
+    const channelsById = {
+      1: { id: 1, auto_created: true },
+      2: { id: 2, auto_created: false },
+    };
+    await updateChannelsWithOverrideRouting(
+      [1, 2],
+      { is_radio: false },
+      channelsById
+    );
+    const body = API.bulkUpdateChannels.mock.calls[0][0];
+    expect(body).toEqual([
+      { id: 1, override: { is_radio: false } },
+      { id: 2, is_radio: false },
+    ]);
+  });
+
   it('keeps raw Channel.X writes for manual channels (auto_created=false)', async () => {
     const channelsById = {
       1: { id: 1, auto_created: false },

@@ -27,7 +27,8 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import Authenticated, permission_classes_by_method
+from apps.accounts.permissions import permissions_for_method
+from apps.channels.access import channels_queryset_for_user, user_may_use_profile
 from apps.channels.managers import with_effective_values
 from apps.channels.models import Channel
 from apps.epg.models import ProgramData
@@ -170,6 +171,10 @@ def _dummy_generation_span(now, lookback, cutoff):
     hour-aligned) generation start rather than `now`, since splitting the
     computation into separate back/forward day counts and adding them can
     under-count by up to a day when `now`'s minutes/seconds are non-zero.
+
+    Rewinds are whole days so the block grid stays anchored to the current
+    hour. Chunked guide loads (initial, forward, backward) must share that
+    anchor or adjacent standard-dummy blocks overlap.
     """
     truncated_now = now.replace(minute=0, second=0, microsecond=0)
     default_lookback = now - _DEFAULT_LOOKBACK
@@ -221,27 +226,15 @@ def _visible_channels_queryset(user, profile_id=None):
     channels with an enabled membership in that profile are returned.
     """
     qs = Channel.objects.filter(hidden_from_output=False)
-    assigned_profiles = None
-    if user is not None and getattr(user, 'user_level', 10) < 10:
-        qs = qs.filter(user_level__lte=user.user_level)
-        custom_props = getattr(user, 'custom_properties', None) or {}
-        if custom_props.get('hide_adult_content', False):
-            qs = qs.filter(is_adult=False)
-        if user.channel_profiles.exists():
-            assigned_profiles = user.channel_profiles.all()
+    if user is not None and getattr(user, "is_authenticated", False):
+        # An explicit profile_id applies its own membership filter below.
+        qs = channels_queryset_for_user(qs, user, profiles=profile_id is None)
+        if profile_id is not None and not user_may_use_profile(user, profile_id):
+            return qs.none()
 
     if profile_id is not None:
-        if assigned_profiles is not None and not assigned_profiles.filter(
-            pk=profile_id
-        ).exists():
-            return qs.none()
         qs = qs.filter(
             channelprofilemembership__channel_profile_id=profile_id,
-            channelprofilemembership__enabled=True,
-        ).distinct()
-    elif assigned_profiles is not None:
-        qs = qs.filter(
-            channelprofilemembership__channel_profile__in=assigned_profiles,
             channelprofilemembership__enabled=True,
         ).distinct()
 
@@ -336,7 +329,7 @@ def _iter_real_program_dicts(lookback, cutoff, epg_ids):
 
 
 def _iter_dummy_for_channels(
-    channels, id_prefix, *, custom_source, lookback, cutoff, dummy_start, dummy_days
+    channels, id_prefix, *, custom_source, lookback, cutoff, dummy_start, dummy_days, clock
 ):
     """Yield on-demand dummy programs for a prepared channel list."""
     if custom_source:
@@ -364,6 +357,7 @@ def _iter_dummy_for_channels(
                 export_lookback=lookback,
                 export_cutoff=cutoff,
                 generation_start=dummy_start,
+                clock=clock,
             )
         except Exception:
             logger.exception(
@@ -442,6 +436,7 @@ def _iter_grid_json_chunks(
             cutoff=cutoff,
             dummy_start=dummy_start,
             dummy_days=dummy_days,
+            clock=now,
         ):
             batch.append(program)
             dummy_count += 1
@@ -459,6 +454,7 @@ def _iter_grid_json_chunks(
             cutoff=cutoff,
             dummy_start=dummy_start,
             dummy_days=dummy_days,
+            clock=now,
         ):
             batch.append(program)
             dummy_count += 1
@@ -492,12 +488,7 @@ class EPGGridAPIView(APIView):
     """Programs overlapping a time window, plus on-demand dummy programmes."""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description=(

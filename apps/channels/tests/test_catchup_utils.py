@@ -156,3 +156,64 @@ class CatchupRollupActiveAccountTests(TestCase):
         channel.refresh_from_db()
         self.assertFalse(channel.is_catchup)
         self.assertEqual(channel.catchup_days, 0)
+
+
+class BulkCreateChannelsFromStreamsCatchupTests(TestCase):
+    """bulk_create skips ChannelStream post_save; task rolls up catch-up once."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.active = M3UAccount.objects.create(
+            name="bulk-catchup-active",
+            server_url="http://example.test",
+            account_type="XC",
+            is_active=True,
+        )
+        cls.inactive = M3UAccount.objects.create(
+            name="bulk-catchup-inactive",
+            server_url="http://example.test",
+            account_type="XC",
+            is_active=False,
+        )
+
+    @patch("core.utils.send_websocket_update")
+    def test_rolls_up_catchup_from_active_stream(self, _ws):
+        from apps.channels.tasks import bulk_create_channels_from_streams
+
+        stream = Stream.objects.create(
+            name="bulk-catchup",
+            url="http://example.test/catchup",
+            m3u_account=self.active,
+            is_catchup=True,
+            catchup_days=2,
+            is_radio=True,
+        )
+
+        result = bulk_create_channels_from_streams.run([stream.id])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["created_count"], 1)
+        channel = Channel.objects.get(streams=stream)
+        self.assertTrue(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 2)
+        # is_radio is still seeded at create time on this path.
+        self.assertTrue(channel.is_radio)
+
+    @patch("core.utils.send_websocket_update")
+    def test_ignores_catchup_from_inactive_account(self, _ws):
+        from apps.channels.tasks import bulk_create_channels_from_streams
+
+        stream = Stream.objects.create(
+            name="bulk-inactive-catchup",
+            url="http://example.test/inactive-catchup",
+            m3u_account=self.inactive,
+            is_catchup=True,
+            catchup_days=5,
+        )
+
+        result = bulk_create_channels_from_streams.run([stream.id])
+
+        self.assertEqual(result["status"], "completed")
+        channel = Channel.objects.get(streams=stream)
+        self.assertFalse(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 0)

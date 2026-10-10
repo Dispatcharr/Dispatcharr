@@ -14,6 +14,7 @@ from django.http import Http404
 from django.urls import reverse
 from django.utils import timezone as django_timezone
 
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, ChannelProfile
 from apps.channels.utils import format_channel_number
 from apps.epg.models import ProgramData
@@ -84,30 +85,11 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
 
         # Get channels based on user/profile
         if user is not None:
-            if user.user_level < 10:
-                user_profile_count = user.channel_profiles.count()
-
-                # If user has ALL profiles or NO profiles, give unrestricted access
-                if user_profile_count == 0:
-                    # No profile filtering - user sees all channels based on user_level
-                    filters = {"user_level__lte": user.user_level}
-                    # Hide adult content if user preference is set
-                    if (user.custom_properties or {}).get('hide_adult_content', False):
-                        filters["is_adult"] = False
-                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source')
-                else:
-                    # User has specific limited profiles assigned
-                    filters = {
-                        "channelprofilemembership__enabled": True,
-                        "user_level__lte": user.user_level,
-                        "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                    }
-                    # Hide adult content if user preference is set
-                    if (user.custom_properties or {}).get('hide_adult_content', False):
-                        filters["is_adult"] = False
-                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source').distinct()
-            else:
-                base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('logo', 'epg_data__epg_source')
+            base_qs = channels_queryset_for_user(
+                Channel.objects.all(),
+                user,
+                level_cap_admins=True,
+            ).select_related("logo", "epg_data__epg_source")
         else:
             if profile_name is not None:
                 try:
