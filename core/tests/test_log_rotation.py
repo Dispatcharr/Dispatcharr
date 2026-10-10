@@ -3,17 +3,18 @@
 from django.test import TestCase, override_settings
 
 from core.models import CoreSettings, SYSTEM_SETTINGS_KEY
-from core.serializers import CoreSettingsSerializer, _clamp_int
+from core.serializers import CoreSettingsSerializer
+from core.utils import clamp_int
 
 
 class ClampIntTests(TestCase):
     def test_coerces_and_clamps(self):
-        self.assertEqual(_clamp_int("abc", 10, 1, 1000), 10)  # garbage -> default
-        self.assertEqual(_clamp_int(None, 10, 1, 1000), 10)
-        self.assertEqual(_clamp_int("50", 10, 1, 1000), 50)
-        self.assertEqual(_clamp_int(5000, 10, 1, 1000), 1000)
-        self.assertEqual(_clamp_int(0, 10, 1, 1000), 1)
-        self.assertEqual(_clamp_int(10.9, 10, 1, 1000), 10)
+        self.assertEqual(clamp_int("abc", 10, 1, 1000), 10)  # garbage -> default
+        self.assertEqual(clamp_int(None, 10, 1, 1000), 10)
+        self.assertEqual(clamp_int("50", 10, 1, 1000), 50)
+        self.assertEqual(clamp_int(5000, 10, 1, 1000), 1000)
+        self.assertEqual(clamp_int(0, 10, 1, 1000), 1)
+        self.assertEqual(clamp_int(10.9, 10, 1, 1000), 10)
 
 
 # locmem cache: isolates this test's settings write from the shared Redis-backed group cache.

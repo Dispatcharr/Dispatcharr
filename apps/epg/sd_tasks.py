@@ -113,6 +113,43 @@ def _sd_backfill_schedule_dates_without_data(
     return backfilled_count
 
 
+def _sd_prune_ended_programmes(mapped_epg_ids):
+    """Delete programmes that ended before each EPG's guide-history cutoff.
+
+    Returns the number of rows deleted. EPGs that share a cutoff are deleted in
+    one query, so the cost follows the number of distinct cutoffs, not channels.
+    """
+    from apps.epg.utils import epg_retention_cutoffs
+
+    by_cutoff = {}
+    for epg_id, cutoff in epg_retention_cutoffs(mapped_epg_ids).items():
+        by_cutoff.setdefault(cutoff, []).append(epg_id)
+
+    deleted = 0
+    for cutoff, epg_ids in by_cutoff.items():
+        deleted += ProgramData.objects.filter(
+            epg_id__in=epg_ids, end_time__lt=cutoff
+        ).delete()[0]
+    return deleted
+
+
+def _sd_stations_without_current_data(mapped_epg_ids, mapped_tvg_ids, window_start):
+    """Mapped station ids with no stored programme that ends at or after *window_start*.
+
+    Ended programmes are kept for the guide-history window, so a station that
+    only has old rows must still count as empty. Otherwise a stale schedule MD5
+    cache could stop its current days from being fetched.
+    """
+    with_current_data = set(
+        ProgramData.objects.filter(
+            epg_id__in=mapped_epg_ids, end_time__gte=window_start
+        )
+        .values_list('tvg_id', flat=True)
+        .distinct()
+    )
+    return set(mapped_tvg_ids) - with_current_data
+
+
 def _sd_programs_needing_metadata(
     program_ids_needed,
     schedule_program_md5s,
@@ -626,7 +663,7 @@ def fetch_schedules_direct(
     # SD API spec requires the User-Agent to identify the application and version.
     # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
-    def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
+    def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata):
         """Poster fetch, logo auto-apply, and pruning. Runs even when schedules are unchanged.
 
         Returns the number of ProgramData rows updated with poster artwork.
@@ -758,11 +795,13 @@ def fetch_schedules_direct(
         except Exception as prune_err:
             logger.warning(f"Failed to clean up orphaned SD ProgramData: {prune_err}")
 
-        today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
         try:
-            expired_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids, end_time__lt=today_utc).delete()[0]
+            expired_count = _sd_prune_ended_programmes(mapped_epg_ids)
             if expired_count:
-                logger.info(f"Pruned {expired_count} expired SD ProgramData records (end_time before {today}).")
+                logger.info(
+                    f"Pruned {expired_count} expired SD ProgramData records "
+                    f"outside the guide-history window."
+                )
         except Exception as prune_err:
             logger.warning(f"Failed to prune expired SD ProgramData: {prune_err}")
 
@@ -1153,7 +1192,7 @@ def fetch_schedules_direct(
 
     if not mapped_station_ids:
         logger.info("No channels mapped to this SD source; skipping schedule MD5 check and downloads.")
-        _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        _sd_post_refresh_tasks(mapped_epg_ids, {})
         if single_epg_fetch:
             msg = "No mapped channel found for this EPG entry; guide fetch skipped."
             source.last_message = msg
@@ -1254,9 +1293,8 @@ def fetch_schedules_direct(
         ).values_list('epg_id', 'start_time'):
             dates_with_data.add((epg_id, start_time.date()))
 
-    stations_without_any_data = mapped_tvg_ids - set(
-        ProgramData.objects.filter(epg_id__in=mapped_epg_ids)
-        .values_list('tvg_id', flat=True).distinct()
+    stations_without_any_data = _sd_stations_without_current_data(
+        mapped_epg_ids, mapped_tvg_ids, window_start
     )
     backfilled_count = _sd_backfill_schedule_dates_without_data(
         changed_by_station,
@@ -1289,7 +1327,7 @@ def fetch_schedules_direct(
 
     if not changed_by_station:
         logger.info("No schedule changes detected, skipping schedule and program downloads.")
-        posters_updated = _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        posters_updated = _sd_post_refresh_tasks(mapped_epg_ids, {})
         if posters_updated:
             msg = (
                 f"No schedule changes detected. Updated poster artwork for "
@@ -1870,7 +1908,7 @@ def fetch_schedules_direct(
     # -------------------------------------------------------------------------
     # Step 8–9: Posters, logo auto-apply, and pruning
     # -------------------------------------------------------------------------
-    _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today)
+    _sd_post_refresh_tasks(mapped_epg_ids, program_metadata)
 
     # -------------------------------------------------------------------------
     # Done

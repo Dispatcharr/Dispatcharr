@@ -14,27 +14,20 @@ from datetime import timedelta
 from django.db.models import Max, Q
 from django.utils import timezone as dj_timezone
 
+from core.models import CoreSettings
 from core.utils import send_websocket_update
-
-# Retention floor/ceiling for ProgramData pruning (see epg_retention_cutoffs).
-# One day so "what aired earlier today" survives a refresh even on plain live
-# channels; capped at 30 so a channel's own catchup_days can't be set high
-# enough to keep effectively-unbounded guide history.
-DEFAULT_EPG_RETENTION_DAYS = 1
-MAX_EPG_RETENTION_DAYS = 30
 
 
 def epg_retention_cutoffs(epg_ids, *, now=None):
     """
     Map each epg_id to the oldest ProgramData.end_time worth keeping.
 
-    A programme past its epg's cutoff is safe to prune on the next refresh:
-    no channel's catchup_days can reach back far enough to ever request it
-    again. The cutoff is the largest catchup_days among catchup-enabled
-    channels mapped to that epg, floored at DEFAULT_EPG_RETENTION_DAYS and
-    capped at MAX_EPG_RETENTION_DAYS; an epg with no catchup-enabled channel
-    still gets the floor, so non-catchup channels keep a rolling one-day
-    guide history too.
+    A programme that ended before its epg's cutoff is removed on the next
+    refresh. The cutoff is the largest catchup_days among catchup-enabled
+    channels mapped to that epg, then raised to the history minimum and
+    capped at the history maximum. An epg with no catchup-enabled channel
+    still gets the minimum. Default days back only affects what a client is
+    served; it does not change how much is kept.
 
     A channel's effective epg is its own Channel.epg_data, unless a
     ChannelOverride redirects it elsewhere -- ChannelOverride has no
@@ -42,7 +35,7 @@ def epg_retention_cutoffs(epg_ids, *, now=None):
     still apply either way. Both paths are checked so an override-only
     mapping (which bulk parsing already treats as mapped, see
     _epg_ids_mapped_to_channels) doesn't silently fall back to the
-    one-day floor for a channel that actually wants more.
+    configured minimum for a channel that actually wants more.
     """
     from apps.channels.models import Channel
 
@@ -52,6 +45,8 @@ def epg_retention_cutoffs(epg_ids, *, now=None):
 
     if now is None:
         now = dj_timezone.now()
+
+    policy = CoreSettings.get_epg_history_policy()
 
     max_catchup_days = {}
 
@@ -79,7 +74,7 @@ def epg_retention_cutoffs(epg_ids, *, now=None):
     cutoffs = {}
     for epg_id in epg_ids:
         days = max_catchup_days.get(epg_id) or 0
-        days = max(DEFAULT_EPG_RETENTION_DAYS, min(days, MAX_EPG_RETENTION_DAYS))
+        days = min(max(days, policy.min_days), policy.max_days)
         cutoffs[epg_id] = now - timedelta(days=days)
     return cutoffs
 

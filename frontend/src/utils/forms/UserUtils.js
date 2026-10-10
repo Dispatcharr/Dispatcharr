@@ -10,6 +10,30 @@ const isValidNetworkEntry = (entry) =>
   (entry + '/128').match(IPV6_CIDR_REGEX);
 const NETWORK_KEYS = Object.keys(NETWORK_ACCESS_OPTIONS);
 
+const toEpgDays = (value) => {
+  if (value == null || value === '') {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
+// Empty means the key is absent (inherit the system default). 0 is a real value.
+const storedEpgDay = (value) => toEpgDays(value) ?? '';
+
+// An empty field removes the key: omit it on create, send null on update so
+// the serializer merge drops it.
+const writeEpgDay = (customProps, key, value, existingUser) => {
+  const days = toEpgDays(value);
+  if (days !== null) {
+    customProps[key] = days;
+  } else if (existingUser) {
+    customProps[key] = null;
+  } else {
+    delete customProps[key];
+  }
+};
+
 export const createUser = (values) => {
   return API.createUser(values);
 };
@@ -70,8 +94,8 @@ export const userToFormValues = (user) => {
       customProps.dvr_access === DVR_ACCESS.MANAGE
         ? customProps.dvr_access
         : DVR_ACCESS.VIEW,
-    epg_days: customProps.epg_days || 0,
-    epg_prev_days: customProps.epg_prev_days || 0,
+    epg_days: storedEpgDay(customProps.epg_days),
+    epg_prev_days: storedEpgDay(customProps.epg_prev_days),
     allowed_ips: [
       ...new Set(
         NETWORK_KEYS.flatMap((key) =>
@@ -148,10 +172,10 @@ export const formValuesToPayload = (values, existingUser) => {
   delete customProps.dvr_view_enabled;
   delete customProps.dvr_manage_enabled;
 
-  customProps.epg_days = payload.epg_days || 0;
+  writeEpgDay(customProps, 'epg_days', payload.epg_days, existingUser);
   delete payload.epg_days;
 
-  customProps.epg_prev_days = payload.epg_prev_days || 0;
+  writeEpgDay(customProps, 'epg_prev_days', payload.epg_prev_days, existingUser);
   delete payload.epg_prev_days;
 
   const joined = (payload.allowed_ips || []).join(',');
@@ -192,8 +216,8 @@ export const getFormInitialValues = () => {
     vod_movies_enabled: true,
     vod_series_enabled: true,
     dvr_access: DVR_ACCESS.VIEW,
-    epg_days: 0,
-    epg_prev_days: 0,
+    epg_days: '',
+    epg_prev_days: '',
     allowed_ips: [],
   };
 };

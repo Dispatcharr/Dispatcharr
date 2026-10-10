@@ -16,7 +16,7 @@ from django.utils import timezone as django_timezone
 
 from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, ChannelProfile
-from apps.channels.utils import format_channel_number
+from apps.channels.utils import format_channel_number, resolve_epg_output_window
 from apps.epg.models import ProgramData
 from apps.epg.utils import sd_poster_proxy_path
 from apps.output.dummy_epg import (
@@ -41,28 +41,14 @@ def _epg_export_teardown():
     spawn_memory_trim(close_connections=True)
 
 
-def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=False):
+def generate_epg(request, profile_name=None, user=None):
     """
     Dynamically generate an XMLTV (EPG) file using a streaming response.
     Since the EPG data is stored independently of Channels, we group programmes
     by their associated EPGData record.
     """
-    user_custom = (user.custom_properties or {}) if user else {}
-    try:
-        num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
-        num_days = max(0, min(num_days, 365))
-    except (ValueError, TypeError):
-        num_days = 0
-    if xc_catchup_prev_days:
-        from apps.channels.utils import resolve_xc_epg_prev_days
-
-        prev_days = resolve_xc_epg_prev_days(request, user)
-    else:
-        try:
-            prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
-            prev_days = max(0, min(prev_days, 30))
-        except (ValueError, TypeError):
-            prev_days = 0
+    window = resolve_epg_output_window(request, user)
+    num_days, prev_days = window.forward_days, window.prev_days
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
 

@@ -751,6 +751,90 @@ class SDScheduleBackfillTests(TestCase):
         self.assertEqual(sorted(changed['10001']), self.DATE_LIST)
 
 
+class SDGuideHistoryTests(TestCase):
+    """SD keeps ended programmes for the guide-history window and prunes the rest."""
+
+    def setUp(self):
+        self.source = EPGSource.objects.create(
+            name='SD History', source_type='schedules_direct'
+        )
+        self.now = timezone.now().replace(microsecond=0)
+        self.epg = EPGData.objects.create(
+            epg_source=self.source, tvg_id='10001', name='10001'
+        )
+
+    def _program(self, *, ended_days_ago, title):
+        end = self.now - timedelta(days=ended_days_ago)
+        return ProgramData.objects.create(
+            epg=self.epg,
+            tvg_id='10001',
+            title=title,
+            start_time=end - timedelta(hours=1),
+            end_time=end,
+        )
+
+    def test_prune_keeps_the_default_one_day_of_history(self):
+        from apps.epg.sd_tasks import _sd_prune_ended_programmes
+
+        self._program(ended_days_ago=0.5, title='Recent')
+        self._program(ended_days_ago=3, title='Old')
+
+        deleted = _sd_prune_ended_programmes([self.epg.id])
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual(
+            list(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True)),
+            ['Recent'],
+        )
+
+    def test_prune_keeps_catchup_days_of_history(self):
+        from apps.epg.sd_tasks import _sd_prune_ended_programmes
+
+        Channel.objects.create(
+            channel_number=1, name='SD Catchup', epg_data=self.epg,
+            is_catchup=True, catchup_days=5,
+        )
+        self._program(ended_days_ago=3, title='Within catch-up')
+        self._program(ended_days_ago=8, title='Past catch-up')
+
+        _sd_prune_ended_programmes([self.epg.id])
+
+        self.assertEqual(
+            list(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True)),
+            ['Within catch-up'],
+        )
+
+    def test_station_with_only_old_rows_counts_as_empty(self):
+        from apps.epg.sd_tasks import _sd_stations_without_current_data
+
+        self._program(ended_days_ago=1, title='Yesterday')
+        window_start = self.now.replace(hour=0, minute=0, second=0)
+
+        empty = _sd_stations_without_current_data(
+            [self.epg.id], {'10001'}, window_start
+        )
+
+        self.assertEqual(empty, {'10001'})
+
+    def test_station_with_a_current_row_is_not_empty(self):
+        from apps.epg.sd_tasks import _sd_stations_without_current_data
+
+        ProgramData.objects.create(
+            epg=self.epg,
+            tvg_id='10001',
+            title='Tonight',
+            start_time=self.now,
+            end_time=self.now + timedelta(hours=1),
+        )
+        window_start = self.now.replace(hour=0, minute=0, second=0)
+
+        empty = _sd_stations_without_current_data(
+            [self.epg.id], {'10001'}, window_start
+        )
+
+        self.assertEqual(empty, set())
+
+
 class SDProgramMetadataDeltaTests(TestCase):
     def test_fetches_when_md5_changed(self):
         needed = _sd_programs_needing_metadata(

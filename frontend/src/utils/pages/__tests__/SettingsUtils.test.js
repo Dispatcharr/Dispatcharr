@@ -119,7 +119,31 @@ describe('SettingsUtils', () => {
         epg_match_ignore_prefixes: [],
         epg_match_ignore_suffixes: [],
         epg_match_ignore_custom: [],
+        epg_history_min_days: 1,
+        epg_history_max_days: 30,
+        epg_default_prev_days: 0,
+        epg_default_days: 0,
       });
+    });
+
+    it('keeps a stored 0 for EPG day fields', () => {
+      const result = SettingsUtils.parseGroupSettings(
+        {
+          epg_settings: {
+            value: {
+              epg_history_min_days: 0,
+              epg_history_max_days: '0',
+              epg_default_prev_days: 0,
+              epg_default_days: '0',
+            },
+          },
+        },
+        'epg_settings'
+      );
+      expect(result.epg_history_min_days).toBe(0);
+      expect(result.epg_history_max_days).toBe(0);
+      expect(result.epg_default_prev_days).toBe(0);
+      expect(result.epg_default_days).toBe(0);
     });
 
     it('parses system settings with defaults for missing keys', () => {

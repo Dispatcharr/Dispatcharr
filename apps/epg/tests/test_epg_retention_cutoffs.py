@@ -1,14 +1,16 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
 from apps.channels.models import Channel, ChannelOverride
 from apps.epg.models import EPGData, EPGSource
-from apps.epg.utils import (
-    DEFAULT_EPG_RETENTION_DAYS,
-    MAX_EPG_RETENTION_DAYS,
-    epg_retention_cutoffs,
+from apps.epg.utils import epg_retention_cutoffs
+from core.models import (
+    EPG_HISTORY_MAX_DAYS_DEFAULT,
+    EPG_HISTORY_MIN_DAYS_DEFAULT,
+    EpgHistoryPolicy,
 )
 
 
@@ -37,7 +39,7 @@ class EpgRetentionCutoffsTests(TestCase):
         cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
 
         self.assertEqual(
-            cutoffs[epg.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
+            cutoffs[epg.id], self.now - timedelta(days=EPG_HISTORY_MIN_DAYS_DEFAULT)
         )
 
     def test_defaults_to_the_floor_with_no_channel_at_all(self):
@@ -46,7 +48,7 @@ class EpgRetentionCutoffsTests(TestCase):
         cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
 
         self.assertEqual(
-            cutoffs[epg.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
+            cutoffs[epg.id], self.now - timedelta(days=EPG_HISTORY_MIN_DAYS_DEFAULT)
         )
 
     def test_uses_channel_catchup_days(self):
@@ -76,7 +78,7 @@ class EpgRetentionCutoffsTests(TestCase):
         cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
 
         self.assertEqual(
-            cutoffs[epg.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
+            cutoffs[epg.id], self.now - timedelta(days=EPG_HISTORY_MIN_DAYS_DEFAULT)
         )
 
     def test_caps_at_the_maximum(self):
@@ -92,7 +94,7 @@ class EpgRetentionCutoffsTests(TestCase):
         cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
 
         self.assertEqual(
-            cutoffs[epg.id], self.now - timedelta(days=MAX_EPG_RETENTION_DAYS)
+            cutoffs[epg.id], self.now - timedelta(days=EPG_HISTORY_MAX_DAYS_DEFAULT)
         )
 
     def test_uses_the_largest_catchup_days_among_channels_sharing_an_epg(self):
@@ -129,7 +131,7 @@ class EpgRetentionCutoffsTests(TestCase):
         cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
 
         self.assertEqual(
-            cutoffs[epg.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
+            cutoffs[epg.id], self.now - timedelta(days=EPG_HISTORY_MIN_DAYS_DEFAULT)
         )
 
     def test_computes_cutoffs_independently_per_epg(self):
@@ -147,7 +149,7 @@ class EpgRetentionCutoffsTests(TestCase):
         cutoffs = epg_retention_cutoffs([plain.id, catchup.id], now=self.now)
 
         self.assertEqual(
-            cutoffs[plain.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
+            cutoffs[plain.id], self.now - timedelta(days=EPG_HISTORY_MIN_DAYS_DEFAULT)
         )
         self.assertEqual(cutoffs[catchup.id], self.now - timedelta(days=5))
 
@@ -170,5 +172,65 @@ class EpgRetentionCutoffsTests(TestCase):
         # The channel's own epg_data is no longer its effective epg once the
         # override redirects it, so it must not also inflate own_epg's window.
         self.assertEqual(
-            cutoffs[own_epg.id], self.now - timedelta(days=DEFAULT_EPG_RETENTION_DAYS)
+            cutoffs[own_epg.id], self.now - timedelta(days=EPG_HISTORY_MIN_DAYS_DEFAULT)
         )
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(0, 30, 0, 0),
+    )
+    def test_minimum_zero_does_not_keep_extra_history(self, _policy):
+        epg = self._epg('no-floor')
+        Channel.objects.create(channel_number=1, name='Plain', epg_data=epg)
+
+        cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
+
+        self.assertEqual(cutoffs[epg.id], self.now)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(0, 0, 0, 0),
+    )
+    def test_maximum_zero_drops_catchup_history(self, _policy):
+        epg = self._epg('no-max')
+        Channel.objects.create(
+            channel_number=1,
+            name='Catchup',
+            epg_data=epg,
+            is_catchup=True,
+            catchup_days=10,
+        )
+
+        cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
+
+        self.assertEqual(cutoffs[epg.id], self.now)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 7, 0),
+    )
+    def test_default_days_back_does_not_raise_retention(self, _policy):
+        epg = self._epg('default-back')
+        Channel.objects.create(channel_number=1, name='Plain', epg_data=epg)
+
+        cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
+
+        self.assertEqual(cutoffs[epg.id], self.now - timedelta(days=1))
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(7, 30, 0, 0),
+    )
+    def test_raised_floor_beats_a_shorter_catchup_window(self, _policy):
+        epg = self._epg('floor')
+        Channel.objects.create(
+            channel_number=1,
+            name='Short',
+            epg_data=epg,
+            is_catchup=True,
+            catchup_days=2,
+        )
+
+        cutoffs = epg_retention_cutoffs([epg.id], now=self.now)
+
+        self.assertEqual(cutoffs[epg.id], self.now - timedelta(days=7))

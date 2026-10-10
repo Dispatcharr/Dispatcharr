@@ -3,7 +3,7 @@ import json
 from django.urls import reverse
 from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
-from apps.channels.utils import MAX_AUTO_PREV_DAYS, format_channel_number, is_catchup_enabled
+from apps.channels.utils import format_channel_number, is_catchup_enabled, resolve_epg_output_window
 from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled, xc_language_suffix
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
@@ -25,7 +25,6 @@ import os
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
 import regex
-from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 from apps.output.dummy_epg import (
@@ -401,7 +400,6 @@ def generate_m3u(request, profile_name=None, user=None):
                     catchup_days = direct_stream_catchup_days
             elif is_xc_request and channel.is_catchup:
                 catchup_days = channel.catchup_days or 0
-            catchup_days = min(catchup_days, MAX_AUTO_PREV_DAYS)
             if catchup_days > 0 and use_direct_urls:
                 catchup_attrs = f'catchup="xc" catchup-days="{catchup_days}" '
             elif catchup_days > 0 and _catchup_source_prefix is not None:
@@ -672,7 +670,7 @@ def xc_xmltv(request):
         )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
-    return generate_epg(request, None, user, xc_catchup_prev_days=True)
+    return generate_epg(request, None, user)
 
 
 def xc_get_live_categories(user):
@@ -931,26 +929,16 @@ def xc_get_epg(request, user, short=False):
         int(channel.effective_channel_number) if channel.effective_channel_number is not None else 0,
     )
 
-    from apps.channels.utils import resolve_xc_epg_prev_days
-
     limit = int(request.GET.get('limit', 4))
-    user_custom = user.custom_properties or {}
-    try:
-        num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
-        num_days = max(0, min(num_days, 365))
-    except (ValueError, TypeError):
-        num_days = 0
-    prev_days = resolve_xc_epg_prev_days(request, user, auto_detect_fallback=False)
+    window = resolve_epg_output_window(request, user)
+    num_days, prev_days = window.forward_days, window.prev_days
     now = django_timezone.now()
 
-    # XC catch-up clients expect past programmes when prev_days was not set.
-    # Only expand from channel.catchup_days while catch-up is allowed; when
-    # disabled, honor URL / user epg_prev_days alone (no forced lookback).
+    # The resolved window is the guide. Catch-up advertising and has_archive
+    # still follow the channel archive.
     catchup_allowed = is_catchup_enabled(user=user)
     channel_is_catchup = getattr(channel, "is_catchup", False)
-    _channel_catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
-    if catchup_allowed and channel_is_catchup and prev_days == 0:
-        prev_days = _channel_catchup_days
+    _channel_catchup_days = getattr(channel, "catchup_days", 0) or 0
 
     lookback_cutoff = now - timedelta(days=prev_days)
     forward_cutoff = now + timedelta(days=num_days) if num_days > 0 else None

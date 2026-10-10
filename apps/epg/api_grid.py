@@ -39,6 +39,7 @@ from apps.output.dummy_epg import (
     prefetch_streams_for_stream_named_sources,
     resolve_channel_parse_name,
 )
+from core.models import CoreSettings
 from core.utils import spawn_memory_trim
 
 logger = logging.getLogger(__name__)
@@ -47,8 +48,6 @@ _DEFAULT_LOOKBACK = timedelta(hours=1)
 _DEFAULT_FORWARD = timedelta(hours=24)
 _MIN_DAYS = 1
 _MAX_DAYS = 365
-_MAX_PREV_DAYS = 30
-_MAX_WINDOW = timedelta(days=_MAX_DAYS + _MAX_PREV_DAYS)
 _SECONDS_PER_DAY = 86_400
 
 # Serialize this many program objects before yielding a chunk.
@@ -89,13 +88,17 @@ def _parse_grid_datetime(raw, name):
     return dt
 
 
-def _clamp_window(lookback, cutoff):
-    """Validate that *cutoff* is after *lookback* and within the max span."""
+def _clamp_window(lookback, cutoff, max_prev_days):
+    """Validate that *cutoff* is after *lookback* and within the max span.
+
+    The span is the forward limit plus the configured EPG history maximum.
+    """
+    max_window = timedelta(days=_MAX_DAYS + max_prev_days)
     if cutoff <= lookback:
         raise GridWindowError("end must be after start.")
-    if cutoff - lookback > _MAX_WINDOW:
+    if cutoff - lookback > max_window:
         raise GridWindowError(
-            f"Window is too large. Maximum span is {_MAX_WINDOW.days} days."
+            f"Window is too large. Maximum span is {max_window.days} days."
         )
     return lookback, cutoff
 
@@ -113,10 +116,11 @@ def _absolute_window(params, now):
         if end_raw
         else lookback + _DEFAULT_FORWARD
     )
-    return _clamp_window(lookback, cutoff)
+    return _clamp_window(lookback, cutoff, CoreSettings.get_epg_history_policy().max_days)
 
 
 def _relative_window(days, prev_days, now):
+    max_prev_days = CoreSettings.get_epg_history_policy().max_days
     if days is None:
         cutoff = now + _DEFAULT_FORWARD
     else:
@@ -126,9 +130,9 @@ def _relative_window(days, prev_days, now):
     if prev_days is None:
         lookback = now - _DEFAULT_LOOKBACK
     else:
-        prev_days = max(0, min(prev_days, _MAX_PREV_DAYS))
+        prev_days = max(0, min(prev_days, max_prev_days))
         lookback = now - timedelta(days=prev_days)
-    return _clamp_window(lookback, cutoff)
+    return _clamp_window(lookback, cutoff, max_prev_days)
 
 
 def _resolve_epg_grid_window(request, now=None):

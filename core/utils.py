@@ -119,6 +119,14 @@ def ensure_custom_properties_dict(value):
     return custom_properties_as_dict(value)
 
 
+def clamp_int(value, default, lo, hi):
+    """Coerce a settings value to an int within [lo, hi], falling back to default on garbage."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def truncate_with_warning(value, max_length, *, label):
     """Clamp a string to ``max_length``, logging a warning when truncated.
 
