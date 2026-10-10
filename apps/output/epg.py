@@ -25,7 +25,10 @@ from apps.output.dummy_epg import (
     prefetch_streams_for_stream_named_sources,
     resolve_pattern_match_name,
 )
-from apps.output.streaming_chunk_cache import stream_cached_response
+from apps.output.streaming_chunk_cache import (
+    EPG_CACHE_GENERATION_KEY,
+    stream_cached_response,
+)
 from core.utils import build_absolute_uri_with_port, log_system_event
 
 logger = logging.getLogger(__name__)
@@ -637,4 +640,5 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
         build_epg_stream,
         content_type="application/xml",
         filename="Dispatcharr.xml",
+        generation_key=EPG_CACHE_GENERATION_KEY,
     )

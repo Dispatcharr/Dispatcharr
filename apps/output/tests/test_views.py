@@ -373,13 +373,14 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     def test_override_epg_change_invalidates_xmltv_chunk_cache(self):
         """
         XC reads live ProgramData; XMLTV is chunk-cached. Changing the
-        effective EPG via ChannelOverride must drop that cache so the next
+        effective EPG via ChannelOverride must retire that cache so the next
         /output/epg emits the new station's programmes, not the previous ones.
         """
         from django.utils import timezone
         from apps.channels.models import ChannelOverride
         from apps.epg.models import ProgramData
         from django_redis import get_redis_connection
+        from apps.output.streaming_chunk_cache import EPG_CACHE_GENERATION_KEY
 
         # This mixin normally bypasses Redis chunk caching; use the real path here.
         self._epg_cache_patch.stop()
@@ -426,12 +427,12 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
             cached_before = list(redis.scan_iter(match="epg_content:*", count=200))
             self.assertGreater(len(cached_before), 0, "XMLTV chunk cache should be warm")
 
+            generation_before = redis.get(EPG_CACHE_GENERATION_KEY)
             ChannelOverride.objects.create(channel=channel, epg_data=epg_new)
 
-            cached_after = list(redis.scan_iter(match="epg_content:*", count=200))
-            self.assertEqual(
-                len(cached_after),
-                0,
+            self.assertNotEqual(
+                redis.get(EPG_CACHE_GENERATION_KEY),
+                generation_before,
                 "Override EPG change must invalidate XMLTV chunk cache",
             )
 
