@@ -86,13 +86,13 @@ def epg_retention_cutoffs(epg_ids, *, now=None):
 
 def epg_first_start(start_times, cutoff):
     """
-    First programme start of a new pull, for the replace rule.
+    Earliest programme start in a new pull that falls at or after the cutoff.
 
-    Starts before the retention cutoff are ignored, so one bad early
-    timestamp can't pull first_start back over retained history. The
-    programme spanning the cutoff therefore ends at or before first_start and
-    keeps its stored copy. Returns None when no programme in the pull starts
-    inside the retention window.
+    Starts before the cutoff are ignored, so one bad early timestamp cannot
+    pull the replace point back over retained history. Returns None when
+    every start in the pull is before the cutoff. The caller keeps a stored
+    row whose end is at or before that instant, and replaces a row that ends
+    later, including one that started before the cutoff and runs past it.
     """
     in_window = [start for start in start_times if start >= cutoff]
     return min(in_window) if in_window else None

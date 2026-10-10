@@ -1941,8 +1941,11 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                     deleted_count = ProgramData.objects.filter(epg=epg).filter(
                         delete_q
                     ).delete()[0]
-                    # The programme spanning the cutoff ends before first_start,
-                    # so its stored copy is kept; don't add it a second time.
+                    # A stored row that starts before the cutoff and ends at or
+                    # before first_start is still here. Skip the pull's copy of
+                    # that same start so it is not inserted again. A spanning
+                    # row that ends after first_start was deleted above, and
+                    # the pull's copy of it is inserted.
                     kept_starts = set(
                         ProgramData.objects.filter(
                             epg=epg, start_time__lt=cutoff, end_time__gte=cutoff
@@ -2203,9 +2206,11 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
                 params,
             )
             deleted_count += cursor.rowcount
-            # Staged programmes that ended before the cutoff are not inserted,
-            # nor a programme spanning the cutoff whose stored copy was kept
-            # (see the single-channel path).
+            # Do not insert a staged row that already ended before the cutoff.
+            # Also drop a staged row that starts before the cutoff when a stored
+            # row with that start is still present: that stored row ended at or
+            # before first_start and was kept. A spanning row that ended after
+            # first_start was deleted above, so the staged copy is inserted.
             cursor.execute(
                 f"""
                 WITH cutoffs (epg_id, cutoff) AS (
@@ -2271,12 +2276,15 @@ def _swap_parsed_epg_programs(mapped_epg_ids, epg_source, programs_to_create, ba
     """
     SQLite/dev fallback: atomic scoped delete + bulk insert from an in-memory batch list.
 
-    Same rule as _swap_staged_epg_programs: per epg_id in this batch, stored
-    rows are deleted when they ended before the retention cutoff or end after
-    the batch's first start (see epg_first_start). An epg_id with no rows in
-    this batch is left untouched.
+    Same rule as _swap_staged_epg_programs: per mapped epg_id in this batch,
+    stored rows are deleted when they ended before the retention cutoff or end
+    after the batch's first start (see epg_first_start). An epg_id with no rows
+    in this batch is left untouched. Rows for an epg_id that is not mapped are
+    ignored.
     """
     with transaction.atomic():
+        mapped = set(mapped_epg_ids)
+        programs_to_create = [p for p in programs_to_create if p.epg_id in mapped]
         by_epg = defaultdict(list)
         for program in programs_to_create:
             by_epg[program.epg_id].append(program)
@@ -2300,13 +2308,19 @@ def _swap_parsed_epg_programs(mapped_epg_ids, epg_source, programs_to_create, ba
 
         deleted_count = ProgramData.objects.filter(delete_q).delete()[0] if delete_q else 0
         if cutoffs:
-            kept_starts = {
-                (epg_id, start)
-                for epg_id, start in ProgramData.objects.filter(
-                    epg_id__in=list(cutoffs), start_time__lt=max(cutoffs.values())
-                ).values_list('epg_id', 'start_time')
-                if start < cutoffs[epg_id]
-            }
+            # Same kept-row test as the single-channel path: start before this
+            # epg's cutoff and end at or after it.
+            earliest_cutoff = min(cutoffs.values())
+            latest_cutoff = max(cutoffs.values())
+            kept_starts = set()
+            for epg_id, start, end in ProgramData.objects.filter(
+                epg_id__in=list(cutoffs),
+                start_time__lt=latest_cutoff,
+                end_time__gte=earliest_cutoff,
+            ).values_list('epg_id', 'start_time', 'end_time'):
+                cutoff = cutoffs[epg_id]
+                if start < cutoff <= end:
+                    kept_starts.add((epg_id, start))
             programs_to_create = [
                 p for p in programs_to_create
                 if p.start_time >= cutoffs[p.epg_id]
