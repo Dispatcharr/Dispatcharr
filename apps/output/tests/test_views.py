@@ -10,6 +10,7 @@ from apps.channels.models import Channel, ChannelGroup, ChannelOverride, Channel
 from apps.epg.models import EPGData, EPGSource, ProgramData
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
+from core.models import EpgHistoryPolicy
 from apps.output.views import (
     xc_get_live_categories,
     xc_get_live_streams,
@@ -1365,14 +1366,26 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
         self.assertNotIn("catchup=", content)
         self.assertNotIn("catchup-timezone=", content)
 
-    def test_catchup_days_capped_at_max_lookback(self):
+    def test_catchup_days_advertises_the_channel_archive(self):
         from apps.output.views import generate_m3u
 
         self.channel.catchup_days = 45
         self.channel.save(update_fields=["catchup_days"])
         response = generate_m3u(self._xc_style_request(), None, self.user)
         content = _response_text(response)
-        self.assertIn('catchup-days="30"', content)
+        self.assertIn('catchup-days="45"', content)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 10, 0, 0),
+    )
+    def test_catchup_days_ignore_the_epg_history_maximum(self, _policy):
+        from apps.output.views import generate_m3u
+
+        self.channel.catchup_days = 45
+        self.channel.save(update_fields=["catchup_days"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        self.assertIn('catchup-days="45"', _response_text(response))
 
 
 class GenerateM3UDirectCatchupTests(OutputEndpointTestMixin, TestCase):
@@ -1621,10 +1634,17 @@ class XcGetEpgCatchupGateTests(TestCase):
             item["_title"] = base64.b64decode(item["title"]).decode()
         return listings
 
-    def test_catchup_enabled_expands_lookback_from_catchup_days(self):
+    def test_default_zero_omits_ended_programmes_on_a_catchup_channel(self):
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 7, 0),
+    )
+    def test_system_default_includes_past_programmes_and_marks_the_archive(self, _policy):
         listings = self._listings()
-        titles = [item["_title"] for item in listings]
-        self.assertIn("Past Show", titles)
         past = next(item for item in listings if item["_title"] == "Past Show")
         self.assertEqual(past["has_archive"], 1)
 
@@ -1652,6 +1672,63 @@ class XcGetEpgCatchupGateTests(TestCase):
         self.assertIn("Past Show", titles)
         past = next(item for item in listings if item["_title"] == "Past Show")
         self.assertEqual(past["has_archive"], 0)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 5, 0),
+    )
+    def test_system_default_applies_when_catchup_is_disabled(self, _policy):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        listings = self._listings()
+        past = next(item for item in listings if item["_title"] == "Past Show")
+        self.assertEqual(past["has_archive"], 0)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 5, 0),
+    )
+    def test_explicit_user_window_is_not_extended_to_the_archive(self, _policy):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 1,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 2, 0, 0),
+    )
+    def test_history_maximum_caps_a_requested_lookback(self, _policy):
+        """A requested lookback stops at the history max. Catch-up advertising does not."""
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 7,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    def test_saved_zero_does_not_expand_to_the_archive(self):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 0,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    def test_url_zero_does_not_expand_to_the_archive(self):
+        titles = [item["_title"] for item in self._listings(extra_query={"prev_days": "0"})]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
 
 
 class XcGetEpgDummyTests(TestCase):
@@ -1837,6 +1914,43 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
 
     def setUp(self):
         self.factory = RequestFactory()
+        # Pin the policy so this SimpleTestCase never reads settings from the DB.
+        patcher = patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 0, 0),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_system_default_windows_apply_when_nothing_else_is_set(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 2, 3),
+        ):
+            cache_key = generate_epg(self.factory.get("/epg/"), profile_name="test", user=None)
+
+        self.assertIn(":d=3:p=2:", cache_key)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_url_zero_overrides_the_system_default_windows(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 2, 3),
+        ):
+            cache_key = generate_epg(
+                self.factory.get("/epg/?days=0&prev_days=0"), profile_name="test", user=None
+            )
+
+        self.assertIn(":d=0:p=0:", cache_key)
 
     @patch("apps.output.epg.stream_cached_response")
     @patch("apps.output.epg.Channel.objects")

@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from collections import namedtuple
 from shlex import split as shlex_split
 
 from django.conf import settings
@@ -16,6 +17,7 @@ from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from core.utils import clamp_int
 from dispatcharr.log_collector import DEFAULT_LOG_KEEP, DEFAULT_LOG_MB
 
 logger = logging.getLogger(__name__)
@@ -278,6 +280,14 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
+# Guide-history defaults. Every day limit is clamped to 0..EPG_DAYS_LIMIT.
+EPG_HISTORY_MIN_DAYS_DEFAULT = 1
+EPG_HISTORY_MAX_DAYS_DEFAULT = 30
+EPG_DAYS_LIMIT = 365
+EpgHistoryPolicy = namedtuple(
+    "EpgHistoryPolicy",
+    ["min_days", "max_days", "default_prev_days", "default_days"],
+)
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
 REVERSE_PROXY_AUTH_KEY = "reverse_proxy_auth"
 
@@ -683,7 +693,38 @@ class CoreSettings(models.Model):
             "epg_match_ignore_prefixes": [],
             "epg_match_ignore_suffixes": [],
             "epg_match_ignore_custom": [],
+            "epg_history_min_days": EPG_HISTORY_MIN_DAYS_DEFAULT,
+            "epg_history_max_days": EPG_HISTORY_MAX_DAYS_DEFAULT,
+            "epg_default_prev_days": 0,
+            "epg_default_days": 0,
         })
+
+    @classmethod
+    def get_epg_history_policy(cls):
+        """Past-history floor/ceiling and the default output windows.
+
+        Missing or unreadable values use the defaults. A stored minimum above
+        the maximum is pulled down to the maximum, and default days back
+        cannot exceed it.
+        """
+        settings = cls.get_epg_settings()
+        max_days = clamp_int(
+            settings.get("epg_history_max_days"),
+            EPG_HISTORY_MAX_DAYS_DEFAULT, 0, EPG_DAYS_LIMIT,
+        )
+        min_days = min(
+            clamp_int(
+                settings.get("epg_history_min_days"),
+                EPG_HISTORY_MIN_DAYS_DEFAULT, 0, EPG_DAYS_LIMIT,
+            ),
+            max_days,
+        )
+        return EpgHistoryPolicy(
+            min_days,
+            max_days,
+            clamp_int(settings.get("epg_default_prev_days"), 0, 0, max_days),
+            clamp_int(settings.get("epg_default_days"), 0, 0, EPG_DAYS_LIMIT),
+        )
 
     @classmethod
     def _safe_string_list(cls, value):
