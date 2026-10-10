@@ -81,6 +81,7 @@ _DEFAULT_CONF = {
     "max_mb": DEFAULT_LOG_MB,
     "keep": DEFAULT_LOG_KEEP,
     "time_zone": "",
+    "redact": True,
 }
 
 # One canonical shape for every source: "stamp [offset] LEVEL source rest".
@@ -225,7 +226,7 @@ def pid_path(log_dir):
     return os.path.join(_config_dir(log_dir), PID_NAME)
 
 
-def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
+def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC", redact=True):
     """Write collector.conf atomically; called from the app (safe contexts only)."""
     if not log_dir:
         return
@@ -239,10 +240,14 @@ def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
                 f"max_mb={int(max_mb)}\n"
                 f"keep={int(keep)}\n"
                 f"time_zone={time_zone}\n"
+                f"redact={1 if redact else 0}\n"
             )
         os.replace(tmp, conf_path(log_dir))
-    except OSError:
-        pass
+    except OSError as exc:
+        # The collector keeps its old settings, which may leave masking off.
+        logging.getLogger(__name__).warning(
+            "Could not write log collector settings to %s: %s", conf_path(log_dir), exc
+        )
 
 
 def apply_settings(log_dir, values, warn_if_absent=False):
@@ -258,6 +263,7 @@ def apply_settings(log_dir, values, warn_if_absent=False):
         values.get("log_max_mb", DEFAULT_LOG_MB) or DEFAULT_LOG_MB,
         values.get("log_keep", DEFAULT_LOG_KEEP) or DEFAULT_LOG_KEEP,
         values.get("time_zone") or "UTC",
+        values.get("log_redact", True) is not False,
     )
     if warn_if_absent and not collector_running(log_dir):
         logging.getLogger(__name__).warning(
@@ -306,6 +312,8 @@ def read_conf(log_dir):
     except OSError:
         return conf
     conf["persist"] = str(conf["persist"]).strip() not in ("0", "false", "")
+    # Only an explicit off disables masking.
+    conf["redact"] = str(conf["redact"]).strip().lower() not in ("0", "false")
     for key, lo, cap in (("max_mb", 1, MAX_LOG_MB), ("keep", 2, MAX_LOG_KEEP)):
         try:
             conf[key] = min(max(int(conf[key]), lo), cap)
@@ -363,7 +371,7 @@ class Collector:
             eof = not chunk
             chunk, carry = carry + chunk, b""
             more = not chunk.endswith(b"\n")
-            if more and not eof and len(chunk) > _CARRY_MAX_BYTES:
+            if more and not eof and self.conf["redact"] and len(chunk) > _CARRY_MAX_BYTES:
                 cut = _carry_cut(chunk)
                 chunk, carry = chunk[:cut], chunk[cut:]
             # Continuation chunks of an oversize line must not be stamped.
@@ -568,10 +576,11 @@ class Collector:
     def _filter(self, raw):
         """Mask credentials in every line, on the way to both sinks.
 
-        A fixed stage, not a configurable one: nothing can turn it off.
         Undecodable bytes round-trip through surrogateescape, so masking
         changes nothing but the masked values.
         """
+        if not self.conf["redact"]:
+            return raw
         try:
             text = raw.decode("utf-8", "surrogateescape")
             masked = redact_text(text)

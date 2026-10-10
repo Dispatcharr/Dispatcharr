@@ -26,7 +26,9 @@ class ConfTests(SimpleTestCase):
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
 
     def test_conf_round_trip(self):
-        log_collector.write_conf(self.log_dir, False, 17, 7, "Pacific/Auckland")
+        log_collector.write_conf(
+            self.log_dir, False, 17, 7, "Pacific/Auckland", redact=False
+        )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
@@ -35,8 +37,23 @@ class ConfTests(SimpleTestCase):
                 "max_mb": 17,
                 "keep": 7,
                 "time_zone": "Pacific/Auckland",
+                "redact": False,
             },
         )
+
+    def test_only_an_explicit_off_disables_redaction(self):
+        path = log_collector.conf_path(self.log_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        for value, expected in (
+            ("0", False), ("false", False), ("1", True), ("", True), ("off?", True)
+        ):
+            with open(path, "w") as f:
+                f.write(f"redact={value}\n")
+            self.assertIs(
+                log_collector.read_conf(self.log_dir)["redact"], expected, value
+            )
+        os.remove(path)
+        self.assertIs(log_collector.read_conf(self.log_dir)["redact"], True)
 
     def test_write_conf_creates_the_config_subdirectory(self):
         log_collector.write_conf(self.log_dir, True, 10, 5)
@@ -225,6 +242,20 @@ class CollectorTests(SimpleTestCase):
         done.start()
         done.join(timeout=5.0)
         self.assertFalse(done.is_alive())
+
+    def test_redaction_off_forwards_and_files_lines_untouched(self):
+        self.collector.conf["redact"] = False
+        self.feed(b"GET /live/joe/s3cret/1.ts\n")
+        self.collector._drain()
+        self.assertIn("GET /live/joe/s3cret/1.ts", self.read_forward())
+        self.assertIn("GET /live/joe/s3cret/1.ts", self.read_log())
+
+    def test_redaction_off_skips_the_safe_cut_search(self):
+        self.collector.conf["redact"] = False
+        line = b"a b " * (log_collector._MAX_LINE_BYTES // 2) + b"\n"
+        with mock.patch.object(log_collector, "_carry_cut", side_effect=AssertionError):
+            self.feed(line)
+        self.assertEqual(self.strip_stamps(self.read_forward()).encode(), line)
 
     def test_masking_keeps_an_open_chunk_open(self):
         self.assertEqual(
@@ -627,7 +658,12 @@ class ApplySettingsTests(SimpleTestCase):
     def test_settings_round_trip_to_conf(self):
         log_collector.apply_settings(
             self.log_dir,
-            {"log_persist": False, "log_max_mb": 15, "log_keep": 3},
+            {
+                "log_persist": False,
+                "log_max_mb": 15,
+                "log_keep": 3,
+                "log_redact": False,
+            },
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
@@ -637,6 +673,7 @@ class ApplySettingsTests(SimpleTestCase):
                 "max_mb": 15,
                 "keep": 3,
                 "time_zone": "UTC",
+                "redact": False,
             },
         )
 
@@ -645,6 +682,19 @@ class ApplySettingsTests(SimpleTestCase):
         with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_ENV": "modular"}):
             log_collector.apply_settings(self.log_dir, {"log_persist": False})
         self.assertFalse(log_collector.read_conf(self.log_dir)["persist"])
+
+    def test_a_missing_redact_setting_keeps_masking_on(self):
+        # Settings saved before the switch existed carry no log_redact key.
+        log_collector.write_conf(self.log_dir, True, 10, 5, redact=False)
+        log_collector.apply_settings(self.log_dir, {"log_persist": False})
+        self.assertIs(log_collector.read_conf(self.log_dir)["redact"], True)
+
+    def test_a_failed_conf_write_is_logged(self):
+        with mock.patch.object(
+            log_collector.os, "replace", side_effect=OSError("read-only")
+        ), self.assertLogs("dispatcharr.log_collector", "WARNING") as logs:
+            log_collector.apply_settings(self.log_dir, {"log_redact": True})
+        self.assertIn("Could not write log collector settings", logs.output[0])
 
     def test_collector_running_needs_a_live_collector_process(self):
         self.assertFalse(log_collector.collector_running(self.log_dir))
@@ -676,7 +726,12 @@ class ReceiverTests(TestCase):
             key=SYSTEM_SETTINGS_KEY, defaults={"value": {}}
         )
         with override_settings(LOG_FILE_DIR=log_dir):
-            inst.value = {"log_persist": False, "log_max_mb": 20, "log_keep": 4}
+            inst.value = {
+                "log_persist": False,
+                "log_max_mb": 20,
+                "log_keep": 4,
+                "log_redact": False,
+            }
             inst.save()
         conf = log_collector.read_conf(log_dir)
         self.assertEqual(
@@ -686,6 +741,7 @@ class ReceiverTests(TestCase):
                 "max_mb": 20,
                 "keep": 4,
                 "time_zone": "UTC",
+                "redact": False,
             },
         )
 

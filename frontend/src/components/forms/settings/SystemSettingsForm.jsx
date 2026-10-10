@@ -96,6 +96,12 @@ const SystemSettingsForm = React.memo(({ active }) => {
         {...form.getInputProps('log_persist', { type: 'checkbox' })}
         id="log_persist"
       />
+      <Switch
+        label="Redact Credentials in Logs"
+        description="Mask passwords, tokens, API keys and provider hosts in console output and log files."
+        {...form.getInputProps('log_redact', { type: 'checkbox' })}
+        id="log_redact"
+      />
       <NumberInput
         label="Maximum Log File Size (MB)"
         description="Rotate the log once it grows past this size."
