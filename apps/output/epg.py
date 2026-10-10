@@ -268,7 +268,11 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                     end_time__gte=lookback_cutoff,
                 )
 
-            programs_base_qs = programs_qs.order_by('epg_id', 'id').values(
+            # Paged by (epg_id, end_time, id) so each page can use the
+            # (epg, end_time) index and skip retained history before the
+            # lookback. Rows of one EPG stay together; flush_pending re-sorts
+            # them by start time before writing.
+            programs_base_qs = programs_qs.order_by('epg_id', 'end_time', 'id').values(
                 'id', 'epg_id', 'start_time', 'end_time', 'title', 'sub_title',
                 'description', 'custom_properties',
             )
@@ -280,6 +284,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             program_batch = []
             chunk_size = _EPG_PROGRAM_DB_CHUNK_SIZE
             last_epg_id = 0
+            last_end_time = None
             last_id = 0
             _poster_site_origin = request_origin
 
@@ -306,15 +311,20 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                 pending.clear()
 
             while True:
-                program_chunk = list(
-                    programs_base_qs.filter(epg_id__gte=last_epg_id)
-                    .exclude(epg_id=last_epg_id, id__lte=last_id)[:chunk_size]
-                )
+                page_qs = programs_base_qs.filter(epg_id__gte=last_epg_id)
+                if last_end_time is not None:
+                    page_qs = page_qs.exclude(
+                        epg_id=last_epg_id, end_time__lt=last_end_time
+                    ).exclude(
+                        epg_id=last_epg_id, end_time=last_end_time, id__lte=last_id
+                    )
+                program_chunk = list(page_qs[:chunk_size])
                 if not program_chunk:
                     break
 
                 last_row = program_chunk[-1]
                 last_epg_id = last_row['epg_id']
+                last_end_time = last_row['end_time']
                 last_id = last_row['id']
 
                 for prog in program_chunk:
