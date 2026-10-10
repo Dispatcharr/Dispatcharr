@@ -189,7 +189,11 @@ vi.mock('@mantine/core', async () => ({
     </div>
   ),
   SimpleGrid: ({ children }) => <div>{children}</div>,
-  Stack: ({ children, style }) => <div style={style}>{children}</div>,
+  Stack: ({ children, style, ...rest }) => (
+    <div style={style} {...rest}>
+      {children}
+    </div>
+  ),
   Text: ({ children }) => <span>{children}</span>,
   TextInput: ({ placeholder, value, onChange }) => (
     <input
