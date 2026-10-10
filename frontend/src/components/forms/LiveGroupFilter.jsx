@@ -1,4 +1,12 @@
-import React, { Suspense, useEffect, useRef, useState } from 'react';
+import React, {
+  Suspense,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActionIcon,
   Alert,
@@ -7,7 +15,6 @@ import {
   Checkbox,
   Divider,
   Flex,
-  Group,
   Loader,
   SegmentedControl,
   SimpleGrid,
@@ -24,6 +31,7 @@ import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import OrphanCleanupControl from './AutoSyncOrphanCleanup.jsx';
 import AutoSyncBasic from './AutoSyncBasic.jsx';
 import ErrorBoundary from '../ErrorBoundary.jsx';
+import { computeRangeOverlapsFor } from '../../utils/forms/AutoSyncBasicUtils.js';
 const AutoSyncAdvanced = React.lazy(() => import('./AutoSyncAdvanced.jsx'));
 const LogoForm = React.lazy(() => import('./Logo.jsx'));
 import {
@@ -38,6 +46,164 @@ import {
   isGroupVisible,
   rangeFor,
 } from '../../utils/forms/LiveGroupFilterUtils.js';
+
+const EMPTY_OVERLAPS = Object.freeze([]);
+const EMPTY_CONFLICTS = Object.freeze({});
+
+const NUMBERING_MODE_OPTIONS = [
+  { value: 'fixed', label: 'Fixed' },
+  { value: 'provider', label: 'Provider' },
+  { value: 'next_available', label: 'Next Avail' },
+];
+
+const LiveGroupCard = memo(function LiveGroupCard({
+  group,
+  hasChannelConflict,
+  overlaps,
+  onToggle,
+  onToggleAutoSync,
+  onNumberingModeChange,
+  onConfigure,
+  onApplyGroupChange,
+}) {
+  const numberingMode =
+    group.custom_properties?.channel_numbering_mode || 'fixed';
+  const showAutoSyncControls = group.auto_channel_sync && group.enabled;
+
+  return (
+    <Stack
+      gap={4}
+      data-testid="group-card"
+      style={{
+        padding: '8px',
+        border: '1px solid #444',
+        borderRadius: '8px',
+        backgroundColor: group.enabled ? '#2A2A2E' : '#1E1E22',
+      }}
+    >
+      <Tooltip
+        label={
+          group.enabled && group.is_stale
+            ? 'This group was not seen in the last M3U refresh and will be deleted after the retention period expires'
+            : ''
+        }
+        disabled={!group.enabled || !group.is_stale}
+        multiline
+        w={220}
+      >
+        <Button
+          color={
+            group.enabled ? (group.is_stale ? 'orange' : 'green') : 'gray'
+          }
+          variant="filled"
+          onClick={() => onToggle(group.channel_group)}
+          radius="md"
+          size="xs"
+          leftSection={
+            group.enabled ? <CircleCheck size={14} /> : <CircleX size={14} />
+          }
+          fullWidth
+        >
+          <Text size="xs" truncate>
+            {group.name}
+          </Text>
+        </Button>
+      </Tooltip>
+
+      <Stack gap={4}>
+        <Flex align="center" gap="xs" justify="space-between">
+          <Checkbox
+            label="Auto Channel Sync"
+            checked={group.auto_channel_sync && group.enabled}
+            disabled={!group.enabled}
+            onChange={() => onToggleAutoSync(group.channel_group)}
+            size="xs"
+          />
+          {showAutoSyncControls && (
+            <Tooltip
+              label="Configure advanced options for this group"
+              withArrow
+            >
+              <ActionIcon
+                variant="subtle"
+                size="sm"
+                onClick={() => onConfigure(group)}
+                aria-label="Configure group"
+              >
+                <Cog size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+        </Flex>
+
+        {showAutoSyncControls && (
+          <>
+            <Tooltip
+              label={
+                <div>
+                  <div>
+                    <strong>Fixed:</strong> Start at a specific number and
+                    increment
+                  </div>
+                  <div>
+                    <strong>Provider:</strong> Use channel numbers from the M3U
+                    source
+                  </div>
+                  <div>
+                    <strong>Next Available:</strong> Auto-assign starting from
+                    1, skipping used numbers
+                  </div>
+                </div>
+              }
+              withArrow
+              multiline
+              w={280}
+              openDelay={500}
+            >
+              <Box>
+                <Text size="xs" mb={6}>
+                  Channel Numbering Mode
+                </Text>
+                <SegmentedControl
+                  value={numberingMode}
+                  onChange={(value) =>
+                    onNumberingModeChange(group.channel_group, value)
+                  }
+                  data={NUMBERING_MODE_OPTIONS}
+                  size="xs"
+                  fullWidth
+                />
+              </Box>
+            </Tooltip>
+
+            {numberingMode !== 'next_available' && (
+              <Text size="xs" c="dimmed" mt={-2}>
+                {numberingMode === 'provider'
+                  ? 'Provider numbers; falls back to Start - End.'
+                  : 'Channels number sequentially from Start - End.'}
+              </Text>
+            )}
+
+            <AutoSyncBasic
+              group={group}
+              overlaps={overlaps}
+              groupConflicts={
+                hasChannelConflict
+                  ? {
+                      [group.channel_group]: {
+                        hasChannelConflict: true,
+                      },
+                    }
+                  : EMPTY_CONFLICTS
+              }
+              onApplyGroupChange={onApplyGroupChange}
+            />
+          </>
+        )}
+      </Stack>
+    </Stack>
+  );
+});
 
 const LiveGroupFilter = ({
   playlist,
@@ -93,15 +259,18 @@ const LiveGroupFilter = ({
   const configuringGroup = configuringGroupId
     ? groupStates.find((g) => g.channel_group === configuringGroupId)
     : null;
-  const applyGroupChange = (nextGroupState) => {
-    setGroupStates((prev) =>
-      prev.map((state) =>
-        state.channel_group === nextGroupState.channel_group
-          ? nextGroupState
-          : state
-      )
-    );
-  };
+  const applyGroupChange = useCallback(
+    (nextGroupState) => {
+      setGroupStates((prev) =>
+        prev.map((state) =>
+          state.channel_group === nextGroupState.channel_group
+            ? nextGroupState
+            : state
+        )
+      );
+    },
+    [setGroupStates]
+  );
 
   // Update one source ('occupant' or 'form') of a group's conflict
   // tracking and re-merge into the public `groupConflicts` state.
@@ -443,34 +612,72 @@ const LiveGroupFilter = ({
     );
   }, [playlist, channelGroups]);
 
-  const toggleGroupEnabled = (id) => {
-    setGroupStates((prev) =>
-      prev.map((state) => ({
-        ...state,
-        enabled: state.channel_group == id ? !state.enabled : state.enabled,
-      }))
-    );
-  };
+  const toggleGroupEnabled = useCallback(
+    (id) => {
+      setGroupStates((prev) =>
+        prev.map((state) =>
+          state.channel_group == id
+            ? { ...state, enabled: !state.enabled }
+            : state
+        )
+      );
+    },
+    [setGroupStates]
+  );
 
-  const toggleAutoSync = (id) => {
-    setGroupStates((prev) =>
-      prev.map((state) => {
-        if (state.channel_group != id) return state;
-        const turningOn = !state.auto_channel_sync;
-        const next = { ...state, auto_channel_sync: turningOn };
-        if (!turningOn) return next;
+  const toggleAutoSync = useCallback(
+    (id) => {
+      setGroupStates((prev) =>
+        prev.map((state) => {
+          if (state.channel_group != id) return state;
+          const turningOn = !state.auto_channel_sync;
+          const next = { ...state, auto_channel_sync: turningOn };
+          if (!turningOn) return next;
 
-        // Pick a sensible start when enabling auto-sync: max of other
-        // groups' end (or start) plus 1, so multiple groups don't all
-        // default to 1. Skipped if a non-default start is already set.
-        const currentStart = state.auto_sync_channel_start;
-        if (currentStart && currentStart > 1) return next;
+          // Pick a sensible start when enabling auto-sync: max of other
+          // groups' end (or start) plus 1, so multiple groups don't all
+          // default to 1. Skipped if a non-default start is already set.
+          const currentStart = state.auto_sync_channel_start;
+          if (currentStart && currentStart > 1) return next;
 
-        next.auto_sync_channel_start = computeAutoSyncStart(prev, id);
-        return next;
-      })
-    );
-  };
+          next.auto_sync_channel_start = computeAutoSyncStart(prev, id);
+          return next;
+        })
+      );
+    },
+    [setGroupStates]
+  );
+
+  const updateNumberingMode = useCallback(
+    (id, value) => {
+      setGroupStates((prev) =>
+        prev.map((state) => {
+          if (state.channel_group !== id) return state;
+          return {
+            ...state,
+            custom_properties: {
+              ...state.custom_properties,
+              channel_numbering_mode: value || 'fixed',
+            },
+          };
+        })
+      );
+    },
+    [setGroupStates]
+  );
+
+  const openConfigure = useCallback((group) => {
+    // Snapshot at open time so Cancel can restore pre-edit state.
+    // custom_properties needs a one-level clone since the rest of group
+    // state is flat.
+    configureSnapshotRef.current = {
+      ...group,
+      custom_properties: {
+        ...(group.custom_properties || {}),
+      },
+    };
+    setConfiguringGroupId(group.channel_group);
+  }, []);
 
   // Handle logo selection from LogoForm
   const handleLogoSuccess = ({ logo }) => {
@@ -495,27 +702,49 @@ const LiveGroupFilter = ({
     setCurrentEditingGroupId(null);
   };
 
-  const selectAll = () => {
+  const selectAll = useCallback(() => {
     setGroupStates((prev) =>
-      prev.map((state) => ({
-        ...state,
-        enabled: isGroupVisible(state, groupFilter, statusFilter)
-          ? true
-          : state.enabled,
-      }))
+      prev.map((state) => {
+        if (
+          !isGroupVisible(state, groupFilter, statusFilter) ||
+          state.enabled
+        ) {
+          return state;
+        }
+        return { ...state, enabled: true };
+      })
     );
-  };
+  }, [groupFilter, setGroupStates, statusFilter]);
 
-  const deselectAll = () => {
+  const deselectAll = useCallback(() => {
     setGroupStates((prev) =>
-      prev.map((state) => ({
-        ...state,
-        enabled: isGroupVisible(state, groupFilter, statusFilter)
-          ? false
-          : state.enabled,
-      }))
+      prev.map((state) => {
+        if (
+          !isGroupVisible(state, groupFilter, statusFilter) ||
+          !state.enabled
+        ) {
+          return state;
+        }
+        return { ...state, enabled: false };
+      })
     );
-  };
+  }, [groupFilter, setGroupStates, statusFilter]);
+
+  const overlapsByGroup = useMemo(() => {
+    const map = new Map();
+    for (const group of groupStates) {
+      if (!group.enabled || !group.auto_channel_sync) continue;
+      const overlaps = computeRangeOverlapsFor(group, groupStates);
+      if (overlaps.length > 0) {
+        map.set(group.channel_group, overlaps);
+      }
+    }
+    return map;
+  }, [groupStates]);
+
+  const visibleGroups = groupStates
+    .filter((group) => isGroupVisible(group, groupFilter, statusFilter))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <Stack style={{ paddingTop: 10 }}>
@@ -574,187 +803,23 @@ const LiveGroupFilter = ({
           spacing="xs"
           verticalSpacing="xs"
         >
-          {groupStates
-            .filter((group) => isGroupVisible(group, groupFilter, statusFilter))
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((group) => (
-              <Group
-                key={group.channel_group}
-                spacing="xs"
-                style={{
-                  padding: '8px',
-                  border: '1px solid #444',
-                  borderRadius: '8px',
-                  backgroundColor: group.enabled ? '#2A2A2E' : '#1E1E22',
-                  flexDirection: 'column',
-                  alignItems: 'stretch',
-                }}
-              >
-                {/* Group Enable/Disable Button */}
-                <Tooltip
-                  label={
-                    group.enabled && group.is_stale
-                      ? 'This group was not seen in the last M3U refresh and will be deleted after the retention period expires'
-                      : ''
-                  }
-                  disabled={!group.enabled || !group.is_stale}
-                  multiline
-                  w={220}
-                >
-                  <Button
-                    color={
-                      group.enabled
-                        ? group.is_stale
-                          ? 'orange'
-                          : 'green'
-                        : 'gray'
-                    }
-                    variant="filled"
-                    onClick={() => toggleGroupEnabled(group.channel_group)}
-                    radius="md"
-                    size="xs"
-                    leftSection={
-                      group.enabled ? (
-                        <CircleCheck size={14} />
-                      ) : (
-                        <CircleX size={14} />
-                      )
-                    }
-                    fullWidth
-                  >
-                    <Text size="xs" truncate>
-                      {group.name}
-                    </Text>
-                  </Button>
-                </Tooltip>
-
-                {/* Auto Sync Controls */}
-                <Stack spacing="xs" style={{ '--stack-gap': '4px' }}>
-                  <Flex align="center" gap="xs" justify="space-between">
-                    <Checkbox
-                      label="Auto Channel Sync"
-                      checked={group.auto_channel_sync && group.enabled}
-                      disabled={!group.enabled}
-                      onChange={() => toggleAutoSync(group.channel_group)}
-                      size="xs"
-                    />
-                    {group.auto_channel_sync && group.enabled && (
-                      <Tooltip
-                        label="Configure advanced options for this group"
-                        withArrow
-                      >
-                        <ActionIcon
-                          variant="subtle"
-                          size="sm"
-                          onClick={() => {
-                            // Snapshot at open time so Cancel can restore
-                            // pre-edit state. custom_properties needs a
-                            // one-level clone since the rest of group
-                            // state is flat.
-                            configureSnapshotRef.current = {
-                              ...group,
-                              custom_properties: {
-                                ...(group.custom_properties || {}),
-                              },
-                            };
-                            setConfiguringGroupId(group.channel_group);
-                          }}
-                          aria-label="Configure group"
-                        >
-                          <Cog size={14} />
-                        </ActionIcon>
-                      </Tooltip>
-                    )}
-                  </Flex>
-
-                  {group.auto_channel_sync && group.enabled && (
-                    <>
-                      <Tooltip
-                        label={
-                          <div>
-                            <div>
-                              <strong>Fixed:</strong> Start at a specific number
-                              and increment
-                            </div>
-                            <div>
-                              <strong>Provider:</strong> Use channel numbers
-                              from the M3U source
-                            </div>
-                            <div>
-                              <strong>Next Available:</strong> Auto-assign
-                              starting from 1, skipping used numbers
-                            </div>
-                          </div>
-                        }
-                        withArrow
-                        multiline
-                        w={280}
-                        openDelay={500}
-                      >
-                        <Box>
-                          <Text size="xs" mb={6}>
-                            Channel Numbering Mode
-                          </Text>
-                          <SegmentedControl
-                            value={
-                              group.custom_properties?.channel_numbering_mode ||
-                              'fixed'
-                            }
-                            onChange={(value) => {
-                              setGroupStates((prev) =>
-                                prev.map((state) => {
-                                  if (
-                                    state.channel_group === group.channel_group
-                                  ) {
-                                    return {
-                                      ...state,
-                                      custom_properties: {
-                                        ...state.custom_properties,
-                                        channel_numbering_mode:
-                                          value || 'fixed',
-                                      },
-                                    };
-                                  }
-                                  return state;
-                                })
-                              );
-                            }}
-                            data={[
-                              { value: 'fixed', label: 'Fixed' },
-                              { value: 'provider', label: 'Provider' },
-                              { value: 'next_available', label: 'Next Avail' },
-                            ]}
-                            size="xs"
-                            fullWidth
-                          />
-                        </Box>
-                      </Tooltip>
-
-                      {(() => {
-                        const m =
-                          group.custom_properties?.channel_numbering_mode ||
-                          'fixed';
-                        if (m === 'next_available') return null;
-                        return (
-                          <Text size="xs" c="dimmed" mt={-2}>
-                            {m === 'provider'
-                              ? 'Provider numbers; falls back to Start - End.'
-                              : 'Channels number sequentially from Start - End.'}
-                          </Text>
-                        );
-                      })()}
-
-                      <AutoSyncBasic
-                        group={group}
-                        groupStates={groupStates}
-                        groupConflicts={groupConflicts}
-                        onApplyGroupChange={applyGroupChange}
-                      />
-                    </>
-                  )}
-                </Stack>
-              </Group>
-            ))}
+          {visibleGroups.map((group) => (
+            <LiveGroupCard
+              key={group.channel_group}
+              group={group}
+              hasChannelConflict={
+                !!groupConflicts[group.channel_group]?.hasChannelConflict
+              }
+              overlaps={
+                overlapsByGroup.get(group.channel_group) || EMPTY_OVERLAPS
+              }
+              onToggle={toggleGroupEnabled}
+              onToggleAutoSync={toggleAutoSync}
+              onNumberingModeChange={updateNumberingMode}
+              onConfigure={openConfigure}
+              onApplyGroupChange={applyGroupChange}
+            />
+          ))}
         </SimpleGrid>
       </Box>
 

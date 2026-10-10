@@ -1,7 +1,9 @@
 from celery import shared_task, current_app, group
 from django.utils import timezone
 from django.db import transaction, IntegrityError
-from django.db.models import Q
+from django.db.models import F, OuterRef, Q, Subquery, TextField, Value
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Coalesce, Lower
 from apps.m3u.models import M3UAccount
 from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
@@ -9,6 +11,7 @@ from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
+from .utils import category_language
 from datetime import datetime
 import logging
 import json
@@ -27,22 +30,64 @@ def _empty_categories_should_abort(categories_data, account, category_type):
     ).exclude(category__name='Uncategorized').exists()
 
 
-def lookup_by_name_year(model, name_year_pairs):
-    """Return {(name, year): row} for rows without TMDB/IMDB IDs.
+def _existing_vod_row(key, existing):
+    """Exact (identity, language) row, otherwise the untagged row for that identity.
+
+    A new stream in a tagged category joins the untagged movie or series when
+    one already exists, so the batch does not mint a second id. Reconcile
+    renames or splits that row afterwards.
+    """
+    row = existing.get(key)
+    if row is not None:
+        return row
+    if key[-1] != '':
+        return existing.get(key[:-1] + ('',))
+    return None
+
+
+def _name_year_keys_including_untagged(name_year_language_keys):
+    """Include the untagged (name, year, '') key so the fallback above can see it."""
+    keys = list(name_year_language_keys)
+    for name, year, language in name_year_language_keys:
+        if language:
+            keys.append((name, year, ''))
+    return keys
+
+
+def _match_existing_vod_row(row, by_tmdb, by_imdb, by_name_year):
+    """DB row this unsaved movie/series should attach to, or None to insert it."""
+    existing = None
+    if row.tmdb_id and (str(row.tmdb_id), row.language) in by_tmdb:
+        existing = by_tmdb[(str(row.tmdb_id), row.language)]
+    elif row.imdb_id and (str(row.imdb_id), row.language) in by_imdb:
+        existing = by_imdb[(str(row.imdb_id), row.language)]
+    elif not row.tmdb_id and not row.imdb_id:
+        existing = by_name_year.get((row.name, row.year, row.language))
+    if existing is not None or not row.language:
+        return existing
+    if row.tmdb_id:
+        return by_tmdb.get((str(row.tmdb_id), ''))
+    if row.imdb_id:
+        return by_imdb.get((str(row.imdb_id), ''))
+    return by_name_year.get((row.name, row.year, ''))
+
+
+def lookup_by_name_year(model, name_year_language_keys):
+    """Return {(name, year, language): row} for rows without TMDB/IMDB IDs.
 
     Scoped to the names in this batch instead of scanning the full table.
     """
-    if not name_year_pairs:
+    if not name_year_language_keys:
         return {}
-    wanted = set(name_year_pairs)
-    names = {name for name, _ in wanted}
+    wanted = set(name_year_language_keys)
+    names = {name for name, _, _ in wanted}
     found = {}
     for row in model.objects.filter(
         tmdb_id__isnull=True,
         imdb_id__isnull=True,
         name__in=names,
     ):
-        key = (row.name, row.year)
+        key = (row.name, row.year, row.language)
         if key in wanted:
             found[key] = row
     return found
@@ -99,10 +144,20 @@ def refresh_vod_content(account_id):
             # Refresh series with batch processing (pass scan start time)
             refresh_series(client, account, series_categories, relations, scan_start_time=start_time)
 
+        # Reconcile language once per account refresh, not per batch. Relations
+        # stay pinned during the batch (see process_movie_batch /
+        # process_series_batch). Must run before cleanup_orphaned_vod_content
+        # so cleanup's orphan-deletion stays a backstop, not the primary mechanism.
+        logger.info(f"Reconciling VOD language identity for account {account.name}")
+        movie_summary = reconcile_movie_language_identity(account, scan_start_time=start_time)
+        series_summary = reconcile_series_language_identity(account, scan_start_time=start_time)
+
         end_time = timezone.now()
         duration = (end_time - start_time).total_seconds()
 
-        logger.info(f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds")
+        skip_note = _language_skip_note(movie_summary, series_summary)
+        completion = f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds{skip_note}"
+        logger.info(completion)
 
         # Cleanup orphaned VOD content after refresh (scoped to this account only)
         logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
@@ -111,9 +166,9 @@ def refresh_vod_content(account_id):
 
         # Send completion notification
         send_m3u_update(account_id, "vod_refresh", 100, status="success",
-                       message=f"VOD refresh completed in {duration:.2f} seconds")
+                       message=f"VOD refresh completed in {duration:.2f} seconds{skip_note}")
 
-        return f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
+        return completion
 
     except Exception as e:
         import traceback
@@ -429,6 +484,18 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     relations_to_update = []
     movie_keys = {}  # For deduplication like M3U stream_hashes
 
+    # Prefetch existing relations before computing identity so an already-known
+    # stream stays pinned to its current movie for this batch. A category
+    # re-tag only takes effect via reconcile_movie_language_identity(), run
+    # once after the full account refresh, not mid-batch.
+    batch_stream_ids = [str(movie_data.get('stream_id')) for movie_data in batch]
+    existing_relations = {
+        rel.stream_id: rel for rel in M3UMovieRelation.objects.filter(
+            m3u_account=account,
+            stream_id__in=batch_stream_ids
+        ).select_related('movie')
+    }
+
     # Process each movie in the batch
     for movie_data in batch:
         try:
@@ -484,13 +551,24 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
-            if tmdb_id:
-                movie_key = f"tmdb_{tmdb_id}"
-            elif imdb_id:
-                movie_key = f"imdb_{imdb_id}"
+            # The category's language is part of movie identity. A stream we
+            # already have a relation for stays pinned to its current movie's
+            # language for this batch, even if its category was just tagged/
+            # retagged - only the reconcile pass moves it.
+            existing_relation = existing_relations.get(stream_id)
+            if existing_relation is not None:
+                language = existing_relation.movie.language
             else:
-                movie_key = f"name_{name}_{year or 'None'}"
+                language = category_language(relations.get(category.id) if category else None)
+
+            # Create a unique key for this movie (priority: TMDB > IMDB > name+year),
+            # scoped to the language like the Movie unique constraints
+            if tmdb_id:
+                movie_key = ('tmdb', str(tmdb_id), language)
+            elif imdb_id:
+                movie_key = ('imdb', str(imdb_id), language)
+            else:
+                movie_key = ('name', name, year, language)
 
             # Reuse props for this movie_key, but keep every distinct stream_id
             # so each still gets its own relation (same stream_id coalesces).
@@ -500,7 +578,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     'movie_data': movie_data,
                 })
                 incoming_props, incoming_logo = build_movie_list_props(
-                    movie_data, name, year, tmdb_id, imdb_id,
+                    movie_data, name, year, tmdb_id, imdb_id, language,
                 )
                 merge_blank_vod_list_props(movie_keys[movie_key]['props'], incoming_props)
                 if not movie_keys[movie_key].get('logo_url') and incoming_logo:
@@ -508,7 +586,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 continue
 
             movie_props, logo_url = build_movie_list_props(
-                movie_data, name, year, tmdb_id, imdb_id,
+                movie_data, name, year, tmdb_id, imdb_id, language,
             )
 
             movie_keys[movie_key] = {
@@ -566,53 +644,41 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     existing_movies = {}
 
     # Query by TMDB IDs
-    tmdb_keys = [k for k in movie_keys.keys() if k.startswith('tmdb_')]
-    tmdb_ids = [k.replace('tmdb_', '') for k in tmdb_keys]
+    tmdb_ids = {k[1] for k in movie_keys if k[0] == 'tmdb'}
     if tmdb_ids:
         for movie in Movie.objects.filter(tmdb_id__in=tmdb_ids):
-            existing_movies[f"tmdb_{movie.tmdb_id}"] = movie
+            existing_movies[('tmdb', movie.tmdb_id, movie.language)] = movie
 
     # Query by IMDB IDs
-    imdb_keys = [k for k in movie_keys.keys() if k.startswith('imdb_')]
-    imdb_ids = [k.replace('imdb_', '') for k in imdb_keys]
+    imdb_ids = {k[1] for k in movie_keys if k[0] == 'imdb'}
     if imdb_ids:
         for movie in Movie.objects.filter(imdb_id__in=imdb_ids):
-            existing_movies[f"imdb_{movie.imdb_id}"] = movie
+            existing_movies[('imdb', movie.imdb_id, movie.language)] = movie
 
-    # Query by name+year for movies without external IDs
-    name_year_keys = [k for k in movie_keys.keys() if k.startswith('name_')]
-    if name_year_keys:
-        name_year_pairs = [
-            (movie_keys[k]['props']['name'], movie_keys[k]['props'].get('year'))
-            for k in name_year_keys
-        ]
-        for key_tuple, movie in lookup_by_name_year(Movie, name_year_pairs).items():
-            existing_movies[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = movie
+    # Query by name+year+language for movies without external IDs
+    name_year_keys = _name_year_keys_including_untagged(
+        [k[1:] for k in movie_keys if k[0] == 'name']
+    )
+    for key_tuple, movie in lookup_by_name_year(Movie, name_year_keys).items():
+        existing_movies[('name', *key_tuple)] = movie
 
-    # Get existing relations
-    stream_ids = [
-        stream_id
-        for data in movie_keys.values()
-        for stream_id in data['occurrences']
-    ]
-    existing_relations = {
-        rel.stream_id: rel for rel in M3UMovieRelation.objects.filter(
-            m3u_account=account,
-            stream_id__in=stream_ids
-        ).select_related('movie')
-    }
+    # existing_relations was already prefetched above (before movie_keys was
+    # built) so per-row identity could pin to it.
 
     # Process each movie
     for movie_key, data in movie_keys.items():
         movie_props = data['props']
         logo_url = data.get('logo_url')
 
-        if movie_key in existing_movies:
-            # Update existing movie
-            movie = existing_movies[movie_key]
+        movie = _existing_vod_row(movie_key, existing_movies)
+        if movie is not None:
+            # Language changes happen in reconcile, not here. A tagged stream
+            # that joined an untagged row must not rename that row mid-batch.
             updated = False
 
             for field, value in movie_props.items():
+                if field == 'language':
+                    continue
                 if field == 'custom_properties':
                     # Merge custom_properties: fill director/actors/release_date
                     # only when empty; apply other non-blank list keys.
@@ -668,6 +734,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if stream_id in existing_relations:
                 # Update existing relation
                 relation = existing_relations[stream_id]
+                movie_changed = relation.movie_id != movie.pk
                 relation.movie = movie
                 relation.category = category
                 relation.container_extension = movie_data.get('container_extension', 'mp4')
@@ -678,6 +745,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     **existing_rel_cp,
                     'basic_data': movie_data,
                 }
+                if movie_changed:
+                    # Re-fetch details for the row this stream now belongs to,
+                    # e.g. after its category was assigned a language
+                    relation.custom_properties['detailed_fetched'] = False
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
             else:
@@ -705,26 +776,23 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             created_movies = {}
             if movies_to_create:
                 # Bulk query to check which movies already exist
-                tmdb_ids = [m.tmdb_id for m in movies_to_create if m.tmdb_id]
-                imdb_ids = [m.imdb_id for m in movies_to_create if m.imdb_id]
-                name_year_pairs = [(m.name, m.year) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
+                tmdb_ids = [str(m.tmdb_id) for m in movies_to_create if m.tmdb_id]
+                imdb_ids = [str(m.imdb_id) for m in movies_to_create if m.imdb_id]
+                name_year_keys = _name_year_keys_including_untagged(
+                    [(m.name, m.year, m.language) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
+                )
 
-                existing_by_tmdb = {m.tmdb_id: m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
-                existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+                existing_by_tmdb = {(m.tmdb_id, m.language): m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {(m.imdb_id, m.language): m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
-                existing_by_name_year = lookup_by_name_year(Movie, name_year_pairs)
+                existing_by_name_year = lookup_by_name_year(Movie, name_year_keys)
 
                 # Check each movie against the bulk query results
                 movies_actually_created = []
                 for movie in movies_to_create:
-                    existing = None
-                    if movie.tmdb_id and movie.tmdb_id in existing_by_tmdb:
-                        existing = existing_by_tmdb[movie.tmdb_id]
-                    elif movie.imdb_id and movie.imdb_id in existing_by_imdb:
-                        existing = existing_by_imdb[movie.imdb_id]
-                    elif not movie.tmdb_id and not movie.imdb_id:
-                        existing = existing_by_name_year.get((movie.name, movie.year))
-
+                    existing = _match_existing_vod_row(
+                        movie, existing_by_tmdb, existing_by_imdb, existing_by_name_year
+                    )
                     if existing:
                         created_movies[id(movie)] = existing
                     else:
@@ -786,6 +854,18 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     relations_to_update = []
     series_keys = {}  # For deduplication like M3U stream_hashes
 
+    # Prefetch existing relations before computing identity so an already-known
+    # series stays pinned to its current series for this batch. A category
+    # re-tag only takes effect via reconcile_series_language_identity(), run
+    # once after the full account refresh, not mid-batch.
+    batch_series_ids = [str(series_data.get('series_id')) for series_data in batch]
+    existing_relations = {
+        rel.external_series_id: rel for rel in M3USeriesRelation.objects.filter(
+            m3u_account=account,
+            external_series_id__in=batch_series_ids
+        ).select_related('series')
+    }
+
     # Process each series in the batch
     for series_data in batch:
         try:
@@ -843,13 +923,24 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # Create a unique key for this series (priority: TMDB > IMDB > name+year)
-            if tmdb_id:
-                series_key = f"tmdb_{tmdb_id}"
-            elif imdb_id:
-                series_key = f"imdb_{imdb_id}"
+            # The category's language is part of series identity. A series we
+            # already have a relation for stays pinned to its current series'
+            # language for this batch, even if its category was just tagged/
+            # retagged - only the reconcile pass moves it.
+            existing_relation = existing_relations.get(series_id)
+            if existing_relation is not None:
+                language = existing_relation.series.language
             else:
-                series_key = f"name_{name}_{year or 'None'}"
+                language = category_language(relations.get(category.id) if category else None)
+
+            # Create a unique key for this series (priority: TMDB > IMDB > name+year),
+            # scoped to the language like the Series unique constraints
+            if tmdb_id:
+                series_key = ('tmdb', str(tmdb_id), language)
+            elif imdb_id:
+                series_key = ('imdb', str(imdb_id), language)
+            else:
+                series_key = ('name', name, year, language)
 
             # Reuse props for this series_key, but keep every distinct series_id
             # so each still gets its own relation (same series_id coalesces).
@@ -859,7 +950,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     'series_data': series_data,
                 })
                 incoming_props, incoming_logo = build_series_list_props(
-                    series_data, name, year, tmdb_id, imdb_id,
+                    series_data, name, year, tmdb_id, imdb_id, language,
                 )
                 merge_blank_vod_list_props(series_keys[series_key]['props'], incoming_props)
                 if not series_keys[series_key].get('logo_url') and incoming_logo:
@@ -867,7 +958,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 continue
 
             series_props, logo_url = build_series_list_props(
-                series_data, name, year, tmdb_id, imdb_id,
+                series_data, name, year, tmdb_id, imdb_id, language,
             )
 
             series_keys[series_key] = {
@@ -925,53 +1016,41 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     existing_series = {}
 
     # Query by TMDB IDs
-    tmdb_keys = [k for k in series_keys.keys() if k.startswith('tmdb_')]
-    tmdb_ids = [k.replace('tmdb_', '') for k in tmdb_keys]
+    tmdb_ids = {k[1] for k in series_keys if k[0] == 'tmdb'}
     if tmdb_ids:
         for series in Series.objects.filter(tmdb_id__in=tmdb_ids):
-            existing_series[f"tmdb_{series.tmdb_id}"] = series
+            existing_series[('tmdb', series.tmdb_id, series.language)] = series
 
     # Query by IMDB IDs
-    imdb_keys = [k for k in series_keys.keys() if k.startswith('imdb_')]
-    imdb_ids = [k.replace('imdb_', '') for k in imdb_keys]
+    imdb_ids = {k[1] for k in series_keys if k[0] == 'imdb'}
     if imdb_ids:
         for series in Series.objects.filter(imdb_id__in=imdb_ids):
-            existing_series[f"imdb_{series.imdb_id}"] = series
+            existing_series[('imdb', series.imdb_id, series.language)] = series
 
-    # Query by name+year for series without external IDs
-    name_year_keys = [k for k in series_keys.keys() if k.startswith('name_')]
-    if name_year_keys:
-        name_year_pairs = [
-            (series_keys[k]['props']['name'], series_keys[k]['props'].get('year'))
-            for k in name_year_keys
-        ]
-        for key_tuple, series in lookup_by_name_year(Series, name_year_pairs).items():
-            existing_series[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = series
+    # Query by name+year+language for series without external IDs
+    name_year_keys = _name_year_keys_including_untagged(
+        [k[1:] for k in series_keys if k[0] == 'name']
+    )
+    for key_tuple, series in lookup_by_name_year(Series, name_year_keys).items():
+        existing_series[('name', *key_tuple)] = series
 
-    # Get existing relations
-    series_ids = [
-        series_id
-        for data in series_keys.values()
-        for series_id in data['occurrences']
-    ]
-    existing_relations = {
-        rel.external_series_id: rel for rel in M3USeriesRelation.objects.filter(
-            m3u_account=account,
-            external_series_id__in=series_ids
-        ).select_related('series')
-    }
+    # existing_relations was already prefetched above (before series_keys was
+    # built) so per-row identity could pin to it.
 
     # Process each series
     for series_key, data in series_keys.items():
         series_props = data['props']
         logo_url = data.get('logo_url')
 
-        if series_key in existing_series:
-            # Update existing series
-            series = existing_series[series_key]
+        series = _existing_vod_row(series_key, existing_series)
+        if series is not None:
+            # Language changes happen in reconcile, not here. A tagged stream
+            # that joined an untagged row must not rename that row mid-batch.
             updated = False
 
             for field, value in series_props.items():
+                if field == 'language':
+                    continue
                 if field == 'custom_properties':
                     existing_cp = series.custom_properties or {}
                     incoming_cp = value or {}
@@ -1024,6 +1103,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if series_id in existing_relations:
                 # Update existing relation
                 relation = existing_relations[series_id]
+                series_changed = relation.series_id != series.pk
                 relation.series = series
                 relation.category = category
                 # Merge so list sync updates basic_data without dropping detail
@@ -1033,6 +1113,11 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     **existing_rel_cp,
                     'basic_data': series_data,
                 }
+                if series_changed:
+                    # Re-fetch details and episodes for the row this series now
+                    # belongs to, e.g. after its category was assigned a language
+                    relation.custom_properties['detailed_fetched'] = False
+                    relation.custom_properties['episodes_fetched'] = False
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
             else:
@@ -1060,26 +1145,23 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             created_series = {}
             if series_to_create:
                 # Bulk query to check which series already exist
-                tmdb_ids = [s.tmdb_id for s in series_to_create if s.tmdb_id]
-                imdb_ids = [s.imdb_id for s in series_to_create if s.imdb_id]
-                name_year_pairs = [(s.name, s.year) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
+                tmdb_ids = [str(s.tmdb_id) for s in series_to_create if s.tmdb_id]
+                imdb_ids = [str(s.imdb_id) for s in series_to_create if s.imdb_id]
+                name_year_keys = _name_year_keys_including_untagged(
+                    [(s.name, s.year, s.language) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
+                )
 
-                existing_by_tmdb = {s.tmdb_id: s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
-                existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+                existing_by_tmdb = {(s.tmdb_id, s.language): s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {(s.imdb_id, s.language): s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
-                existing_by_name_year = lookup_by_name_year(Series, name_year_pairs)
+                existing_by_name_year = lookup_by_name_year(Series, name_year_keys)
 
                 # Check each series against the bulk query results
                 series_actually_created = []
                 for series in series_to_create:
-                    existing = None
-                    if series.tmdb_id and series.tmdb_id in existing_by_tmdb:
-                        existing = existing_by_tmdb[series.tmdb_id]
-                    elif series.imdb_id and series.imdb_id in existing_by_imdb:
-                        existing = existing_by_imdb[series.imdb_id]
-                    elif not series.tmdb_id and not series.imdb_id:
-                        existing = existing_by_name_year.get((series.name, series.year))
-
+                    existing = _match_existing_vod_row(
+                        series, existing_by_tmdb, existing_by_imdb, existing_by_name_year
+                    )
                     if existing:
                         created_series[id(series)] = existing
                     else:
@@ -1701,6 +1783,831 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
         return f"Batch episode refresh failed: {str(e)}"
 
 
+def _find_vod_for_language(model, source, language):
+    """Existing Movie/Series that already holds this language for source's identity.
+
+    TMDB is checked first, then IMDB. A row with a different TMDB id can still
+    occupy the ``(imdb_id, language)`` slot, and claiming past it would fail
+    the unique constraint on every later refresh.
+    """
+    if source.tmdb_id:
+        row = model.objects.filter(tmdb_id=source.tmdb_id, language=language).first()
+        if row is not None:
+            return row
+    if source.imdb_id:
+        row = model.objects.filter(imdb_id=source.imdb_id, language=language).first()
+        if row is not None:
+            return row
+    if not source.tmdb_id and not source.imdb_id:
+        return model.objects.filter(
+            name=source.name, year=source.year, language=language,
+            tmdb_id__isnull=True, imdb_id__isnull=True,
+        ).first()
+    return None
+
+
+def _find_or_create_vod_for_language(model, source, language):
+    existing = _find_vod_for_language(model, source, language)
+    if existing is not None:
+        return existing
+    # Explicit tmdb_id/imdb_id here, not get_or_create(..., tmdb_id__isnull=True):
+    # get_or_create() strips '__' kwargs when building the create() call, which
+    # would leave tmdb_id/imdb_id as '' (CharField default) instead of NULL and
+    # silently defeat the partial UniqueConstraint's isnull condition.
+    return model.objects.create(
+        name=source.name,
+        year=source.year,
+        language=language,
+        tmdb_id=source.tmdb_id,
+        imdb_id=source.imdb_id,
+    )
+
+
+def _move_language_relations(relation_model, relations, target, fk_name, *, refetch_episodes):
+    """Point relations at target and force a detail refetch on next open."""
+    for rel in relations:
+        setattr(rel, fk_name, target)
+        cp = rel.custom_properties or {}
+        cp['detailed_fetched'] = False
+        if refetch_episodes:
+            cp['episodes_fetched'] = False
+        rel.custom_properties = cp
+    relation_model.objects.bulk_update(relations, [fk_name, 'custom_properties'])
+
+
+def _language_reconcile_candidate_ids(account, scan_start_time, *, relation_model, fk_name):
+    """Primary keys whose touched relations no longer match the row language.
+
+    Compared in SQL so a refresh with no language work does not load the
+    catalog into Python. Covers first-time tags (untagged row, tagged
+    category), retags, and clears. Missing or null category language counts
+    as untagged, and the code is compared case-insensitively.
+    """
+    lang_sq = (
+        M3UVODCategoryRelation.objects.filter(
+            m3u_account_id=OuterRef('m3u_account_id'),
+            category_id=OuterRef('category_id'),
+        )
+        .annotate(
+            _lang=Lower(
+                Coalesce(
+                    KeyTextTransform('language', 'custom_properties'),
+                    Value(''),
+                    output_field=TextField(),
+                )
+            )
+        )
+        .values('_lang')[:1]
+    )
+    return set(
+        relation_model.objects.filter(
+            m3u_account=account,
+            last_seen__gte=scan_start_time,
+        )
+        .annotate(
+            resolved_lang=Coalesce(
+                Subquery(lang_sq, output_field=TextField()),
+                Value(''),
+                output_field=TextField(),
+            )
+        )
+        .exclude(resolved_lang=F(f'{fk_name}__language'))
+        .values_list(f'{fk_name}_id', flat=True)
+        .distinct()
+    )
+
+
+def _language_reconcile_candidates(account, scan_start_time, *, model, relation_model, fk_name):
+    """Rows this account's refresh may need to rename or split by language."""
+    candidate_ids = _language_reconcile_candidate_ids(
+        account, scan_start_time, relation_model=relation_model, fk_name=fk_name,
+    )
+    if not candidate_ids:
+        return []
+    return list(model.objects.filter(id__in=candidate_ids))
+
+
+def _category_language_map(relations):
+    """``(account_id, category_id) -> language`` for these relations, loaded once."""
+    account_ids = {rel.m3u_account_id for rel in relations if rel.category_id}
+    category_ids = {rel.category_id for rel in relations if rel.category_id}
+    if not category_ids:
+        return {}
+    return {
+        (category_rel.m3u_account_id, category_rel.category_id): category_language(category_rel)
+        for category_rel in M3UVODCategoryRelation.objects.filter(
+            m3u_account_id__in=account_ids, category_id__in=category_ids
+        )
+    }
+
+
+def _relation_language(rel, language_map):
+    if not rel.category_id:
+        return ''
+    return language_map.get((rel.m3u_account_id, rel.category_id), '')
+
+
+def _group_relations_by_language(relations, language_map):
+    """Map category language to the relations that currently resolve to it."""
+    groups = {}
+    for rel in relations:
+        groups.setdefault(_relation_language(rel, language_map), []).append(rel)
+    return groups
+
+
+def _identity_key(row):
+    """Identity used to find another language of the same title. TMDB wins, then IMDB."""
+    if row.tmdb_id:
+        return ('tmdb', row.tmdb_id)
+    if row.imdb_id:
+        return ('imdb', row.imdb_id)
+    return ('name', row.name, row.year)
+
+
+def _load_language_slots(model, rows):
+    """``(identity key, language) -> row`` for titles these rows might collide with."""
+    slots = {}
+
+    def add(row):
+        if row.tmdb_id:
+            slots[(('tmdb', row.tmdb_id), row.language)] = row
+        if row.imdb_id:
+            slots[(('imdb', row.imdb_id), row.language)] = row
+        if not row.tmdb_id and not row.imdb_id:
+            slots[(('name', row.name, row.year), row.language)] = row
+
+    tmdb_ids = {row.tmdb_id for row in rows if row.tmdb_id}
+    imdb_ids = {row.imdb_id for row in rows if row.imdb_id}
+    names = {row.name for row in rows if not row.tmdb_id and not row.imdb_id}
+    if tmdb_ids:
+        for row in model.objects.filter(tmdb_id__in=tmdb_ids):
+            add(row)
+    if imdb_ids:
+        for row in model.objects.filter(imdb_id__in=imdb_ids):
+            add(row)
+    if names:
+        for row in model.objects.filter(
+            name__in=names, tmdb_id__isnull=True, imdb_id__isnull=True
+        ):
+            add(row)
+    return slots
+
+
+def _language_slot_owner(slots, source, language):
+    """Another row already stored at source's identity and language, or None."""
+    if source.tmdb_id:
+        owner = slots.get((('tmdb', source.tmdb_id), language))
+        if owner is not None and owner.id != source.id:
+            return owner
+    if source.imdb_id:
+        owner = slots.get((('imdb', source.imdb_id), language))
+        if owner is not None and owner.id != source.id:
+            return owner
+    if not source.tmdb_id and not source.imdb_id:
+        owner = slots.get((('name', source.name, source.year), language))
+        if owner is not None and owner.id != source.id:
+            return owner
+    return None
+
+
+def _language_in_use(model, source, language):
+    """DB row, other than source, occupying this identity and language."""
+    owner = _find_vod_for_language(model, source, language)
+    if owner is not None and owner.id != source.id:
+        return owner
+    return None
+
+
+_PARK_LETTERS = "zyxwvutsrqponmlkjihgfedcba"
+_BULK_LANGUAGE_CHUNK = 500
+
+
+class _ReconcileRun:
+    """Counts and ids for one committed title. Discarded if that transaction rolls back."""
+
+    def __init__(self):
+        self.updated = 0
+        self.moved = 0
+        self.absorbed = 0
+        self.absorbed_ids = set()
+        self.done = set()
+        self.stack = []
+
+
+_SKIPPED_TITLE_RE = re.compile(r"(\d+) titles? skipped")
+
+
+def _language_skip_note(movie_summary, series_summary):
+    """Short refresh-status sentence when any title was skipped."""
+    notes = []
+    for summary, kind in ((movie_summary, "movie"), (series_summary, "series")):
+        match = _SKIPPED_TITLE_RE.search(summary or "")
+        if not match:
+            continue
+        count = int(match.group(1))
+        if count == 1:
+            notes.append(f"1 {kind} title skipped during language reconcile")
+        else:
+            notes.append(f"{count} {kind} titles skipped during language reconcile")
+    if not notes:
+        return ""
+    return ". " + ". ".join(notes)
+
+
+def _skip_phrase(failed):
+    if failed == 1:
+        return "1 title skipped"
+    return f"{failed} titles skipped"
+
+
+def _reconcile_keep_language(source, groups, non_empty_langs):
+    """Language that stays on source.id among the groups still on this row.
+
+    Hand-off may already have moved streams that have a clean home, so
+    ``groups`` can be smaller than the row started with. Among what remains:
+    an untagged group keeps '', a still-matching tagged language stays,
+    otherwise the largest remaining group wins (language code breaks a
+    tie). Clearing every category language leaves ''.
+    """
+    if source.language == '':
+        if '' in groups:
+            return ''
+        if len(non_empty_langs) == 1:
+            return non_empty_langs[0]
+        return max(non_empty_langs, key=lambda lang: (len(groups[lang]), lang))
+
+    if source.language in groups:
+        return source.language
+    if not non_empty_langs:
+        return ''
+    if len(non_empty_langs) == 1:
+        return non_empty_langs[0]
+    return max(non_empty_langs, key=lambda lang: (len(groups[lang]), lang))
+
+
+def _row_keep_language(source, groups):
+    """Language this row should end on, or None when there is nothing to do."""
+    if not groups:
+        return None
+    non_empty_langs = [lang for lang in groups if lang != '']
+    if source.language == '':
+        if not non_empty_langs:
+            return None
+    elif set(groups) == {source.language}:
+        # A cleared category resolves to '' and is not a match.
+        return None
+    return _reconcile_keep_language(source, groups, non_empty_langs)
+
+
+def _groups_for_row(ctx, row):
+    """Group this row's relations, loading any category languages not seen yet.
+
+    A donor is often not one of this account's candidates, so its categories
+    are absent from the map built for the candidate scan.
+    """
+    relations = list(ctx.relation_model.objects.filter(**{ctx.fk_id: row.id}))
+    missing = [
+        rel for rel in relations
+        if rel.category_id and (rel.m3u_account_id, rel.category_id) not in ctx.language_map
+    ]
+    if missing:
+        ctx.language_map.update(_category_language_map(missing))
+    return _group_relations_by_language(relations, ctx.language_map)
+
+
+def _relations_all_match(ctx, row, language):
+    """True when every relation on row resolves to language (or row has none)."""
+    groups = _groups_for_row(ctx, row)
+    if not groups:
+        return True
+    return set(groups) <= {language}
+
+
+def _set_language(source, language, run):
+    if source.language == language:
+        return
+    source.language = language
+    source.save(update_fields=['language'])
+    run.updated += 1
+
+
+def _park_language(ctx, row, forbidden):
+    """Move row off its language slot onto a code this title does not use.
+
+    Used only inside the claim transaction so a pair of rows can exchange
+    languages without tripping the unique constraint. The parked value is
+    overwritten before commit.
+    """
+    for first in _PARK_LETTERS:
+        for second in _PARK_LETTERS:
+            code = first + second
+            if code in forbidden:
+                continue
+            if _language_in_use(ctx.model, row, code) is None:
+                row.language = code
+                row.save(update_fields=['language'])
+                return
+    raise RuntimeError(f"no free language code to park {ctx.fk_name} id={row.id}")
+
+
+def _claim_language(ctx, source, keep_lang, run):
+    """Make source.language == keep_lang, keeping ids of rows whose streams disagree.
+
+    A stored language row is absorbed only when every one of its relations
+    resolves to keep_lang. Otherwise that row is reconciled first so it leaves
+    the slot under its own id.
+    """
+    # Retry only while the occupant actually changes. A swap settles in a
+    # couple of tries. The same occupant twice means this claim is stuck.
+    seen_occupants = set()
+    while True:
+        try:
+            source.refresh_from_db()
+        except ctx.model.DoesNotExist:
+            return
+        if source.language == keep_lang:
+            return
+        donor = _find_vod_for_language(ctx.model, source, keep_lang)
+        if donor is None or donor.id == source.id or donor.id in run.absorbed_ids:
+            _set_language(source, keep_lang, run)
+            return
+        if _relations_all_match(ctx, donor, keep_lang):
+            run.absorbed += _absorb_language_row(
+                source, donor, ctx.relation_model, ctx.fk_name,
+                refetch_episodes=ctx.refetch_episodes,
+            )
+            run.absorbed_ids.add(donor.id)
+            _set_language(source, keep_lang, run)
+            return
+        if source.id in run.stack:
+            # The occupant is part of this claim chain (the two titles swapped
+            # languages). Park it, then take the slot on the next attempt.
+            _park_language(ctx, donor, forbidden={keep_lang, source.language, donor.language, ''})
+            continue
+        occupant = (donor.id, donor.language)
+        if occupant in seen_occupants:
+            raise RuntimeError(f"language claim did not settle for {ctx.fk_name} id={source.id}")
+        seen_occupants.add(occupant)
+        run.stack.append(source.id)
+        try:
+            _reconcile_one(ctx, donor, run)
+        finally:
+            run.stack.pop()
+
+
+def _clean_language_row(ctx, source, language, run):
+    """Row that already is `language` and whose streams all want it, or None."""
+    donor = _find_vod_for_language(ctx.model, source, language)
+    if donor is None or donor.id == source.id or donor.id in run.absorbed_ids:
+        return None
+    if not _relations_all_match(ctx, donor, language):
+        return None
+    return donor
+
+
+def _hand_off_clean_languages(ctx, source, run):
+    """Move streams onto rows that already own their language, in one pass.
+
+    Languages with a clean home leave this row. The keep rule then runs on
+    whatever remains, which may be a smaller group than the row started
+    with. When every language already has a home, one language is kept so
+    this id does not disappear, and claim absorbs that language's duplicate.
+    """
+    groups = _groups_for_row(ctx, source)
+    keep_lang = _row_keep_language(source, groups)
+    if keep_lang is None:
+        return
+    homes = {
+        lang: _clean_language_row(ctx, source, lang, run)
+        for lang in groups
+    }
+    homes = {lang: donor for lang, donor in homes.items() if donor is not None}
+    if not homes:
+        return
+    to_move = set(homes)
+    if to_move >= set(groups):
+        to_move.discard(keep_lang)
+    for lang in to_move:
+        rels = groups.get(lang) or []
+        if not rels:
+            continue
+        _move_language_relations(
+            ctx.relation_model, rels, homes[lang], ctx.fk_name,
+            refetch_episodes=ctx.refetch_episodes,
+        )
+        run.moved += len(rels)
+
+
+def _reconcile_one(ctx, source, run):
+    """Rename, split, or absorb one row. Nested calls share ``run``."""
+    if source.id in run.done or source.id in run.absorbed_ids:
+        return
+    try:
+        source.refresh_from_db()
+    except ctx.model.DoesNotExist:
+        run.done.add(source.id)
+        return
+
+    moved_before = run.moved
+    _hand_off_clean_languages(ctx, source, run)
+    groups = _groups_for_row(ctx, source)
+    keep_lang = _row_keep_language(source, groups)
+    if keep_lang is not None:
+        _claim_language(ctx, source, keep_lang, run)
+
+    try:
+        source.refresh_from_db()
+    except ctx.model.DoesNotExist:
+        run.done.add(source.id)
+        return
+
+    current_groups = _groups_for_row(ctx, source)
+    for lang, rels in current_groups.items():
+        if lang == source.language or not rels:
+            continue
+        target = _find_or_create_vod_for_language(ctx.model, source, lang)
+        if target.id == source.id or target.id in run.absorbed_ids:
+            continue
+        _move_language_relations(
+            ctx.relation_model, rels, target, ctx.fk_name,
+            refetch_episodes=ctx.refetch_episodes,
+        )
+        run.moved += len(rels)
+    if ctx.before_split is not None and run.moved > moved_before:
+        ctx.before_split(source)
+    run.done.add(source.id)
+
+
+class _LanguageReconcileContext:
+    def __init__(self, model, relation_model, fk_name, language_map, refetch_episodes, before_split):
+        self.model = model
+        self.relation_model = relation_model
+        self.fk_name = fk_name
+        self.fk_id = f'{fk_name}_id'
+        self.language_map = language_map
+        self.refetch_episodes = refetch_episodes
+        self.before_split = before_split
+        self.finished = set()
+        self.absorbed_ids = set()
+
+
+def _language_only_rows(candidates, groups_by_id, slots):
+    """Rows whose every relation wants one language and that slot is free.
+
+    These are a language update and nothing else, so they can be written
+    with one bulk_update. Two candidates claiming the same slot stay on the
+    per-title path, which collapses them.
+    """
+    plans = {}
+    claimants = {}
+    for source in candidates:
+        groups = groups_by_id.get(source.id, {})
+        keep_lang = _row_keep_language(source, groups)
+        if keep_lang is None or set(groups) != {keep_lang} or keep_lang == source.language:
+            continue
+        plans[source.id] = keep_lang
+        claimants.setdefault((_identity_key(source), keep_lang), []).append(source.id)
+
+    simple = []
+    for source in candidates:
+        keep_lang = plans.get(source.id)
+        if keep_lang is None:
+            continue
+        if len(claimants[(_identity_key(source), keep_lang)]) != 1:
+            continue
+        if _language_slot_owner(slots, source, keep_lang) is not None:
+            continue
+        simple.append(source)
+    return plans, simple
+
+
+def _bulk_set_language(model, rows, plans):
+    for row in rows:
+        row.language = plans[row.id]
+    for offset in range(0, len(rows), _BULK_LANGUAGE_CHUNK):
+        model.objects.bulk_update(rows[offset:offset + _BULK_LANGUAGE_CHUNK], ['language'])
+
+
+def _reconcile_language_identity(
+    account,
+    scan_start_time,
+    *,
+    model,
+    relation_model,
+    fk_name,
+    noun,
+    title,
+    refetch_episodes=False,
+    before_split=None,
+):
+    """Resolve language identity for rows this account's refresh touched.
+
+    The batch pins an already-known stream to its current row so a category
+    re-tag cannot fork mid-ingest. This runs once per content type after the
+    batches, before cleanup_orphaned_vod_content, and considers every
+    account's relations on those rows.
+
+    The existing row keeps its id. A new id is created only for a language
+    group that cannot stay on that row, including relations whose category
+    language was cleared. before_split(source), when set, runs after series
+    relations have moved so episodes can follow series_relation.
+
+    A donor is absorbed only when its relations all want the language being
+    claimed. Otherwise it is reconciled first and keeps its id. A title that
+    raises is rolled back and counted as skipped; the rest of the account
+    continues.
+    """
+    candidates = _language_reconcile_candidates(
+        account, scan_start_time,
+        model=model, relation_model=relation_model, fk_name=fk_name,
+    )
+    if not candidates:
+        return f"No {noun} needed language reconcile this refresh."
+
+    fk_id = f'{fk_name}_id'
+    relations = list(relation_model.objects.filter(**{f'{fk_id}__in': [row.id for row in candidates]}))
+    language_map = _category_language_map(relations)
+    groups_by_id = {}
+    for rel in relations:
+        groups_by_id.setdefault(getattr(rel, fk_id), []).append(rel)
+    groups_by_id = {
+        row_id: _group_relations_by_language(rels, language_map)
+        for row_id, rels in groups_by_id.items()
+    }
+    slots = _load_language_slots(model, candidates)
+    plans, simple = _language_only_rows(candidates, groups_by_id, slots)
+    simple_ids = {row.id for row in simple}
+
+    updated = moved = absorbed = failed = 0
+    if simple:
+        try:
+            with transaction.atomic():
+                _bulk_set_language(model, simple, plans)
+        except Exception:
+            logger.exception(
+                "Bulk language update failed for account %s; retrying those %s per title",
+                account.id, noun,
+            )
+            for row in simple:
+                try:
+                    row.refresh_from_db()
+                except model.DoesNotExist:
+                    pass
+            simple_ids = set()
+        else:
+            updated += len(simple)
+
+    pending = [
+        row for row in candidates
+        if row.id not in simple_ids
+        and _row_keep_language(row, groups_by_id.get(row.id, {})) is not None
+    ]
+    # Rows leaving their stored language run first, so a row arriving at that
+    # language finds the slot empty. Within each group, newer ids run first
+    # and the older id absorbs them when both end on the same language.
+    pending.sort(key=lambda row: (
+        0 if row.language and row.language not in groups_by_id.get(row.id, {}) else 1,
+        -row.id,
+    ))
+
+    ctx = _LanguageReconcileContext(
+        model, relation_model, fk_name, language_map, refetch_episodes, before_split,
+    )
+    for source in pending:
+        if source.id in ctx.finished or source.id in ctx.absorbed_ids:
+            continue
+        run = _ReconcileRun()
+        try:
+            with transaction.atomic():
+                _reconcile_one(ctx, source, run)
+        except Exception:
+            logger.exception(
+                "Language reconcile failed for %s id=%s (account %s); "
+                "continuing with remaining titles",
+                noun, source.id, account.id,
+            )
+            failed += 1
+            continue
+        updated += run.updated
+        moved += run.moved
+        absorbed += run.absorbed
+        ctx.finished |= run.done
+        ctx.absorbed_ids |= run.absorbed_ids
+
+    if before_split is not None:
+        # Split only runs when relations move. Rename-only and bulk updates
+        # still drop empty episode rows left on titles this refresh touched.
+        Episode.objects.filter(
+            series_id__in=[row.id for row in candidates],
+            m3u_relations__isnull=True,
+        ).delete()
+
+    if updated == 0 and moved == 0 and absorbed == 0 and failed == 0:
+        return f"No {noun} needed language reconcile this refresh."
+
+    result = (
+        f"{title} language reconcile: {updated} updated in place, "
+        f"{moved} relations moved, {absorbed} existing language rows absorbed"
+    )
+    if failed:
+        result = f"{result}, {_skip_phrase(failed)}"
+        logger.warning(result)
+    else:
+        logger.info(result)
+    return result
+
+
+def reconcile_movie_language_identity(account, scan_start_time):
+    """Resolve movie language identity after this account's refresh. See _reconcile_language_identity."""
+    return _reconcile_language_identity(
+        account,
+        scan_start_time,
+        model=Movie,
+        relation_model=M3UMovieRelation,
+        fk_name='movie',
+        noun='movies',
+        title='Movie',
+    )
+
+
+def _fill_blank_vod_metadata(survivor, donor):
+    """Copy donor fields onto survivor only where survivor is blank."""
+    update_fields = []
+    for field in ('description', 'rating', 'genre', 'year'):
+        current = getattr(survivor, field)
+        incoming = getattr(donor, field)
+        if is_blank_vod_value(current) and not is_blank_vod_value(incoming):
+            setattr(survivor, field, incoming)
+            update_fields.append(field)
+    if hasattr(survivor, 'duration_secs'):
+        current = survivor.duration_secs
+        incoming = donor.duration_secs
+        if not current and incoming:
+            survivor.duration_secs = incoming
+            update_fields.append('duration_secs')
+    if not survivor.logo_id and donor.logo_id:
+        survivor.logo_id = donor.logo_id
+        update_fields.append('logo')
+    survivor_cp = dict(survivor.custom_properties or {})
+    changed = False
+    for key, value in (donor.custom_properties or {}).items():
+        if not is_blank_vod_value(value) and is_blank_vod_value(survivor_cp.get(key)):
+            survivor_cp[key] = value
+            changed = True
+    if changed:
+        survivor.custom_properties = survivor_cp
+        update_fields.append('custom_properties')
+    if update_fields:
+        survivor.save(update_fields=update_fields)
+
+
+def _absorb_language_row(source, donor, relation_model, fk_name, *, refetch_episodes):
+    """Move donor onto source and delete donor. source keeps its id.
+
+    donor is removed before source.language is set by the caller, so the
+    unique (external id, language) slot is free.
+    """
+    donor_relations = list(relation_model.objects.filter(**{f'{fk_name}_id': donor.id}))
+    if donor_relations:
+        _move_language_relations(
+            relation_model, donor_relations, source, fk_name,
+            refetch_episodes=refetch_episodes,
+        )
+    if refetch_episodes:
+        _migrate_series_episodes(donor, source)
+    _fill_blank_vod_metadata(source, donor)
+    donor.delete()
+    return 1
+
+
+def _migrate_series_episodes(source_series, target_series):
+    """Move source_series's Episodes onto target_series before source_series
+    is deleted.
+
+    Repoints Episode.series in place (preserving Episode/relation ids - those
+    ids are what clients are currently playing) unless target_series already
+    has an Episode at the same (season, episode), in which case the source
+    episode's M3UEpisodeRelations move onto the existing target episode and
+    the now-empty source episode is deleted.
+    """
+    for episode in list(Episode.objects.filter(series=source_series)):
+        collision = Episode.objects.filter(
+            series=target_series,
+            season_number=episode.season_number,
+            episode_number=episode.episode_number,
+        ).first()
+        if collision:
+            M3UEpisodeRelation.objects.filter(episode=episode).update(episode=collision)
+            episode.delete()
+        else:
+            episode.series = target_series
+            episode.save(update_fields=['series'])
+
+
+def _clone_episode_onto_series(episode, series_id):
+    """Episode row on series_id for this season/episode, creating one if needed."""
+    existing = Episode.objects.filter(
+        series_id=series_id,
+        season_number=episode.season_number,
+        episode_number=episode.episode_number,
+    ).first()
+    if existing is not None:
+        return existing
+    return Episode.objects.create(
+        series_id=series_id,
+        name=episode.name,
+        description=episode.description,
+        air_date=episode.air_date,
+        rating=episode.rating,
+        duration_secs=episode.duration_secs,
+        season_number=episode.season_number,
+        episode_number=episode.episode_number,
+        tmdb_id=episode.tmdb_id,
+        imdb_id=episode.imdb_id,
+        custom_properties=episode.custom_properties,
+    )
+
+
+def _split_series_episodes(source_series):
+    """Point each episode stream at an episode of the series it was fetched for.
+
+    The Episode row stays with whichever destination has the most of its
+    relations (series id breaks a tie), so that episode id does not change
+    for that series. Other series_relation values get their own episode row.
+    A null series_relation stays on the original episode. Rows with no
+    streams left, including ones that were already empty, are deleted.
+    """
+    episodes = list(Episode.objects.filter(series=source_series))
+    if not episodes:
+        return
+    relations = M3UEpisodeRelation.objects.filter(
+        episode_id__in=[episode.id for episode in episodes]
+    ).select_related('series_relation')
+    by_episode = {}
+    for rel in relations:
+        by_episode.setdefault(rel.episode_id, []).append(rel)
+
+    for episode in episodes:
+        episode_relations = by_episode.get(episode.id, [])
+        if not episode_relations:
+            episode.delete()
+            continue
+        destinations = {}
+        for rel in episode_relations:
+            if rel.series_relation_id and rel.series_relation.series_id != episode.series_id:
+                dest = rel.series_relation.series_id
+            else:
+                dest = episode.series_id
+            destinations.setdefault(dest, []).append(rel)
+        if len(destinations) == 1 and episode.series_id in destinations:
+            continue
+        winner = max(destinations, key=lambda series_id: (len(destinations[series_id]), series_id))
+        if winner != episode.series_id:
+            collision = Episode.objects.filter(
+                series_id=winner,
+                season_number=episode.season_number,
+                episode_number=episode.episode_number,
+            ).exclude(pk=episode.pk).first()
+            if collision is not None:
+                M3UEpisodeRelation.objects.filter(
+                    id__in=[rel.id for rel in destinations[winner]]
+                ).update(episode=collision)
+                destinations[winner] = []
+            else:
+                episode.series_id = winner
+                episode.save(update_fields=['series'])
+        home = episode.series_id
+        for dest, group in destinations.items():
+            if dest == home or not group:
+                continue
+            clone = _clone_episode_onto_series(episode, dest)
+            M3UEpisodeRelation.objects.filter(
+                id__in=[rel.id for rel in group]
+            ).update(episode=clone)
+        if not M3UEpisodeRelation.objects.filter(episode=episode).exists():
+            episode.delete()
+
+
+def reconcile_series_language_identity(account, scan_start_time):
+    """Resolve series language identity after this account's refresh. See _reconcile_language_identity.
+
+    When relations move to another series, episode streams follow
+    series_relation onto the series they were fetched for. Episode ids stay
+    with the series that has the most streams of that episode.
+    """
+    return _reconcile_language_identity(
+        account,
+        scan_start_time,
+        model=Series,
+        relation_model=M3USeriesRelation,
+        fk_name='series',
+        noun='series',
+        title='Series',
+        refetch_episodes=True,
+        before_split=_split_series_episodes,
+    )
+
+
 @shared_task
 def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=None):
     """Clean up VOD content that has no M3U relations or has stale relations"""
@@ -1791,13 +2698,17 @@ def handle_movie_id_conflicts(current_movie, relation, tmdb_id_to_set, imdb_id_t
     # Check for existing movies with these IDs
     if tmdb_id_to_set:
         try:
-            existing_movie_with_tmdb = Movie.objects.get(tmdb_id=tmdb_id_to_set)
+            existing_movie_with_tmdb = Movie.objects.get(
+                tmdb_id=tmdb_id_to_set, language=current_movie.language
+            )
         except Movie.DoesNotExist:
             pass
 
     if imdb_id_to_set:
         try:
-            existing_movie_with_imdb = Movie.objects.get(imdb_id=imdb_id_to_set)
+            existing_movie_with_imdb = Movie.objects.get(
+                imdb_id=imdb_id_to_set, language=current_movie.language
+            )
         except Movie.DoesNotExist:
             pass
 
@@ -1944,13 +2855,17 @@ def handle_series_id_conflicts(current_series, relation, tmdb_id_to_set, imdb_id
     # Check for existing series with these IDs
     if tmdb_id_to_set:
         try:
-            existing_series_with_tmdb = Series.objects.get(tmdb_id=tmdb_id_to_set)
+            existing_series_with_tmdb = Series.objects.get(
+                tmdb_id=tmdb_id_to_set, language=current_series.language
+            )
         except Series.DoesNotExist:
             pass
 
     if imdb_id_to_set:
         try:
-            existing_series_with_imdb = Series.objects.get(imdb_id=imdb_id_to_set)
+            existing_series_with_imdb = Series.objects.get(
+                imdb_id=imdb_id_to_set, language=current_series.language
+            )
         except Series.DoesNotExist:
             pass
 
@@ -2181,7 +3096,7 @@ def merge_blank_vod_list_props(existing_props, incoming_props):
             existing_props[field] = value
 
 
-def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
+def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id, language=''):
     """Build Movie list-sync props and logo URL from a provider row."""
     description = movie_data.get('description') or movie_data.get('plot') or ''
     rating = normalize_rating(movie_data.get('rating') or movie_data.get('vote_average'))
@@ -2216,6 +3131,7 @@ def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
         'year': year,
         'tmdb_id': tmdb_id,
         'imdb_id': imdb_id,
+        'language': language,
         'description': description,
         'rating': rating,
         'genre': genre,
@@ -2232,7 +3148,7 @@ def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
     return movie_props, logo_url
 
 
-def build_series_list_props(series_data, name, year, tmdb_id, imdb_id):
+def build_series_list_props(series_data, name, year, tmdb_id, imdb_id, language=''):
     """Build Series list-sync props and logo URL from a provider row."""
     description = series_data.get('plot', '')
     rating = normalize_rating(series_data.get('rating'))
@@ -2269,6 +3185,7 @@ def build_series_list_props(series_data, name, year, tmdb_id, imdb_id):
         'year': year,
         'tmdb_id': tmdb_id,
         'imdb_id': imdb_id,
+        'language': language,
         'description': description,
         'rating': rating,
         'genre': genre,
