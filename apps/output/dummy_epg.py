@@ -431,9 +431,28 @@ def _generate_recurring_time_programs(
     export_lookback,
     export_cutoff,
     max_programs=None,
+    clock=None,
 ):
+    """Emit one time-of-day occurrence, with upcoming/ended filler around it.
+
+    ``clock`` is the request time (defaults to ``timezone.now()``). The
+    occurrence uses that instant's date in the source timezone. ``now`` is only
+    the generation alignment base (often hour-aligned lookback) and can fall on
+    the previous evening, so day slices are not calendar days. Filler is split
+    on the event timestamp itself: upcoming until kickoff, one live block, then
+    ended. A kickoff that has already ended before lookback stays ended filler
+    for the whole window.
+    """
     lookback = export_lookback if export_lookback is not None else now
-    event_happened = False
+    if clock is None:
+        clock = django_timezone.now()
+    event_date = clock.astimezone(source_tz).date()
+    event_start_utc = _localize_event_start(source_tz, event_date, time_info)
+    event_end_utc = event_start_utc + timedelta(minutes=opts.duration_minutes)
+    overlaps = programme_overlaps_export_window(
+        event_start_utc, event_end_utc, lookback, export_cutoff
+    )
+    emitted = False
 
     for day in range(num_days):
         if _at_program_limit(programs, max_programs):
@@ -447,16 +466,8 @@ def _generate_recurring_time_programs(
         if day_start >= day_end:
             continue
 
-        now_in_source_tz = now.astimezone(source_tz)
-        current_date = (now_in_source_tz + timedelta(days=day)).date()
-        event_start_utc = _localize_event_start(source_tz, current_date, time_info)
-        event_end_utc = event_start_utc + timedelta(minutes=opts.duration_minutes)
-
-        if not programme_overlaps_export_window(
-            event_start_utc, event_end_utc, lookback, export_cutoff
-        ):
-            # Past day-0 event: fill the remaining window with ended filler.
-            if day == 0 and event_end_utc < lookback:
+        if not overlaps:
+            if event_end_utc <= lookback:
                 _append_filler_programs(
                     programs,
                     day_start,
@@ -466,21 +477,53 @@ def _generate_recurring_time_programs(
                     opts,
                     max_programs=max_programs,
                 )
-                event_happened = True
-            continue
-
-        is_event_day = day == 0
-        if is_event_day and not event_happened:
-            if event_start_utc > day_start:
+            elif export_cutoff is None or event_start_utc >= export_cutoff:
                 _append_filler_programs(
                     programs,
                     day_start,
-                    min(event_start_utc, day_end),
+                    day_end,
                     labels.upcoming_title,
                     labels.upcoming_description,
                     opts,
                     max_programs=max_programs,
                 )
+            continue
+
+        if day_end <= event_start_utc:
+            _append_filler_programs(
+                programs,
+                day_start,
+                day_end,
+                labels.upcoming_title,
+                labels.upcoming_description,
+                opts,
+                max_programs=max_programs,
+            )
+            continue
+
+        if day_start >= event_end_utc:
+            _append_filler_programs(
+                programs,
+                day_start,
+                day_end,
+                labels.ended_title,
+                labels.ended_description,
+                opts,
+                max_programs=max_programs,
+            )
+            continue
+
+        if event_start_utc > day_start:
+            _append_filler_programs(
+                programs,
+                day_start,
+                min(event_start_utc, day_end),
+                labels.upcoming_title,
+                labels.upcoming_description,
+                opts,
+                max_programs=max_programs,
+            )
+        if not emitted and event_start_utc < day_end and event_end_utc > day_start:
             _append_main_event(
                 programs,
                 event_start_utc,
@@ -489,29 +532,15 @@ def _generate_recurring_time_programs(
                 opts,
                 max_programs=max_programs,
             )
-            event_happened = True
-            ended_start = max(event_end_utc, day_start)
-            if ended_start < day_end:
-                _append_filler_programs(
-                    programs,
-                    ended_start,
-                    day_end,
-                    labels.ended_title,
-                    labels.ended_description,
-                    opts,
-                    max_programs=max_programs,
-                )
-        else:
-            title = labels.ended_title if event_happened else labels.upcoming_title
-            description = (
-                labels.ended_description if event_happened else labels.upcoming_description
-            )
+            emitted = True
+        ended_start = max(event_end_utc, day_start)
+        if ended_start < day_end:
             _append_filler_programs(
                 programs,
-                day_start,
+                ended_start,
                 day_end,
-                title,
-                description,
+                labels.ended_title,
+                labels.ended_description,
                 opts,
                 max_programs=max_programs,
             )
@@ -679,6 +708,7 @@ def generate_custom_dummy_programs(
     export_lookback=None,
     export_cutoff=None,
     max_programs=None,
+    clock=None,
 ):
     logger.debug("Generating custom dummy programs for channel: %s", channel_name)
 
@@ -962,6 +992,7 @@ def generate_custom_dummy_programs(
             export_lookback=export_lookback,
             export_cutoff=export_cutoff,
             max_programs=max_programs,
+            clock=clock,
         )
     else:
         _generate_no_time_programs(
@@ -993,12 +1024,15 @@ def generate_dummy_programs(
     export_cutoff=None,
     max_programs=None,
     generation_start=None,
+    clock=None,
 ):
     now = (
         generation_start
         if generation_start is not None
         else django_timezone.now().replace(minute=0, second=0, microsecond=0)
     )
+    if clock is None:
+        clock = django_timezone.now()
 
     if epg_source and epg_source.source_type == 'dummy' and epg_source.custom_properties:
         custom_programs = generate_custom_dummy_programs(
@@ -1010,6 +1044,7 @@ def generate_dummy_programs(
             export_lookback=export_lookback,
             export_cutoff=export_cutoff,
             max_programs=max_programs,
+            clock=clock,
         )
         if custom_programs is not None:
             return custom_programs

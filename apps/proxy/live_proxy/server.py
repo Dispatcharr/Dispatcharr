@@ -14,7 +14,6 @@ import os
 import json
 import gevent
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel, Stream
 from core.utils import RedisClient, log_system_event
 from django.db import close_old_connections
 from redis.exceptions import ConnectionError, TimeoutError
@@ -22,6 +21,8 @@ from .input.manager import StreamManager
 from .input.buffer import StreamBuffer
 from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
+from .output.hls.manager import HLSOutputManager
+from .output.hls.waiters import notify_playlist_ready
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, ChannelMetadataField, REDIS_TTL_DEFAULT
@@ -89,8 +90,8 @@ class ProxyServer:
             # Use dedicated Redis client for proxy
             self.redis_client = RedisClient.get_client()
             if self.redis_client is not None:
-                logger.info("Using dedicated Redis client for proxy server")
-                logger.info(f"Worker ID: {self.worker_id}")
+                logger.debug("Using dedicated Redis client for proxy server")
+                logger.debug(f"Worker ID: {self.worker_id}")
             else:
                 # Fall back to direct connection with retry
                 self._setup_redis_connection()
@@ -170,13 +171,14 @@ class ProxyServer:
 
             pubsub_client = None
             pubsub = None
+            started = False
 
             while True:
                 try:
                     # Use dedicated PubSub client for event listener
                     pubsub_client = RedisClient.get_pubsub_client(retry_interval = 1, max_retry_interval =  30)
                     if pubsub_client:
-                        logger.info("Using dedicated Redis PubSub client for event listener")
+                        logger.debug("Using dedicated Redis PubSub client for event listener")
                     else:
                         # Fall back to creating a dedicated client if utility fails
                         logger.warning("Utility function for PubSub client failed, creating direct connection")
@@ -190,7 +192,11 @@ class ProxyServer:
                     pubsub = pubsub_client.pubsub()
                     pubsub.psubscribe("live:events:*")
 
-                    logger.info("Started Redis event listener for client activity")
+                    # A restart after a failure is news; the first start is not.
+                    (logger.info if started else logger.debug)(
+                        "Started Redis event listener for client activity"
+                    )
+                    started = True
 
                     for message in pubsub.listen():
                         if message["type"] != "pmessage":
@@ -203,6 +209,15 @@ class ProxyServer:
                             channel_id = data.get("channel_id")
 
                             if channel_id and event_type:
+                                # Any worker may be holding a cold-start playlist
+                                # request for this channel. Wake them as soon as
+                                # the segmenter publishes, not on the next poll.
+                                if event_type == EventType.HLS_PLAYLIST_READY:
+                                    notify_playlist_ready(
+                                        channel_id, data.get("fmt") or "hls"
+                                    )
+                                    continue
+
                                 # For owner, update client status immediately
                                 if self.am_i_owner(channel_id):
                                     if event_type == EventType.CLIENT_CONNECTED:
@@ -236,12 +251,13 @@ class ProxyServer:
                                                 self.redis_client.setex(status_key, 60, "switching")
 
                                             stream_manager = self.stream_managers[channel_id]
-                                            if new_url == stream_manager.url:
+                                            url_changed = new_url != stream_manager.url
+                                            if not url_changed:
                                                 # update_url() returns False for same URL; still success so metadata refreshes
                                                 logger.info(f"Channel {channel_id} already using requested URL, refreshing metadata only")
                                                 success = True
                                             else:
-                                                success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id)
+                                                success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id, reason='manual')
 
                                             if success:
                                                 stream_manager.reset_failover_rotation_state()
@@ -254,6 +270,7 @@ class ProxyServer:
                                                             channel_id, new_url, user_agent,
                                                             event_stream_id, event_m3u_profile_id,
                                                             event_stream_name,
+                                                            switch_reason='manual' if url_changed else None,
                                                         )
                                                     except Exception as e:
                                                         logger.error(f"Error updating switch metadata for channel {channel_id}: {e}", exc_info=True)
@@ -436,8 +453,10 @@ class ProxyServer:
             lock_key = RedisKeys.channel_owner(channel_id)
 
             # Use atomic SET NX EX for locking with error handling
+            # None means Redis failed; a held lock gives False.
             acquired = self._execute_redis_command(
                 lambda: self.redis_client.set(lock_key, self.worker_id, nx=True, ex=ttl)
+                or False
             )
 
             if acquired is None:  # Redis command failed
@@ -881,12 +900,24 @@ class ProxyServer:
                     # Otherwise assume it's still in progress
                     return True
 
-            # Additional checks if metadata doesn't exist
+            # No metadata yet. An owner lock held by a live worker means that worker
+            # claimed the channel and may still be fetching a URL before it writes
+            # initializing metadata, so the lock must not be treated as an orphan.
+            # A lock whose owner has no heartbeat (crashed or recycled worker) is
+            # stale and is cleaned up so the next request can take over immediately.
             additional_keys = [
                 RedisKeys.clients(channel_id),
                 RedisKeys.buffer_index(channel_id),
-                RedisKeys.channel_owner(channel_id)
             ]
+            owner = self.get_channel_owner(channel_id)
+            if owner:
+                if owner == self.worker_id or self.redis_client.exists(RedisKeys.worker_heartbeat(owner)):
+                    logger.info(
+                        f"Channel {channel_id} has an owner lock held by live worker {owner} "
+                        f"but no metadata yet - initialization in progress, not cleaning up"
+                    )
+                    return False
+                additional_keys.append(RedisKeys.channel_owner(channel_id))
 
             for key in additional_keys:
                 if self.redis_client.exists(key):
@@ -1082,6 +1113,14 @@ class ProxyServer:
         try:
             client_set_key = RedisKeys.clients(channel_id)
             total = self.redis_client.scard(client_set_key) or 0
+
+            if total:
+                # Drop set entries whose metadata hash has expired. Pull-based
+                # clients (HLS) never report a disconnect; when one stops
+                # polling, its hash lapses, and the stale set entry must not
+                # keep the channel or an output manager alive.
+                if ClientManager.remove_ghost_clients(self.redis_client, channel_id):
+                    total = self.redis_client.scard(client_set_key) or 0
 
             logger.debug(
                 f"handle_client_disconnect: channel={channel_id[:8]} total={total} "
@@ -1279,6 +1318,7 @@ class ProxyServer:
 
         _OUTPUT_FORMAT_MANAGERS = {
             'fmp4': FMP4RemuxManager,
+            'hls': HLSOutputManager,
         }
         base_fmt, _ = self._parse_output_key(fmt)
         manager_cls = _OUTPUT_FORMAT_MANAGERS.get(base_fmt)
@@ -1564,11 +1604,17 @@ class ProxyServer:
 
     @staticmethod
     def _channel_id_from_metadata_key(key):
+        """Extract channel/worker id from ``live:channel:{id}:metadata``.
+
+        Uses prefix/suffix slicing so ids that contain dots (profile-scoped
+        stream previews) are preserved; a naive ``split(':')[2]`` would truncate.
+        """
         if isinstance(key, bytes):
             key = key.decode('utf-8', errors='replace')
-        parts = key.split(':')
-        if len(parts) >= 3:
-            return parts[2]
+        prefix = "live:channel:"
+        suffix = ":metadata"
+        if key.startswith(prefix) and key.endswith(suffix):
+            return key[len(prefix) : -len(suffix)] or None
         return None
 
     def _stop_upstream_before_redis_cleanup(self, channel_id):
@@ -2124,7 +2170,7 @@ class ProxyServer:
         thread = threading.Thread(target=cleanup_task, daemon=True)
         thread.name = "ts-proxy-cleanup"
         thread.start()
-        logger.info(f"Started TS proxy cleanup thread (interval: {ConfigHelper.cleanup_check_interval()}s)")
+        logger.debug(f"Started TS proxy cleanup thread (interval: {ConfigHelper.cleanup_check_interval()}s)")
 
     def _check_orphaned_channels(self):
         """Check for orphaned channels in Redis (owner worker crashed)"""
@@ -2326,24 +2372,13 @@ class ProxyServer:
         metadata-only release when the channel was deleted mid-playback.
         """
         try:
-            channel = Channel.objects.get(uuid=channel_id)
-            if channel.release_stream():
-                return True
-            logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-        except Channel.DoesNotExist:
-            pass
-        except Exception as e:
-            logger.debug(f"Channel {channel_id}: release_stream via ORM failed: {e}")
+            from .url_utils import release_worker_stream
 
-        try:
-            stream = Stream.objects.get(stream_hash=channel_id)
-            if stream.release_stream():
+            if release_worker_stream(channel_id):
                 return True
-            logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-        except Stream.DoesNotExist:
-            pass
+            logger.debug(f"Worker {channel_id}: release_stream found no keys to clean")
         except Exception as e:
-            logger.debug(f"Stream {channel_id}: release_stream via ORM failed: {e}")
+            logger.debug(f"Worker {channel_id}: release_stream failed: {e}")
 
         if self._release_profile_slot_from_redis_metadata(channel_id):
             return True

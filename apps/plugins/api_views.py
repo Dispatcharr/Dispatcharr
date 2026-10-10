@@ -17,10 +17,7 @@ import shutil
 import tempfile
 import requests as http_requests
 from urllib.parse import urlparse
-from apps.accounts.permissions import (
-    Authenticated,
-    permission_classes_by_method,
-)
+from apps.accounts.permissions import permissions_for_method
 from core.http_security import get_with_validated_redirects
 from core.image_proxy import IgnoreClientContentNegotiation
 from core.utils import build_absolute_uri_with_port
@@ -93,16 +90,11 @@ def _absolutize_logo_url(request, url: str | None) -> str | None:
 
 
 class PluginAuthMixin:
-    """Mixin that routes permission resolution through permission_classes_by_method,
-    falling back to Authenticated() for any method not explicitly listed."""
+    """Mixin that routes permission resolution through permissions_for_method,
+    failing closed to IsAdmin for any method not explicitly listed."""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
 
 class PluginsListAPIView(PluginAuthMixin, APIView):

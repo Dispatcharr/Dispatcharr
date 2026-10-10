@@ -29,7 +29,9 @@ class ProcessM3UBatchCleanupTests(SimpleTestCase):
         )
         mock_stream_cls.generate_hash_key = MagicMock(return_value="hash123")
 
-        with patch("django.db.connections") as mock_connections:
+        with patch("django.db.connections") as mock_connections, patch(
+            "apps.m3u.tasks.transaction"
+        ):
             process_m3u_batch_direct(1, [], {}, ["name", "url"], compiled_filters=[])
             mock_connections.close_all.assert_called()
 
@@ -47,7 +49,9 @@ class ProcessM3UBatchCleanupTests(SimpleTestCase):
         )
         mock_stream_cls.generate_hash_key = MagicMock(return_value="hash123")
 
-        with patch("gc.collect") as mock_gc, patch("django.db.connections"):
+        with patch("gc.collect") as mock_gc, patch("django.db.connections"), patch(
+            "apps.m3u.tasks.transaction"
+        ):
             process_m3u_batch_direct(1, [], {}, ["name", "url"], compiled_filters=[])
             mock_gc.assert_called()
 
@@ -66,7 +70,7 @@ class ProcessM3UBatchCleanupTests(SimpleTestCase):
         )
         mock_stream_cls.generate_hash_key = MagicMock(return_value="hash123")
 
-        with patch("django.db.connections"):
+        with patch("django.db.connections"), patch("apps.m3u.tasks.transaction"):
             process_m3u_batch_direct(1, [], {}, ["name", "url"], compiled_filters=[])
 
         mock_account.filters.order_by.assert_not_called()

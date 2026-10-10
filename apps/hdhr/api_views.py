@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
-from apps.accounts.permissions import Authenticated, permission_classes_by_action
+from apps.accounts.permissions import permissions_for_action
 from django.http import JsonResponse, HttpResponseForbidden, HttpResponse
 import logging
 from drf_spectacular.utils import extend_schema, OpenApiParameter
@@ -37,10 +37,7 @@ class HDHRDeviceViewSet(viewsets.ModelViewSet):
     serializer_class = HDHRDeviceSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 # 🔹 2) Discover API

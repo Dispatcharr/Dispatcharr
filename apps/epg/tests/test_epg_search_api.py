@@ -345,3 +345,52 @@ class ProgramSearchAPIViewTests(TestCase):
         # All 4 seeded programs are returned — request was accepted and clamped
         self.assertEqual(data["count"], 4)
         self.assertEqual(len(data["results"]), 4)
+
+    def test_channels_payload_uses_effective_values_and_override_maps(self):
+        """Search channel payloads reflect overrides and override-only EPG links."""
+        from apps.channels.models import ChannelGroup, ChannelOverride
+
+        admin = User.objects.create_user(
+            username="epg_admin", password="x", user_level=10
+        )
+        self.client.force_authenticate(user=admin)
+
+        group = ChannelGroup.objects.create(name="Override Group")
+        other_epg = EPGData.objects.create(
+            tvg_id="override-only",
+            name="Override Only EPG",
+            epg_source=self.epg_source,
+        )
+        ProgramData.objects.create(
+            epg=other_epg,
+            title="Override Linked Show",
+            description="Visible via ChannelOverride.epg_data only.",
+            start_time=self.now,
+            end_time=self.now + timedelta(hours=1),
+        )
+        channel = Channel.objects.create(
+            name="Provider Channel",
+            channel_number=1.0,
+            channel_group=group,
+            epg_data=None,
+            auto_created=True,
+            user_level=1,
+        )
+        ChannelOverride.objects.create(
+            channel=channel,
+            name="Effective Channel",
+            channel_number=99.0,
+            epg_data=other_epg,
+        )
+
+        response = self.client.get(
+            SEARCH_URL, {"title": "Override Linked Show"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.json()["results"]
+        self.assertEqual(len(results), 1)
+        channels = results[0]["channels"]
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0]["id"], channel.id)
+        self.assertEqual(channels[0]["name"], "Effective Channel")
+        self.assertEqual(channels[0]["channel_number"], 99.0)

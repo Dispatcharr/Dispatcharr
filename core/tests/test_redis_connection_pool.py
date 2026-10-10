@@ -1,12 +1,14 @@
 """Redis client pools must stay bounded under concurrent waiters."""
 
 import os
+import ssl
 import threading
 import time
 
 from django.test import SimpleTestCase, override_settings
-from redis.connection import BlockingConnectionPool
+from redis.connection import BlockingConnectionPool, SSLConnection
 
+from core.redis_connection import build_redis_client
 from core.utils import RedisClient
 from unittest.mock import patch, MagicMock
 
@@ -105,3 +107,41 @@ class RedisConnectionPoolTests(SimpleTestCase):
         with patch.dict(os.environ, {"REDIS_URL": "redis://localhost:6379/0?invalid_query=%%"}, clear=False):
             client = RedisClient._init_client(decode_responses=True)
             self.assertIsNone(client)
+
+    def test_hostport_ssl_params_use_ssl_connection_class(self):
+        """Discrete REDIS_SSL_* params must not pass ssl=True into the pool.
+
+        redis-py's BlockingConnectionPool forwards unknown kwargs into
+        AbstractConnection, which rejects ssl=. Translate ssl=True into
+        connection_class=SSLConnection instead.
+        """
+        ssl_params = {
+            "ssl": True,
+            "ssl_cert_reqs": ssl.CERT_NONE,
+            "ssl_ca_certs": "/etc/ssl/certs/ca-certificates.crt",
+        }
+        client, location = build_redis_client(
+            host="redis.example.io",
+            port=6380,
+            db=5,
+            ssl_params=ssl_params,
+            max_connections=2,
+            pool_timeout=1,
+        )
+        pool = client.connection_pool
+        self.assertIsInstance(pool, BlockingConnectionPool)
+        self.assertIs(pool.connection_class, SSLConnection)
+        self.assertNotIn("ssl", pool.connection_kwargs)
+        self.assertEqual(pool.connection_kwargs.get("ssl_cert_reqs"), ssl.CERT_NONE)
+        self.assertEqual(
+            pool.connection_kwargs.get("ssl_ca_certs"),
+            "/etc/ssl/certs/ca-certificates.crt",
+        )
+        self.assertEqual(location, "redis.example.io:6380")
+        # Connection construction must not raise TypeError on ssl=.
+        with patch.object(SSLConnection, "connect", return_value=None):
+            conn = pool.get_connection()
+            try:
+                self.assertIsInstance(conn, SSLConnection)
+            finally:
+                pool.release(conn)

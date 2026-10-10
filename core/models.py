@@ -1,6 +1,7 @@
 # core/models.py
 
 import logging
+import os
 import time
 from shlex import split as shlex_split
 
@@ -47,6 +48,7 @@ class UserAgent(models.Model):
 
 PROXY_PROFILE_NAME = "Proxy"
 REDIRECT_PROFILE_NAME = "Redirect"
+FFMPEG_PROFILE_NAME = "FFmpeg"
 
 
 def _enforce_locked_profile(instance, allowed_fields):
@@ -106,6 +108,11 @@ class StreamProfile(models.Model):
         # user_agent is the profile's request header, not the stream command.
         _enforce_locked_profile(self, {"user_agent"})
         super().save(*args, **kwargs)
+
+    @classmethod
+    def get_locked(cls, name):
+        """Return the locked profile whose display name matches case-insensitively."""
+        return cls.objects.get(name__iexact=name, locked=True)
 
     @classmethod
     def update(cls, pk, **kwargs):
@@ -272,6 +279,7 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+REVERSE_PROXY_AUTH_KEY = "reverse_proxy_auth"
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
@@ -308,6 +316,20 @@ _CACHE_BACKEND_ERROR = object()
 
 _GROUP_CACHE_ERROR_LOG_INTERVAL_SECONDS = 60
 _last_group_cache_error_log_at = 0.0
+
+# Opt out of the settings Redis cache and read Postgres instead. The AIO
+# entrypoint sets this for migrate (Redis is not up yet); other callers can
+# set it whenever they need the same bypass.
+_SKIP_REDIS_CACHE_ENV = "DISPATCHARR_SKIP_REDIS_CACHE"
+
+
+def _skip_redis_cache():
+    """True when Redis settings-cache access is explicitly disabled."""
+    return os.environ.get(_SKIP_REDIS_CACHE_ENV, "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _log_group_cache_backend_error(operation, key, exc):
@@ -359,8 +381,11 @@ class CoreSettings(models.Model):
         distinguish that from a normal miss. AIO starts Redis via uWSGI after
         ``migrate``, so settings reads during data migrations must not
         hard-require Redis. Local connection refused fails immediately (no
-        connect-timeout wait).
+        connect-timeout wait). When ``DISPATCHARR_SKIP_REDIS_CACHE`` is
+        set, skip Redis without probing or warning.
         """
+        if _skip_redis_cache():
+            return _CACHE_BACKEND_ERROR
         try:
             return cache.get(key, default)
         except _GROUP_CACHE_RERAISE_ERRORS:
@@ -371,7 +396,9 @@ class CoreSettings(models.Model):
 
     @classmethod
     def _cache_set(cls, key, value, timeout=None):
-        """Write to Django cache; no-op if Redis is unreachable."""
+        """Write to Django cache; no-op if Redis is unreachable or skipped."""
+        if _skip_redis_cache():
+            return False
         try:
             cache.set(key, value, timeout=timeout)
             return True
@@ -383,7 +410,9 @@ class CoreSettings(models.Model):
 
     @classmethod
     def _cache_delete(cls, key):
-        """Delete from Django cache; no-op if Redis is unreachable."""
+        """Delete from Django cache; no-op if Redis is unreachable or skipped."""
+        if _skip_redis_cache():
+            return False
         try:
             cache.delete(key)
             return True
@@ -782,6 +811,15 @@ class CoreSettings(models.Model):
     def get_network_access_settings(cls):
         """CIDR allowlists per endpoint type (UI, STREAMS, XC_API, M3U_EPG, ...)."""
         return cls._get_group(NETWORK_ACCESS_KEY, {})
+
+    # Reverse Proxy Auth
+    @classmethod
+    def get_reverse_proxy_auth_settings(cls):
+        """Header-based sign-in handed off by a trusted reverse proxy."""
+        return cls._get_group(REVERSE_PROXY_AUTH_KEY, {
+            "enabled": False,
+            "header": "",
+        })
 
     # System Settings
     @classmethod

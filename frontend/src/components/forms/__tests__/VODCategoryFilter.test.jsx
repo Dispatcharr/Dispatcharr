@@ -64,6 +64,33 @@ vi.mock('@mantine/core', () => ({
       ))}
     </div>
   ),
+  Select: ({
+    label,
+    value,
+    onChange,
+    data = [],
+    placeholder,
+    'aria-label': ariaLabel,
+  }) => (
+    <label>
+      {label}
+      <select
+        aria-label={ariaLabel ?? label}
+        value={value ?? ''}
+        onChange={(e) => {
+          const next = e.target.value;
+          onChange?.(next === '' ? null : next);
+        }}
+      >
+        <option value="">{placeholder}</option>
+        {data.map((item) => (
+          <option key={item.value ?? item} value={item.value ?? item}>
+            {item.label ?? item}
+          </option>
+        ))}
+      </select>
+    </label>
+  ),
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -75,20 +102,26 @@ const makeCategories = () => [
   {
     id: 1,
     name: 'Action',
-    m3u_accounts: [{ m3u_account: 10, enabled: true }],
-    category_type: 'movies',
+    m3u_accounts: [
+      {
+        m3u_account: 10,
+        enabled: true,
+        custom_properties: { language: 'en', quality: '1080p' },
+      },
+    ],
+    category_type: 'movie',
   },
   {
     id: 2,
     name: 'Comedy',
     m3u_accounts: [{ m3u_account: 10, enabled: false }],
-    category_type: 'movies',
+    category_type: 'movie',
   },
   {
     id: 3,
     name: 'Drama',
     m3u_accounts: [{ m3u_account: 10, enabled: true }],
-    category_type: 'movies',
+    category_type: 'movie',
   },
   {
     id: 4,
@@ -118,16 +151,27 @@ const defaultProps = (overrides = {}) => {
   return {
     playlist: makePlaylist(),
     categoryStates: [
-      { id: 1, name: 'Action', enabled: true },
-      { id: 2, name: 'Comedy', enabled: false },
-      { id: 3, name: 'Drama', enabled: true },
+      {
+        id: 1,
+        name: 'Action',
+        enabled: true,
+        custom_properties: { language: 'en', quality: '1080p' },
+      },
+      { id: 2, name: 'Comedy', enabled: false, custom_properties: {} },
+      { id: 3, name: 'Drama', enabled: true, custom_properties: {} },
     ],
     setCategoryStates: vi.fn(),
-    type: 'movies',
+    type: 'movie',
     autoEnableNewGroups: true,
     setAutoEnableNewGroups: vi.fn(),
     ...overrides,
   };
+};
+
+// setCategoryStates may receive an array or a functional updater.
+const latestCategoryStates = (setCategoryStates, previous) => {
+  const next = setCategoryStates.mock.calls.at(-1)[0];
+  return typeof next === 'function' ? next(previous) : next;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -325,20 +369,18 @@ describe('VODCategoryFilter', () => {
   describe('Enable All button', () => {
     it('calls setCategoryStates with all visible categories set to true', () => {
       const setCategoryStates = vi.fn();
+      const categoryStates = [
+        { id: 1, name: 'Action', enabled: false },
+        { id: 2, name: 'Comedy', enabled: false },
+        { id: 3, name: 'Drama', enabled: false },
+      ];
       render(
         <VODCategoryFilter
-          {...defaultProps({
-            setCategoryStates,
-            categoryStates: [
-              { id: 1, name: 'Action', enabled: false },
-              { id: 2, name: 'Comedy', enabled: false },
-              { id: 3, name: 'Drama', enabled: false },
-            ],
-          })}
+          {...defaultProps({ setCategoryStates, categoryStates })}
         />
       );
       fireEvent.click(screen.getByText('Select Visible'));
-      const called = setCategoryStates.mock.calls.at(-1)[0];
+      const called = latestCategoryStates(setCategoryStates, categoryStates);
       expect(called.find((s) => s.id === 1).enabled).toBe(true);
       expect(called.find((s) => s.id === 2).enabled).toBe(true);
       expect(called.find((s) => s.id === 3).enabled).toBe(true);
@@ -346,23 +388,21 @@ describe('VODCategoryFilter', () => {
 
     it('only enables filtered categories when a text filter is active', () => {
       const setCategoryStates = vi.fn();
+      const categoryStates = [
+        { id: 1, name: 'Action', enabled: false },
+        { id: 2, name: 'Comedy', enabled: false },
+        { id: 3, name: 'Drama', enabled: false },
+      ];
       render(
         <VODCategoryFilter
-          {...defaultProps({
-            setCategoryStates,
-            categoryStates: [
-              { id: 1, name: 'Action', enabled: false },
-              { id: 2, name: 'Comedy', enabled: false },
-              { id: 3, name: 'Drama', enabled: false },
-            ],
-          })}
+          {...defaultProps({ setCategoryStates, categoryStates })}
         />
       );
       fireEvent.change(screen.getByPlaceholderText(/filter/i), {
         target: { value: 'act' },
       });
       fireEvent.click(screen.getByText('Select Visible'));
-      const called = setCategoryStates.mock.calls.at(-1)[0];
+      const called = latestCategoryStates(setCategoryStates, categoryStates);
       expect(called.find((s) => s.id === 1).enabled).toBe(true);
       // Comedy and Drama were filtered out — their state should be unchanged
       expect(called.find((s) => s.id === 2).enabled).toBe(false);
@@ -373,9 +413,13 @@ describe('VODCategoryFilter', () => {
   describe('Disable All button', () => {
     it('calls setCategoryStates with all visible categories set to false', () => {
       const setCategoryStates = vi.fn();
-      render(<VODCategoryFilter {...defaultProps({ setCategoryStates })} />);
+      const props = defaultProps({ setCategoryStates });
+      render(<VODCategoryFilter {...props} />);
       fireEvent.click(screen.getByText('Deselect Visible'));
-      const called = setCategoryStates.mock.calls.at(-1)[0];
+      const called = latestCategoryStates(
+        setCategoryStates,
+        props.categoryStates
+      );
       expect(called.find((s) => s.id === 1).enabled).toBe(false);
       expect(called.find((s) => s.id === 2).enabled).toBe(false);
       expect(called.find((s) => s.id === 3).enabled).toBe(false);
@@ -383,23 +427,21 @@ describe('VODCategoryFilter', () => {
 
     it('only disables filtered categories when a text filter is active', () => {
       const setCategoryStates = vi.fn();
+      const categoryStates = [
+        { id: 1, name: 'Action', enabled: true },
+        { id: 2, name: 'Comedy', enabled: true },
+        { id: 3, name: 'Drama', enabled: true },
+      ];
       render(
         <VODCategoryFilter
-          {...defaultProps({
-            setCategoryStates,
-            categoryStates: [
-              { id: 1, name: 'Action', enabled: true },
-              { id: 2, name: 'Comedy', enabled: true },
-              { id: 3, name: 'Drama', enabled: true },
-            ],
-          })}
+          {...defaultProps({ setCategoryStates, categoryStates })}
         />
       );
       fireEvent.change(screen.getByPlaceholderText(/filter/i), {
         target: { value: 'comedy' },
       });
       fireEvent.click(screen.getByText('Deselect Visible'));
-      const called = setCategoryStates.mock.calls.at(-1)[0];
+      const called = latestCategoryStates(setCategoryStates, categoryStates);
       expect(called.find((s) => s.id === 2).enabled).toBe(false);
       expect(called.find((s) => s.id === 1).enabled).toBe(true);
       expect(called.find((s) => s.id === 3).enabled).toBe(true);
@@ -464,7 +506,7 @@ describe('VODCategoryFilter', () => {
             id: 99,
             name: 'Foreign',
             m3u_accounts: [{ m3u_account: 99, enabled: true }],
-            category_type: 'movies',
+            category_type: 'movie',
           },
         ],
       });
@@ -472,6 +514,96 @@ describe('VODCategoryFilter', () => {
       expect(
         screen.queryByRole('button', { name: 'Foreign' })
       ).not.toBeInTheDocument();
+    });
+  });
+
+  // ── Language / quality ────────────────────────────────────────────────────
+
+  describe('language and quality selects', () => {
+    it('renders language and quality selects for each visible category', () => {
+      render(<VODCategoryFilter {...defaultProps()} />);
+      expect(screen.getAllByLabelText('Language')).toHaveLength(3);
+      expect(screen.getAllByLabelText('Quality')).toHaveLength(3);
+    });
+
+    it('loads existing language and quality from category state', () => {
+      render(<VODCategoryFilter {...defaultProps()} />);
+      const languageSelects = screen.getAllByLabelText('Language');
+      const qualitySelects = screen.getAllByLabelText('Quality');
+      // Categories render sorted by name: Action, Comedy, Drama
+      expect(languageSelects[0]).toHaveValue('en');
+      expect(qualitySelects[0]).toHaveValue('1080p');
+      expect(languageSelects[1]).toHaveValue('');
+      expect(qualitySelects[1]).toHaveValue('');
+    });
+
+    it('updates custom_properties.language when language changes', () => {
+      const setCategoryStates = vi.fn();
+      const props = defaultProps({ setCategoryStates });
+      render(<VODCategoryFilter {...props} />);
+      const languageSelects = screen.getAllByLabelText('Language');
+      fireEvent.change(languageSelects[0], { target: { value: 'es' } });
+      const called = latestCategoryStates(
+        setCategoryStates,
+        props.categoryStates
+      );
+      expect(called.find((s) => s.id === 1).custom_properties.language).toBe(
+        'es'
+      );
+      expect(called.find((s) => s.id === 1).custom_properties.quality).toBe(
+        '1080p'
+      );
+    });
+
+    it('updates custom_properties.quality when quality changes', () => {
+      const setCategoryStates = vi.fn();
+      const props = defaultProps({ setCategoryStates });
+      render(<VODCategoryFilter {...props} />);
+      const qualitySelects = screen.getAllByLabelText('Quality');
+      fireEvent.change(qualitySelects[0], { target: { value: '4K' } });
+      const called = latestCategoryStates(
+        setCategoryStates,
+        props.categoryStates
+      );
+      expect(called.find((s) => s.id === 1).custom_properties.quality).toBe(
+        '4K'
+      );
+    });
+
+    it('clears language to null when deselected', () => {
+      const setCategoryStates = vi.fn();
+      const props = defaultProps({ setCategoryStates });
+      render(<VODCategoryFilter {...props} />);
+      const languageSelects = screen.getAllByLabelText('Language');
+      fireEvent.change(languageSelects[0], { target: { value: '' } });
+      const called = latestCategoryStates(
+        setCategoryStates,
+        props.categoryStates
+      );
+      expect(called.find((s) => s.id === 1).custom_properties.language).toBe(
+        null
+      );
+    });
+
+    it('hydrates custom_properties from the store on mount', () => {
+      const setCategoryStates = vi.fn();
+      render(
+        <VODCategoryFilter
+          {...defaultProps({ setCategoryStates, categoryStates: [] })}
+        />
+      );
+      expect(setCategoryStates).toHaveBeenCalled();
+      const hydrated = latestCategoryStates(setCategoryStates, []);
+      const action = hydrated.find((s) => s.id === 1);
+      expect(action.custom_properties).toEqual({
+        language: 'en',
+        quality: '1080p',
+      });
+      expect(action.original_custom_properties).toEqual({
+        language: 'en',
+        quality: '1080p',
+      });
+      expect(action.original_enabled).toBe(true);
     });
   });
 });

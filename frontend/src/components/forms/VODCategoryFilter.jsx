@@ -1,5 +1,4 @@
-// Modal.js
-import React, { useState, useEffect } from 'react';
+import React, { memo, startTransition, useCallback, useEffect, useState } from 'react';
 import {
   TextInput,
   Button,
@@ -11,9 +10,122 @@ import {
   Box,
   Checkbox,
   SegmentedControl,
+  Select,
 } from '@mantine/core';
 import { CircleCheck, CircleX } from 'lucide-react';
 import useVODStore from '../../store/useVODStore';
+
+export const VOD_CATEGORY_QUALITIES = ['4K', '1080p', '720p', '480p', 'SD'];
+
+// Common ISO 639-1 codes for IPTV VOD catalogs.
+export const VOD_CATEGORY_LANGUAGES = [
+  { value: 'en', label: 'English (en)' },
+  { value: 'es', label: 'Spanish (es)' },
+  { value: 'fr', label: 'French (fr)' },
+  { value: 'de', label: 'German (de)' },
+  { value: 'it', label: 'Italian (it)' },
+  { value: 'pt', label: 'Portuguese (pt)' },
+  { value: 'nl', label: 'Dutch (nl)' },
+  { value: 'pl', label: 'Polish (pl)' },
+  { value: 'ru', label: 'Russian (ru)' },
+  { value: 'ar', label: 'Arabic (ar)' },
+  { value: 'tr', label: 'Turkish (tr)' },
+  { value: 'ja', label: 'Japanese (ja)' },
+  { value: 'ko', label: 'Korean (ko)' },
+  { value: 'zh', label: 'Chinese (zh)' },
+  { value: 'hi', label: 'Hindi (hi)' },
+  { value: 'sv', label: 'Swedish (sv)' },
+  { value: 'no', label: 'Norwegian (no)' },
+  { value: 'da', label: 'Danish (da)' },
+  { value: 'fi', label: 'Finnish (fi)' },
+  { value: 'cs', label: 'Czech (cs)' },
+  { value: 'el', label: 'Greek (el)' },
+  { value: 'he', label: 'Hebrew (he)' },
+  { value: 'hu', label: 'Hungarian (hu)' },
+  { value: 'ro', label: 'Romanian (ro)' },
+  { value: 'uk', label: 'Ukrainian (uk)' },
+  { value: 'th', label: 'Thai (th)' },
+  { value: 'vi', label: 'Vietnamese (vi)' },
+  { value: 'id', label: 'Indonesian (id)' },
+  { value: 'ms', label: 'Malay (ms)' },
+];
+
+const QUALITY_OPTIONS = VOD_CATEGORY_QUALITIES.map((q) => ({
+  value: q,
+  label: q,
+}));
+
+const parseCustomProperties = (raw) => {
+  if (!raw) return {};
+  try {
+    return typeof raw === 'string' ? JSON.parse(raw) : { ...raw };
+  } catch {
+    return {};
+  }
+};
+
+const CategoryCard = memo(function CategoryCard({
+  category,
+  onToggle,
+  onCustomPropertyChange,
+}) {
+  const props = category.custom_properties || {};
+
+  return (
+    <Stack
+      gap={4}
+      style={{
+        padding: '8px',
+        border: '1px solid #444',
+        borderRadius: '8px',
+        backgroundColor: category.enabled ? '#2A2A2E' : '#1E1E22',
+      }}
+    >
+      <Button
+        color={category.enabled ? 'green' : 'gray'}
+        variant="filled"
+        onClick={() => onToggle(category.id)}
+        radius="md"
+        size="xs"
+        leftSection={
+          category.enabled ? <CircleCheck size={14} /> : <CircleX size={14} />
+        }
+        fullWidth
+      >
+        <Text size="xs" truncate>
+          {category.name}
+        </Text>
+      </Button>
+      <Group grow gap="xs" wrap="nowrap">
+        <Select
+          size="xs"
+          aria-label="Language"
+          placeholder="Language"
+          data={VOD_CATEGORY_LANGUAGES}
+          value={props.language || null}
+          onChange={(value) =>
+            onCustomPropertyChange(category.id, 'language', value)
+          }
+          searchable
+          clearable
+          allowDeselect
+        />
+        <Select
+          size="xs"
+          aria-label="Quality"
+          placeholder="Quality"
+          data={QUALITY_OPTIONS}
+          value={props.quality || null}
+          onChange={(value) =>
+            onCustomPropertyChange(category.id, 'quality', value)
+          }
+          clearable
+          allowDeselect
+        />
+      </Group>
+    </Stack>
+  );
+});
 
 const VODCategoryFilter = ({
   playlist = null,
@@ -32,8 +144,6 @@ const VODCategoryFilter = ({
       return;
     }
 
-    console.log(categories);
-
     setCategoryStates(
       Object.values(categories)
         .filter(
@@ -45,40 +155,71 @@ const VODCategoryFilter = ({
           const match = cat.m3u_accounts.find(
             (acc) => acc.m3u_account == playlist.id
           );
-          if (match) {
-            return {
-              ...cat,
-              enabled: match.enabled || false, // Keep user's previous choice, default to false for new categories
-              original_enabled: match.enabled,
-            };
-          }
+          if (!match) return null;
+          const custom_properties = parseCustomProperties(match.custom_properties);
+          return {
+            ...cat,
+            enabled: match.enabled || false,
+            original_enabled: match.enabled,
+            custom_properties,
+            original_custom_properties: { ...custom_properties },
+          };
         })
+        .filter(Boolean)
     );
   }, [categories, playlist.id, setCategoryStates, type]);
 
-  const toggleEnabled = (id) => {
-    setCategoryStates(
-      categoryStates.map((state) => ({
-        ...state,
-        enabled: state.id == id ? !state.enabled : state.enabled,
-      }))
-    );
-  };
+  const toggleEnabled = useCallback(
+    (id) => {
+      setCategoryStates((prev) =>
+        prev.map((state) =>
+          state.id == id ? { ...state, enabled: !state.enabled } : state
+        )
+      );
+    },
+    [setCategoryStates]
+  );
 
-  const isVisible = (category) => {
-    const matchesText = category.name
-      .toLowerCase()
-      .includes(filter.toLowerCase());
-    const matchesStatus =
-      statusFilter === 'all' ||
-      (statusFilter === 'enabled' && category.enabled) ||
-      (statusFilter === 'disabled' && !category.enabled);
-    return matchesText && matchesStatus;
-  };
+  const updateCustomProperty = useCallback(
+    (id, key, value) => {
+      const nextValue = value === '' || value == null ? null : value;
+      // Keep the Select close/selection responsive; list paint can wait a frame.
+      startTransition(() => {
+        setCategoryStates((prev) =>
+          prev.map((state) => {
+            if (state.id !== id) return state;
+            return {
+              ...state,
+              custom_properties: {
+                ...(state.custom_properties || {}),
+                // null clears the key on the API merge path
+                [key]: nextValue,
+              },
+            };
+          })
+        );
+      });
+    },
+    [setCategoryStates]
+  );
+
+  const isVisible = useCallback(
+    (category) => {
+      const matchesText = category.name
+        .toLowerCase()
+        .includes(filter.toLowerCase());
+      const matchesStatus =
+        statusFilter === 'all' ||
+        (statusFilter === 'enabled' && category.enabled) ||
+        (statusFilter === 'disabled' && !category.enabled);
+      return matchesText && matchesStatus;
+    },
+    [filter, statusFilter]
+  );
 
   const selectAll = () => {
-    setCategoryStates(
-      categoryStates.map((state) => ({
+    setCategoryStates((prev) =>
+      prev.map((state) => ({
         ...state,
         enabled: isVisible(state) ? true : state.enabled,
       }))
@@ -86,13 +227,17 @@ const VODCategoryFilter = ({
   };
 
   const deselectAll = () => {
-    setCategoryStates(
-      categoryStates.map((state) => ({
+    setCategoryStates((prev) =>
+      prev.map((state) => ({
         ...state,
         enabled: isVisible(state) ? false : state.enabled,
       }))
     );
   };
+
+  const visibleCategories = categoryStates
+    .filter((category) => isVisible(category))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <Stack style={{ paddingTop: 10 }}>
@@ -134,48 +279,18 @@ const VODCategoryFilter = ({
 
       <Box style={{ maxHeight: '50vh', overflowY: 'auto' }}>
         <SimpleGrid
-          cols={{ base: 1, sm: 2, md: 3 }}
+          cols={{ base: 1, sm: 2, md: 2 }}
           spacing="xs"
           verticalSpacing="xs"
         >
-          {categoryStates
-            .filter((category) => isVisible(category))
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((category) => (
-              <Group
-                key={category.id}
-                spacing="xs"
-                style={{
-                  padding: '8px',
-                  border: '1px solid #444',
-                  borderRadius: '8px',
-                  backgroundColor: category.enabled ? '#2A2A2E' : '#1E1E22',
-                  flexDirection: 'column',
-                  alignItems: 'stretch',
-                }}
-              >
-                {/* Group Enable/Disable Button */}
-                <Button
-                  color={category.enabled ? 'green' : 'gray'}
-                  variant="filled"
-                  onClick={() => toggleEnabled(category.id)}
-                  radius="md"
-                  size="xs"
-                  leftSection={
-                    category.enabled ? (
-                      <CircleCheck size={14} />
-                    ) : (
-                      <CircleX size={14} />
-                    )
-                  }
-                  fullWidth
-                >
-                  <Text size="xs" truncate>
-                    {category.name}
-                  </Text>
-                </Button>
-              </Group>
-            ))}
+          {visibleCategories.map((category) => (
+            <CategoryCard
+              key={category.id}
+              category={category}
+              onToggle={toggleEnabled}
+              onCustomPropertyChange={updateCustomProperty}
+            />
+          ))}
         </SimpleGrid>
       </Box>
     </Stack>

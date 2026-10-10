@@ -1,9 +1,14 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UiSettingsForm from '../UiSettingsForm';
+import { USER_LEVELS } from '../../../../constants';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../../store/settings.jsx', () => ({ default: vi.fn() }));
+vi.mock('../../../../store/auth', () => ({ default: vi.fn() }));
+vi.mock('../../../../store/outputProfiles.jsx', () => ({
+  default: vi.fn((sel) => sel({ profiles: [] })),
+}));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../../hooks/useBrowserStorage.jsx', () => ({
@@ -27,6 +32,11 @@ vi.mock('../../../../utils/notificationUtils.js', () => ({
 
 vi.mock('../../../../utils/forms/settings/UiSettingsFormUtils.js', () => ({
   saveTimeZoneSetting: vi.fn(),
+}));
+
+vi.mock('../../../../utils/components/FloatingVideoUtils.js', () => ({
+  getPlayerPrefs: vi.fn(() => ({})),
+  savePlayerPrefs: vi.fn(),
 }));
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
@@ -66,6 +76,7 @@ vi.mock('@mantine/core', () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import useSettingsStore from '../../../../store/settings.jsx';
+import useAuthStore from '../../../../store/auth';
 import useBrowserStorage from '../../../../hooks/useBrowserStorage.jsx';
 import useTablePreferences from '../../../../hooks/useTablePreferences.jsx';
 import {
@@ -98,6 +109,7 @@ const setupMocks = ({
   timeZone = DEFAULT_TZ,
   headerPinned = false,
   tableSize = 'default',
+  userLevel = USER_LEVELS.ADMIN,
 } = {}) => {
   const setTimeFormat = vi.fn();
   const setDateFormat = vi.fn();
@@ -110,6 +122,9 @@ const setupMocks = ({
   vi.mocked(saveTimeZoneSetting).mockResolvedValue(undefined);
 
   vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
+  vi.mocked(useAuthStore).mockImplementation((sel) =>
+    sel({ user: { user_level: userLevel } })
+  );
 
   vi.mocked(useBrowserStorage).mockImplementation((key, defaultVal) => {
     if (key === 'time-format') return [timeFormat, setTimeFormat];
@@ -289,6 +304,21 @@ describe('UiSettingsForm', () => {
       });
     });
 
+    it('updates local time zone for standard users without saving to CoreSettings', async () => {
+      const { setTimeZone } = setupMocks({
+        settings: makeSettings({ timeZone: 'UTC' }),
+        userLevel: USER_LEVELS.STANDARD,
+      });
+      render(<UiSettingsForm />);
+      fireEvent.change(screen.getByTestId('select-time-zone'), {
+        target: { value: 'America/Chicago' },
+      });
+      expect(setTimeZone).toHaveBeenCalledWith('America/Chicago');
+      await waitFor(() => {
+        expect(saveTimeZoneSetting).not.toHaveBeenCalled();
+      });
+    });
+
     it('does not call setTimeZone when value is empty', () => {
       const { setTimeZone } = setupMocks();
       render(<UiSettingsForm />);
@@ -351,6 +381,18 @@ describe('UiSettingsForm', () => {
           DEFAULT_TZ,
           makeSettings({ timeZone: null })
         );
+      });
+    });
+
+    it('does not call saveTimeZoneSetting for standard users when no tz in settings', async () => {
+      setupMocks({
+        settings: makeSettings({ timeZone: null }),
+        timeZone: DEFAULT_TZ,
+        userLevel: USER_LEVELS.STANDARD,
+      });
+      render(<UiSettingsForm />);
+      await waitFor(() => {
+        expect(saveTimeZoneSetting).not.toHaveBeenCalled();
       });
     });
 

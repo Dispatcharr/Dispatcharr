@@ -15,6 +15,13 @@ urlpatterns = [
     path('plugins/', include(('apps.plugins.api_urls', 'plugins'), namespace='plugins')),
     path('vod/', include(('apps.vod.api_urls', 'vod'), namespace='vod')),
     path('catchup/', include(('apps.timeshift.api_urls', 'catchup'), namespace='catchup')),
+    path(
+        'proxy/hls/',
+        include(
+            ('apps.proxy.live_proxy.output.hls.api_urls', 'hls'),
+            namespace='hls',
+        ),
+    ),
     path('backups/', include(('apps.backups.api_urls', 'backups'), namespace='backups')),
     path('connect/', include(('apps.connect.api_urls', 'connect'), namespace='connect')),
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),

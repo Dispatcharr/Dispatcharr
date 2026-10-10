@@ -91,20 +91,20 @@ class XCGetSeriesInfoTests(TestCase):
             container_extension='mp4',
         )
 
-    def _info(self, relation_id):
+    def _info(self, series_id):
         request = self.factory.get('/player_api.php')
-        return xc_get_series_info(request, self.user, str(relation_id))
+        return xc_get_series_info(request, self.user, str(series_id))
 
     def test_returns_all_active_provider_episodes(self):
-        # XC clients get a unified catalog, even when asked via one series_relation id.
-        info = self._info(self.relation_a.id)
+        # XC clients get a unified catalog across every provider of the series.
+        info = self._info(self.series.id)
         self.assertIn(0, info['episodes'])
         self.assertIn(1, info['episodes'])
         self.assertEqual(info['episodes'][0][0]['title'], 'Special')
         self.assertEqual(info['episodes'][0][0]['season'], 0)
 
     def test_prefers_higher_priority_account_stream_metadata(self):
-        info = self._info(self.relation_a.id)
+        info = self._info(self.series.id)
         self.assertEqual(info['episodes'][1][0]['container_extension'], 'mp4')
 
     def test_episode_artwork_prefers_higher_priority_relation(self):
@@ -127,7 +127,7 @@ class XCGetSeriesInfoTests(TestCase):
             }
         )
 
-        info = self._info(self.relation_a.id)
+        info = self._info(self.series.id)
         movie_image = info['episodes'][1][0]['info']['movie_image']
         self.assertIn('/api/vod/episodes/', movie_image)
         self.assertIn('kind=movie_image', movie_image)
@@ -152,10 +152,10 @@ class XCGetSeriesInfoTests(TestCase):
                 container_extension='mkv',
             )
 
-        self._info(self.relation_a.id)  # warm
+        self._info(self.series.id)  # warm
 
         with CaptureQueriesContext(connection) as ctx:
-            info = self._info(self.relation_a.id)
+            info = self._info(self.series.id)
 
         self.assertEqual(len(info['episodes'][1]), 11)
         relation_queries = [

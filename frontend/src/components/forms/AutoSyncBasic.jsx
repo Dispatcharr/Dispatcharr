@@ -16,6 +16,8 @@ const AutoSyncBasic = ({
   groupStates,
   groupConflicts,
   onApplyGroupChange,
+  // Optional precomputed overlaps; when omitted, computed from groupStates.
+  overlaps: overlapsProp,
 }) => {
   const mode = group.custom_properties?.channel_numbering_mode || 'fixed';
   if (mode === 'next_available') {
@@ -92,9 +94,10 @@ const AutoSyncBasic = ({
   }
   const metaText = metaParts.join(' · ');
 
-  const conflict = groupConflicts[group.channel_group];
+  const conflict = groupConflicts?.[group.channel_group];
   const hasChannelConflict = !!conflict?.hasChannelConflict;
-  const overlaps = computeRangeOverlapsFor(group, groupStates);
+  const overlaps =
+    overlapsProp ?? computeRangeOverlapsFor(group, groupStates || []);
 
   // Channel-level conflicts get a generic Channels-page pointer (count
   // can be large); range-level overlaps stay specific to the modal.

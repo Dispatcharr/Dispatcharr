@@ -6,17 +6,20 @@ import random
 from ..redis_keys import RedisKeys
 from ..config_helper import ConfigHelper
 from ..constants import TS_PACKET_SIZE
+from .ts_discontinuity import stamp_first_packet_per_pid
 from ..utils import get_logger
 import gevent.event
 import gevent
 
 logger = get_logger()
 
+
 class StreamBuffer:
     """Manages stream data buffering with optimized chunk storage"""
 
     def __init__(self, channel_id=None, redis_client=None,
-                 buffer_index_key=None, buffer_chunk_prefix=None, chunk_timestamps_key=None):
+                 buffer_index_key=None, buffer_chunk_prefix=None, chunk_timestamps_key=None,
+                 discontinuities_key=None):
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.lock = threading.Lock()
@@ -43,6 +46,21 @@ class StreamBuffer:
 
         # Sorted-set key for chunk receive-timestamps (time-based positioning)
         self.chunk_timestamps_key = chunk_timestamps_key or (RedisKeys.chunk_timestamps(channel_id) if channel_id else "")
+        # Sidecar: chunk indices where a source discontinuity begins. Optional for
+        # profile output buffers that do not participate in failover marking.
+        if discontinuities_key is not None:
+            self.discontinuities_key = discontinuities_key
+        elif channel_id and buffer_index_key is None:
+            # Default input buffer only; custom-keyed buffers opt in explicitly.
+            self.discontinuities_key = RedisKeys.buffer_discontinuities(channel_id)
+        else:
+            self.discontinuities_key = ""
+
+        # After mark_discontinuity(): stamp discontinuity_indicator on the first
+        # packet of each PID until the first post-mark Redis chunk is written.
+        self._disc_stamp_active = False
+        self._disc_stamped_pids = set()
+        self._disc_mark_index = 0
 
         # Register Lua scripts once — subsequent calls use EVALSHA (just the
         # SHA hash) instead of sending the full script text on every invocation.
@@ -87,38 +105,22 @@ class StreamBuffer:
                     return True
 
                 # Split into complete packets and remainder
-                complete_packets = combined_data[:complete_packets_size]
-                self._partial_packet = combined_data[complete_packets_size:]
+                complete_packets = bytes(combined_data[:complete_packets_size])
+                self._partial_packet = bytearray(combined_data[complete_packets_size:])
+
+                if self._disc_stamp_active:
+                    complete_packets, _ = stamp_first_packet_per_pid(
+                        complete_packets, self._disc_stamped_pids
+                    )
 
                 # Add completed packets to write buffer
                 self._write_buffer.extend(complete_packets)
 
                 # Only write to Redis when we have enough data for an optimized chunk
                 while len(self._write_buffer) >= self.target_chunk_size:
-                    # Extract a full chunk
-                    chunk_data = self._write_buffer[:self.target_chunk_size]
-                    self._write_buffer = self._write_buffer[self.target_chunk_size:]
-
-                    # Write optimized chunk to Redis. We need the new index from
-                    # incr() to build the chunk key, so issue that first; the
-                    # remaining writes are pipelined into one round trip.
-                    if self.redis_client:
-                        chunk_index = self.redis_client.incr(self.buffer_index_key)
-                        chunk_key = f"{self.buffer_prefix}{chunk_index}"
-
-                        pipe = self.redis_client.pipeline(transaction=False)
-                        pipe.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
-
-                        if self.chunk_timestamps_key:
-                            now = time.time()
-                            pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
-                            pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
-                            pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
-
-                        pipe.execute()
-
-                        # Update local tracking
-                        self.index = chunk_index
+                    chunk_data = bytes(self._write_buffer[:self.target_chunk_size])
+                    del self._write_buffer[:self.target_chunk_size]
+                    if self._write_chunk_unlocked(chunk_data):
                         writes_done += 1
 
             if writes_done > 0:
@@ -133,13 +135,167 @@ class StreamBuffer:
             logger.error(f"Error adding chunk to buffer: {e}")
             return False
 
+    def _write_chunk_unlocked(self, chunk_data):
+        """Write one packet-aligned chunk to Redis. Caller must hold self.lock.
+
+        Index is chosen locally and published only after the chunk write
+        succeeds. A prior INCR-first approach could burn an index when the
+        subsequent pipeline failed, leaving a permanent hole that every
+        positional reader (TS / fMP4 / HLS / profile) treats as contiguous.
+        Single-writer under self.lock, so local self.index + 1 is safe.
+        """
+        if not chunk_data or not self.redis_client:
+            return False
+        chunk_index = self.index + 1
+        chunk_key = f"{self.buffer_prefix}{chunk_index}"
+
+        pipe = self.redis_client.pipeline(transaction=False)
+        pipe.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
+        pipe.set(self.buffer_index_key, chunk_index)
+
+        if self.chunk_timestamps_key:
+            now = time.time()
+            pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
+            pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
+            pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
+
+        try:
+            pipe.execute()
+        except Exception as e:
+            logger.error(
+                f"Failed to write buffer chunk {chunk_index} for channel "
+                f"{self.channel_id}: {e}"
+            )
+            return False
+
+        self.index = chunk_index
+
+        # First Redis chunk after a discontinuity mark finishes the in-band
+        # stamping pass (PAT/PMT/A/V first packets are already in this chunk).
+        if self._disc_stamp_active and chunk_index > self._disc_mark_index:
+            self._disc_stamp_active = False
+
+        return True
+
+    def mark_discontinuity(self):
+        """
+        Close out the old source in Redis and arm discontinuity handling for
+        the next source.
+
+        1. Flush any complete packets still in the write buffer so the last
+           old-source Redis chunk ends cleanly.
+        2. Drop a trailing partial packet (cannot form a valid TS packet).
+        3. Record the next chunk index in the discontinuities sidecar so
+           consumers (HLS) can cut before reading it.
+        4. Arm in-band stamping: the first packet of each PID in the new
+           source gets discontinuity_indicator=1 (ISO 13818-1 / FFmpeg
+           initial_discontinuity).
+
+        Must be called after the old input is closed and before new bytes
+        are written.
+        """
+        try:
+            with self.lock:
+                flushed = self._flush_write_buffer_unlocked()
+                # Incomplete trailing bytes belong to the old source and must
+                # not be prepended to the new source's first packet.
+                if hasattr(self, '_partial_packet'):
+                    self._partial_packet = bytearray()
+
+                self._disc_mark_index = self.index
+                next_index = self.index + 1
+                self._disc_stamp_active = True
+                self._disc_stamped_pids = set()
+                self._record_discontinuity_unlocked(next_index)
+
+            if flushed:
+                self.chunk_available.set()
+                self.chunk_available.clear()
+            logger.debug(
+                f"Marked stream discontinuity for channel {self.channel_id} "
+                f"at buffer index {next_index} (flushed={flushed})"
+            )
+            return next_index
+        except Exception as e:
+            logger.error(
+                f"Error marking discontinuity for channel {self.channel_id}: {e}",
+                exc_info=True,
+            )
+            return None
+
+    def _flush_write_buffer_unlocked(self):
+        """Write any pending complete packets even if under target_chunk_size."""
+        if not self._write_buffer:
+            return False
+        # Write buffer is always packet-aligned by construction.
+        aligned = len(self._write_buffer) - (len(self._write_buffer) % self.TS_PACKET_SIZE)
+        if aligned <= 0:
+            self._write_buffer = bytearray()
+            return False
+        chunk_data = bytes(self._write_buffer[:aligned])
+        self._write_buffer = bytearray(self._write_buffer[aligned:])
+        return self._write_chunk_unlocked(chunk_data)
+
+    def _record_discontinuity_unlocked(self, chunk_index):
+        """Publish chunk_index as a discontinuity start into the sidecar set."""
+        if not self.redis_client or not self.discontinuities_key:
+            return
+        try:
+            pipe = self.redis_client.pipeline(transaction=False)
+            pipe.zadd(self.discontinuities_key, {str(chunk_index): float(chunk_index)})
+            # Keep the sidecar no larger than the chunk retention window.
+            pipe.zremrangebyscore(
+                self.discontinuities_key, '-inf', float(chunk_index) - 10000
+            )
+            pipe.expire(self.discontinuities_key, self.chunk_ttl)
+            pipe.execute()
+        except Exception as e:
+            logger.error(
+                f"Error recording discontinuity index {chunk_index} for "
+                f"channel {self.channel_id}: {e}"
+            )
+
+    def discontinuities_in_range(self, start_index_exclusive, end_index_inclusive):
+        """
+        Return sorted chunk indices D where start_index_exclusive < D <= end_index_inclusive.
+
+        These are the first Redis chunks of a new source era; consumers should
+        treat the boundary before D as a discontinuity.
+        """
+        if (
+            not self.redis_client
+            or not self.discontinuities_key
+            or end_index_inclusive <= start_index_exclusive
+        ):
+            return []
+        try:
+            members = self.redis_client.zrangebyscore(
+                self.discontinuities_key,
+                float(start_index_exclusive) + 1e-9,
+                float(end_index_inclusive),
+            )
+            out = []
+            for m in members or []:
+                try:
+                    out.append(int(m))
+                except (TypeError, ValueError):
+                    continue
+            return out
+        except Exception as e:
+            logger.debug(
+                f"Error reading discontinuities for channel {self.channel_id}: {e}"
+            )
+            return []
+
     def reset_buffer_position(self):
         """
         Reset internal buffers for a clean stream transition (failover).
 
-        Called by stream_manager.update_url() when switching between FFmpeg
-        processes. Without this, _partial_packet from the old FFmpeg gets
-        concatenated with the first bytes from the new FFmpeg, creating
+        Prefer mark_discontinuity() on URL switches: it flushes complete
+        packets to Redis before clearing. This method remains for callers that
+        only need to drop local leftovers (e.g. after mark_discontinuity already
+        flushed). Without clearing _partial_packet, bytes from the old FFmpeg
+        get concatenated with the first bytes from the new FFmpeg, creating
         corrupted TS packets that break audio decoder sync in the client.
         """
         try:

@@ -2,9 +2,9 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.accounts.permissions import (
-    Authenticated,
-    permission_classes_by_action,
-    permission_classes_by_method,
+    IsAdmin,
+    permissions_for_action,
+    permissions_for_method,
 )
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -28,6 +28,7 @@ from apps.channels.utils import coerce_channel_profile_ids
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
+from apps.vod.utils import validate_category_custom_properties
 
 from .serializers import (
     M3UAccountSerializer,
@@ -49,10 +50,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     serializer_class = M3UAccountSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -332,7 +330,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             },
         },
     )
-    @action(detail=True, methods=["get"], url_path="auto-created-channels-count")
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="auto-created-channels-count",
+        permission_classes=[IsAdmin],
+    )
     def auto_created_channels_count(self, request, pk=None):
         """
         Preview how many auto-created channels would be removed if the account
@@ -374,7 +377,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             },
         },
     )
-    @action(detail=True, methods=["post"], url_path="repack-group")
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="repack-group",
+        permission_classes=[IsAdmin],
+    )
     def repack_group(self, request, pk=None):
         """
         Manually re-pack visible channels in one of this account's
@@ -441,7 +449,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 )
         return Response(result)
 
-    @action(detail=True, methods=["post"], url_path="refresh-vod")
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="refresh-vod",
+        permission_classes=[IsAdmin],
+    )
     def refresh_vod(self, request, pk=None):
         """Trigger VOD content refresh for XtreamCodes accounts"""
         account = self.get_object()
@@ -478,7 +491,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    @action(detail=True, methods=["patch"], url_path="group-settings")
+    @action(
+        detail=True,
+        methods=["patch"],
+        url_path="group-settings",
+        permission_classes=[IsAdmin],
+    )
     def update_group_settings(self, request, pk=None):
         """Update auto channel sync settings for M3U account groups"""
         account = self.get_object()
@@ -486,6 +504,20 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         category_settings = request.data.get("category_settings", [])
 
         try:
+            validated_category_props = {}
+            for setting in category_settings:
+                try:
+                    validated_category_props[setting.get("id")] = (
+                        validate_category_custom_properties(
+                            setting.get("custom_properties")
+                        )
+                    )
+                except ValueError as e:
+                    return Response(
+                        {"error": f"Category {setting.get('id')}: {e}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             for setting in group_settings:
                 start = setting.get("auto_sync_channel_start")
                 end = setting.get("auto_sync_channel_end")
@@ -546,14 +578,27 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         ],
                     )
 
+                category_ids = [
+                    setting["id"] for setting in category_settings if setting.get("id")
+                ]
+                existing_category_props = {
+                    rel.category_id: rel.custom_properties or {}
+                    for rel in M3UVODCategoryRelation.objects.filter(
+                        m3u_account=account, category_id__in=category_ids
+                    )
+                }
+
                 category_objects = [
                     M3UVODCategoryRelation(
                         category_id=setting["id"],
                         m3u_account=account,
                         enabled=setting.get("enabled", True),
-                        custom_properties=ensure_custom_properties_dict(
-                            setting.get("custom_properties")
-                        ),
+                        # Merged so a partial update (e.g. only `quality`) keeps
+                        # the category's language, which keys its VOD identity
+                        custom_properties={
+                            **existing_category_props.get(setting["id"], {}),
+                            **validated_category_props.get(setting["id"], {}),
+                        },
                     )
                     for setting in category_settings
                     if setting.get("id")
@@ -581,10 +626,7 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
     serializer_class = M3UFilterSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         m3u_account_id = self.kwargs["account_id"]
@@ -611,22 +653,14 @@ class ServerGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ServerGroupSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class RefreshM3UAPIView(APIView):
     """Triggers refresh for all active M3U accounts"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers a refresh of all active M3U accounts",
@@ -643,12 +677,7 @@ class RefreshSingleM3UAPIView(APIView):
     """Triggers refresh for a single M3U account"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers a refresh of a single M3U account",
@@ -668,12 +697,7 @@ class RefreshAccountInfoAPIView(APIView):
     """Triggers account info refresh for a single M3U account"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers a refresh of account information for a specific M3U profile",
@@ -718,10 +742,7 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     serializer_class = UserAgentSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class M3UAccountProfileViewSet(viewsets.ModelViewSet):
@@ -729,10 +750,7 @@ class M3UAccountProfileViewSet(viewsets.ModelViewSet):
     serializer_class = M3UAccountProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         m3u_account_id = self.kwargs["account_id"]

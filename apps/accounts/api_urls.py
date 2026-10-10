@@ -23,12 +23,15 @@ router.register(r"api-keys", APIKeyViewSet, basename="api-key")
 # 🔹 Custom Authentication Endpoints
 auth_view = AuthViewSet.as_view({"post": "login"})
 
+proxy_login_view = AuthViewSet.as_view({"post": "proxy_login"})
+
 logout_view = AuthViewSet.as_view({"post": "logout"})
 
 # 🔹 Define API URL patterns
 urlpatterns = [
     # Authentication
     path("auth/login/", auth_view, name="user-login"),
+    path("auth/proxy-login/", proxy_login_view, name="user-proxy-login"),
     path("auth/logout/", logout_view, name="user-logout"),
     # Superuser API
     path("initialize-superuser/", initialize_superuser, name="initialize_superuser"),
