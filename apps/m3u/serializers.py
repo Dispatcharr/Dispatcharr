@@ -148,6 +148,11 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
+    # Not a model field - stored under custom_properties["hash_key"]. A
+    # missing key means this account inherits the global M3U Hash Key.
+    hash_key = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, write_only=True
+    )
     cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
 
     class Meta:
@@ -175,6 +180,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "password",
             "stale_stream_days",
             "priority",
+            "hash_key",
             "status",
             "last_message",
             "enable_vod",
@@ -228,6 +234,8 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         data["auto_enable_new_groups_live"] = custom_props.get("auto_enable_new_groups_live", True)
         data["auto_enable_new_groups_vod"] = custom_props.get("auto_enable_new_groups_vod", True)
         data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
+        # Missing key means this account inherits the global M3U Hash Key.
+        data["hash_key"] = custom_props.get("hash_key")
 
         # Derive cron_expression from the linked PeriodicTask's crontab (single source of truth)
         # But first check if we have a transient _cron_expression (from create/update before signal runs)
@@ -272,6 +280,8 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", None)
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", None)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
+        _HASH_KEY_NOT_SET = object()
+        hash_key = validated_data.pop("hash_key", _HASH_KEY_NOT_SET)
 
         # Merge client-supplied custom_properties over the existing blob
         # so unrelated keys persist. The dedicated preference fields below
@@ -296,6 +306,16 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
         if auto_enable_new_groups_series is not None:
             custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+
+        # A hash_key override is stored under custom_properties["hash_key"].
+        # An empty/null value means "clear the override" - remove the key
+        # entirely rather than storing a null/empty value, so the account
+        # falls back to the global default.
+        if hash_key is not _HASH_KEY_NOT_SET:
+            if hash_key:
+                custom_props["hash_key"] = hash_key
+            else:
+                custom_props.pop("hash_key", None)
 
         validated_data["custom_properties"] = custom_props
 
@@ -356,6 +376,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", True)
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", True)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", True)
+        hash_key = validated_data.pop("hash_key", None)
 
         # Parse existing custom_properties or create new
         custom_props = validated_data.get("custom_properties") or {}
@@ -367,6 +388,11 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         custom_props["auto_enable_new_groups_live"] = auto_enable_new_groups_live
         custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
         custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+        # A hash_key override is stored under custom_properties["hash_key"];
+        # a missing key means this account inherits the global default, so
+        # only set it when a non-empty override was supplied.
+        if hash_key:
+            custom_props["hash_key"] = hash_key
         validated_data["custom_properties"] = custom_props
 
         # Build instance manually so we can attach transient attr before save triggers signal

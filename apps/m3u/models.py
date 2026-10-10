@@ -103,6 +103,23 @@ class M3UAccount(models.Model):
     def __str__(self):
         return self.name
 
+    def get_effective_hash_keys(self):
+        """Return the list of hash key fields to use for this account's streams.
+
+        Uses this account's own ``hash_key`` override (stored under
+        ``custom_properties["hash_key"]``) when set; otherwise falls back to
+        the global ``m3u_hash_key`` CoreSettings value. A missing key means
+        this account inherits the global default.
+        """
+        custom_props = self.custom_properties or {}
+        if isinstance(custom_props, dict):
+            raw_hash_key = custom_props.get("hash_key")
+            if raw_hash_key:
+                keys = [key for key in raw_hash_key.split(",") if key]
+                if keys:
+                    return keys
+        return CoreSettings.get_m3u_hash_key().split(",")
+
     def clean(self):
         if self.max_streams < 0:
             raise ValidationError("Max streams cannot be negative.")

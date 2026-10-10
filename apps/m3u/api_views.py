@@ -38,6 +38,7 @@ from .serializers import (
 )
 
 from .tasks import refresh_single_m3u_account, refresh_m3u_accounts, refresh_account_info
+from core.tasks import rehash_streams
 import json
 
 
@@ -147,6 +148,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         old_vod_enabled = False
+        old_hash_key = (instance.custom_properties or {}).get("hash_key")
 
         # Check current VOD setting
         if instance.custom_properties:
@@ -188,6 +190,15 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
         # Now call super().update() to update the instance
         response = super().update(request, *args, **kwargs)
+
+        # If this account's hash key override changed, rehash just its own
+        # streams (cheaper than a full rehash, and correct since every other
+        # account's effective keys are unaffected by this account's change).
+        instance.refresh_from_db(fields=["custom_properties"])
+        new_hash_key = (instance.custom_properties or {}).get("hash_key")
+        if new_hash_key != old_hash_key:
+            new_keys = instance.get_effective_hash_keys()
+            rehash_streams.delay(new_keys, account_id=instance.id)
 
         # Check if VOD setting changed and trigger refresh if needed
         new_vod_enabled = request.data.get("enable_vod", old_vod_enabled)
