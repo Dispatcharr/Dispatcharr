@@ -7,9 +7,10 @@ from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
-from apps.epg.models import EPGData, EPGSource
+from apps.epg.models import EPGData, EPGSource, ProgramData
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
+from core.models import EpgHistoryPolicy
 from apps.output.views import (
     xc_get_live_categories,
     xc_get_live_streams,
@@ -229,6 +230,40 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     def _epg_url(self, query="tvg_id_source=tvg_id&days=0&prev_days=0"):
         base = reverse("output:epg_endpoint", kwargs={"profile_name": self.profile.name})
         return f"{base}?{query}"
+
+    def test_paged_export_emits_every_programme_once_in_order(self):
+        """Paging by (epg_id, end_time, id) keeps rows with equal end times intact."""
+        from django.utils import timezone
+
+        source = EPGSource.objects.create(name=f"Paging {uuid4().hex[:8]}", source_type="xmltv")
+        base = timezone.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        expected = {}
+        for number, tvg in ((1.0, "paging.one"), (2.0, "paging.two")):
+            epg = EPGData.objects.create(epg_source=source, tvg_id=tvg, name=tvg)
+            self._add_channel(channel_number=number, name=tvg, tvg_id=tvg, epg_data=epg)
+            titles = []
+            for i in range(5):
+                start = base + timedelta(minutes=30 * i)
+                # Pairs share an end time, so page boundaries fall inside them.
+                end = base + timedelta(minutes=30 * (i // 2 * 2 + 2))
+                title = f"{tvg}-{i}"
+                ProgramData.objects.create(
+                    epg=epg, start_time=start, end_time=end, title=title, tvg_id=tvg,
+                )
+                titles.append(title)
+            expected[tvg] = titles
+
+        with patch("apps.output.epg._EPG_PROGRAM_DB_CHUNK_SIZE", 2):
+            response = self.client.get(self._epg_url())
+
+        root = ET.fromstring(_response_text(response))
+        for tvg, titles in expected.items():
+            got = [
+                p.findtext("title")
+                for p in root.findall("programme")
+                if p.get("channel") == tvg
+            ]
+            self.assertEqual(got, titles)
 
     def test_channel_id_with_ampersand(self):
         """Test channel ID with ampersand is properly escaped"""
@@ -602,7 +637,7 @@ class XcVodSeriesDistinctTests(TestCase):
             series=series,
             external_series_id="low-series",
         )
-        high_rel = M3USeriesRelation.objects.create(
+        M3USeriesRelation.objects.create(
             m3u_account=high,
             series=series,
             external_series_id="high-series",
@@ -612,7 +647,7 @@ class XcVodSeriesDistinctTests(TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["name"], "Shared Series")
-        self.assertEqual(results[0]["series_id"], high_rel.id)
+        self.assertEqual(results[0]["series_id"], series.id)
 
     def test_series_excludes_inactive_accounts(self):
         active = self._account(f"active-{uuid4().hex[:6]}")
@@ -948,7 +983,7 @@ class XcVodSeriesRegressionTests(TestCase):
         row = xc_get_series(self.request, self.user)[0]
 
         self.assertEqual(set(row.keys()), XC_SERIES_KEYS)
-        self.assertEqual(row["series_id"], relation.id)
+        self.assertEqual(row["series_id"], series.id)
         self.assertIn(f"/{logo.id}/", row["cover"])
         self.assertEqual(row["plot"], "Series plot")
         self.assertEqual(row["cast"], "Actor A")
@@ -1331,14 +1366,26 @@ class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
         self.assertNotIn("catchup=", content)
         self.assertNotIn("catchup-timezone=", content)
 
-    def test_catchup_days_capped_at_max_lookback(self):
+    def test_catchup_days_advertises_the_channel_archive(self):
         from apps.output.views import generate_m3u
 
         self.channel.catchup_days = 45
         self.channel.save(update_fields=["catchup_days"])
         response = generate_m3u(self._xc_style_request(), None, self.user)
         content = _response_text(response)
-        self.assertIn('catchup-days="30"', content)
+        self.assertIn('catchup-days="45"', content)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 10, 0, 0),
+    )
+    def test_catchup_days_ignore_the_epg_history_maximum(self, _policy):
+        from apps.output.views import generate_m3u
+
+        self.channel.catchup_days = 45
+        self.channel.save(update_fields=["catchup_days"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        self.assertIn('catchup-days="45"', _response_text(response))
 
 
 class GenerateM3UDirectCatchupTests(OutputEndpointTestMixin, TestCase):
@@ -1587,10 +1634,17 @@ class XcGetEpgCatchupGateTests(TestCase):
             item["_title"] = base64.b64decode(item["title"]).decode()
         return listings
 
-    def test_catchup_enabled_expands_lookback_from_catchup_days(self):
+    def test_default_zero_omits_ended_programmes_on_a_catchup_channel(self):
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 7, 0),
+    )
+    def test_system_default_includes_past_programmes_and_marks_the_archive(self, _policy):
         listings = self._listings()
-        titles = [item["_title"] for item in listings]
-        self.assertIn("Past Show", titles)
         past = next(item for item in listings if item["_title"] == "Past Show")
         self.assertEqual(past["has_archive"], 1)
 
@@ -1618,6 +1672,63 @@ class XcGetEpgCatchupGateTests(TestCase):
         self.assertIn("Past Show", titles)
         past = next(item for item in listings if item["_title"] == "Past Show")
         self.assertEqual(past["has_archive"], 0)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 5, 0),
+    )
+    def test_system_default_applies_when_catchup_is_disabled(self, _policy):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        listings = self._listings()
+        past = next(item for item in listings if item["_title"] == "Past Show")
+        self.assertEqual(past["has_archive"], 0)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 5, 0),
+    )
+    def test_explicit_user_window_is_not_extended_to_the_archive(self, _policy):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 1,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 2, 0, 0),
+    )
+    def test_history_maximum_caps_a_requested_lookback(self, _policy):
+        """A requested lookback stops at the history max. Catch-up advertising does not."""
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 7,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    def test_saved_zero_does_not_expand_to_the_archive(self):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 0,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    def test_url_zero_does_not_expand_to_the_archive(self):
+        titles = [item["_title"] for item in self._listings(extra_query={"prev_days": "0"})]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
 
 
 class XcGetEpgDummyTests(TestCase):
@@ -1803,6 +1914,43 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
 
     def setUp(self):
         self.factory = RequestFactory()
+        # Pin the policy so this SimpleTestCase never reads settings from the DB.
+        patcher = patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 0, 0),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_system_default_windows_apply_when_nothing_else_is_set(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 2, 3),
+        ):
+            cache_key = generate_epg(self.factory.get("/epg/"), profile_name="test", user=None)
+
+        self.assertIn(":d=3:p=2:", cache_key)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_url_zero_overrides_the_system_default_windows(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 2, 3),
+        ):
+            cache_key = generate_epg(
+                self.factory.get("/epg/?days=0&prev_days=0"), profile_name="test", user=None
+            )
+
+        self.assertIn(":d=0:p=0:", cache_key)
 
     @patch("apps.output.epg.stream_cached_response")
     @patch("apps.output.epg.Channel.objects")
@@ -2042,12 +2190,12 @@ class XcVodAccessFlagTests(TestCase):
             xc_get_vod_info(self.request, no_movies, self.movie.id)
         # ...but the series detail for the same user still resolves.
         self.assertIn(
-            "info", xc_get_series_info(self.request, no_movies, self.series_relation.id)
+            "info", xc_get_series_info(self.request, no_movies, self.series.id)
         )
 
         no_series = self._user(vod_series_enabled=False)
         with self.assertRaises(Http404):
-            xc_get_series_info(self.request, no_series, self.series_relation.id)
+            xc_get_series_info(self.request, no_series, self.series.id)
         self.assertIn("info", xc_get_vod_info(self.request, no_series, self.movie.id))
 
     def test_flags_apply_to_admins(self):

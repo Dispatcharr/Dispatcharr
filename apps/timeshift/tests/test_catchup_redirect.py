@@ -86,16 +86,15 @@ class CatchupRedirectViewTests(SimpleTestCase):
 
     def _enter_common(self, stack, *, is_redirect, stream=None, redis=None):
         stream = stream or _make_catchup_stream(provider_tz="UTC")
-        channel_cls = stack.enter_context(patch.object(views, "Channel"))
+        channel_lookup = stack.enter_context(
+            patch.object(views, "get_channel_for_user")
+        )
         redis_cls = stack.enter_context(patch.object(views, "RedisClient"))
         stack.enter_context(
             patch.object(views, "_authenticate_user", return_value=MagicMock(id=1))
         )
         stack.enter_context(
             patch.object(views, "network_access_allowed", return_value=True)
-        )
-        stack.enter_context(
-            patch.object(views, "_user_can_access_channel", return_value=True)
         )
         stack.enter_context(
             patch.object(views, "get_channel_catchup_streams", return_value=[stream])
@@ -126,8 +125,8 @@ class CatchupRedirectViewTests(SimpleTestCase):
         channel, is_redirect_mock = _channel_with_redirect(
             is_redirect, id=8, name="Ch", logo_id=None,
         )
-        channel_cls.objects.get.return_value = channel
-        return channel_cls, redis_cls, stream, is_redirect_mock
+        channel_lookup.return_value = channel
+        return channel_lookup, redis_cls, stream, is_redirect_mock
 
     def test_redirect_on_path_hands_off_provider_url(self):
         request = self.factory.get(_proxy_url(session_id=None))

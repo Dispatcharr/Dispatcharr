@@ -40,6 +40,10 @@ const GROUP_CONFIG = {
       epg_match_ignore_prefixes: { type: 'array', default: [] },
       epg_match_ignore_suffixes: { type: 'array', default: [] },
       epg_match_ignore_custom: { type: 'array', default: [] },
+      epg_history_min_days: { type: 'int', default: 1 },
+      epg_history_max_days: { type: 'int', default: 30 },
+      epg_default_prev_days: { type: 'int', default: 0 },
+      epg_default_days: { type: 'int', default: 0 },
     },
   },
   dvr_settings: {
@@ -87,8 +91,14 @@ const GROUP_CONFIG = {
 const toOptionalIdString = (value) =>
   value != null ? String(value) : null;
 
-const toIntOr = (value, fallback) =>
-  typeof value === 'number' ? value : parseInt(value, 10) || fallback;
+const toIntOr = (value, fallback) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  const parsed = parseInt(value, 10);
+  // 0 is a real value for several EPG day fields; do not treat it as missing.
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
 const toBool = (value, fallback = false) =>
   typeof value === 'boolean' ? value : value == null ? fallback : Boolean(value);

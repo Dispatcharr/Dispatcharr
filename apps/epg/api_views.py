@@ -3,7 +3,6 @@ import os
 from collections import defaultdict
 from rest_framework import viewsets, status, serializers
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.epg.sd_api import (
@@ -29,6 +28,7 @@ from .serializers import (
 )
 from .tasks import refresh_epg_data, find_current_program_for_tvg_id
 from .query_utils import parse_text_query
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.managers import (
     effective_field_lookup_q,
     effective_related_name_lookup_q,
@@ -36,11 +36,10 @@ from apps.channels.managers import (
 )
 from apps.channels.models import Channel
 from apps.accounts.permissions import (
-    Authenticated,
     IsAdmin,
     IsStandardUser,
-    permission_classes_by_action,
-    permission_classes_by_method,
+    permissions_for_action,
+    permissions_for_method,
 )
 from core.utils import safe_upload_path
 
@@ -61,16 +60,11 @@ class EPGSourceViewSet(SchedulesDirectSourceMixin, viewsets.ModelViewSet):
     serializer_class = EPGSourceSerializer
 
     def get_permissions(self):
-        if self.action == "upload":
+        if self.action in ('sd_lineups', 'sd_lineups_search'):
+            if self.request.method == 'GET':
+                return [IsStandardUser()]
             return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action in ('sd_lineups', 'sd_lineups_search'):
-                if self.request.method == 'GET':
-                    return [IsStandardUser()]
-                return [IsAdmin()]
-            return [IsAdmin()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         from django.db.models import Exists, OuterRef
@@ -87,7 +81,7 @@ class EPGSourceViewSet(SchedulesDirectSourceMixin, viewsets.ModelViewSet):
         logger.debug("Listing all EPG sources.")
         return super().list(request, *args, **kwargs)
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], permission_classes=[IsAdmin])
     def upload(self, request):
         if "file" not in request.FILES:
             return Response(
@@ -153,12 +147,7 @@ class ProgramViewSet(
     # Image download limits are persisted on the EPG source (shared across workers).
 
     def get_permissions(self):
-        if self.action == 'poster':
-            return [AllowAny()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
@@ -389,10 +378,7 @@ class ProgramViewSet(
         # including override-only EPG mappings.
         user = request.user
         if user.user_level < 10:
-            access_qs = Channel.objects.filter(user_level__lte=user.user_level)
-            custom_props = user.custom_properties or {}
-            if custom_props.get('hide_adult_content', False):
-                access_qs = access_qs.filter(is_adult=False)
+            access_qs = channels_queryset_for_user(Channel.objects.all(), user)
             accessible_epg_ids = effective_epg_ids(access_qs)
             queryset = queryset.filter(epg_id__in=accessible_epg_ids)
 
@@ -424,10 +410,7 @@ class ProgramViewSet(
                     )
                 ).select_related("channel_group", "override__channel_group")
                 if user.user_level < 10:
-                    mapped = mapped.filter(user_level__lte=user.user_level)
-                    custom_props = user.custom_properties or {}
-                    if custom_props.get("hide_adult_content", False):
-                        mapped = mapped.filter(is_adult=False)
+                    mapped = channels_queryset_for_user(mapped, user)
                 if allowed is None or "streams" in allowed:
                     mapped = mapped.prefetch_related(
                         "streams",
@@ -461,12 +444,7 @@ class EPGImportAPIView(APIView):
     """Triggers an EPG data refresh"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers an EPG data refresh for the given source.",
@@ -521,10 +499,7 @@ class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = EPGDataSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 # ─────────────────────────────
@@ -537,12 +512,7 @@ class CurrentProgramsAPIView(APIView):
     """
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Get currently playing programs for specified channels or all channels",

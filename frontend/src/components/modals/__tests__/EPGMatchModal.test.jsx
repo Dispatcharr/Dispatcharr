@@ -292,6 +292,37 @@ describe('EPGMatchModal', () => {
   });
 
   describe('Settings Persistence', () => {
+    it('should only pass the match fields to the settings save', async () => {
+      // epg_settings also stores the guide-history fields; this dialog must not write them.
+      const original = SettingsUtils.parseGroupSettings.getMockImplementation();
+      SettingsUtils.parseGroupSettings.mockImplementation((settings) => ({
+        ...original(settings),
+        epg_history_min_days: 1,
+        epg_history_max_days: 30,
+      }));
+      SettingsUtils.getChangedGroupSettings.mockImplementation((values) => values);
+      SettingsUtils.saveGroupSettings.mockResolvedValue();
+      API.matchEpg.mockResolvedValue();
+
+      try {
+        render(<EPGMatchModal {...defaultProps} />);
+        fireEvent.click(screen.getByText('Start Auto-Match'));
+
+        await waitFor(() => {
+          expect(SettingsUtils.getChangedGroupSettings).toHaveBeenCalled();
+        });
+        const [values] = SettingsUtils.getChangedGroupSettings.mock.calls.at(-1);
+        expect(Object.keys(values).sort()).toEqual([
+          'epg_match_ignore_custom',
+          'epg_match_ignore_prefixes',
+          'epg_match_ignore_suffixes',
+          'epg_match_mode',
+        ]);
+      } finally {
+        SettingsUtils.parseGroupSettings.mockImplementation(original);
+      }
+    });
+
     it('should include epg_match_mode in settings to save', async () => {
       SettingsUtils.getChangedGroupSettings.mockImplementation((values) => values);
       SettingsUtils.saveGroupSettings.mockResolvedValue();

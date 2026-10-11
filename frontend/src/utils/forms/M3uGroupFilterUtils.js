@@ -60,11 +60,27 @@ const prepareGroupSettings = (groupStates) => {
   }));
 };
 
-const prepareCategorySettings = (movieCategoryStates, seriesCategoryStates) => {
+const categoryPropsChanged = (state) => {
+  const current = state.custom_properties || {};
+  const original = state.original_custom_properties || {};
+  return (
+    (current.language ?? null) !== (original.language ?? null) ||
+    (current.quality ?? null) !== (original.quality ?? null)
+  );
+};
+
+export const prepareCategorySettings = (
+  movieCategoryStates,
+  seriesCategoryStates
+) => {
   return [...movieCategoryStates, ...seriesCategoryStates]
+    .filter(
+      (state) =>
+        state.enabled !== state.original_enabled || categoryPropsChanged(state)
+    )
     .map((state) => ({
-      ...state,
+      id: state.id,
+      enabled: state.enabled,
       custom_properties: state.custom_properties || undefined,
-    }))
-    .filter((state) => state.enabled !== state.original_enabled);
+    }));
 };

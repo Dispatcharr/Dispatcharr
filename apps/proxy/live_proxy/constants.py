@@ -35,6 +35,7 @@ class EventType:
     CLIENT_STOP = "client_stop"
     ENSURE_OUTPUT_FORMAT = "ensure_output_format"
     ENSURE_OUTPUT_PROFILE = "ensure_output_profile"
+    HLS_PLAYLIST_READY = "hls_playlist_ready"
 
 # Stream types
 class StreamType:

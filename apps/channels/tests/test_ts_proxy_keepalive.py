@@ -279,8 +279,10 @@ class ClientRemoveIntegrationTests(TestCase):
         cm.lock = threading.Lock()
 
         mock_redis = MagicMock()
-        mock_redis.hgetall.return_value = {b"ip_address": b"127.0.0.1"}
-        mock_redis.scard.return_value = 1
+        mock_redis.hmget.return_value = (b"unknown", None)
+        pipe = MagicMock()
+        pipe.execute.return_value = [1, 1, 1]
+        mock_redis.pipeline.return_value = pipe
         cm.redis_client = mock_redis
 
         slow_ws_called = threading.Event()

@@ -1,23 +1,26 @@
-"""fMP4 buffer management - mirrors StreamBuffer but without TS packet alignment."""
+"""
+Redis-backed output buffer for remux/segment managers.
+
+Mirrors the input StreamBuffer's chunk/index/timestamp model, but stores
+opaque byte blobs (no 188-byte TS alignment). Used by fMP4 (one fragment
+per chunk) and HLS (one media segment per chunk) via the shared
+output:{fmt}:buffer:* keyspace.
+"""
 
 import threading
 import time
+
 import gevent.event
-from ...redis_keys import RedisKeys
-from ...config_helper import ConfigHelper
-from ...utils import get_logger
+
+from ..redis_keys import RedisKeys
+from ..config_helper import ConfigHelper
+from ..utils import get_logger
 
 logger = get_logger()
 
 
-class FMP4StreamBuffer:
-    """
-    Redis-backed buffer for fMP4 remux output.
-
-    Functionally identical to StreamBuffer except:
-    - Uses the fmp4:buffer:* Redis keyspace
-    - No 188-byte TS packet alignment (raw byte accumulation)
-    """
+class OutputStreamBuffer:
+    """Format-parameterized Redis chunk store for a channel's output."""
 
     def __init__(self, channel_id, redis_client=None, fmt='fmp4'):
         self.channel_id = channel_id
@@ -38,7 +41,9 @@ class FMP4StreamBuffer:
                 if current_index:
                     self.index = int(current_index)
             except Exception as e:
-                logger.error(f"[fMP4Buffer:{channel_id}] Error initialising from Redis: {e}")
+                logger.error(
+                    f"[OutputBuffer:{fmt}:{channel_id}] Error initialising from Redis: {e}"
+                )
 
         self.chunk_available = gevent.event.Event()
 
@@ -58,27 +63,38 @@ class FMP4StreamBuffer:
         else:
             self._find_chunk_by_time_sha = None
 
-    def put_fragment(self, data: bytes) -> bool:
-        """Store a single complete fMP4 fragment directly to Redis as its own chunk."""
+    def put_chunk(self, data: bytes) -> bool:
+        """Store one complete output unit (fragment, segment, ...) as its own Redis chunk."""
         if not data or not self.redis_client:
             return False
         try:
             now = time.time()
             with self.lock:
-                chunk_index = self.redis_client.incr(self.buffer_index_key)
+                # Local index + publish-after-write: avoids permanent holes when
+                # an INCR succeeds but the chunk pipeline fails (same contract
+                # as StreamBuffer; single writer under self.lock).
+                chunk_index = self.index + 1
                 chunk_key = RedisKeys.output_buffer_chunk(self.channel_id, self.fmt, chunk_index)
                 pipe = self.redis_client.pipeline(transaction=False)
                 pipe.setex(chunk_key, self.chunk_ttl, data)
+                pipe.set(self.buffer_index_key, chunk_index)
                 pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
                 pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
                 pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
-                pipe.execute()
+                try:
+                    pipe.execute()
+                except Exception as e:
+                    logger.error(
+                        f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                        f"Failed to write chunk {chunk_index}: {e}"
+                    )
+                    return False
                 self.index = chunk_index
             self.chunk_available.set()
             self.chunk_available.clear()
             return True
         except Exception as e:
-            logger.error(f"[fMP4Buffer:{self.channel_id}] Error putting fragment: {e}")
+            logger.error(f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error putting chunk: {e}")
             return False
 
     def get_chunks(self, start_index=None):
@@ -113,14 +129,14 @@ class FMP4StreamBuffer:
             return chunks, current_index
 
         except Exception as e:
-            logger.error(f"[fMP4Buffer:{self.channel_id}] Error getting chunks: {e}")
+            logger.error(f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error getting chunks: {e}")
             return [], self.index
 
     def find_chunk_index_by_time(self, seconds_behind):
-        """Return the fragment index that was received ~seconds_behind seconds ago.
+        """Return the chunk index that was received ~seconds_behind seconds ago.
 
         Returns an int (last-consumed convention: next read starts at index+1)
-        or None if no suitable fragment exists.
+        or None if no suitable chunk exists.
         """
         if not self.redis_client or not self._find_chunk_by_time_sha:
             return None
@@ -137,14 +153,44 @@ class FMP4StreamBuffer:
                 return None
             return max(0, int(result) - 1)
         except Exception as e:
-            logger.error(f"[fMP4Buffer:{self.channel_id}] Error in find_chunk_index_by_time: {e}")
+            logger.error(
+                f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                f"Error in find_chunk_index_by_time: {e}"
+            )
             return None
+
+    def surviving_chunk_scores(self):
+        """Map chunk index -> write timestamp for chunks still tracked in Redis.
+
+        The zset is pruned to chunk_ttl on write; members here are the segments
+        that should still be fetchable (subject to key TTL race on the oldest).
+        """
+        if not self.redis_client or not self.chunk_timestamps_key:
+            return {}
+        try:
+            members = self.redis_client.zrange(
+                self.chunk_timestamps_key, 0, -1, withscores=True
+            )
+            out = {}
+            for member, score in members or []:
+                try:
+                    idx = int(member)
+                except (TypeError, ValueError):
+                    continue
+                out[idx] = float(score)
+            return out
+        except Exception as e:
+            logger.debug(
+                f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                f"Error listing surviving chunks: {e}"
+            )
+            return {}
 
     def stop(self):
         self.stopping = True
 
     def cleanup_redis(self):
-        """Delete all fMP4 buffer keys for this channel from Redis."""
+        """Delete all output buffer keys for this channel/format from Redis."""
         if not self.redis_client:
             return
         try:
@@ -162,4 +208,6 @@ class FMP4StreamBuffer:
             except Exception:
                 pass
         except Exception as e:
-            logger.error(f"[fMP4Buffer:{self.channel_id}] Error during Redis cleanup: {e}")
+            logger.error(
+                f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error during Redis cleanup: {e}"
+            )

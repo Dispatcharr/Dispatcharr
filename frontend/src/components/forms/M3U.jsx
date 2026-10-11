@@ -13,6 +13,7 @@ import {
   Group,
   LoadingOverlay,
   Modal,
+  MultiSelect,
   NumberInput,
   PasswordInput,
   Select,
@@ -38,7 +39,9 @@ import {
   prepareSubmitValues,
   updatePlaylist,
 } from '../../utils/forms/M3uUtils.js';
+import { M3U_HASH_KEY_OPTIONS } from '../../utils/m3uHashKey.js';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
+import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 
 const M3U = ({
   m3uAccount = null,
@@ -60,8 +63,12 @@ const M3U = ({
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
+  const [hasHashKeyOverride, setHasHashKeyOverride] = useState(false);
   const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
     useState(false);
+
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+      useDateTimeFormat();
 
   // Keep expiration in sync when the default profile is edited (store refreshes).
   // Do not rebind the whole form to the live playlist or unsaved edits are wiped.
@@ -91,6 +98,7 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
+      hash_key: [],
     },
 
     validate: {
@@ -126,7 +134,16 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        hash_key: m3uAccount.hash_key
+          ? m3uAccount.hash_key.split(',').filter(Boolean)
+          : [],
       });
+      setHasHashKeyOverride(
+        !!(
+          m3uAccount.hash_key &&
+          m3uAccount.hash_key.split(',').filter(Boolean).length
+        )
+      );
       setExpDate(expDateFromPlaylist(m3uAccount.exp_date));
 
       // Determine schedule type from existing data
@@ -140,6 +157,7 @@ const M3U = ({
       form.reset();
       setScheduleType('interval');
       setExpDate(null);
+      setHasHashKeyOverride(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [m3uAccount]);
@@ -324,7 +342,7 @@ const M3U = ({
                     description="Set an expiration date to receive a warning notification"
                     placeholder="No expiration"
                     clearable
-                    valueFormat="MMM D, YYYY h:mm A"
+                    valueFormat={dateformat + ', YYYY ' + timeformat}
                     value={expDate}
                     onChange={(v) => setExpDate(v ? new Date(v) : null)}
                   />
@@ -393,6 +411,23 @@ const M3U = ({
                     value: `${ua.id}`,
                   }))
                 )}
+              />
+              <MultiSelect
+                id="hash_key"
+                name="hash_key"
+                label="Hash Key Override"
+                description="Fields used to identify this account's streams. Empty inherits the global default. Changing this rehashes only this account."
+                placeholder={
+                  hasHashKeyOverride ? undefined : 'Use global default'
+                }
+                clearable
+                data={M3U_HASH_KEY_OPTIONS}
+                {...form.getInputProps('hash_key')}
+                onChange={(value) => {
+                  form.getInputProps('hash_key').onChange(value);
+                  setHasHashKeyOverride(!!(value && value.length));
+                }}
+                key={form.key('hash_key')}
               />
             </Stack>
 
