@@ -237,6 +237,39 @@ class TsGeneratorDbCleanupTests(SimpleTestCase):
 
         mock_close.assert_called_once()
 
+    @patch("apps.proxy.live_proxy.output.ts.generator.close_old_connections")
+    @patch("apps.proxy.live_proxy.output.ts.generator.ConfigHelper.channel_shutdown_delay", return_value=0)
+    @patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer.get_instance")
+    def test_ts_cleanup_releases_stream_on_last_client(self, mock_proxy_cls, mock_delay, mock_close):
+        """Regression test for a relative-import depth bug: `_cleanup`'s inline
+        `from ...url_utils import release_worker_stream` must resolve to
+        `apps.proxy.live_proxy.url_utils`, not `apps.proxy.live_proxy.output.url_utils`."""
+        proxy_server = MagicMock()
+        proxy_server.redis_client = MagicMock()
+        client_manager = MagicMock()
+        client_manager.get_total_client_count.return_value = 1
+        proxy_server.client_managers = {"channel-uuid": client_manager}
+        mock_proxy_cls.return_value = proxy_server
+
+        from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
+
+        gen = StreamGenerator.__new__(StreamGenerator)
+        gen.channel_id = "channel-uuid"
+        gen.client_id = "client-1"
+        gen.stream_start_time = 0
+        gen.channel_name = "Test"
+        gen.client_ip = "127.0.0.1"
+        gen.client_user_agent = "agent"
+        gen.bytes_sent = 0
+        gen.user = None
+
+        with patch(
+            "apps.proxy.live_proxy.url_utils.release_worker_stream", return_value=True
+        ) as mock_release:
+            gen._cleanup()
+
+        mock_release.assert_called_once_with("channel-uuid")
+
 
 class InitializeChannelDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.services.channel_service.close_old_connections")

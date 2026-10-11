@@ -613,7 +613,7 @@ class StreamGenerator:
                         # During shutdown_delay, keep the slot until coordinated stop runs.
                         if client_count <= 1 and ConfigHelper.channel_shutdown_delay() <= 0:
                             try:
-                                from ..url_utils import release_worker_stream
+                                from ...url_utils import release_worker_stream
 
                                 stream_released = release_worker_stream(self.channel_id)
                                 if stream_released:
