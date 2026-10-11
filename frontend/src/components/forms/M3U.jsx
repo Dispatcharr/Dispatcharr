@@ -39,6 +39,7 @@ import {
   prepareSubmitValues,
   updatePlaylist,
 } from '../../utils/forms/M3uUtils.js';
+import { M3U_HASH_KEY_OPTIONS } from '../../utils/m3uHashKey.js';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
 
 const M3U = ({
@@ -407,6 +408,23 @@ const M3U = ({
                   }))
                 )}
               />
+              <MultiSelect
+                id="hash_key"
+                name="hash_key"
+                label="Hash Key Override"
+                description="Fields used to identify this account's streams. Empty inherits the global default. Changing this rehashes only this account."
+                placeholder={
+                  hasHashKeyOverride ? undefined : 'Use global default'
+                }
+                clearable
+                data={M3U_HASH_KEY_OPTIONS}
+                {...form.getInputProps('hash_key')}
+                onChange={(value) => {
+                  form.getInputProps('hash_key').onChange(value);
+                  setHasHashKeyOverride(!!(value && value.length));
+                }}
+                key={form.key('hash_key')}
+              />
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
@@ -438,30 +456,6 @@ const M3U = ({
                 label="Stale Stream Retention (days)"
                 description="Streams not seen for this many days will be removed"
                 {...form.getInputProps('stale_stream_days')}
-              />
-
-              <MultiSelect
-                id="hash_key"
-                name="hash_key"
-                label="Hash Key Override"
-                description="Fields used to generate a stable identifier for this account's streams. Leave empty to use the global default. Changing this rehashes only this account's streams."
-                placeholder={
-                  hasHashKeyOverride ? undefined : 'Use global default'
-                }
-                clearable
-                data={[
-                  { value: 'name', label: 'Name' },
-                  { value: 'url', label: 'URL' },
-                  { value: 'tvg_id', label: 'TVG-ID' },
-                  { value: 'm3u_id', label: 'M3U ID' },
-                  { value: 'group', label: 'Group' },
-                ]}
-                {...form.getInputProps('hash_key')}
-                onChange={(value) => {
-                  form.getInputProps('hash_key').onChange(value);
-                  setHasHashKeyOverride(!!(value && value.length));
-                }}
-                key={form.key('hash_key')}
               />
 
               {form.getValues().account_type == 'XC' && (
