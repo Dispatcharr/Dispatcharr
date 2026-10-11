@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TS live-proxy last-client cleanup imports `release_worker_stream` correctly again.** `output/ts/generator.py` used `from ..url_utils`, which resolves to the nonexistent `apps.proxy.live_proxy.output.url_utils` (the fMP4 generator already used three dots). With the default `channel_shutdown_delay` of 0, every last TS client disconnect logged that import error and skipped the generator's M3U profile slot release; coordinated stop could still free the slot afterward. (Fixes #1778) - Thanks [@PilaScat](https://github.com/PilaScat)
 - **M3U and DVR date pickers now follow the user's date/time format preferences.** Expiration and recording date/time pickers were hardcoded to a US-style `MMM D, YYYY h:mm A` display. They now use `useDateTimeFormat` like the rest of the UI (M3U account and profile expiration, single recording start/end, and recurring rule dates). (Fixes #1769) - Thanks [@Biologisten](https://github.com/Biologisten)
 - **Day-first dates no longer put a US-style comma before the year.** Preference-based prose dates used `dateFormat + ', YYYY'`, so a day-first setting rendered `7 Oct, 2026`. A shared `dateYearFormat` now keeps the comma for month-first (`Oct 7, 2026`) and omits it for day-first (`7 Oct 2026`) on the Guide header, DVR cards and modals, recurring rule dates, and M3U / profile expiration pickers. - Thanks [@Biologisten](https://github.com/Biologisten)
 
