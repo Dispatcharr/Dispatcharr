@@ -6,8 +6,10 @@ from unittest.mock import MagicMock, patch
 from django.test import SimpleTestCase
 
 from apps.proxy.live_proxy.constants import EventType
+from apps.proxy.live_proxy.input.buffer import ClientBatch, StreamBuffer
 from apps.proxy.live_proxy.output.hls.manager import HLSOutputManager
 from apps.proxy.live_proxy.redis_keys import RedisKeys
+from apps.proxy.live_proxy.tests.test_buffer_discontinuity import _FakeRedis
 
 
 CHANNEL_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -72,6 +74,13 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         mgr.channel_id = CHANNEL_ID
         mgr.worker_id = WORKER_ID
         mgr.fmt = "hls"
+        if isinstance(ts_buffer, MagicMock):
+            # The loop reads with read_client_batch; these stubs answer the plain read.
+            def read(local_index):
+                chunks, next_index = ts_buffer.get_optimized_client_data(local_index)
+                return ClientBatch(chunks, local_index, next_index, None)
+
+            ts_buffer.read_client_batch.side_effect = read
         mgr.ts_buffer = ts_buffer
         mgr.running = True
         mgr._window = []
@@ -143,6 +152,42 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
             [("feed", chunk_pre), "cut", ("feed", chunk_post)],
         )
         ts_buffer.discontinuities_in_range.assert_called_with(0, 2)
+
+    def test_read_past_a_switch_mark_feeds_from_the_mark_and_cuts_before_it(self):
+        redis = _FakeRedis()
+        ts_buffer = StreamBuffer(CHANNEL_ID, redis_client=redis)
+        redis.kv[ts_buffer.buffer_index_key] = "4"
+        ts_buffer.index = 4
+        for i in range(1, 5):
+            redis.kv[f"{ts_buffer.buffer_prefix}{i}"] = f"c{i}".encode()
+        redis.zadd(ts_buffer.discontinuities_key, {"3": 3.0})
+        ts_buffer.find_chunk_index_by_time = MagicMock(return_value=0)
+        real_read = ts_buffer.read_client_batch
+        reads = []
+
+        def read(local_index):
+            reads.append(local_index)
+            if len(reads) > 1:
+                mgr.running = False
+            return real_read(local_index)
+
+        ts_buffer.read_client_batch = read
+        mgr = self._manager(ts_buffer)
+        constructed = []
+
+        def capture(*args, **kwargs):
+            seg = _TrackingSegmenter(*args, **kwargs)
+            constructed.append(seg)
+            return seg
+
+        with patch(
+            "apps.proxy.live_proxy.output.hls.manager.TSSegmenter",
+            side_effect=capture,
+        ):
+            mgr._segmenter_loop()
+        # Chunks 1 and 2 are the old source and are never fed.
+        self.assertEqual(reads, [0, 4])
+        self.assertEqual(constructed[0].events, ["cut", ("feed", b"c3"), ("feed", b"c4")])
 
     def test_no_cut_when_sidecar_empty(self):
         chunk = b"STEADY"

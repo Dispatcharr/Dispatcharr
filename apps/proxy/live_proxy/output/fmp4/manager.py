@@ -8,6 +8,7 @@ stores it in Redis, and writes subsequent fMP4 fragment chunks to OutputStreamBu
 One instance per channel per cluster - coordinated via Redis fmp4:owner lock.
 """
 
+import functools
 import select
 import threading
 import time
@@ -17,6 +18,7 @@ from ..buffer import OutputStreamBuffer
 from ...redis_keys import RedisKeys
 from ...config_helper import ConfigHelper
 from ...utils import get_logger
+from ..pipe_write import write_all
 
 logger = get_logger()
 
@@ -107,7 +109,8 @@ class FMP4RemuxManager:
         self._writer_thread = None
         self._stderr_thread = None
         self.fmp4_buffer = OutputStreamBuffer(
-            channel_id, redis_client=RedisClient.get_buffer(), fmt=fmt
+            channel_id, redis_client=RedisClient.get_buffer(), fmt=fmt,
+            discontinuities_key=RedisKeys.output_discontinuities(channel_id, fmt),
         )
         self._redis = RedisClient.get_client()
         self._last_ttl_refresh = 0.0
@@ -184,22 +187,9 @@ class FMP4RemuxManager:
     # Internal loops
     # ------------------------------------------------------------------
 
-    def _write_all(self, data: bytes):
-        """Write all bytes to FFmpeg stdin, looping on partial writes."""
-        view = memoryview(data)
-        offset = 0
-        total = len(view)
-        while offset < total:
-            if not self.running:
-                return
-            n = self._process.stdin.write(view[offset:])
-            if n is None:
-                # Pipe full (EAGAIN on non-blocking FD); yield cooperatively
-                select.select([], [self._process.stdin], [], 1.0)
-            elif n <= 0:
-                raise OSError("stdin write returned no bytes")
-            else:
-                offset += n
+    def _write_all(self, data: bytes, stop_check=None):
+        """Write all bytes to FFmpeg stdin; see pipe_write.write_all."""
+        write_all(self._process.stdin, data, lambda: self.running, stop_check)
 
     def _writer_loop(self):
         """Read TS chunks from Redis and write to FFmpeg stdin."""
@@ -210,23 +200,39 @@ class FMP4RemuxManager:
         if start_index is None:
             start_index = self.ts_buffer.index
         local_index = start_index
+
+        def stop_check(after_index, mid_skip):
+            # A full pipe: stop the chunk if the source switched after this batch was read.
+            skip = self.ts_buffer.switch_marks.skip_after(after_index)
+            if skip is None:
+                return False
+            mid_skip.append(skip)
+            return True
+
         logger.debug(f"[fMP4Remux:{self.channel_id}] Writer started at buffer index {local_index} ({behind_seconds}s behind live)")
 
         try:
             while self.running:
-                chunks, new_index = self.ts_buffer.get_optimized_client_data(local_index)
+                batch = self.ts_buffer.read_client_batch(local_index)
+                chunks = batch.chunks
 
                 if chunks:
-                    local_index = new_index
+                    local_index = batch.next_index
                     logger.debug(
                         f"[fMP4Remux:{self.channel_id}] Writer: {len(chunks)} chunk(s) "
                         f"-> stdin (index now {local_index})"
                     )
+                    if batch.switch_mark is not None:
+                        # fMP4 clients then skip what FFmpeg made from the old source.
+                        self.fmp4_buffer.record_output_discontinuity()
+                    mid_skip = []
+                    stop = functools.partial(stop_check, batch.next_index - 1, mid_skip)
+
                     for chunk in chunks:
                         if not self.running:
                             break
                         try:
-                            self._write_all(chunk)
+                            self._write_all(chunk, stop)
                             self._process.stdin.flush()
                         except (BrokenPipeError, OSError) as e:
                             logger.warning(
@@ -234,6 +240,15 @@ class FMP4RemuxManager:
                             )
                             self.running = False
                             return
+                        # A switch after the read: the rest of the batch is the old source.
+                        skip = mid_skip[0] if mid_skip else self.ts_buffer.switch_marks.skip_after(batch.next_index - 1)
+                        if skip is not None:
+                            logger.info(
+                                f"[fMP4Remux:{self.channel_id}] Source switch: "
+                                f"dropping the rest of the batch, resuming at index {skip}"
+                            )
+                            local_index = skip
+                            break
                 else:
                     if self.ts_buffer.index > local_index + 20:
                         local_index = self.ts_buffer.index - 5

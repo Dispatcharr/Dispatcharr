@@ -323,8 +323,8 @@ class StreamGenerator:
 
             if chunks:
                 keepalive_start_time = None  # Each recovery restarts the cap independently.
-                yield from self._process_chunks(chunks, next_index)
-                self.local_index = next_index
+                resume_at = yield from self._process_chunks(chunks, next_index)
+                self.local_index = next_index if resume_at is None else resume_at
                 self.last_yield_time = time.time()
                 self.empty_reads = 0
                 self.consecutive_empty = 0
@@ -458,7 +458,7 @@ class StreamGenerator:
         return True
 
     def _process_chunks(self, chunks, next_index):
-        """Process and yield chunks to the client."""
+        """Yield chunks to the client. Returns the index to resume from if a source switch cut the batch, else None."""
         # Process and send chunks
         total_size = sum(len(c) for c in chunks)
         logger.debug(f"[{self.client_id}] Retrieved {len(chunks)} chunks ({total_size} bytes) from index {self.local_index+1} to {next_index}")
@@ -529,6 +529,16 @@ class StreamGenerator:
             except Exception as e:
                 logger.error(f"[{self.client_id}] Error sending chunk to client: {e}")
                 raise  # Re-raise to exit the generator
+
+            # A switch after the read: the rest of the batch is the old source.
+            skip = self.buffer.switch_marks.skip_after(next_index - 1)
+            if skip is not None:
+                logger.info(
+                    f"[{self.client_id}] Source switch on channel {self.channel_id}: "
+                    f"dropping the rest of the batch, resuming at index {skip}"
+                )
+                return skip
+        return None
 
     def _should_send_keepalive(self, local_index):
         """Determine if a keepalive packet should be sent."""
