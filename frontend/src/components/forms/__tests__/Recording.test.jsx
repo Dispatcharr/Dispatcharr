@@ -160,11 +160,12 @@ vi.mock('@mantine/core', () => ({
 
 // ── @mantine/dates ─────────────────────────────────────────────────────────────
 vi.mock('@mantine/dates', () => ({
-  DatePickerInput: ({ label, value, onChange }) => (
+  DatePickerInput: ({ label, value, onChange, valueFormat }) => (
     <div>
       <label>{label}</label>
       <input
         data-testid={`datepicker-${label}`}
+        data-value-format={valueFormat}
         value={value ? (value.toISOString?.() ?? value) : ''}
         onChange={(e) =>
           onChange(e.target.value ? new Date(e.target.value) : null)
@@ -172,10 +173,14 @@ vi.mock('@mantine/dates', () => ({
       />
     </div>
   ),
-  DateTimePicker: ({ label, ...props }) => (
+  DateTimePicker: ({ label, valueFormat, ...props }) => (
     <div>
       <label>{label}</label>
-      <input data-testid={`datetimepicker-${label}`} {...props} />
+      <input
+        data-testid={`datetimepicker-${label}`}
+        data-value-format={valueFormat}
+        {...props}
+      />
     </div>
   ),
   TimeInput: ({ label, value, onChange, onBlur }) => (
@@ -200,7 +205,7 @@ vi.mock('lucide-react', () => ({
 import useChannelsStore from '../../../store/channels';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import * as RecordingUtils from '../../../utils/forms/RecordingUtils.js';
-import { useDateTimeFormat}  from '../../../utils/dateTimeUtils.js';
+import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
 
 const setupStoreMock = () => {
   const mockFetchRecordings = vi.fn().mockResolvedValue(undefined);
@@ -231,8 +236,8 @@ describe('RecordingModal', () => {
     vi.clearAllMocks();
     vi.mocked(useDateTimeFormat).mockReturnValue({
       timeFormat: 'HH:mm',
-      dateFormat: 'MM/DD',
-    })
+      dateYearFormat: 'MMM D, YYYY',
+    });
     vi.mocked(RecordingUtils.getChannelsSummary).mockResolvedValue([
       { id: 'ch-1', name: 'HBO', channel_number: 501 },
     ]);
@@ -292,6 +297,32 @@ describe('RecordingModal', () => {
       render(<RecordingModal isOpen onClose={vi.fn()} />);
       expect(screen.getByTestId('datetimepicker-Start')).toBeInTheDocument();
       expect(screen.getByTestId('datetimepicker-End')).toBeInTheDocument();
+    });
+
+    it('uses a day-first format without a comma before the year', () => {
+      vi.mocked(useDateTimeFormat).mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      render(<RecordingModal isOpen onClose={vi.fn()} />);
+      expect(screen.getByTestId('datetimepicker-Start')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY HH:mm'
+      );
+      expect(screen.getByTestId('datetimepicker-End')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY HH:mm'
+      );
+
+      fireEvent.click(screen.getByTestId('mode-recurring'));
+      expect(screen.getByTestId('datepicker-Start date')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY'
+      );
+      expect(screen.getByTestId('datepicker-End date')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY'
+      );
     });
 
     it('shows recurring fields when in recurring mode', () => {

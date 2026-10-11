@@ -89,12 +89,13 @@ vi.mock('../ScheduleInput', () => ({
 
 // ── Mantine dates ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/dates', () => ({
-  DateTimePicker: ({ label, value, onChange, placeholder }) => (
+  DateTimePicker: ({ label, value, onChange, placeholder, valueFormat }) => (
     <div>
       <label>
         {label}
         <input
           data-testid="date-time-picker"
+          data-value-format={valueFormat}
           placeholder={placeholder}
           value={value ? value.toISOString() : ''}
           onChange={(e) =>
@@ -467,8 +468,8 @@ describe('M3U', () => {
     vi.clearAllMocks();
     mantineForm.__resetFormState();
     vi.mocked(useDateTimeFormat).mockReturnValue({
-        timeFormat: 'HH:mm',
-        dateFormat: 'MM/DD',
+      timeFormat: 'HH:mm',
+      dateYearFormat: 'MMM D, YYYY',
     });
     vi.mocked(M3uUtils.addPlaylist).mockResolvedValue(
       makeM3uAccount({ id: 2 })
@@ -501,6 +502,25 @@ describe('M3U', () => {
       setupStores();
       render(<M3U {...defaultProps()} />);
       expect(screen.getByTestId('text-input-name')).toBeInTheDocument();
+    });
+
+    it('uses a day-first expiration format without a comma before the year', () => {
+      setupStores();
+      vi.mocked(useDateTimeFormat).mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ account_type: 'Other' }),
+          })}
+        />
+      );
+      expect(screen.getByTestId('date-time-picker')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY HH:mm'
+      );
     });
 
     it('renders URL input', () => {
