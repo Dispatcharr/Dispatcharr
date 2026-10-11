@@ -276,6 +276,24 @@ describe('RecordingCard', () => {
       expect(screen.getByText('Test Show')).toBeInTheDocument();
     });
 
+    it('renders a day-first time without a comma before the year', () => {
+      setupMocks();
+      vi.mocked(useDateTimeFormat).mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
+      const timeLine = screen.getByText(/–/);
+      expect(timeLine).toHaveTextContent(/\d{1,2} [A-Za-z]{3} \d{4} \d{2}:\d{2}/);
+      expect(timeLine.textContent).not.toMatch(/, \d{4}/);
+      expect(format).toHaveBeenCalledWith(
+        expect.anything(),
+        'D MMM YYYY HH:mm'
+      );
+    });
+
     it('renders "Custom Recording" when no program title', () => {
       setupMocks({
         recording: makeRecording({

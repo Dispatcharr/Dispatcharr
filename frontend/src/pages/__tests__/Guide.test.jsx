@@ -484,6 +484,25 @@ describe('Guide', () => {
       expect(screen.getByText(/Monday, 01\/15\/2024/)).toBeInTheDocument();
     });
 
+    it('renders a day-first header date without a comma before the year', () => {
+      dateTimeUtils.useDateTimeFormat.mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateFormat: 'D MMM',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      dateTimeUtils.format.mockImplementation((date, fmt) =>
+        dayjs(date).format(fmt)
+      );
+      render(<Guide />);
+      const header = screen.getByText(/•/);
+      expect(header).toHaveTextContent(/\d{1,2} [A-Za-z]{3} \d{4}/);
+      expect(header.textContent).not.toMatch(/, \d{4}/);
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(
+        expect.anything(),
+        'dddd, D MMM YYYY • HH:mm'
+      );
+    });
+
     it('renders channel rows when channels are available', async () => {
       vi.useRealTimers();
 

@@ -181,7 +181,8 @@ export const useDateTimeFormat = () => {
   // Use user preference for time format
   const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
   const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
-  const dateYearFormat = dateFormatSetting === 'mdy' ? 'MMM D, YYYY' : 'D MMM YYYY';
+  const dateYearFormat =
+    dateFormatSetting === 'mdy' ? 'MMM D, YYYY' : 'D MMM YYYY';
 
   // Full format strings for detailed date-time displays
   const fullDateFormat =

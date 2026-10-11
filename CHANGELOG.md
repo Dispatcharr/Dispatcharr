@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **M3U and DVR date pickers now follow the user's date/time format preferences.** Expiration and recording date/time pickers were hardcoded to a US-style `MMM D, YYYY h:mm A` display. They now use `useDateTimeFormat` like the rest of the UI (M3U account and profile expiration, single recording start/end, and recurring rule dates). (Fixes #1769) - Thanks [@Biologisten](https://github.com/Biologisten)
+- **Day-first dates no longer put a US-style comma before the year.** Preference-based prose dates used `dateFormat + ', YYYY'`, so a day-first setting rendered `7 Oct, 2026`. A shared `dateYearFormat` now keeps the comma for month-first (`Oct 7, 2026`) and omits it for day-first (`7 Oct 2026`) on the Guide header, DVR cards and modals, recurring rule dates, and M3U / profile expiration pickers. - Thanks [@Biologisten](https://github.com/Biologisten)
 
 ### Security
 

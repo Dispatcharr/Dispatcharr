@@ -50,7 +50,7 @@ const EpisodeRow = ({
   channelsById,
   livePosterUrl,
   toUserTime,
-  dateyearformat,
+  dateYearFormat,
   timeformat,
   onOpenChild,
   canManage = true,
@@ -114,7 +114,7 @@ const EpisodeRow = ({
             )}
           </Group>
           <Text size="xs">
-            {format(start, `${dateyearformat} ${timeformat}`)} –{' '}
+            {format(start, `${dateYearFormat} ${timeformat}`)} –{' '}
             {format(end, timeformat)}
           </Text>
         </Stack>
@@ -148,8 +148,7 @@ const RecordingDetailsModal = ({
   const { toUserTime, userNow } = useTimeHelpers();
   const [childOpen, setChildOpen] = useState(false);
   const [childRec, setChildRec] = useState(null);
-  const { timeFormat: timeformat, dateYearFormat: dateyearformat } =
-    useDateTimeFormat();
+  const { timeFormat: timeformat, dateYearFormat } = useDateTimeFormat();
 
   const [editing, setEditing] = useState(false);
 
@@ -432,7 +431,7 @@ const RecordingDetailsModal = ({
             channelsById={channelsById}
             livePosterUrl={livePosterUrl}
             toUserTime={toUserTime}
-            dateyearformat={dateyearformat}
+            dateYearFormat={dateYearFormat}
             timeformat={timeformat}
             canManage={canManage}
             onOpenChild={(rec) => {
@@ -515,7 +514,7 @@ const RecordingDetailsModal = ({
             </Group>
           </Group>
           <Text size="sm">
-            {format(start, `${dateyearformat} ${timeformat}`)} –{' '}
+            {format(start, `${dateYearFormat} ${timeformat}`)} –{' '}
             {format(end, timeformat)}
           </Text>
           {rating && (
