@@ -7,6 +7,7 @@ import {
 } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import M3U from '../M3U';
+import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/userAgents', () => ({ default: vi.fn() }));
@@ -43,6 +44,10 @@ vi.mock('../../../utils/forms/DummyEpgUtils.js', () => ({
 
 vi.mock('../../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
+}));
+
+vi.mock('../../../utils/dateTimeUtils.js', () => ({
+  useDateTimeFormat: vi.fn(),
 }));
 
 // ── Sub-component mocks ────────────────────────────────────────────────────────
@@ -461,6 +466,10 @@ describe('M3U', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mantineForm.__resetFormState();
+    vi.mocked(useDateTimeFormat).mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateFormat: 'MM/DD',
+    });
     vi.mocked(M3uUtils.addPlaylist).mockResolvedValue(
       makeM3uAccount({ id: 2 })
     );

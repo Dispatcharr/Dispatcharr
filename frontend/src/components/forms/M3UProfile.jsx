@@ -34,6 +34,7 @@ import {
   updateM3UProfile,
   validateXcSimple,
 } from '../../utils/forms/M3uProfileUtils.js';
+import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 
 const RegexFormAndView = ({
   profile = null,
@@ -55,6 +56,9 @@ const RegexFormAndView = ({
   const isDefaultProfile = profile?.is_default;
 
   const isXC = m3u?.account_type === 'XC';
+
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+      useDateTimeFormat();
 
   const defaultValues = useMemo(
     () => ({
@@ -383,7 +387,7 @@ const RegexFormAndView = ({
             description="Set an expiration date to receive a 7-day warning notification"
             placeholder="No expiration"
             clearable
-            valueFormat="MMM D, YYYY h:mm A"
+            valueFormat={dateformat + ', YYYY ' + timeformat}
             value={watch('exp_date')}
             onChange={(value) => setValue('exp_date', value)}
           />

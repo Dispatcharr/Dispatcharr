@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import M3UProfile from '../M3UProfile';
+import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
 
 // ── WebSocket mock ─────────────────────────────────────────────────────────────
 vi.mock('../../../WebSocket', () => ({
@@ -27,6 +28,10 @@ vi.mock('../../../utils/forms/M3uProfileUtils.js', () => ({
   splitByPattern: vi.fn(),
   updateM3UProfile: vi.fn(),
   validateXcSimple: vi.fn(),
+}));
+
+vi.mock('../../../utils/dateTimeUtils.js', () => ({
+  useDateTimeFormat: vi.fn(),
 }));
 
 // ── react-hook-form mock ───────────────────────────────────────────────────────
@@ -261,6 +266,10 @@ const setupForm = (overrides = {}) => {
 describe('M3UProfile', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useDateTimeFormat).mockReturnValue({
+      timeFormat: 'HH:mm',
+      dateFormat: 'MM/DD',
+    });
     vi.mocked(M3uProfileUtils.addM3UProfile).mockResolvedValue(undefined);
     vi.mocked(M3uProfileUtils.updateM3UProfile).mockResolvedValue(undefined);
     vi.mocked(M3uProfileUtils.buildProfileSchema).mockReturnValue({});
