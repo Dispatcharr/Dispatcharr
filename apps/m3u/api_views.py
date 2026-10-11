@@ -37,8 +37,16 @@ from .serializers import (
 )
 
 from .tasks import refresh_single_m3u_account, refresh_m3u_accounts, refresh_account_info
-from core.tasks import rehash_streams
+from .utils import hash_key_fields
+from core.tasks import (
+    rehash_streams,
+    release_rehash_locks,
+    try_acquire_rehash_locks,
+)
 import json
+
+
+_HASH_KEY_INVALID = object()
 
 
 class M3UAccountViewSet(viewsets.ModelViewSet):
@@ -150,60 +158,116 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         old_vod_enabled = False
-        old_hash_key = (instance.custom_properties or {}).get("hash_key")
+        old_hash_fields = hash_key_fields(
+            (instance.custom_properties or {}).get("hash_key")
+        )
+        hash_key_changing = False
+        preacquired_locks = []
+        lock_token = None
+
+        # Only a real hash_key field-set change gates the save. Unrelated
+        # edits (name, is_active alone, file, etc.) and reorder-only
+        # changes skip this entirely. Acquire uses SET NX (check and take
+        # in one step). Inactive accounts are locked too: the rehash still
+        # rewrites their streams, and the account can be turned back on
+        # before that task finishes.
+        if "hash_key" in request.data:
+            try:
+                incoming_hash_fields = hash_key_fields(
+                    request.data.get("hash_key"), strict=True
+                )
+            except (TypeError, ValueError):
+                # Non-CSV shapes or unknown fields: let the serializer
+                # return the field validation error.
+                incoming_hash_fields = _HASH_KEY_INVALID
+            if (
+                incoming_hash_fields is not _HASH_KEY_INVALID
+                and incoming_hash_fields != old_hash_fields
+            ):
+                hash_key_changing = True
+                preacquired_locks, blocked, lock_token = try_acquire_rehash_locks(
+                    account_id=instance.id
+                )
+                if blocked:
+                    return Response(
+                        {
+                            "detail": (
+                                "Cannot change the hash key override while this "
+                                "account is refreshing. Wait for the refresh to "
+                                "finish, then try again."
+                            ),
+                            "hash_key": [
+                                "Account is currently refreshing. Try again later."
+                            ],
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
 
         # Check current VOD setting
         if instance.custom_properties:
             custom_props = instance.custom_properties or {}
             old_vod_enabled = custom_props.get("enable_vod", False)
+        new_vod_enabled = old_vod_enabled
 
-        # Handle file upload first, if any
-        file_path = None
-        if "file" in request.FILES:
-            file = request.FILES["file"]
-            try:
-                file_path = safe_upload_path(file.name, "/data/uploads/m3us")
-            except ValueError:
-                return Response({"detail": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            # Handle file upload first, if any
+            file_path = None
+            if "file" in request.FILES:
+                file = request.FILES["file"]
+                try:
+                    file_path = safe_upload_path(file.name, "/data/uploads/m3us")
+                except ValueError:
+                    return Response({"detail": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
 
-            os.makedirs("/data/uploads/m3us", exist_ok=True)
-            with open(file_path, "wb+") as destination:
-                for chunk in file.chunks():
-                    destination.write(chunk)
+                os.makedirs("/data/uploads/m3us", exist_ok=True)
+                with open(file_path, "wb+") as destination:
+                    for chunk in file.chunks():
+                        destination.write(chunk)
 
-            # Add file_path to the request data so it's available during creation
-            request.data._mutable = True  # Allow modification of the request data
-            request.data["file_path"] = (
-                file_path  # Include the file path if a file was uploaded
-            )
+                # Add file_path to the request data so it's available during creation
+                request.data._mutable = True  # Allow modification of the request data
+                request.data["file_path"] = (
+                    file_path  # Include the file path if a file was uploaded
+                )
 
-            # Handle the user_agent field - convert "null" string to None
-            if "user_agent" in request.data and request.data["user_agent"] == "null":
-                request.data["user_agent"] = None
+                # Handle the user_agent field - convert "null" string to None
+                if "user_agent" in request.data and request.data["user_agent"] == "null":
+                    request.data["user_agent"] = None
 
-            # Handle server_url appropriately
-            if "server_url" in request.data and not request.data["server_url"]:
-                request.data.pop("server_url")
+                # Handle server_url appropriately
+                if "server_url" in request.data and not request.data["server_url"]:
+                    request.data.pop("server_url")
 
-            request.data._mutable = False  # Make the request data immutable again
+                request.data._mutable = False  # Make the request data immutable again
 
-            if instance.file_path and os.path.exists(instance.file_path):
-                os.remove(instance.file_path)
+                if instance.file_path and os.path.exists(instance.file_path):
+                    os.remove(instance.file_path)
 
-        # Now call super().update() to update the instance
-        response = super().update(request, *args, **kwargs)
+            # Now call super().update() to update the instance
+            response = super().update(request, *args, **kwargs)
 
-        # If this account's hash key override changed, rehash just its own
-        # streams (cheaper than a full rehash, and correct since every other
-        # account's effective keys are unaffected by this account's change).
-        instance.refresh_from_db(fields=["custom_properties"])
-        new_hash_key = (instance.custom_properties or {}).get("hash_key")
-        if new_hash_key != old_hash_key:
-            new_keys = instance.get_effective_hash_keys()
-            rehash_streams.delay(new_keys, account_id=instance.id)
+            # If this account's hash key override changed, rehash just its own
+            # streams. Locks were taken before the save so the setting and the
+            # rehash cannot race a concurrent refresh.
+            if hash_key_changing:
+                instance.refresh_from_db(fields=["custom_properties"])
+                new_keys = instance.get_effective_hash_keys()
+                lock_ids = list(preacquired_locks)
+                rehash_streams.delay(
+                    new_keys,
+                    account_id=instance.id,
+                    locks_preacquired=True,
+                    preacquired_lock_ids=lock_ids,
+                    preacquired_lock_token=lock_token,
+                )
+                preacquired_locks = []
 
-        # Check if VOD setting changed and trigger refresh if needed
-        new_vod_enabled = request.data.get("enable_vod", old_vod_enabled)
+            # Check if VOD setting changed and trigger refresh if needed
+            new_vod_enabled = request.data.get("enable_vod", old_vod_enabled)
+        finally:
+            # Release only if we never handed ownership to the rehash task
+            # (validation failure, unexpected error, or no rehash queued).
+            release_rehash_locks(preacquired_locks, lock_token)
 
         if (
             instance.account_type == M3UAccount.Types.XC

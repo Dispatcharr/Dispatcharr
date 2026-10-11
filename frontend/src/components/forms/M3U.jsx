@@ -160,7 +160,9 @@ const M3U = ({
   useEffect(() => {
     if (storeExpDate === undefined) return;
     const next = expDateFromPlaylist(storeExpDate);
-    setExpDate((prev) => (expDateKey(prev) === expDateKey(next) ? prev : next));
+    setExpDate((prev) =>
+      expDateKey(prev) === expDateKey(next) ? prev : next
+    );
   }, [storeExpDate]);
 
   const handleNewPlaylist = async (newPlaylist, values, create_epg) => {

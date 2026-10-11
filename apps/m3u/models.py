@@ -7,6 +7,7 @@ from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
 from core.utils import custom_properties_as_dict
+from .utils import parse_m3u_hash_keys
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
 
@@ -109,16 +110,15 @@ class M3UAccount(models.Model):
         Uses this account's own ``hash_key`` override (stored under
         ``custom_properties["hash_key"]``) when set; otherwise falls back to
         the global ``m3u_hash_key`` CoreSettings value. A missing key means
-        this account inherits the global default.
+        this account inherits the global default. Tokens are stripped and
+        limited to the known hash field set.
         """
         custom_props = self.custom_properties or {}
         if isinstance(custom_props, dict):
-            raw_hash_key = custom_props.get("hash_key")
-            if raw_hash_key:
-                keys = [key for key in raw_hash_key.split(",") if key]
-                if keys:
-                    return keys
-        return CoreSettings.get_m3u_hash_key().split(",")
+            keys = parse_m3u_hash_keys(custom_props.get("hash_key"))
+            if keys:
+                return keys
+        return parse_m3u_hash_keys(CoreSettings.get_m3u_hash_key())
 
     def clean(self):
         if self.max_streams < 0:
