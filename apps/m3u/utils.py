@@ -9,6 +9,70 @@ lock = threading.Lock()
 active_streams_map = {}
 logger = logging.getLogger(__name__)
 
+# Fields accepted by Stream.generate_hash_key / the M3U Hash Key UI.
+M3U_HASH_KEY_FIELDS = frozenset({"name", "url", "tvg_id", "m3u_id", "group"})
+
+
+def parse_m3u_hash_keys(value, *, strict=False):
+    """Parse a comma-separated M3U hash key CSV into field names.
+
+    Accepts ``None`` or a CSV string from settings, custom_properties, or
+    API input. Strips whitespace, drops blanks, and keeps only known
+    fields from ``M3U_HASH_KEY_FIELDS``. Order is preserved; duplicates
+    are removed.
+
+    Callers that already have a field list (for example
+    ``get_effective_hash_keys()``) should pass that list through and not
+    call this helper again.
+
+    When ``strict`` is True, unknown tokens raise ``ValueError`` instead of
+    being dropped (used by the API serializer so bad overrides are rejected
+    before they can collapse stream hashes).
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        raise TypeError(
+            "parse_m3u_hash_keys expects a CSV string or None; "
+            "pass an already-parsed field list through directly."
+        )
+
+    keys = []
+    seen = set()
+    invalid = []
+    for token in str(value).split(","):
+        key = token.strip()
+        if not key:
+            continue
+        if key not in M3U_HASH_KEY_FIELDS:
+            if key not in invalid:
+                invalid.append(key)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+
+    if strict and invalid:
+        allowed = ", ".join(sorted(M3U_HASH_KEY_FIELDS))
+        bad = ", ".join(invalid)
+        raise ValueError(
+            f"Invalid hash key field(s): {bad}. Allowed fields: {allowed}."
+        )
+    return keys
+
+
+def hash_key_fields(value, *, strict=False):
+    """Return the frozenset of hash key fields for change detection.
+
+    ``value`` is a CSV string or ``None`` (same inputs as
+    ``parse_m3u_hash_keys``). Order does not affect
+    Stream.generate_hash_key (sort_keys=True), so reordering the same
+    fields is treated as unchanged. Empty or unset values yield an empty
+    frozenset.
+    """
+    return frozenset(parse_m3u_hash_keys(value, strict=strict))
+
 
 def convert_js_numbered_backreferences(replacement):
     """Translate JS-style ``$1``/``$2`` backreferences to Python ``\\1``/``\\2``.

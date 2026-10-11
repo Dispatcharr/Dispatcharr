@@ -18,6 +18,7 @@ import {
   getStreamSettingsFormInitialValues,
   getStreamSettingsFormValidation,
 } from '../../../utils/forms/settings/StreamSettingsFormUtils.js';
+import { M3U_HASH_KEY_OPTIONS } from '../../../utils/m3uHashKey.js';
 
 const STREAM_GROUP = 'stream_settings';
 
@@ -229,28 +230,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
           name="m3u_hash_key"
           label="M3U Hash Key"
           description="Fields used to generate a stable identifier for each stream. Changing this requires rehashing all streams."
-          data={[
-            {
-              value: 'name',
-              label: 'Name',
-            },
-            {
-              value: 'url',
-              label: 'URL',
-            },
-            {
-              value: 'tvg_id',
-              label: 'TVG-ID',
-            },
-            {
-              value: 'm3u_id',
-              label: 'M3U ID',
-            },
-            {
-              value: 'group',
-              label: 'Group',
-            },
-          ]}
+          data={M3U_HASH_KEY_OPTIONS}
           {...form.getInputProps('m3u_hash_key')}
         />
 

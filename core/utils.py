@@ -391,11 +391,12 @@ class TaskLockRenewer:
     slow downloads or large parsing jobs don't lose their lock mid-operation.
     """
 
-    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120, expected_value=None):
         self.task_name = task_name
         self.id = id
         self.ttl = ttl
         self.renewal_interval = renewal_interval
+        self.expected_value = expected_value
         self.lock_id = f"task_lock_{task_name}_{id}"
         self._stop_event = threading.Event()
         self._thread = None
@@ -405,17 +406,24 @@ class TaskLockRenewer:
         while not self._stop_event.wait(self.renewal_interval):
             try:
                 redis_client = RedisClient.get_client()
-                if redis_client.exists(self.lock_id):
-                    redis_client.expire(self.lock_id, self.ttl)
-                    logger.debug(
-                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
-                    )
-                else:
-                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                current = redis_client.get(self.lock_id)
+                if isinstance(current, bytes):
+                    current = current.decode()
+                if current is None:
+                    # Lock was deleted externally (e.g. manual release). Stop renewing.
                     logger.warning(
                         f"Lock {self.lock_id} no longer exists, stopping renewal"
                     )
                     break
+                if self.expected_value is not None and current != self.expected_value:
+                    logger.warning(
+                        f"Lock {self.lock_id} is held by another owner, stopping renewal"
+                    )
+                    break
+                redis_client.expire(self.lock_id, self.ttl)
+                logger.debug(
+                    f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                )
             except Exception as e:
                 logger.error(f"Error renewing lock {self.lock_id}: {e}")
 
