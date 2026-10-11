@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **M3U and DVR date pickers now follow the user's date/time format preferences.** Expiration and recording date/time pickers were hardcoded to a US-style `MMM D, YYYY h:mm A` display. They now use `useDateTimeFormat` like the rest of the UI (M3U account and profile expiration, single recording start/end, and recurring rule dates). (Fixes #1769) - Thanks [@Biologisten](https://github.com/Biologisten)
+
 ### Security
 
 - **Custom VOD logo and M3U account actions require admin.** VOD logo `bulk-delete` and `cleanup`, and M3U account `group-settings`, `repack-group`, `refresh-vod`, and `auto-created-channels-count`, accepted any authenticated user because those actions are not in the shared REST permission map and fell through to "logged in". They now require admin, matching create, update, and delete on the same viewsets. Related M3U viewsets fail closed to admin for any unlisted action. Standard list and retrieve, VOD browsing, and the public logo cache are unchanged. Reported by [@cqliuke](https://github.com/cqliuke).
