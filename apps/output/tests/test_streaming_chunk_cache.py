@@ -276,8 +276,8 @@ class StreamingChunkCacheTests(TestCase):
         return b"".join(body).decode("utf-8")
 
     def test_invalidate_during_build_never_caches_partial_document(self):
-        """Regression for #1650: a mid-build invalidation must not publish
-        a chunk list missing the XML header and opening <tv> element."""
+        """A mid-build invalidation must not publish a chunk list missing the
+        XML header and opening <tv> element."""
         redis = FakeRedis()
         document = ["<?xml?>", "<tv>", "<channel/>", "<programme/>", "<programme/>", "</tv>"]
 
