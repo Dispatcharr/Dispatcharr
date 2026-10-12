@@ -47,4 +47,5 @@ class TestStreamXcEpisodeMissingRelation(SimpleTestCase):
 
             stream_vod_mock.assert_called_once()
             self.assertEqual(stream_vod_mock.call_args[0][2], 'real-uuid')
+            self.assertFalse(stream_vod_mock.call_args.kwargs['check_network'])
             self.assertEqual(result.content, b'STREAMED')

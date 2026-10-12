@@ -28,7 +28,8 @@ gate clears rather than on the next poll tick.
 
 Follow-up URLs are opaque capability tokens (`/proxy/hls/<token>/...`), not
 channel uuids or XC credentials. Possession of the token is the session;
-playlist/segment polls do not hit the ORM.
+playlist/segment polls do not re-check Network Access (mint already did)
+and do not hit the ORM on the steady-state path.
 """
 
 import json
@@ -39,10 +40,8 @@ from django.db import close_old_connections
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 
 from core.utils import RedisClient
-from dispatcharr.utils import network_access_allowed
 
 from ...config_helper import ConfigHelper
 from ...constants import ChannelMetadataField, ChannelState
@@ -473,12 +472,10 @@ def _serve_hls_segment(token, seq):
 def hls_playlist(request, token):
     """Rolling live media playlist for one HLS capability URL."""
     try:
-        if not network_access_allowed(request, "STREAMS"):
-            return Response({"error": "Forbidden"}, status=403)
         return _serve_hls_playlist(token)
     finally:
-        # Settings lookup above hits the ORM; this endpoint is polled every
-        # few seconds per client, so release stale connections promptly.
+        # Cold-start may read settings (ORM-capable); this endpoint is polled
+        # every few seconds per client, so release stale connections promptly.
         close_old_connections()
 
 
@@ -487,10 +484,7 @@ def hls_playlist(request, token):
 def hls_segment(request, token, seq):
     """One HLS media segment for an opaque capability URL."""
     try:
-        if not network_access_allowed(request, "STREAMS"):
-            return Response({"error": "Forbidden"}, status=403)
         return _serve_hls_segment(token, seq)
     finally:
-        # Settings lookup above hits the ORM; this endpoint is polled every
-        # few seconds per client, so release stale connections promptly.
+        # Keep parity with playlist: release any borrowed connections promptly.
         close_old_connections()

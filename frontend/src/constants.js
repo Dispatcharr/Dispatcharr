@@ -18,11 +18,12 @@ export const NETWORK_ACCESS_OPTIONS = {
   STREAMS: {
     label: 'Stream Endpoints',
     description:
-      'Limit network access to stream URLs, including XC stream URLs',
+      'Limit access to non-XC stream URLs (UUID proxy, catch-up sessions, recordings).',
   },
   XC_API: {
     label: 'XC API',
-    description: 'Limit access to the XC API',
+    description:
+      'Limit access to XC-credentialed URLs (player API, playlists, XMLTV, live, VOD, and timeshift)',
   },
   UI: {
     label: 'UI',

@@ -10,6 +10,7 @@ from django.urls import resolve
 from apps.proxy.live_proxy.output.hls.session import SESSION_TOKEN_HEADER
 from apps.accounts.xc_auth import authorize_xc_client
 from apps.proxy.live_proxy.views import (
+    _xc_live_channel_or_error,
     _resolve_xc_live_channel,
     stream_ts,
     stream_xc,
@@ -208,6 +209,7 @@ class StreamXcHlsRedirectTests(SimpleTestCase):
         args, kwargs = mock_stream_ts.call_args
         self.assertEqual(args[1], CHANNEL_UUID)
         self.assertEqual(kwargs["force_output_format"], "hls")
+        self.assertFalse(kwargs["check_network"])
         self.assertNotIn("hls_redirect_base", kwargs)
         self.assertEqual(response.url, f"/proxy/hls/{TOKEN}/index.m3u8")
 
@@ -225,7 +227,9 @@ class StreamXcHlsRedirectTests(SimpleTestCase):
         ):
             stream_xc(request, "alice", "secret", "5.ts")
 
-        self.assertEqual(mock_stream_ts.call_args.kwargs["force_output_format"], "mpegts")
+        kwargs = mock_stream_ts.call_args.kwargs
+        self.assertEqual(kwargs["force_output_format"], "mpegts")
+        self.assertFalse(kwargs["check_network"])
 
 
 class XCLiveAuthHelperTests(SimpleTestCase):
@@ -243,7 +247,7 @@ class XCLiveAuthHelperTests(SimpleTestCase):
             "apps.accounts.xc_auth.network_access_allowed", return_value=False
         ), patch("apps.accounts.xc_auth.get_xc_user") as lookup:
             found, error = authorize_xc_client(
-                self.request, "alice", "secret", "STREAMS",
+                self.request, "alice", "secret", "XC_API",
             )
 
         self.assertIsNone(found)
@@ -257,7 +261,7 @@ class XCLiveAuthHelperTests(SimpleTestCase):
             "apps.accounts.xc_auth.get_xc_user", return_value=self._user()
         ):
             found, error = authorize_xc_client(
-                self.request, "alice", "wrong", "STREAMS",
+                self.request, "alice", "wrong", "XC_API",
             )
 
         self.assertIsNone(found)
@@ -274,7 +278,7 @@ class XCLiveAuthHelperTests(SimpleTestCase):
             "apps.accounts.xc_auth.get_xc_user", return_value=self._user()
         ):
             found, error = authorize_xc_client(
-                self.request, "alice", "secret", "STREAMS",
+                self.request, "alice", "secret", "XC_API",
             )
 
         self.assertIsNone(found)
@@ -289,7 +293,7 @@ class XCLiveAuthHelperTests(SimpleTestCase):
             "apps.accounts.xc_auth.get_xc_user", return_value=user
         ):
             found, error = authorize_xc_client(
-                self.request, "alice", "secret", "STREAMS",
+                self.request, "alice", "secret", "XC_API",
             )
 
         self.assertIs(found, user)
@@ -301,3 +305,22 @@ class XCLiveAuthHelperTests(SimpleTestCase):
         channel, error = _resolve_xc_live_channel(user, "not-a-number")
         self.assertIsNone(channel)
         self.assertEqual(error.status_code, 404)
+
+    def test_xc_live_entry_uses_xc_api_network_key(self):
+        user = self._user()
+        channel = MagicMock(uuid=CHANNEL_UUID)
+        with patch(
+            "apps.proxy.live_proxy.views.authorize_xc_client",
+            return_value=(user, None),
+        ) as auth, patch(
+            "apps.proxy.live_proxy.views._resolve_xc_live_channel",
+            return_value=(channel, None),
+        ):
+            found_user, found_channel, error = _xc_live_channel_or_error(
+                self.request, "alice", "secret", "5"
+            )
+
+        self.assertIs(found_user, user)
+        self.assertIs(found_channel, channel)
+        self.assertIsNone(error)
+        self.assertEqual(auth.call_args.args[3], "XC_API")

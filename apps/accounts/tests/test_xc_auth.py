@@ -60,7 +60,7 @@ class AuthorizeXcClientTests(SimpleTestCase):
     def _user(self):
         return User(username="alice", custom_properties={"xc_password": "secret"})
 
-    def _authorize(self, username, password, network, key="STREAMS"):
+    def _authorize(self, username, password, network, key="XC_API"):
         with patch(
             "apps.accounts.xc_auth.network_access_allowed", side_effect=network
         ):

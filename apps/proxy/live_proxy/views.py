@@ -432,8 +432,12 @@ def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_pr
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
-def stream_ts(request, channel_id, user=None, force_output_format=None):
-    if not network_access_allowed(request, "STREAMS"):
+def stream_ts(
+    request, channel_id, user=None, force_output_format=None, *, check_network=True
+):
+    # stream_xc calls authorize_xc_client (XC_API) first, then passes
+    # check_network=False so this path is not also gated by STREAMS.
+    if check_network and not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
@@ -1042,7 +1046,7 @@ def _resolve_xc_live_channel(user, channel_id):
 
 def _xc_live_channel_or_error(request, username, password, channel_id):
     """Auth + channel lookup for XC live stream entry URLs."""
-    user, error = authorize_xc_client(request, username, password, "STREAMS")
+    user, error = authorize_xc_client(request, username, password, "XC_API")
     if error is not None:
         return None, None, error
     channel, error = _resolve_xc_live_channel(user, channel_id)
@@ -1077,6 +1081,7 @@ def stream_xc(request, username, password, channel_id):
             str(channel.uuid),
             user,
             force_output_format=force_format,
+            check_network=False,
         )
     except Http404:
         raise

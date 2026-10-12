@@ -678,7 +678,16 @@ def _vod_playback_allowed(content_type, user):
 @api_view(["GET"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
-def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
+def stream_vod(
+    request,
+    content_type,
+    content_id,
+    session_id=None,
+    profile_id=None,
+    user=None,
+    *,
+    check_network=True,
+):
     """
     Stream VOD content (movies or series episodes) with session-based connection reuse
 
@@ -687,8 +696,11 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         content_id: ID of the content
         session_id: Optional session ID from URL path (for persistent connections)
         profile_id: Optional M3U profile ID for authentication
+        check_network: When False, skip the STREAMS allowlist. XC movie/episode
+            entry points call authorize_xc_client (XC_API) first, then pass
+            False so STREAMS is not required as well.
     """
-    if not network_access_allowed(request, "STREAMS"):
+    if check_network and not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
     user = _user_from_vod_request(request, user)
     if not _vod_playback_allowed(content_type, user):
@@ -1452,7 +1464,7 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user, error = authorize_xc_client(request, username, password, "STREAMS")
+    user, error = authorize_xc_client(request, username, password, "XC_API")
     if error is not None:
         return error
 
@@ -1470,7 +1482,15 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
         return JsonResponse({"error": "Movie not found"}, status=404)
 
-    return stream_vod(request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request,
+        'movie',
+        movie_relation.movie.uuid,
+        session_id,
+        profile_id,
+        user,
+        check_network=False,
+    )
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -1480,7 +1500,7 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user, error = authorize_xc_client(request, username, password, "STREAMS")
+    user, error = authorize_xc_client(request, username, password, "XC_API")
     if error is not None:
         return error
 
@@ -1494,4 +1514,12 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     if not episode_relation:
         return JsonResponse({"error": "Episode not found"}, status=404)
 
-    return stream_vod(request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request,
+        'episode',
+        episode_relation.episode.uuid,
+        session_id,
+        profile_id,
+        user,
+        check_network=False,
+    )

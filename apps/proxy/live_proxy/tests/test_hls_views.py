@@ -598,9 +598,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
         return proxy
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_unknown_token_returns_410(self, mock_proxy_cls, _network, _close):
+    def test_unknown_token_returns_410(self, mock_proxy_cls, _close):
         redis = MagicMock()
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
             redis, [0]
@@ -614,9 +613,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
         redis.sadd.assert_not_called()
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_session_gone_returns_410(self, mock_proxy_cls, _network, _close):
+    def test_session_gone_returns_410(self, mock_proxy_cls, _close):
         redis = MagicMock()
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
             redis, [1]
@@ -630,11 +628,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
         redis.sadd.assert_not_called()
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_lapsed_client_returns_410_without_reregister(
-        self, mock_proxy_cls, _network, _close
-    ):
+    def test_lapsed_client_returns_410_without_reregister(self, mock_proxy_cls, _close):
         redis = MagicMock()
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
             redis, [2]
@@ -649,11 +644,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
         redis.expire.assert_not_called()
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_stale_playlist_descriptor_returns_404(
-        self, mock_proxy_cls, _network, _close
-    ):
+    def test_stale_playlist_descriptor_returns_404(self, mock_proxy_cls, _close):
         redis = MagicMock()
         stale = json.dumps({
             "window": [{"seq": 1, "dur": 4.0, "disc": False}],
@@ -673,11 +665,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
         self.assertIn(b"Playlist stale", response.content)
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_malformed_playlist_descriptor_returns_500_not_stale(
-        self, mock_proxy_cls, _network, _close
-    ):
+    def test_malformed_playlist_descriptor_returns_500_not_stale(self, mock_proxy_cls, _close):
         """Bad JSON is a ValueError too; it must not be reported as stale."""
         for descriptor in ("{not json", json.dumps({"window": "bad"})):
             redis = MagicMock()
@@ -692,9 +681,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
             self.assertIn(b"Playlist unavailable", response.content)
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_fresh_playlist_returns_m3u8(self, mock_proxy_cls, _network, _close):
+    def test_fresh_playlist_returns_m3u8(self, mock_proxy_cls, _close):
         redis = MagicMock()
         body = json.dumps({
             "window": [{"seq": 7, "dur": 4.0, "disc": False}],
@@ -719,11 +707,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
         redis.pipeline.assert_not_called()
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_missing_playlist_returns_streaming_response(
-        self, mock_proxy_cls, _network, _close
-    ):
+    def test_missing_playlist_returns_streaming_response(self, mock_proxy_cls, _close):
         redis = MagicMock()
         redis.get.return_value = None
         # Precheck poll: not published, not dead
@@ -757,11 +742,8 @@ class HLSPlaylistViewTests(SimpleTestCase):
         )
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_dead_channel_before_stream_returns_410(
-        self, mock_proxy_cls, _network, _close
-    ):
+    def test_dead_channel_before_stream_returns_410(self, mock_proxy_cls, _close):
         redis = MagicMock()
         redis.get.return_value = None
         redis.pipeline.return_value.execute.return_value = (
@@ -787,9 +769,8 @@ class HLSSegmentViewTests(SimpleTestCase):
         return self.factory.get(f"/proxy/hls/{TOKEN}/3.ts")
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
-    @patch("apps.proxy.live_proxy.output.hls.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.output.hls.views.ProxyServer")
-    def test_lapsed_client_returns_410(self, mock_proxy_cls, _network, _close):
+    def test_lapsed_client_returns_410(self, mock_proxy_cls, _close):
         redis = MagicMock()
         redis.register_script.return_value = MagicMock(return_value=[2])
         proxy = MagicMock()
