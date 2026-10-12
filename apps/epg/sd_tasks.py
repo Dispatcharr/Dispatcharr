@@ -49,6 +49,23 @@ SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS = 90
 SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES = 2
 
 
+def _sd_system_status(status_data):
+    """Read text and legacy object statuses without assuming a nonempty list."""
+    values = status_data.get('systemStatus')
+    if not isinstance(values, list):
+        values = [values]
+    statuses = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get('status')
+        if isinstance(value, str) and value.strip():
+            statuses.append(value.strip())
+    # An explicit outage must win over blank or Online entries.
+    if any(value.casefold() == 'offline' for value in statuses):
+        return 'Offline'
+    return statuses[0] if statuses else 'Online'
+
+
 def _set_epg_source_status(*args, **kwargs):
     from apps.epg.tasks import _set_epg_source_status as _impl
     return _impl(*args, **kwargs)
@@ -924,7 +941,7 @@ def fetch_schedules_direct(
         status_response = _sd_req('GET', f"{SD_BASE_URL}/status", timeout=30)
         status_response.raise_for_status()
         status_data = status_response.json()
-        system_status = status_data.get('systemStatus', [{}])[0].get('status', 'Online')
+        system_status = _sd_system_status(status_data)
         if system_status == 'Offline':
             # Per SD API spec: if system is offline, disconnect and do not
             # retry for 1 hour. Next attempt is the next scheduled/manual refresh.
