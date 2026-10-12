@@ -50,8 +50,14 @@ SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES = 2
 
 
 def _sd_system_status(status_data):
-    """Read text and legacy object statuses without assuming a nonempty list."""
-    values = status_data.get('systemStatus')
+    """
+    Normalize Schedules Direct /status systemStatus to a display string.
+
+    Documented entries are objects with a status field. Observed responses can
+    also use bare strings (including empty). Blank or missing values fall back
+    to Online. Any Offline entry wins (case-insensitive).
+    """
+    values = status_data.get('systemStatus') if isinstance(status_data, dict) else None
     if not isinstance(values, list):
         values = [values]
     statuses = []

@@ -561,7 +561,12 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
 
 
 class FetchSchedulesDirectSystemStatusTests(TestCase):
-    """Status response variants must not crash or bypass the offline stop."""
+    """
+    SD /status systemStatus must tolerate documented objects and bare strings.
+
+    Observed responses have included an empty string entry. Blank or missing
+    status continues the refresh; Offline still stops before lineups.
+    """
 
     def _fetch_with_status(self, payload):
         from apps.epg.sd_tasks import fetch_schedules_direct
@@ -592,6 +597,7 @@ class FetchSchedulesDirectSystemStatusTests(TestCase):
         return source, request, update
 
     def test_blank_and_online_statuses_continue_to_lineups(self):
+        # Includes the observed empty-string shape plus documented objects.
         payloads = [
             {'systemStatus': ['']},
             {'systemStatus': ['Online']},
