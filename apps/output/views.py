@@ -8,23 +8,18 @@ from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled, xc_lang
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from apps.epg.models import ProgramData
-from apps.accounts.models import User
+from apps.accounts.xc_auth import authorize_xc_client
 from dispatcharr.utils import get_client_ip, network_access_allowed
 from django.utils import timezone as django_timezone
-from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta, timezone as dt_timezone
-import html
 import time
 from urllib.parse import urlencode, urlparse
 from ipaddress import ip_address
 import base64
 import logging
 from django.db.models.functions import Lower
-import os
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
-import regex
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 from apps.output.dummy_epg import (
@@ -466,29 +461,6 @@ def generate_m3u(request, profile_name=None, user=None):
     return response
 
 
-def xc_get_user(request):
-    username = request.GET.get("username")
-    password = request.GET.get("password")
-
-    if not username or not password:
-        return None
-
-    user = get_object_or_404(User, username=username)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return None
-
-    if custom_properties["xc_password"] != password:
-        return None
-
-    if not network_access_allowed(request, 'XC_API', user):
-        return None
-
-    return user
-
-
 def _xc_allowed_output_formats(user):
     """Return the list of allowed output formats for the XC API user_info response."""
     return ['ts', 'mp4', 'm3u8']
@@ -512,12 +484,7 @@ def _build_xc_server_info(request, hostname, port):
     }
 
 
-def xc_get_info(request, full=False):
-    user = xc_get_user(request)
-
-    if user is None:
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
-
+def xc_get_info(request, user, full=False):
     raw_host = request.get_host()
     if ":" in raw_host:
         hostname, port = raw_host.split(":", 1)
@@ -558,12 +525,42 @@ def xc_get_info(request, full=False):
     return info
 
 
+def _xc_api_user(request, blocked_event=None):
+    """Authorize username/password query params against the XC API allowlist.
+
+    When *blocked_event* is set (``m3u_blocked`` or ``epg_blocked``), a
+    failure is written to the system log before the error is returned.
+    """
+    user, error = authorize_xc_client(
+        request,
+        request.GET.get("username"),
+        request.GET.get("password"),
+        "XC_API",
+    )
+    if error is None or not blocked_event:
+        return user, error
+
+    client_ip = get_client_ip(request) or "unknown"
+    user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
+    if error.status_code == 403:
+        reason = "Network access denied (XC API)"
+    else:
+        reason = "Invalid XC credentials"
+    log_system_event(
+        event_type=blocked_event,
+        user=request.GET.get("username", "unknown"),
+        reason=reason,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
+    return user, error
+
+
 def xc_player_api(request, full=False):
     action = request.GET.get("action")
-    user = xc_get_user(request)
-
-    if user is None:
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
+    user, error = _xc_api_user(request)
+    if error is not None:
+        return error
 
     if action == "get_live_categories":
         return JsonResponse(xc_get_live_categories(user), safe=False)
@@ -591,84 +588,29 @@ def xc_player_api(request, full=False):
     else:
         # For any other action (including get_account_info or unknown actions),
         # return server_info/account_info to match provider behavior
-        server_info = xc_get_info(request)
-        return JsonResponse(server_info, safe=False)
+        return JsonResponse(xc_get_info(request, user), safe=False)
 
 
 def xc_panel_api(request):
-    user = xc_get_user(request)
+    user, error = _xc_api_user(request)
+    if error is not None:
+        return error
 
-    if user is None:
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
-
-    return JsonResponse(xc_get_info(request, True))
+    return JsonResponse(xc_get_info(request, user, True))
 
 
 def xc_get(request):
-    if not network_access_allowed(request, 'XC_API'):
-        # Log blocked M3U download
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='m3u_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Network access denied (XC API)',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
-    action = request.GET.get("action")
-    user = xc_get_user(request)
-
-    if user is None:
-        # Log blocked M3U download due to invalid credentials
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='m3u_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Invalid XC credentials',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
+    user, error = _xc_api_user(request, blocked_event="m3u_blocked")
+    if error is not None:
+        return error
 
     return generate_m3u(request, None, user)
 
 
 def xc_xmltv(request):
-    if not network_access_allowed(request, 'XC_API'):
-        # Log blocked EPG download
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='epg_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Network access denied (XC API)',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
-    user = xc_get_user(request)
-
-    if user is None:
-        # Log blocked EPG download due to invalid credentials
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='epg_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Invalid XC credentials',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
+    user, error = _xc_api_user(request, blocked_event="epg_blocked")
+    if error is not None:
+        return error
 
     return generate_epg(request, None, user)
 

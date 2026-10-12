@@ -8,8 +8,8 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 from apps.proxy.live_proxy.output.hls.session import SESSION_TOKEN_HEADER
+from apps.accounts.xc_auth import authorize_xc_client
 from apps.proxy.live_proxy.views import (
-    _authenticate_xc_live_user,
     _resolve_xc_live_channel,
     stream_ts,
     stream_xc,
@@ -233,33 +233,63 @@ class XCLiveAuthHelperTests(SimpleTestCase):
         self.factory = RequestFactory()
         self.request = self.factory.get("/live/alice/secret/5.m3u8")
 
-    def test_wrong_password_returns_401(self):
+    def _user(self):
         user = MagicMock()
         user.custom_properties = {"xc_password": "secret"}
+        return user
 
+    def test_blocked_network_skips_user_lookup(self):
         with patch(
-            "apps.proxy.live_proxy.views.get_object_or_404", return_value=user
+            "apps.accounts.xc_auth.network_access_allowed", return_value=False
+        ), patch("apps.accounts.xc_auth.get_xc_user") as lookup:
+            found, error = authorize_xc_client(
+                self.request, "alice", "secret", "STREAMS",
+            )
+
+        self.assertIsNone(found)
+        self.assertEqual(error.status_code, 403)
+        lookup.assert_not_called()
+
+    def test_wrong_password_returns_401(self):
+        with patch(
+            "apps.accounts.xc_auth.network_access_allowed", return_value=True
         ), patch(
-            "apps.proxy.live_proxy.views.network_access_allowed", return_value=True
+            "apps.accounts.xc_auth.get_xc_user", return_value=self._user()
         ):
-            found, error = _authenticate_xc_live_user(
-                self.request, "alice", "wrong"
+            found, error = authorize_xc_client(
+                self.request, "alice", "wrong", "STREAMS",
             )
 
         self.assertIsNone(found)
         self.assertEqual(error.status_code, 401)
 
-    def test_valid_credentials_return_user(self):
-        user = MagicMock()
-        user.custom_properties = {"xc_password": "secret"}
+    def test_user_network_deny_returns_403_not_401(self):
+        def allow_global_only(request, key, user=None):
+            return user is None
 
         with patch(
-            "apps.proxy.live_proxy.views.get_object_or_404", return_value=user
+            "apps.accounts.xc_auth.network_access_allowed",
+            side_effect=allow_global_only,
         ), patch(
-            "apps.proxy.live_proxy.views.network_access_allowed", return_value=True
+            "apps.accounts.xc_auth.get_xc_user", return_value=self._user()
         ):
-            found, error = _authenticate_xc_live_user(
-                self.request, "alice", "secret"
+            found, error = authorize_xc_client(
+                self.request, "alice", "secret", "STREAMS",
+            )
+
+        self.assertIsNone(found)
+        self.assertEqual(error.status_code, 403)
+
+    def test_valid_credentials_return_user(self):
+        user = self._user()
+
+        with patch(
+            "apps.accounts.xc_auth.network_access_allowed", return_value=True
+        ), patch(
+            "apps.accounts.xc_auth.get_xc_user", return_value=user
+        ):
+            found, error = authorize_xc_client(
+                self.request, "alice", "secret", "STREAMS",
             )
 
         self.assertIs(found, user)

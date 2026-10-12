@@ -22,8 +22,8 @@ class TestStreamXcEpisodeMissingRelation(SimpleTestCase):
         return user
 
     def test_missing_relation_returns_clean_404_not_500(self):
-        with patch('apps.proxy.vod_proxy.views.network_access_allowed', return_value=True), \
-             patch('apps.proxy.vod_proxy.views.get_object_or_404', return_value=self._mock_user()), \
+        with patch('apps.accounts.xc_auth.network_access_allowed', return_value=True), \
+             patch('apps.accounts.xc_auth.get_xc_user', return_value=self._mock_user()), \
              patch('apps.vod.models.M3UEpisodeRelation') as RelMock:
             RelMock.objects.select_related.return_value.filter.return_value \
                 .order_by.return_value.first.return_value = None
@@ -36,8 +36,8 @@ class TestStreamXcEpisodeMissingRelation(SimpleTestCase):
         episode = MagicMock(uuid='real-uuid')
         relation = MagicMock(episode=episode)
 
-        with patch('apps.proxy.vod_proxy.views.network_access_allowed', return_value=True), \
-             patch('apps.proxy.vod_proxy.views.get_object_or_404', return_value=self._mock_user()), \
+        with patch('apps.accounts.xc_auth.network_access_allowed', return_value=True), \
+             patch('apps.accounts.xc_auth.get_xc_user', return_value=self._mock_user()), \
              patch('apps.vod.models.M3UEpisodeRelation') as RelMock, \
              patch('apps.proxy.vod_proxy.views.stream_vod', return_value=HttpResponse('STREAMED')) as stream_vod_mock:
             RelMock.objects.select_related.return_value.filter.return_value \

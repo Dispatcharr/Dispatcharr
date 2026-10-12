@@ -18,10 +18,10 @@ from apps.m3u.models import M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
+from apps.accounts.xc_auth import authorize_xc_client
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
@@ -1447,26 +1447,14 @@ def stop_vod_client(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc_movie(request, username, password, stream_id, extension):
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-
     from apps.vod.models import M3UMovieRelation
 
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
-
-    if not network_access_allowed(request, 'STREAMS', user):
-        return Response({"error": "Forbidden"}, status=403)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
+    user, error = authorize_xc_client(request, username, password, "STREAMS")
+    if error is not None:
+        return error
 
     if not is_vod_movies_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)
@@ -1487,26 +1475,14 @@ def stream_xc_movie(request, username, password, stream_id, extension):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc_episode(request, username, password, stream_id, extension):
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-
     from apps.vod.models import M3UEpisodeRelation
 
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
-
-    if not network_access_allowed(request, 'STREAMS', user):
-        return Response({"error": "Forbidden"}, status=403)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
+    user, error = authorize_xc_client(request, username, password, "STREAMS")
+    if error is not None:
+        return error
 
     if not is_vod_series_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)

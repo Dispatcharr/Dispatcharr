@@ -666,8 +666,7 @@ class CatchupProxySessionAuthTests(TestCase):
 
     def test_xc_path_unchanged(self):
         request = self.factory.get(_proxy_url())
-        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
-             patch.object(views, "network_access_allowed", return_value=True), \
+        with patch.object(views, "authorize_xc_client", return_value=(MagicMock(id=1), None)), \
              patch.object(views, "get_channel_for_user") as channel_lookup, \
              patch.object(views, "_serve_catchup", return_value=HttpResponse("ok")) as serve:
             channel_lookup.return_value = MagicMock(id=8)

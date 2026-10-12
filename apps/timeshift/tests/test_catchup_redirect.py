@@ -91,10 +91,7 @@ class CatchupRedirectViewTests(SimpleTestCase):
         )
         redis_cls = stack.enter_context(patch.object(views, "RedisClient"))
         stack.enter_context(
-            patch.object(views, "_authenticate_user", return_value=MagicMock(id=1))
-        )
-        stack.enter_context(
-            patch.object(views, "network_access_allowed", return_value=True)
+            patch.object(views, "authorize_xc_client", return_value=(MagicMock(id=1), None))
         )
         stack.enter_context(
             patch.object(views, "get_channel_catchup_streams", return_value=[stream])
