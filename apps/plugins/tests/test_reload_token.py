@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.plugins.loader import PluginManager
+from apps.plugins.loader import LoadedPlugin, PluginManager
 
 
 class PluginReloadTokenTests(SimpleTestCase):
@@ -124,6 +124,26 @@ class PluginReloadTokenTests(SimpleTestCase):
             worker.discover_plugins(sync_db=False, use_cache=True)
 
         mock_impl.assert_not_called()
+
+    def test_single_plugin_reload_broadcasts_after_local_replacement(self):
+        worker = self._make_worker()
+        plugin_dir = os.path.join(self._tmpdir, "Example Plugin")
+        os.makedirs(plugin_dir)
+        with open(os.path.join(plugin_dir, "plugin.py"), "w", encoding="utf-8"):
+            pass
+        seed = self._pin_token_mtime(worker)
+        worker._last_reload_token = seed
+        replacement = LoadedPlugin(key="example_plugin", name="Example Plugin")
+
+        with patch.object(worker, "stop_plugin"), patch.object(
+            worker,
+            "_load_and_merge_plugin_entry",
+            return_value=(replacement, "example_package", None),
+        ), patch.object(worker, "_sync_db_with_registry"):
+            self.assertTrue(worker.reload_plugin("example_plugin"))
+
+        self.assertGreater(worker._get_reload_token(), seed)
+        self.assertEqual(worker._last_reload_token, worker._get_reload_token())
 
     def test_unloading_namespace_subpackage_after_parent_is_safe(self):
         """Namespace paths can fail after their parent is removed from sys.modules."""

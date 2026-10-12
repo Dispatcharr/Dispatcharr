@@ -33,9 +33,11 @@ class PluginEnabledAPICapabilityAckTests(TestCase):
         self.addCleanup(self._pm_patcher.stop)
         self.pm = pm
 
-    def _post(self, enabled):
+    def _post(self, enabled, acknowledge_capabilities=None):
         request = self.factory.post(
-            "/api/plugins/plugins/my-plugin/enabled/", {"enabled": enabled}, format="json"
+            "/api/plugins/plugins/my-plugin/enabled/",
+            {"enabled": enabled, "acknowledge_capabilities": acknowledge_capabilities or []},
+            format="json",
         )
         force_authenticate(request, user=self.admin)
         return PluginEnabledAPIView.as_view()(request, key="my-plugin")
@@ -43,27 +45,25 @@ class PluginEnabledAPICapabilityAckTests(TestCase):
     def _lp(self, capabilities):
         return LoadedPlugin(key="my-plugin", name="My Plugin", capabilities=list(capabilities))
 
-    def test_enabling_unions_effective_capabilities_into_acknowledged(self):
+    def test_enabling_requires_explicit_capability_acknowledgement(self):
         with patch.object(self.pm, "discover_plugins"), patch.object(
             self.pm, "get_plugin", return_value=self._lp(["background_tasks"])
         ), patch.object(self.pm, "list_plugins", return_value=[]):
             response = self._post(True)
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["error_code"], "capability_confirmation_required")
         self.cfg.refresh_from_db()
-        self.assertEqual(self.cfg.acknowledged_capabilities, ["background_tasks"])
+        self.assertFalse(self.cfg.enabled)
+        self.assertEqual(self.cfg.acknowledged_capabilities, [])
 
-    def test_reenabling_adds_newly_declared_capability(self):
-        self.cfg.acknowledged_capabilities = ["background_tasks"]
-        self.cfg.enabled = False
-        self.cfg.save(update_fields=["acknowledged_capabilities", "enabled"])
-
+    def test_enabling_persists_explicitly_acknowledged_capabilities(self):
         with patch.object(self.pm, "discover_plugins"), patch.object(
             self.pm,
             "get_plugin",
             return_value=self._lp(["background_tasks", "persistent_service"]),
         ), patch.object(self.pm, "list_plugins", return_value=[]):
-            response = self._post(True)
+            response = self._post(True, ["background_tasks", "persistent_service"])
 
         self.assertEqual(response.status_code, 200)
         self.cfg.refresh_from_db()

@@ -972,7 +972,8 @@ describe('AvailablePluginCard', () => {
       await waitFor(() => {
         expect(PluginsUtils.setPluginEnabled).toHaveBeenCalledWith(
           'test-plugin',
-          true
+          true,
+          []
         );
       });
     });

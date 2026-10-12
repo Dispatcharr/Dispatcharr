@@ -19,8 +19,8 @@ export const computeResetSettings = (fields) => {
 export const runPluginAction = async (key, actionId) => {
   return await API.runPluginAction(key, actionId);
 };
-export const setPluginEnabled = async (key, next) => {
-  return await API.setPluginEnabled(key, next);
+export const setPluginEnabled = async (key, next, acknowledgeCapabilities = []) => {
+  return await API.setPluginEnabled(key, next, acknowledgeCapabilities);
 };
 export const importPlugin = async (
   importFile,

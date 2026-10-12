@@ -107,8 +107,8 @@ const PluginsList = ({ onRequestDelete, onRequireTrust }) => {
     return result;
   }, [plugins, searchQuery, filterStatus]);
 
-  const handleTogglePluginEnabled = async (key, next) => {
-    const resp = await setPluginEnabled(key, next);
+  const handleTogglePluginEnabled = async (key, next, acknowledgeCapabilities = []) => {
+    const resp = await setPluginEnabled(key, next, acknowledgeCapabilities);
 
     if (resp?.success) {
       const updates = resp?.plugin || {
@@ -353,7 +353,11 @@ export default function PluginsPage() {
 
       const proceed = !needsCapabilityAck(imported) || (await requireTrust(imported));
       if (proceed) {
-        const resp = await setPluginEnabled(imported.key, true);
+        const resp = await setPluginEnabled(
+          imported.key,
+          true,
+          (imported.capabilities || []).map((capability) => capability.id)
+        );
         if (resp?.success) {
           const updates = resp?.plugin || { enabled: true, ever_enabled: true };
           usePluginStore.getState().updatePlugin(imported.key, updates);

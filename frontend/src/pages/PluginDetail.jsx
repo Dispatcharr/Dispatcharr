@@ -336,14 +336,16 @@ function PluginDetailForKey({ routeKey: key }) {
   };
 
   const handleEnableChange = async (next) => {
+    let acknowledgeCapabilities = [];
     if (next && needsCapabilityAck(plugin)) {
       const ok = await usePluginStore.getState().requestEnableConfirmation(plugin);
       if (!ok) return;
+      acknowledgeCapabilities = (plugin.capabilities || []).map((capability) => capability.id);
     }
     const previous = enabled;
     setEnabled(next);
     try {
-      const resp = await setPluginEnabled(plugin.key, next);
+      const resp = await setPluginEnabled(plugin.key, next, acknowledgeCapabilities);
       if (resp?.success) {
         const updates = resp?.plugin || { enabled: next, ever_enabled: resp?.ever_enabled };
         usePluginStore.getState().updatePlugin(plugin.key, updates);

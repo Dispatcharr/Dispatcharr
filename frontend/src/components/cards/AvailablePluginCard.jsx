@@ -347,7 +347,11 @@ const AvailablePluginCard = ({
       if (proceed) {
         setEnabling(true);
         try {
-          await setPluginEnabled(installedKey, true);
+          await setPluginEnabled(
+            installedKey,
+            true,
+            (installedPlugin?.capabilities || []).map((capability) => capability.id)
+          );
         } finally {
           setEnabling(false);
         }
