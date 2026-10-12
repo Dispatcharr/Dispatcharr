@@ -4,7 +4,12 @@ from unittest.mock import patch
 
 from django.test import RequestFactory, SimpleTestCase
 
-from apps.accounts.xc_auth import XC_AUTH_CREDENTIALS, XC_AUTH_NETWORK, xc_auth_error_response
+from apps.accounts.xc_auth import (
+    XC_AUTH_CREDENTIALS,
+    XC_AUTH_NETWORK,
+    XC_AUTH_RATE_LIMIT,
+    xc_auth_error_response,
+)
 from apps.output.views import xc_get, xc_panel_api, xc_player_api, xc_xmltv
 
 
@@ -58,4 +63,14 @@ class XcApiAuthStatusTests(SimpleTestCase):
         self.assertEqual(
             log_event.call_args.kwargs["reason"],
             "Invalid XC credentials",
+        )
+
+        with patch(
+            "apps.output.views.authorize_xc_client",
+            return_value=(None, xc_auth_error_response(XC_AUTH_RATE_LIMIT)),
+        ), patch("apps.output.views.log_system_event") as log_event:
+            xc_get(request)
+        self.assertEqual(
+            log_event.call_args.kwargs["reason"],
+            "XC auth rate limited",
         )

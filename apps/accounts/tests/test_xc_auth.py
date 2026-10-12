@@ -6,6 +6,7 @@ from apps.accounts.models import User
 from apps.accounts.xc_auth import (
     XC_AUTH_CREDENTIALS,
     XC_AUTH_NETWORK,
+    XC_AUTH_RATE_LIMIT,
     authorize_xc_client,
     xc_auth_error_response,
     xc_password_matches,
@@ -54,6 +55,12 @@ class XcAuthErrorResponseTests(SimpleTestCase):
     def test_credentials_are_401(self):
         response = xc_auth_error_response(XC_AUTH_CREDENTIALS)
         self.assertEqual(response.status_code, 401)
+
+    def test_rate_limit_is_429_with_retry_after(self):
+        response = xc_auth_error_response(XC_AUTH_RATE_LIMIT, retry_after=12.3)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response["Retry-After"], "12")
+
 
 
 class AuthorizeXcClientTests(SimpleTestCase):

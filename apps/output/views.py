@@ -544,6 +544,8 @@ def _xc_api_user(request, blocked_event=None):
     user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
     if error.status_code == 403:
         reason = "Network access denied (XC API)"
+    elif error.status_code == 429:
+        reason = "XC auth rate limited"
     else:
         reason = "Invalid XC credentials"
     log_system_event(

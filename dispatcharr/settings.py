@@ -369,6 +369,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {
         "login": "3/minute",
+        # Failed XC credential attempts only (see apps.accounts.xc_auth).
+        "xc_auth": "10/minute",
     },
 }
 
