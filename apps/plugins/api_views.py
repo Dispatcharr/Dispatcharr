@@ -30,6 +30,7 @@ from core.utils import safe_upload_path
 
 from .capabilities import compute_effective_capabilities, describe_capabilities
 from .loader import PluginManager
+from .keys import normalize_plugin_key
 from .models import PluginConfig, PluginRepo
 from .serializers import PluginRepoSerializer
 from .version_utils import compare_versions, get_plugin_status
@@ -72,11 +73,7 @@ def _parse_bool(value):
 
 
 def _sanitize_plugin_key(value: str) -> str:
-    base = os.path.basename(value or "")
-    base = base.replace(" ", "_").replace("-", "_").lower()
-    base = re.sub(r"[^a-z0-9_]", "_", base)
-    base = base.strip("._ ")
-    return base or "plugin"
+    return normalize_plugin_key(value)
 
 
 def _create_plugin_import_dir(plugins_dir):
@@ -187,11 +184,12 @@ class PluginSingleReloadAPIView(PluginAuthMixin, APIView):
     """Reload one plugin's Python code without stopping or re-importing any others."""
 
     @extend_schema(
-        description="Reload a single plugin's Python code in isolation (process-local; does not broadcast to other workers).",
+        description="Reload a single plugin's Python code in isolation. Other workers reload it on their next plugin use.",
         request=None,
         responses={200: inline_serializer(name="PluginSingleReloadResponse", fields={"success": serializers.BooleanField()})},
     )
     def post(self, request, key):
+        key = normalize_plugin_key(key)
         pm = PluginManager.get()
         ok = pm.reload_plugin(key)
         if not ok:
@@ -739,6 +737,7 @@ PLUGIN_RUN_SYNC_TIMEOUT = int(os.environ.get("DISPATCHARR_PLUGIN_RUN_SYNC_TIMEOU
 
 class PluginRunAPIView(PluginAuthMixin, APIView):
     def post(self, request, key):
+        key = normalize_plugin_key(key)
         pm = PluginManager.get()
         action = request.data.get("action")
         params = request.data.get("params", {})
@@ -753,6 +752,7 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        pm.discover_plugins(sync_db=False, use_cache=True)
         lp = pm.get_plugin(key)
         action_def = next(
             (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action), {}
@@ -816,6 +816,7 @@ class PluginTaskHistoryAPIView(PluginAuthMixin, APIView):
 
 class PluginEnabledAPIView(PluginAuthMixin, APIView):
     def post(self, request, key):
+        key = normalize_plugin_key(key)
         enabled_raw = request.data.get("enabled")
         if enabled_raw is None:
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
@@ -824,10 +825,29 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
             return Response({"success": False, "error": "Invalid 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             pm = PluginManager.get()
+            pm.discover_plugins(sync_db=False, use_cache=True)
+            lp = pm.get_plugin(key)
+            effective = list(lp.capabilities or []) if lp else []
+            acknowledged = request.data.get("acknowledge_capabilities", [])
+            if not isinstance(acknowledged, list):
+                acknowledged = []
+            acknowledged = {capability for capability in acknowledged if isinstance(capability, str)}
             pm.refresh_task_ownership()
             try:
                 with transaction.atomic():
                     cfg = PluginConfig.objects.select_for_update().get(key=key)
+                    unacknowledged = sorted(
+                        set(effective) - set(cfg.acknowledged_capabilities or [])
+                    )
+                    if enabled and unacknowledged and not set(unacknowledged).issubset(acknowledged):
+                        return Response(
+                            {
+                                "success": False,
+                                "error_code": "capability_confirmation_required",
+                                "capabilities": describe_capabilities(unacknowledged),
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
                     stopping = cfg.enabled and not enabled
                     if stopping:
                         pm.suspend_schedules(cfg)
@@ -843,7 +863,13 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
                     # Mark that this plugin has been enabled at least once
                     if cfg.enabled and not cfg.ever_enabled:
                         cfg.ever_enabled = True
-                    cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+                    if enabled and unacknowledged:
+                        cfg.acknowledged_capabilities = sorted(
+                            set(cfg.acknowledged_capabilities or []) | set(unacknowledged)
+                        )
+                    cfg.save(update_fields=[
+                        "enabled", "ever_enabled", "acknowledged_capabilities", "updated_at",
+                    ])
                     if enabled:
                         pm.restore_schedules(cfg)
             except PluginConfig.DoesNotExist:
@@ -855,13 +881,6 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
             pm.discover_plugins(force_reload=True)
-            if cfg.enabled:
-                lp = pm.get_plugin(key)
-                effective = list(lp.capabilities or []) if lp else []
-                acknowledged = sorted(set(cfg.acknowledged_capabilities or []) | set(effective))
-                if acknowledged != (cfg.acknowledged_capabilities or []):
-                    cfg.acknowledged_capabilities = acknowledged
-                    cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
             plugin_entry = None
             try:
                 plugin_entry = next((p for p in pm.list_plugins() if p.get("key") == key), None)
@@ -906,11 +925,14 @@ class PluginLogoAPIView(APIView):
 
 class PluginDeleteAPIView(PluginAuthMixin, APIView):
     def delete(self, request, key):
+        key = normalize_plugin_key(key)
         pm = PluginManager.get()
         with _plugin_mutation_lock(pm.plugins_dir):
             pm.refresh_task_ownership()
+            pm.discover_plugins(sync_db=False, use_cache=True)
             plugins_dir = pm.plugins_dir
-            target_dir = pm.get_plugin_path(key)
+            lp = pm.get_plugin(key)
+            target_dir = lp.path if lp and lp.path else pm.get_plugin_path(key)
             # Safety: ensure path inside plugins_dir
             abs_plugins = os.path.abspath(plugins_dir) + os.sep
             abs_target = os.path.abspath(target_dir)

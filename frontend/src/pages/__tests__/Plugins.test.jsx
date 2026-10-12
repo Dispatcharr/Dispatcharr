@@ -490,7 +490,7 @@ describe('PluginsPage', () => {
       fireEvent.click(enableButton);
 
       await waitFor(() => {
-        expect(setPluginEnabled).toHaveBeenCalledWith('new-plugin', true);
+        expect(setPluginEnabled).toHaveBeenCalledWith('new-plugin', true, []);
       });
     });
   });
@@ -564,7 +564,7 @@ describe('PluginsPage', () => {
       await importAndToggleEnableNow();
 
       await waitFor(() => {
-        expect(setPluginEnabled).toHaveBeenCalledWith('new-plugin', true);
+        expect(setPluginEnabled).toHaveBeenCalledWith('new-plugin', true, ['background_tasks']);
       });
     });
 

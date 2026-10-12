@@ -24,7 +24,9 @@ def effective_capabilities_for_plugin(plugin_key):
     from apps.plugins.capabilities import compute_effective_capabilities
 
     plugins_dir = os.environ.get("DISPATCHARR_PLUGINS_DIR", "/data/plugins")
-    manifest_path = os.path.join(plugins_dir, plugin_key, "plugin.json")
+    from apps.plugins.keys import plugin_manifest_path
+
+    manifest_path = plugin_manifest_path(plugins_dir, plugin_key)
     try:
         with open(manifest_path, "r", encoding="utf-8") as manifest_file:
             manifest = json.load(manifest_file)

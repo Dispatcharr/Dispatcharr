@@ -28,6 +28,7 @@ from .capabilities import (
     manifest_version_supported,
 )
 from .context import running_as_plugin
+from .keys import normalize_plugin_key
 from .sandbox import plugin_builtins, stable_plugin_data_path
 from .models import PluginConfig
 from .version_utils import get_plugin_status
@@ -251,7 +252,7 @@ class PluginManager:
                 if not (has_pkg or has_pluginpy):
                     continue
 
-                plugin_key = entry.replace(" ", "_").lower()
+                plugin_key = normalize_plugin_key(entry)
 
                 if force_reload:
                     prev_alias = previous_aliases.get(plugin_key)
@@ -1040,6 +1041,13 @@ class PluginManager:
         task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
+            # Check the shared token before resolving the instance so prefork
+            # children cannot keep serving an old module after a reload.
+            self.discover_plugins(
+                sync_db=False,
+                use_cache=True,
+                release_connections=False,
+            )
             lp = self.get_plugin(key)
             if not lp or not lp.instance:
                 # Attempt a lightweight re-discovery in case the registry was rebuilt
@@ -1412,9 +1420,9 @@ class PluginManager:
         """Reload a single plugin's Python code in isolation.
 
         Unlike `discover_plugins(force_reload=True)`, this does not stop or
-        re-import any other plugin, and deliberately does not touch the
-        shared `.reload_token` file used to broadcast full reloads to other
-        worker processes (a single-plugin reload is process-local only).
+        re-import any other plugin locally. A successful reload broadcasts
+        through the shared token so other worker processes converge on their
+        next cached discovery.
         Concurrent reloads of the same key are rejected (returns False)
         rather than racing with an in-progress unload/re-import.
         """
@@ -1434,7 +1442,7 @@ class PluginManager:
                 candidate = os.path.join(self.plugins_dir, entry)
                 if not os.path.isdir(candidate):
                     continue
-                if entry.replace(" ", "_").lower() == key:
+                if normalize_plugin_key(entry) == key:
                     path = candidate
                     entry_name = entry
                     break
@@ -1484,6 +1492,9 @@ class PluginManager:
             except Exception:
                 logger.exception("Deferring plugin DB sync after single-plugin reload")
 
+            self._touch_reload_token()
+            with self._lock:
+                self._last_reload_token = self._get_reload_token()
             logger.info("Reloaded plugin '%s'", key)
             return True
         finally:

@@ -45,17 +45,19 @@ const PluginCard = ({
   const handleEnableChange = () => {
     return async (e) => {
       const next = e.currentTarget.checked;
+      let acknowledgeCapabilities = [];
       if (next && needsCapabilityAck(plugin) && onRequireTrust) {
         const ok = await onRequireTrust(plugin);
         if (!ok) {
           setEnabled(false);
           return;
         }
+        acknowledgeCapabilities = (plugin.capabilities || []).map((capability) => capability.id);
       }
       const previous = enabled;
       setEnabled(next);
       try {
-        const resp = await onToggleEnabled(plugin.key, next);
+        const resp = await onToggleEnabled(plugin.key, next, acknowledgeCapabilities);
         if (!resp?.success) {
           setEnabled(previous);
           return;

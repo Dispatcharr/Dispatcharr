@@ -2492,13 +2492,13 @@ export default class API {
     }
   }
 
-  static async setPluginEnabled(key, enabled) {
+  static async setPluginEnabled(key, enabled, acknowledge_capabilities = []) {
     try {
       const response = await request(
         `${host}/api/plugins/plugins/${key}/enabled/`,
         {
           method: 'POST',
-          body: { enabled },
+          body: { enabled, acknowledge_capabilities },
         }
       );
       return response;
