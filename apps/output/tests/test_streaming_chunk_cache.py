@@ -67,13 +67,22 @@ class FakeRedis:
         self._lists.setdefault(key, []).append(value)
 
     def lindex(self, key, offset):
+        self._purge_expired()
         items = self._lists.get(key, [])
         if offset < len(items):
             return items[offset]
         return None
 
     def llen(self, key):
+        self._purge_expired()
         return len(self._lists.get(key, []))
+
+    def ttl_remaining(self, key):
+        self._purge_expired()
+        deadline = self._expires_at.get(key)
+        if deadline is None:
+            return None
+        return deadline - time.monotonic()
 
     def scan_iter(self, match=None, count=None):  # noqa: ARG002
         self._purge_expired()
@@ -378,6 +387,152 @@ class StreamingChunkCacheTests(TestCase):
         expected = "".join(document)
         self.assertEqual(b"".join(leader_body).decode("utf-8"), expected)
         self.assertEqual(b"".join(follower_body).decode("utf-8"), expected)
+
+    def _set_expiry_at(self, redis, base_key, deadline):
+        for key in (
+            _chunks_key(base_key),
+            _ready_key(base_key),
+            _status_key(base_key),
+        ):
+            if key in redis._strings or key in redis._lists:
+                redis._expires_at[key] = deadline
+
+    def test_ready_reader_refreshes_ttl_and_survives_near_expiry(self):
+        """A ready-cache download must not truncate when keys are near expiry."""
+        redis = FakeRedis()
+        document = ["<tv>", "<a/>", "<b/>", "<c/>", "</tv>"]
+        cache_ttl = 4
+
+        def source():
+            yield from document
+
+        _consume(
+            stream_cached_response(
+                "cache:ready-ttl",
+                source,
+                redis=redis,
+                cache_ttl=cache_ttl,
+            )
+        )
+
+        def forbidden_source():
+            raise AssertionError("ready hit must not rebuild")
+            yield  # pragma: no cover
+
+        self._set_expiry_at(redis, "cache:ready-ttl", time.monotonic() + 0.05)
+        body = _consume(
+            stream_cached_response(
+                "cache:ready-ttl",
+                forbidden_source,
+                redis=redis,
+                cache_ttl=cache_ttl,
+            )
+        )
+
+        self.assertEqual(body, "".join(document))
+        self.assertTrue(redis.exists(_chunks_key("cache:ready-ttl")))
+        self.assertTrue(redis.exists(_ready_key("cache:ready-ttl")))
+        self.assertGreater(redis.ttl_remaining(_chunks_key("cache:ready-ttl")), 1)
+
+    def test_ready_reader_periodic_refresh_keeps_keys_during_slow_download(self):
+        """Periodic TTL refresh must keep chunks alive across a slow ready read."""
+        from unittest.mock import patch
+
+        redis = FakeRedis()
+        document = ["<tv>", "<a/>", "<b/>", "</tv>"]
+        cache_ttl = 4
+        clock = {"now": 1000.0}
+
+        def source():
+            yield from document
+
+        _consume(
+            stream_cached_response(
+                "cache:ready-slow",
+                source,
+                redis=redis,
+                cache_ttl=cache_ttl,
+            )
+        )
+
+        def forbidden_source():
+            raise AssertionError("ready hit must not rebuild")
+            yield  # pragma: no cover
+
+        def fake_mono():
+            return clock["now"]
+
+        with (
+            patch("apps.output.streaming_chunk_cache.time.monotonic", fake_mono),
+            patch(f"{__name__}.time.monotonic", fake_mono),
+        ):
+            stream = iter(
+                stream_cached_response(
+                    "cache:ready-slow",
+                    forbidden_source,
+                    redis=redis,
+                    cache_ttl=cache_ttl,
+                ).streaming_content
+            )
+            body = [next(stream)]
+            # Still before expiry, but past the refresh interval so the next
+            # iteration extends TTLs before reading more chunks.
+            self._set_expiry_at(redis, "cache:ready-slow", 1001.5)
+            clock["now"] = 1001.0
+            body.extend(stream)
+
+            self.assertEqual(b"".join(body).decode("utf-8"), "".join(document))
+            self.assertTrue(redis.exists(_chunks_key("cache:ready-slow")))
+            self.assertGreater(redis.ttl_remaining(_chunks_key("cache:ready-slow")), 1)
+
+    def test_follower_refreshes_ttl_while_draining_chunks(self):
+        """A follower draining chunks must refresh TTLs so mid-read expiry
+        cannot truncate the document."""
+        from unittest.mock import patch
+
+        redis = FakeRedis()
+        base = "cache:follow-ttl"
+        cache_ttl = 4
+        clock = {"now": 1000.0}
+
+        redis.set(_lock_key(base), "1", ex=120)
+        redis.set(_status_key(base), STATUS_BUILDING, ex=120)
+        redis.rpush(_chunks_key(base), b"<tv>")
+        redis.rpush(_chunks_key(base), b"<a/>")
+
+        def forbidden_source():
+            raise AssertionError("follower must not rebuild")
+            yield  # pragma: no cover
+
+        def fake_mono():
+            return clock["now"]
+
+        with (
+            patch("apps.output.streaming_chunk_cache.time.monotonic", fake_mono),
+            patch(f"{__name__}.time.monotonic", fake_mono),
+            patch("apps.output.streaming_chunk_cache._poll_wait", return_value=None),
+        ):
+            follower = iter(
+                stream_cached_response(
+                    base,
+                    forbidden_source,
+                    redis=redis,
+                    cache_ttl=cache_ttl,
+                    poll_interval=0.01,
+                ).streaming_content
+            )
+            body = [next(follower), next(follower)]
+            self._set_expiry_at(redis, base, 1001.5)
+            clock["now"] = 1001.0
+            redis.rpush(_chunks_key(base), b"<b/>")
+            redis.rpush(_chunks_key(base), b"</tv>")
+            redis.set(_status_key(base), STATUS_READY, ex=cache_ttl)
+            redis.set(_ready_key(base), "1", ex=cache_ttl)
+            body.extend(follower)
+
+            self.assertEqual(b"".join(body).decode("utf-8"), "<tv><a/><b/></tv>")
+            self.assertTrue(redis.exists(_chunks_key(base)))
+            self.assertGreater(redis.ttl_remaining(_chunks_key(base)), 1)
 
     def test_invalidate_m3u_content_cache_uses_django_delete_pattern(self):
         from unittest.mock import MagicMock, patch

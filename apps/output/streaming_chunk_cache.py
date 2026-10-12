@@ -95,10 +95,23 @@ def _refresh_build_ttl(redis, base_key, lock_ttl):
     redis.expire(_chunks_key(base_key), lock_ttl)
 
 
-def _stream_ready(redis, base_key):
-    offset = 0
+def _refresh_ready_ttl(redis, base_key, cache_ttl):
+    redis.expire(_chunks_key(base_key), cache_ttl)
+    redis.expire(_status_key(base_key), cache_ttl)
+    redis.expire(_ready_key(base_key), cache_ttl)
+
+
+def _stream_ready(redis, base_key, cache_ttl):
     chunks_key = _chunks_key(base_key)
+    refresh_interval = max(1, cache_ttl // 4)
+    _refresh_ready_ttl(redis, base_key, cache_ttl)
+    last_refresh = time.monotonic()
+    offset = 0
     while True:
+        now = time.monotonic()
+        if now - last_refresh >= refresh_interval:
+            _refresh_ready_ttl(redis, base_key, cache_ttl)
+            last_refresh = now
         chunk = redis.lindex(chunks_key, offset)
         if chunk is None:
             break
@@ -150,11 +163,17 @@ def _stream_follow(redis, base_key, source, cache_ttl, lock_ttl, poll_interval, 
     idle_polls = 0
     chunks_key = _chunks_key(base_key)
     lock_key = _lock_key(base_key)
+    refresh_interval = max(1, cache_ttl // 4)
+    last_refresh = 0.0
 
     while True:
         chunk = redis.lindex(chunks_key, offset)
         if chunk is not None:
             idle_polls = 0
+            now = time.monotonic()
+            if now - last_refresh >= refresh_interval:
+                _refresh_ready_ttl(redis, base_key, cache_ttl)
+                last_refresh = now
             yield _decode_chunk(chunk)
             offset += 1
             continue
@@ -225,7 +244,7 @@ def stream_cached_response(
 
     if redis.get(_ready_key(cache_key)):
         logger.debug("Serving response from chunk cache")
-        stream = _stream_ready(redis, cache_key)
+        stream = _stream_ready(redis, cache_key, cache_ttl)
     else:
         status = _get_status(redis, cache_key)
         if status == STATUS_ERROR:
