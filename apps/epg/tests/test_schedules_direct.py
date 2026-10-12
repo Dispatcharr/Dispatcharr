@@ -560,6 +560,77 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
 
 
+class FetchSchedulesDirectSystemStatusTests(TestCase):
+    """Status response variants must not crash or bypass the offline stop."""
+
+    def _fetch_with_status(self, payload):
+        from apps.epg.sd_tasks import fetch_schedules_direct
+
+        source = EPGSource.objects.create(
+            name=f'SD Status {EPGSource.objects.count()}',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+        auth = MagicMock(ok=True, debug_rejected=False, token='test-token')
+        status_response = MagicMock(
+            status_code=200, json=MagicMock(return_value=payload),
+        )
+        lineups_response = MagicMock(
+            status_code=200, json=MagicMock(return_value={'lineups': []}),
+        )
+        with patch('apps.epg.sd_tasks.sd_obtain_token', return_value=auth), \
+             patch('apps.epg.sd_tasks.sd_authorized_request') as request, \
+             patch('apps.epg.sd_tasks.send_epg_update') as update:
+            request.side_effect = [
+                (status_response, 'test-token'),
+                (lineups_response, 'test-token'),
+            ]
+            fetch_schedules_direct(source, stations_only=True)
+
+        source.refresh_from_db()
+        return source, request, update
+
+    def test_blank_and_online_statuses_continue_to_lineups(self):
+        payloads = [
+            {'systemStatus': ['']},
+            {'systemStatus': ['Online']},
+            {'systemStatus': [{'status': 'Online'}]},
+            {'systemStatus': []},
+            {},
+            {'systemStatus': None},
+            {'systemStatus': 'Online'},
+            {'systemStatus': [None, {}, 123, '  ']},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                source, request, _ = self._fetch_with_status(payload)
+                self.assertEqual(request.call_count, 2)
+                self.assertTrue(request.call_args.args[1].endswith('/lineups'))
+                self.assertEqual(source.status, EPGSource.STATUS_IDLE)
+                self.assertIn('No lineups configured', source.last_message)
+
+    def test_offline_status_stops_before_lineups(self):
+        payloads = [
+            {'systemStatus': ['Offline']},
+            {'systemStatus': [{'status': 'Offline'}]},
+            {'systemStatus': [' offline ']},
+            {'systemStatus': 'Offline'},
+            {'systemStatus': ['', 'Online', {'status': 'Offline'}]},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                source, request, update = self._fetch_with_status(payload)
+                request.assert_called_once()
+                self.assertTrue(request.call_args.args[1].endswith('/status'))
+                self.assertEqual(source.status, EPGSource.STATUS_IDLE)
+                self.assertIn('Do not retry for at least 1 hour', source.last_message)
+                update.assert_called_with(
+                    source.id, 'refresh', 100, status='idle',
+                    message=source.last_message,
+                )
+
+
 class FetchSchedulesDirectStationsOnlyTests(TestCase):
     """stations_only fetch must signal channel parsing completion to the frontend."""
 
