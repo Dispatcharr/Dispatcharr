@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from django.core.cache import cache
 from django.test import RequestFactory, TestCase
+from rest_framework.settings import api_settings
 
 from apps.accounts.models import User
 from apps.accounts.throttling import XcFailedAuthRateThrottle
@@ -14,10 +15,11 @@ from core.utils import (
     XC_AUTH_LOCKOUT_NOTICE_KEY,
 )
 
-# Production rate is 10/minute (see REST_FRAMEWORK DEFAULT_THROTTLE_RATES).
-# DRF copies that dict onto the throttle class at import, so tests use the
-# real rate instead of override_settings.
-XC_AUTH_FAILURE_LIMIT = 10
+# DRF copies DEFAULT_THROTTLE_RATES onto the throttle class at import, so
+# override_settings does not change the live rate. Read the configured limit.
+XC_AUTH_FAILURE_LIMIT = int(
+    api_settings.DEFAULT_THROTTLE_RATES["xc_auth"].split("/")[0]
+)
 
 
 class XcFailedAuthRateLimitTests(TestCase):

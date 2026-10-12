@@ -66,10 +66,7 @@ def _xc_credential_failure(request, username):
     When this failure crosses the per-IP rate limit, emit one ``login_failed``
     system event and (subject to cooldown) an admin inbox notice.
     """
-    crossed = False
-    if request is not None:
-        crossed = record_xc_failed_auth(request)
-    if crossed:
+    if record_xc_failed_auth(request):
         _emit_xc_auth_lockout(request, username)
     return None, xc_auth_error_response(XC_AUTH_CREDENTIALS)
 
@@ -78,23 +75,19 @@ def _emit_xc_auth_lockout(request, username):
     """Log the lockout trip and maybe refresh the cooldown inbox notice."""
     from core.utils import log_system_event, notify_xc_auth_lockout_inbox
 
-    client_ip = get_client_ip(request) if request is not None else None
-    user_agent = (
-        request.META.get("HTTP_USER_AGENT", "unknown")
-        if request is not None
-        else "unknown"
-    )
+    client_ip = get_client_ip(request) or "unknown"
+    user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
     log_system_event(
         event_type="login_failed",
         user=username or "unknown",
-        client_ip=client_ip or "unknown",
+        client_ip=client_ip,
         user_agent=user_agent,
         reason="XC auth rate limited",
     )
     logger.info(
         "XC auth rate limited: user=%s ip=%s",
         username or "unknown",
-        client_ip or "unknown",
+        client_ip,
     )
     try:
         notify_xc_auth_lockout_inbox()
@@ -123,10 +116,9 @@ def authorize_xc_client(request, username, password, network_key):
     if not system_network_ok:
         return None, xc_auth_error_response(XC_AUTH_NETWORK)
 
-    if request is not None:
-        limited, wait = xc_failed_auth_limited(request)
-        if limited:
-            return None, xc_auth_error_response(XC_AUTH_RATE_LIMIT, retry_after=wait)
+    limited, wait = xc_failed_auth_limited(request)
+    if limited:
+        return None, xc_auth_error_response(XC_AUTH_RATE_LIMIT, retry_after=wait)
 
     if not username or not password:
         return _xc_credential_failure(request, username)

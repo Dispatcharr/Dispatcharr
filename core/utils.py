@@ -1022,6 +1022,10 @@ LOGIN_RATE_LIMIT_NOTICE_KEY = "login-rate-limit"
 LOGIN_RATE_LIMIT_COOLDOWN_CACHE_KEY = "login_rate_limit_notice_cooldown"
 LOGIN_RATE_LIMIT_COOLDOWN_SECONDS = 3600
 
+API_KEY_AUTH_LOCKOUT_NOTICE_KEY = "api-key-auth-lockout"
+API_KEY_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY = "api_key_auth_lockout_notice_cooldown"
+API_KEY_AUTH_LOCKOUT_COOLDOWN_SECONDS = 3600
+
 
 def _notify_auth_lockout_inbox(
     *,
@@ -1095,6 +1099,21 @@ def notify_login_rate_limit_inbox():
             "One or more clients were temporarily locked out after too many "
             "login attempts (JWT, reverse-proxy headers, or Django admin). Check "
             "System Events on the Stats page for IP addresses and details."
+        ),
+    )
+
+
+def notify_api_key_auth_lockout_inbox():
+    """Create or refresh the cooldown-gated API-key lockout admin inbox notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=API_KEY_AUTH_LOCKOUT_NOTICE_KEY,
+        cooldown_cache_key=API_KEY_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=API_KEY_AUTH_LOCKOUT_COOLDOWN_SECONDS,
+        title="API key authentication rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "failed API key attempts. Check System Events on the Stats page "
+            "for IP addresses and details."
         ),
     )
 

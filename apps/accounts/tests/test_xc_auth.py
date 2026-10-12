@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase
 
 from apps.accounts.models import User
 from apps.accounts.xc_auth import (
@@ -64,14 +64,28 @@ class XcAuthErrorResponseTests(SimpleTestCase):
 
 
 class AuthorizeXcClientTests(SimpleTestCase):
+    def setUp(self):
+        self.request = RequestFactory().get("/player_api.php")
+
     def _user(self):
         return User(username="alice", custom_properties={"xc_password": "secret"})
 
     def _authorize(self, username, password, network, key="XC_API"):
-        with patch(
-            "apps.accounts.xc_auth.network_access_allowed", side_effect=network
+        # Patch rate-limit helpers so these unit tests stay about auth order,
+        # not Redis budgets (covered in test_xc_auth_rate_limit).
+        with (
+            patch(
+                "apps.accounts.xc_auth.network_access_allowed", side_effect=network
+            ),
+            patch(
+                "apps.accounts.xc_auth.xc_failed_auth_limited",
+                return_value=(False, None),
+            ),
+            patch(
+                "apps.accounts.xc_auth.record_xc_failed_auth", return_value=False
+            ),
         ):
-            return authorize_xc_client(None, username, password, key)
+            return authorize_xc_client(self.request, username, password, key)
 
     def test_global_deny_skips_user_lookup(self):
         def deny(request, key, user=None):

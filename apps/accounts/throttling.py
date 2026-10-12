@@ -1,4 +1,4 @@
-"""Shared login and XC failed-auth rate limiting."""
+"""Shared login and failed-auth rate limiting (XC, API key)."""
 
 import logging
 import math
@@ -61,22 +61,32 @@ class LoginRateThrottle(ClientIPRateThrottle):
     scope = "login"
 
 
-class XcFailedAuthRateThrottle(ClientIPRateThrottle):
-    """Per-IP XC failed-credential throttle (scope ``xc_auth``).
+class FailedAuthRateThrottle(ClientIPRateThrottle):
+    """Fail-only per-IP throttle; subclasses set ``scope``.
 
     Only failed credential attempts should call ``record_failure``. Successful
-    XC auth must not consume a slot. Always keys by IP (unlike stock
+    auth must not consume a slot. Always keys by IP (unlike stock
     ``AnonRateThrottle``, which skips authenticated Django users and reads
     ``request.user``).
     """
-
-    scope = "xc_auth"
 
     def get_cache_key(self, request, view):
         return self.cache_format % {
             "scope": self.scope,
             "ident": self.get_ident(request),
         }
+
+
+class XcFailedAuthRateThrottle(FailedAuthRateThrottle):
+    """Per-IP XC failed-credential throttle (scope ``xc_auth``)."""
+
+    scope = "xc_auth"
+
+
+class ApiKeyFailedAuthRateThrottle(FailedAuthRateThrottle):
+    """Per-IP API-key failed-auth throttle (scope ``api_key_auth``)."""
+
+    scope = "api_key_auth"
 
 
 def _login_username_from_request(request):
@@ -196,3 +206,20 @@ def record_xc_failed_auth(request):
     Returns True when this failure crossed the rate limit (first trip).
     """
     return XcFailedAuthRateThrottle().record_failure(request)
+
+
+def api_key_failed_auth_limited(request):
+    """Return ``(limited, wait_seconds)`` for the API-key failed-auth budget."""
+    throttle = ApiKeyFailedAuthRateThrottle()
+    if not throttle.is_limited(request):
+        return False, None
+    wait = throttle.wait()
+    return True, wait
+
+
+def record_api_key_failed_auth(request):
+    """Record a failed API-key attempt.
+
+    Returns True when this failure crossed the rate limit (first trip).
+    """
+    return ApiKeyFailedAuthRateThrottle().record_failure(request)
