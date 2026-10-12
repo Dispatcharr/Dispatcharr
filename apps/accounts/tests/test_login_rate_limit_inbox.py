@@ -88,7 +88,9 @@ class LoginRateLimitInboxTests(TestCase):
             notification_key=LOGIN_RATE_LIMIT_NOTICE_KEY
         )
         self.assertEqual(notice.title, "Login rate limit triggered")
-        self.assertIn("JWT, reverse-proxy, or Django admin", notice.message)
+        self.assertIn(
+            "JWT, reverse-proxy headers, or Django admin", notice.message
+        )
         self.assertNotIn("session login", notice.message)
         self.assertTrue(notice.admin_only)
         self.assertEqual(notice.action_data.get("action_url"), "/stats")

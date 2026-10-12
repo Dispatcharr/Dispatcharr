@@ -15,15 +15,26 @@ from apps.output.streaming_chunk_cache import (
 
 
 class FakeRedis:
-    """Minimal Redis stand-in for chunk-cache unit tests."""
+    """Minimal Redis stand-in for chunk-cache unit tests.
 
-    def __init__(self):
+    ``clock`` is a callable returning the current time (defaults to
+    ``time.monotonic``). TTL tests that patch monotonic must pass the same
+    clock here: otherwise keys stamped with the real clock look already
+    expired when the fake clock is still a small number (common on fresh CI
+    runners).
+    """
+
+    def __init__(self, clock=None):
+        self._clock = clock or time.monotonic
         self._strings = {}
         self._lists = {}
         self._expires_at = {}
 
+    def _now(self):
+        return self._clock()
+
     def _purge_expired(self):
-        now = time.monotonic()
+        now = self._now()
         expired = [key for key, deadline in self._expires_at.items() if deadline <= now]
         for key in expired:
             self._strings.pop(key, None)
@@ -40,7 +51,7 @@ class FakeRedis:
             return None
         self._strings[key] = value
         if ex is not None:
-            self._expires_at[key] = time.monotonic() + ex
+            self._expires_at[key] = self._now() + ex
         return True
 
     def delete(self, *keys):
@@ -55,7 +66,7 @@ class FakeRedis:
 
     def expire(self, key, ttl):
         if key in self._strings or key in self._lists:
-            self._expires_at[key] = time.monotonic() + ttl
+            self._expires_at[key] = self._now() + ttl
         return True
 
     def incr(self, key):
@@ -82,7 +93,7 @@ class FakeRedis:
         deadline = self._expires_at.get(key)
         if deadline is None:
             return None
-        return deadline - time.monotonic()
+        return deadline - self._now()
 
     def scan_iter(self, match=None, count=None):  # noqa: ARG002
         self._purge_expired()
@@ -438,34 +449,33 @@ class StreamingChunkCacheTests(TestCase):
         """Periodic TTL refresh must keep chunks alive across a slow ready read."""
         from unittest.mock import patch
 
-        redis = FakeRedis()
+        clock = {"now": 1000.0}
+
+        def fake_mono():
+            return clock["now"]
+
+        redis = FakeRedis(clock=fake_mono)
         document = ["<tv>", "<a/>", "<b/>", "</tv>"]
         cache_ttl = 4
-        clock = {"now": 1000.0}
 
         def source():
             yield from document
-
-        _consume(
-            stream_cached_response(
-                "cache:ready-slow",
-                source,
-                redis=redis,
-                cache_ttl=cache_ttl,
-            )
-        )
 
         def forbidden_source():
             raise AssertionError("ready hit must not rebuild")
             yield  # pragma: no cover
 
-        def fake_mono():
-            return clock["now"]
-
-        with (
-            patch("apps.output.streaming_chunk_cache.time.monotonic", fake_mono),
-            patch(f"{__name__}.time.monotonic", fake_mono),
+        with patch(
+            "apps.output.streaming_chunk_cache.time.monotonic", fake_mono
         ):
+            _consume(
+                stream_cached_response(
+                    "cache:ready-slow",
+                    source,
+                    redis=redis,
+                    cache_ttl=cache_ttl,
+                )
+            )
             stream = iter(
                 stream_cached_response(
                     "cache:ready-slow",
@@ -490,10 +500,14 @@ class StreamingChunkCacheTests(TestCase):
         cannot truncate the document."""
         from unittest.mock import patch
 
-        redis = FakeRedis()
+        clock = {"now": 1000.0}
+
+        def fake_mono():
+            return clock["now"]
+
+        redis = FakeRedis(clock=fake_mono)
         base = "cache:follow-ttl"
         cache_ttl = 4
-        clock = {"now": 1000.0}
 
         redis.set(_lock_key(base), "1", ex=120)
         redis.set(_status_key(base), STATUS_BUILDING, ex=120)
@@ -504,12 +518,8 @@ class StreamingChunkCacheTests(TestCase):
             raise AssertionError("follower must not rebuild")
             yield  # pragma: no cover
 
-        def fake_mono():
-            return clock["now"]
-
         with (
             patch("apps.output.streaming_chunk_cache.time.monotonic", fake_mono),
-            patch(f"{__name__}.time.monotonic", fake_mono),
             patch("apps.output.streaming_chunk_cache._poll_wait", return_value=None),
         ):
             follower = iter(
