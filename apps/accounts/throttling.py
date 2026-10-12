@@ -1,9 +1,14 @@
 """Shared login and XC failed-auth rate limiting."""
 
+import logging
+import math
+
 from django.http import HttpResponse
 from rest_framework.throttling import AnonRateThrottle
 
 from dispatcharr.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
 
 
 class ClientIPRateThrottle(AnonRateThrottle):
@@ -74,7 +79,85 @@ class XcFailedAuthRateThrottle(ClientIPRateThrottle):
         }
 
 
-def enforce_login_rate_limit(request):
+def _login_username_from_request(request):
+    """Best-effort username from DRF ``request.data`` or Django ``POST``."""
+    data = getattr(request, "data", None)
+    if data is not None:
+        try:
+            username = data.get("username")
+        except Exception:
+            username = None
+        if username:
+            return username
+    post = getattr(request, "POST", None)
+    if post is not None:
+        return post.get("username") or None
+    return None
+
+
+def _lockout_flag_timeout(wait, duration):
+    """Seconds to suppress another lockout event for this IP.
+
+    ``wait`` is the throttle retry delay the caller already computed. Ceil
+    keeps the flag up until that delay has fully elapsed.
+    """
+    seconds = duration if wait is None else wait
+    if not seconds:
+        seconds = 1
+    return max(1, math.ceil(seconds))
+
+
+def emit_login_rate_limit_lockout(request, username=None, wait=None, throttle=None):
+    """Emit one ``login_failed`` event and maybe an inbox notice for this IP.
+
+    Call only after the login throttle has already denied the request.
+    ``throttle`` is that instance when the caller has it (admin and proxy),
+    so the retry delay comes from history already in memory. JWT passes
+    ``wait`` from ``throttled`` instead. This does not read the throttle
+    history again.
+
+    ``cache.add`` makes overlapping 429s record a single event. The username
+    is read only after that add wins, so a later 429 does not parse the body.
+    Any failure is logged and swallowed so the caller can still return 429.
+    The inbox notice has its own longer cooldown (see
+    ``notify_login_rate_limit_inbox``).
+    """
+    from django.core.cache import cache
+
+    from core.utils import log_system_event, notify_login_rate_limit_inbox
+
+    try:
+        if throttle is None:
+            throttle = LoginRateThrottle()
+        if wait is None and getattr(throttle, "history", None) is not None:
+            wait = throttle.wait()
+        timeout = _lockout_flag_timeout(wait, throttle.duration)
+        emit_key = f"login_rate_limit_lockout_emitted:{throttle.get_ident(request)}"
+        if not cache.add(emit_key, True, timeout=timeout):
+            return
+
+        if not username:
+            username = _login_username_from_request(request)
+        client_ip = get_client_ip(request) or "unknown"
+        user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
+        log_system_event(
+            event_type="login_failed",
+            user=username or "unknown",
+            client_ip=client_ip,
+            user_agent=user_agent,
+            reason="Login rate limited",
+        )
+        logger.info(
+            "Login rate limited: user=%s ip=%s",
+            username or "unknown",
+            client_ip,
+        )
+        notify_login_rate_limit_inbox()
+    except Exception:
+        logger.exception("Failed to record login rate limit lockout")
+
+
+def enforce_login_rate_limit(request, username=None):
     """Return a 429 response when the shared login throttle denies *request*.
 
     Allowed checks consume a slot in the same ``login`` scope used by
@@ -84,6 +167,8 @@ def enforce_login_rate_limit(request):
     throttle = LoginRateThrottle()
     if throttle.allow_request(request, view=None):
         return None
+
+    emit_login_rate_limit_lockout(request, username=username, throttle=throttle)
 
     wait = throttle.wait()
     response = HttpResponse(

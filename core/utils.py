@@ -1011,55 +1011,92 @@ def _send_async(channel_layer, group, message):
     _do()
 
 
-# Admin inbox notice when XC failed-auth rate limiting trips. Cooldown is
-# shared across workers via the default Redis cache so spray does not refill
-# the bell; deleting the row clears dismissals so a later window can notify again.
+# Admin inbox notices when auth rate limiting trips. Cooldown is shared across
+# workers via the default Redis cache so spray does not refill the bell;
+# deleting the row clears dismissals so a later window can notify again.
 XC_AUTH_LOCKOUT_NOTICE_KEY = "xc-auth-lockout"
 XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY = "xc_auth_lockout_notice_cooldown"
 XC_AUTH_LOCKOUT_COOLDOWN_SECONDS = 3600
 
+LOGIN_RATE_LIMIT_NOTICE_KEY = "login-rate-limit"
+LOGIN_RATE_LIMIT_COOLDOWN_CACHE_KEY = "login_rate_limit_notice_cooldown"
+LOGIN_RATE_LIMIT_COOLDOWN_SECONDS = 3600
 
-def notify_xc_auth_lockout_inbox():
-    """Create or refresh the cooldown-gated XC lockout admin inbox notice.
 
-    Returns the notification when one was created, otherwise None.
+def _notify_auth_lockout_inbox(
+    *,
+    notification_key,
+    cooldown_cache_key,
+    cooldown_seconds,
+    title,
+    message,
+):
+    """Create or refresh a cooldown-gated auth lockout admin inbox notice.
+
+    Claims the cooldown with ``cache.add`` first so overlapping trips produce
+    one notice. If creating the row fails after the claim, the cooldown key is
+    cleared so a later attempt can try again. Returns the notification when
+    one was created, otherwise None.
     """
     from django.core.cache import cache
 
     from core.models import SystemNotification
 
-    if cache.get(XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY):
+    if not cache.add(cooldown_cache_key, True, timeout=cooldown_seconds):
         return None
 
-    SystemNotification.objects.filter(
-        notification_key=XC_AUTH_LOCKOUT_NOTICE_KEY
-    ).delete()
+    try:
+        SystemNotification.objects.filter(notification_key=notification_key).delete()
+        notification = SystemNotification.objects.create(
+            notification_key=notification_key,
+            notification_type=SystemNotification.NotificationType.WARNING,
+            priority=SystemNotification.Priority.HIGH,
+            source=SystemNotification.Source.SYSTEM,
+            title=title,
+            message=message,
+            action_data={
+                "action_url": "/stats",
+                "action_text": "Open Stats",
+            },
+            is_active=True,
+            admin_only=True,
+        )
+    except Exception:
+        cache.delete(cooldown_cache_key)
+        raise
 
-    notification = SystemNotification.objects.create(
+    send_websocket_notification(notification)
+    return notification
+
+
+def notify_xc_auth_lockout_inbox():
+    """Create or refresh the cooldown-gated XC lockout admin inbox notice."""
+    return _notify_auth_lockout_inbox(
         notification_key=XC_AUTH_LOCKOUT_NOTICE_KEY,
-        notification_type=SystemNotification.NotificationType.WARNING,
-        priority=SystemNotification.Priority.HIGH,
-        source=SystemNotification.Source.SYSTEM,
+        cooldown_cache_key=XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=XC_AUTH_LOCKOUT_COOLDOWN_SECONDS,
         title="XC authentication rate limit triggered",
         message=(
             "One or more clients were temporarily locked out after too many "
             "failed XC credential attempts. Check System Events on the Stats "
             "page for IP addresses and details."
         ),
-        action_data={
-            "action_url": "/stats",
-            "action_text": "Open Stats",
-        },
-        is_active=True,
-        admin_only=True,
     )
-    cache.set(
-        XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY,
-        True,
-        timeout=XC_AUTH_LOCKOUT_COOLDOWN_SECONDS,
+
+
+def notify_login_rate_limit_inbox():
+    """Create or refresh the cooldown-gated JWT/admin login lockout notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=LOGIN_RATE_LIMIT_NOTICE_KEY,
+        cooldown_cache_key=LOGIN_RATE_LIMIT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=LOGIN_RATE_LIMIT_COOLDOWN_SECONDS,
+        title="Login rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "login attempts (JWT, reverse-proxy headers, or Django admin). Check "
+            "System Events on the Stats page for IP addresses and details."
+        ),
     )
-    send_websocket_notification(notification)
-    return notification
 
 
 def send_websocket_notification(notification):
