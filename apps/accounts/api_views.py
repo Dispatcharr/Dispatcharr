@@ -11,7 +11,11 @@ from drf_spectacular.types import OpenApiTypes
 import json
 import secrets
 from .permissions import IsAdmin, Authenticated
-from .throttling import LoginRateThrottle, enforce_login_rate_limit
+from .throttling import (
+    LoginRateThrottle,
+    emit_login_rate_limit_lockout,
+    enforce_login_rate_limit,
+)
 from dispatcharr.utils import (
     SETUP_ALLOWED_IP_ENV,
     get_client_ip,
@@ -85,6 +89,10 @@ def _resolve_proxy_auth_user(identity):
 
 class TokenObtainPairView(TokenObtainPairView):
     throttle_classes = [LoginRateThrottle]
+
+    def throttled(self, request, wait):
+        emit_login_rate_limit_lockout(request, wait=wait)
+        return super().throttled(request, wait)
 
     def post(self, request, *args, **kwargs):
         if not network_access_allowed(request, "UI"):
@@ -284,7 +292,7 @@ class AuthViewSet(viewsets.ViewSet):
         # here rather than as a view throttle so the web UI's availability
         # probe, which returns above without minting anything, does not spend
         # login attempts the user needs for the password form.
-        throttled = enforce_login_rate_limit(request)
+        throttled = enforce_login_rate_limit(request, username=identity)
         if throttled is not None:
             logger.info(f"Proxy login throttled: identity={identity} ip={client_ip}")
             response = Response(

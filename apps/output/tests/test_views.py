@@ -60,6 +60,10 @@ class OutputEndpointTestMixin:
             "apps.output.views.network_access_allowed",
             return_value=True,
         )
+        self._xc_network_patch = patch(
+            "apps.accounts.xc_auth.network_access_allowed",
+            return_value=True,
+        )
         self._epg_teardown_patch = patch("apps.output.epg._epg_export_teardown")
         self._log_event_patch = patch("apps.output.views.log_system_event")
         self._epg_log_event_patch = patch("apps.output.epg.log_system_event")
@@ -69,6 +73,7 @@ class OutputEndpointTestMixin:
             side_effect=_epg_response_without_redis,
         )
         self._network_patch.start()
+        self._xc_network_patch.start()
         self._epg_teardown_patch.start()
         self._log_event_patch.start()
         self._epg_log_event_patch.start()
@@ -84,6 +89,7 @@ class OutputEndpointTestMixin:
         self._epg_log_event_patch.stop()
         self._log_event_patch.stop()
         self._epg_teardown_patch.stop()
+        self._xc_network_patch.stop()
         self._network_patch.stop()
         super().tearDown()
 

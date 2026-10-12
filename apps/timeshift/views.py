@@ -1,6 +1,5 @@
 """Catch-up (timeshift) proxy with multi-provider failover."""
 
-import hmac
 import json
 import logging
 import secrets
@@ -29,7 +28,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
-from apps.accounts.models import User
+from apps.accounts.xc_auth import authorize_xc_client
 from apps.channels.access import get_channel_for_user
 from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from apps.m3u.connection_pool import (
@@ -162,12 +161,9 @@ def _timeshift_proxy_impl(
 ):
     raw_id = channel_id[:-3] if channel_id.endswith(".ts") else channel_id
 
-    user = _authenticate_user(username, password)
-    if user is None:
-        return _finalize_timeshift_response(HttpResponseForbidden("Invalid credentials"))
-
-    if not network_access_allowed(request, "XC_API", user):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
+    user, error = authorize_xc_client(request, username, password, "XC_API")
+    if error is not None:
+        return _finalize_timeshift_response(error)
 
     try:
         channel_pk = int(raw_id)
@@ -764,19 +760,6 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
     return _finalize_timeshift_response(
         HttpResponseBadRequest("Cannot build timeshift URL")
     )
-
-
-def _authenticate_user(username, password):
-    try:
-        user = User.objects.get(username=username)
-    except User.DoesNotExist:
-        return None
-    expected = (user.custom_properties or {}).get("xc_password")
-    if not expected:
-        return None
-    if not hmac.compare_digest(str(expected), str(password)):
-        return None
-    return user
 
 
 # Per-client pool (session_id from 301 redirect or inline adopt when ?session_id=

@@ -1,4 +1,3 @@
-import hmac
 import json
 import time
 import random
@@ -12,7 +11,6 @@ from django.http import (
     Http404,
 )
 from django.views.decorators.csrf import csrf_exempt
-from django.shortcuts import get_object_or_404
 from .server import ProxyServer
 from .channel_status import ChannelStatus, build_live_channel_stats_data
 from .output.ts.generator import create_stream_generator
@@ -22,10 +20,10 @@ from .redis_keys import RedisKeys
 from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, Stream
 from apps.accounts.models import User
+from apps.accounts.xc_auth import authorize_xc_client
 from core.models import CoreSettings, PROXY_PROFILE_NAME, StreamProfile
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 from apps.accounts.permissions import IsAdmin
 from .constants import ChannelState, ChannelMetadataField
 from .services.channel_service import ChannelService
@@ -434,8 +432,12 @@ def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_pr
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
-def stream_ts(request, channel_id, user=None, force_output_format=None):
-    if not network_access_allowed(request, "STREAMS"):
+def stream_ts(
+    request, channel_id, user=None, force_output_format=None, *, check_network=True
+):
+    # stream_xc calls authorize_xc_client (XC_API) first, then passes
+    # check_network=False so this path is not also gated by STREAMS.
+    if check_network and not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
@@ -1024,19 +1026,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         close_old_connections()
 
 
-def _authenticate_xc_live_user(request, username, password):
-    """Return (user, error_response). Missing users raise Http404."""
-    user = get_object_or_404(User, username=username)
-    if not network_access_allowed(request, "STREAMS", user):
-        return None, Response({"error": "Forbidden"}, status=403)
-    custom_properties = user.custom_properties or {}
-    if "xc_password" not in custom_properties:
-        return None, Response({"error": "Invalid credentials"}, status=401)
-    if not hmac.compare_digest(str(custom_properties["xc_password"]), str(password)):
-        return None, Response({"error": "Invalid credentials"}, status=401)
-    return user, None
-
-
 def _resolve_xc_live_channel(user, channel_id):
     """Return (channel, error_response). Admin missing channels raise Http404."""
     try:
@@ -1057,7 +1046,7 @@ def _resolve_xc_live_channel(user, channel_id):
 
 def _xc_live_channel_or_error(request, username, password, channel_id):
     """Auth + channel lookup for XC live stream entry URLs."""
-    user, error = _authenticate_xc_live_user(request, username, password)
+    user, error = authorize_xc_client(request, username, password, "XC_API")
     if error is not None:
         return None, None, error
     channel, error = _resolve_xc_live_channel(user, channel_id)
@@ -1092,6 +1081,7 @@ def stream_xc(request, username, password, channel_id):
             str(channel.uuid),
             user,
             force_output_format=force_format,
+            check_network=False,
         )
     except Http404:
         raise
