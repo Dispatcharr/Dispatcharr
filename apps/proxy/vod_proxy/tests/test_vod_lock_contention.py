@@ -13,6 +13,8 @@ import threading
 import time
 from unittest.mock import MagicMock
 
+from redis.exceptions import WatchError
+
 from django.test import SimpleTestCase
 
 
@@ -106,16 +108,39 @@ class _FakePipeline:
     def __init__(self, redis):
         self._redis = redis
         self._cmds = []
+        self._watched = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._cmds = []
+        self._watched = {}
+
+    def watch(self, *keys):
+        for key in keys:
+            self._watched[key] = self._redis.get(key)
+
+    def get(self, key):
+        return self._redis.get(key)
+
+    def multi(self):
+        pass
+
+    def decr(self, key):
+        self._cmds.append(("decr", (key,)))
+        return self
 
     def delete(self, *keys):
         self._cmds.append(("delete", keys))
         return self
 
     def execute(self):
+        if any(self._redis.get(key) != value for key, value in self._watched.items()):
+            raise WatchError()
         results = []
         for cmd, args in self._cmds:
-            if cmd == "delete":
-                results.append(self._redis.delete(*args))
+            results.append(getattr(self._redis, cmd)(*args))
         self._cmds = []
         return results
 

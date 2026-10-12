@@ -23,6 +23,7 @@ import {
   deleteOutputProfile,
   updateOutputProfile,
 } from '../../utils/tables/OutputProfilesTableUtils.js';
+import { sortLockedFirstByName } from '../../utils/tables/profileTableUtils.js';
 
 const RowActions = ({ row, editOutputProfile, handleDeleteOutputProfile }) => {
   return (
@@ -191,7 +192,11 @@ const OutputProfiles = () => {
   };
 
   useEffect(() => {
-    setData(outputProfiles.filter((p) => !(hideInactive && !p.is_active)));
+    setData(
+      sortLockedFirstByName(
+        outputProfiles.filter((p) => !(hideInactive && !p.is_active))
+      )
+    );
   }, [outputProfiles, hideInactive]);
 
   const renderHeaderCell = (header) => (

@@ -110,10 +110,11 @@ class VODLogoSerializer(serializers.ModelSerializer):
 class M3UVODCategoryRelationSerializer(serializers.ModelSerializer):
     category = serializers.IntegerField(source="category.id")
     m3u_account = serializers.IntegerField(source="m3u_account.id")
+    custom_properties = serializers.JSONField(required=False, allow_null=True)
 
     class Meta:
         model = M3UVODCategoryRelation
-        fields = ["category", "m3u_account", "enabled"]
+        fields = ["category", "m3u_account", "enabled", "custom_properties"]
 
 
 class VODCategorySerializer(serializers.ModelSerializer):

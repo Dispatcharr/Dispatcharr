@@ -255,8 +255,65 @@ class StreamVodRedirectTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 301)
+        from apps.proxy.vod_proxy.views import VOD_SESSION_REDIRECT_CACHE_SECONDS
+
+        self.assertEqual(
+            response["Cache-Control"],
+            f"private, max-age={VOD_SESSION_REDIRECT_CACHE_SECONDS}",
+        )
         mock_idle.assert_not_called()
         mock_select.assert_not_called()
+
+
+class SessionRedirectCacheControlTests(SimpleTestCase):
+    """The mint redirect must be client-cacheable so Range reopens stay on one session.
+
+    ``no-store`` / ``no-cache`` would send every reopen back to the bare URL.
+    A request that carried ``?token=`` is the exception: the Location drops it.
+    """
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _mint(self, path):
+        from apps.proxy.vod_proxy.views import _vod_session_path_redirect
+
+        return _vod_session_path_redirect(self.factory.get(path), "vod_1_1111")
+
+    def test_native_url_without_a_token_is_cacheable_by_the_client_only(self):
+        from apps.proxy.vod_proxy.views import VOD_SESSION_REDIRECT_CACHE_SECONDS
+
+        response = self._mint("/proxy/vod/movie/abc")
+
+        self.assertEqual(response.status_code, 301)
+        self.assertEqual(response["Location"], "/proxy/vod/movie/abc/vod_1_1111")
+        cache_control = response["Cache-Control"]
+        self.assertIn("private", cache_control)
+        self.assertIn(f"max-age={VOD_SESSION_REDIRECT_CACHE_SECONDS}", cache_control)
+        self.assertNotIn("no-store", cache_control)
+        self.assertNotIn("no-cache", cache_control)
+
+    def test_xc_url_is_cacheable_by_the_client(self):
+        response = self._mint("/movie/user/pass/123.mkv")
+
+        self.assertEqual(response.status_code, 301)
+        self.assertIn("max-age=", response["Cache-Control"])
+        self.assertNotIn("no-store", response["Cache-Control"])
+        self.assertIn("session_id=vod_1_1111", response["Location"])
+
+    def test_request_with_a_token_is_never_stored(self):
+        """The Location drops the token, so a stored copy would replay as an
+        anonymous session."""
+        response = self._mint("/proxy/vod/movie/abc?token=jwt-value")
+
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertNotIn("jwt-value", response["Location"])
+
+    def test_lifetime_is_bounded_and_covers_a_long_playback(self):
+        from apps.proxy.vod_proxy.views import VOD_SESSION_REDIRECT_CACHE_SECONDS
+
+        self.assertGreaterEqual(VOD_SESSION_REDIRECT_CACHE_SECONDS, 4 * 3600)
+        self.assertLessEqual(VOD_SESSION_REDIRECT_CACHE_SECONDS, 24 * 3600)
 
 
 class HeadVodRedirectTests(SimpleTestCase):

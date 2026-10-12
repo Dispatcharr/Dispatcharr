@@ -27,6 +27,7 @@ import useOutputProfilesStore from '../../store/outputProfiles';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
 import { DVR_ACCESS } from '../../utils/dvrAccess';
 import useAuthStore from '../../store/auth';
+import useSettingsStore from '../../store/settings';
 import { copyToClipboard } from '../../utils';
 import {
   createUser,
@@ -44,6 +45,14 @@ const User = ({ user = null, isOpen, onClose }) => {
   const m3uProfiles = usePlaylistsStore((s) => s.profiles);
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
+  const epgHistoryMaxDays = useSettingsStore((s) => {
+    const raw = s.settings?.epg_settings?.value?.epg_history_max_days;
+    const number = Number(raw);
+    if (!Number.isFinite(number)) {
+      return 30;
+    }
+    return Math.max(0, Math.min(365, Math.trunc(number)));
+  });
   const setUser = useAuthStore((s) => s.setUser);
 
   const [, setEnableXC] = useState(false);
@@ -439,18 +448,22 @@ const User = ({ user = null, isOpen, onClose }) => {
               </Text>
               <Group grow align="flex-start">
                 <NumberInput
-                  label="Days forward (0 = all)"
-                  description="How many future days of EPG data to include"
+                  label="Days forward"
+                  description="Future days of EPG to include. Empty uses the system default. 0 means all stored future programmes."
+                  placeholder="System default"
                   min={0}
                   max={365}
+                  allowDecimal={false}
                   {...form.getInputProps('epg_days')}
                   key={form.key('epg_days')}
                 />
                 <NumberInput
-                  label="Days back (0 = none)"
-                  description="How many past days of EPG data to include (max 30)"
+                  label="Days back"
+                  description="Past days of EPG to include. Empty uses the system default. 0 means none."
+                  placeholder="System default"
                   min={0}
-                  max={30}
+                  max={epgHistoryMaxDays}
+                  allowDecimal={false}
                   {...form.getInputProps('epg_prev_days')}
                   key={form.key('epg_prev_days')}
                 />
@@ -493,6 +506,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                   data={[
                     { value: 'mpegts', label: 'MPEG-TS' },
                     { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                    { value: 'hls', label: 'HLS' },
                   ]}
                   {...form.getInputProps('output_format')}
                   key={form.key('output_format')}

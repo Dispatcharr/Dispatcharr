@@ -189,6 +189,7 @@ class ProgramData(models.Model):
                 fields=['epg', 'start_time', 'end_time'],
                 name='epg_prog_epg_start_end_idx',
             ),
+            models.Index(fields=['epg', 'end_time'], name='epg_prog_epg_end_idx'),
         ]
 
     def __str__(self):

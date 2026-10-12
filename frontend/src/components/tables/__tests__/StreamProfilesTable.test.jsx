@@ -654,15 +654,21 @@ describe('StreamProfiles', () => {
   // ── Store reactivity ───────────────────────────────────────────────────────
 
   describe('store reactivity', () => {
-    it('passes store profiles directly to the table data', () => {
+    it('orders locked profiles before unlocked ones, then by name', () => {
       const profiles = [
-        makeProfile({ id: 1, name: 'P1' }),
-        makeProfile({ id: 2, name: 'P2' }),
-        makeProfile({ id: 3, name: 'P3' }),
+        makeProfile({ id: 1, name: 'Zebra', locked: false }),
+        makeProfile({ id: 2, name: 'VLC', locked: true }),
+        makeProfile({ id: 3, name: 'Alpha', locked: false }),
+        makeProfile({ id: 4, name: 'FFmpeg', locked: true }),
       ];
       setupMocks({ profiles });
       render(<StreamProfiles />);
-      expect(capturedTableOptions.data).toHaveLength(3);
+      expect(capturedTableOptions.data.map((p) => p.name)).toEqual([
+        'FFmpeg',
+        'VLC',
+        'Alpha',
+        'Zebra',
+      ]);
     });
 
     it('passes an empty array to the table when no profiles exist', () => {

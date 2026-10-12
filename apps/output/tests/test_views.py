@@ -7,10 +7,12 @@ from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
-from apps.epg.models import EPGData, EPGSource
+from apps.epg.models import EPGData, EPGSource, ProgramData
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
+from core.models import EpgHistoryPolicy
 from apps.output.views import (
+    xc_get_live_categories,
     xc_get_live_streams,
     xc_get_series,
     xc_get_series_categories,
@@ -27,6 +29,7 @@ from apps.vod.models import (
     VODCategory,
     VODLogo,
 )
+import re
 import xml.etree.ElementTree as ET
 from datetime import timedelta
 
@@ -149,6 +152,69 @@ class OutputM3UTest(OutputEndpointTestMixin, TestCase):
         self.assertIn("POST requests with body are not allowed", _response_text(response))
 
 
+class GenerateM3URadioAttributeTests(OutputEndpointTestMixin, TestCase):
+    """EXTINF should carry radio="true" for radio channels."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = Client()
+        self.group = ChannelGroup.objects.create(name=f"Radio Group {uuid4().hex[:8]}")
+        self.profile = self._create_isolated_profile("radio-m3u")
+
+    def _m3u_url(self):
+        return reverse("output:m3u_endpoint", kwargs={"profile_name": self.profile.name})
+
+    def test_radio_channel_gets_radio_attribute(self):
+        self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=1.0,
+            name="Radio Channel",
+            is_radio=True,
+        )
+        response = self.client.get(self._m3u_url())
+        self.assertEqual(response.status_code, 200)
+        content = _response_text(response)
+        self.assertIn('radio="true"', content)
+
+    def test_tv_channel_omits_radio_attribute(self):
+        self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=2.0,
+            name="TV Channel",
+            is_radio=False,
+        )
+        response = self.client.get(self._m3u_url())
+        self.assertEqual(response.status_code, 200)
+        content = _response_text(response)
+        self.assertNotIn("radio=", content)
+
+    def test_override_false_wins_over_radio_channel(self):
+        channel = self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=3.0,
+            name="Corrected To TV",
+            is_radio=True,
+        )
+        ChannelOverride.objects.create(channel=channel, is_radio=False)
+        content = _response_text(self.client.get(self._m3u_url()))
+        self.assertNotIn("radio=", content)
+
+    def test_override_true_wins_over_tv_channel(self):
+        channel = self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=4.0,
+            name="Corrected To Radio",
+            is_radio=False,
+        )
+        ChannelOverride.objects.create(channel=channel, is_radio=True)
+        content = _response_text(self.client.get(self._m3u_url()))
+        self.assertIn('radio="true"', content)
+
+
 class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     """Test XML escaping of channel_id attributes in EPG generation"""
 
@@ -164,6 +230,40 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     def _epg_url(self, query="tvg_id_source=tvg_id&days=0&prev_days=0"):
         base = reverse("output:epg_endpoint", kwargs={"profile_name": self.profile.name})
         return f"{base}?{query}"
+
+    def test_paged_export_emits_every_programme_once_in_order(self):
+        """Paging by (epg_id, end_time, id) keeps rows with equal end times intact."""
+        from django.utils import timezone
+
+        source = EPGSource.objects.create(name=f"Paging {uuid4().hex[:8]}", source_type="xmltv")
+        base = timezone.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        expected = {}
+        for number, tvg in ((1.0, "paging.one"), (2.0, "paging.two")):
+            epg = EPGData.objects.create(epg_source=source, tvg_id=tvg, name=tvg)
+            self._add_channel(channel_number=number, name=tvg, tvg_id=tvg, epg_data=epg)
+            titles = []
+            for i in range(5):
+                start = base + timedelta(minutes=30 * i)
+                # Pairs share an end time, so page boundaries fall inside them.
+                end = base + timedelta(minutes=30 * (i // 2 * 2 + 2))
+                title = f"{tvg}-{i}"
+                ProgramData.objects.create(
+                    epg=epg, start_time=start, end_time=end, title=title, tvg_id=tvg,
+                )
+                titles.append(title)
+            expected[tvg] = titles
+
+        with patch("apps.output.epg._EPG_PROGRAM_DB_CHUNK_SIZE", 2):
+            response = self.client.get(self._epg_url())
+
+        root = ET.fromstring(_response_text(response))
+        for tvg, titles in expected.items():
+            got = [
+                p.findtext("title")
+                for p in root.findall("programme")
+                if p.get("channel") == tvg
+            ]
+            self.assertEqual(got, titles)
 
     def test_channel_id_with_ampersand(self):
         """Test channel ID with ampersand is properly escaped"""
@@ -308,13 +408,14 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     def test_override_epg_change_invalidates_xmltv_chunk_cache(self):
         """
         XC reads live ProgramData; XMLTV is chunk-cached. Changing the
-        effective EPG via ChannelOverride must drop that cache so the next
+        effective EPG via ChannelOverride must retire that cache so the next
         /output/epg emits the new station's programmes, not the previous ones.
         """
         from django.utils import timezone
         from apps.channels.models import ChannelOverride
         from apps.epg.models import ProgramData
         from django_redis import get_redis_connection
+        from apps.output.streaming_chunk_cache import EPG_CACHE_GENERATION_KEY
 
         # This mixin normally bypasses Redis chunk caching; use the real path here.
         self._epg_cache_patch.stop()
@@ -361,12 +462,12 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
             cached_before = list(redis.scan_iter(match="epg_content:*", count=200))
             self.assertGreater(len(cached_before), 0, "XMLTV chunk cache should be warm")
 
+            generation_before = redis.get(EPG_CACHE_GENERATION_KEY)
             ChannelOverride.objects.create(channel=channel, epg_data=epg_new)
 
-            cached_after = list(redis.scan_iter(match="epg_content:*", count=200))
-            self.assertEqual(
-                len(cached_after),
-                0,
+            self.assertNotEqual(
+                redis.get(EPG_CACHE_GENERATION_KEY),
+                generation_before,
                 "Override EPG change must invalidate XMLTV chunk cache",
             )
 
@@ -537,7 +638,7 @@ class XcVodSeriesDistinctTests(TestCase):
             series=series,
             external_series_id="low-series",
         )
-        high_rel = M3USeriesRelation.objects.create(
+        M3USeriesRelation.objects.create(
             m3u_account=high,
             series=series,
             external_series_id="high-series",
@@ -547,7 +648,7 @@ class XcVodSeriesDistinctTests(TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["name"], "Shared Series")
-        self.assertEqual(results[0]["series_id"], high_rel.id)
+        self.assertEqual(results[0]["series_id"], series.id)
 
     def test_series_excludes_inactive_accounts(self):
         active = self._account(f"active-{uuid4().hex[:6]}")
@@ -883,7 +984,7 @@ class XcVodSeriesRegressionTests(TestCase):
         row = xc_get_series(self.request, self.user)[0]
 
         self.assertEqual(set(row.keys()), XC_SERIES_KEYS)
-        self.assertEqual(row["series_id"], relation.id)
+        self.assertEqual(row["series_id"], series.id)
         self.assertIn(f"/{logo.id}/", row["cover"])
         self.assertEqual(row["plot"], "Series plot")
         self.assertEqual(row["cast"], "Actor A")
@@ -1078,6 +1179,46 @@ class XcLiveStreamsNullChannelNumberTests(TestCase):
         self.assertNotIn(by_id[unnumbered.id]["num"], {5})
 
 
+class XcLiveCategoriesProfileUserLevelTests(OutputEndpointTestMixin, TestCase):
+    """Standard Users with a Channel Profile must see matching live categories.
+
+    get_live_streams already filters with user_level__lte. Categories used an
+    exact channels__user_level=0 check, so Standard Users (level 1) with only
+    level-1 channels in their profile got streams but an empty category list.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.request = self.factory.get("/player_api.php")
+        self.group = ChannelGroup.objects.create(name=f"Cat Group {uuid4().hex[:8]}")
+        self.profile = self._create_isolated_profile("xc-cat")
+        self.channel = self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            name="Standard Ch",
+            channel_number=1,
+            user_level=1,
+        )
+        self.user = User.objects.create_user(
+            username=f"xc-std-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=1,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.user.channel_profiles.add(self.profile)
+
+    def test_standard_user_with_profile_gets_live_categories(self):
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual([s["stream_id"] for s in streams], [self.channel.id])
+
+        categories = xc_get_live_categories(self.user)
+        self.assertEqual(
+            [(c["category_id"], c["category_name"]) for c in categories],
+            [(str(self.group.id), self.group.name)],
+        )
+
+
 class XcLiveStreamsCatchupAdvertisingTests(TestCase):
     """XC live streams omit tv_archive when catchup is disabled for the user."""
 
@@ -1141,6 +1282,293 @@ class XcLiveStreamsCatchupAdvertisingTests(TestCase):
         self.assertEqual(len(streams), 1)
         self.assertEqual(streams[0]["tv_archive"], 0)
         self.assertEqual(streams[0]["tv_archive_duration"], 0)
+
+
+class GenerateM3UCatchupExtinfTests(OutputEndpointTestMixin, TestCase):
+    """The XC playlist carries a catchup-source template on {utc}; the plain
+    proxy URL gets nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"m3u-catchup-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+        self.channel = Channel.objects.create(
+            name="Catchup Ch",
+            channel_number=1,
+            channel_group=self.group,
+            user_level=0,
+            is_catchup=True,
+            catchup_days=7,
+        )
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        super().tearDown()
+
+    def _xc_style_request(self):
+        return self.factory.get("/get.php", {"username": "x", "password": "y"})
+
+    def test_catchup_advertised_for_xc_style_output(self):
+        from apps.output.views import generate_m3u
+
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        content = _response_text(response)
+        header = content.splitlines()[0]
+        self.assertIn('catchup-timezone="UTC"', header)
+        self.assertIn('catchup="default" catchup-days="7"', content)
+        source = re.search(r'catchup-source="([^"]+)"', content).group(1)
+        self.assertEqual(
+            source,
+            "http://testserver/streaming/timeshift.php?username=x&password=y"
+            f"&stream={self.channel.id}&utc={{utc}}&duration={{duration:60}}",
+        )
+        self.assertNotIn('catchup="xc"', content)
+
+    def test_catchup_omitted_for_plain_proxy_output(self):
+        from apps.output.views import generate_m3u
+
+        request = self.factory.get("/output/m3u")
+        response = generate_m3u(request, None, None)
+        content = _response_text(response)
+        self.assertNotIn("catchup=", content)
+        self.assertNotIn("catchup-timezone=", content)
+
+    def test_catchup_omitted_when_channel_is_not_catchup(self):
+        from apps.output.views import generate_m3u
+
+        self.channel.is_catchup = False
+        self.channel.save(update_fields=["is_catchup"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        content = _response_text(response)
+        # Header still advertises the server zone; no per-channel catchup tags.
+        self.assertIn('catchup-timezone="UTC"', content.splitlines()[0])
+        for line in content.splitlines():
+            if line.startswith("#EXTINF"):
+                self.assertNotIn("catchup=", line)
+
+    def test_catchup_omitted_when_user_disables_catchup(self):
+        from apps.output.views import generate_m3u
+
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        content = _response_text(response)
+        self.assertNotIn("catchup=", content)
+        self.assertNotIn("catchup-timezone=", content)
+
+    def test_catchup_days_advertises_the_channel_archive(self):
+        from apps.output.views import generate_m3u
+
+        self.channel.catchup_days = 45
+        self.channel.save(update_fields=["catchup_days"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        content = _response_text(response)
+        self.assertIn('catchup-days="45"', content)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 10, 0, 0),
+    )
+    def test_catchup_days_ignore_the_epg_history_maximum(self, _policy):
+        from apps.output.views import generate_m3u
+
+        self.channel.catchup_days = 45
+        self.channel.save(update_fields=["catchup_days"])
+        response = generate_m3u(self._xc_style_request(), None, self.user)
+        self.assertIn('catchup-days="45"', _response_text(response))
+
+
+class GenerateM3UDirectCatchupTests(OutputEndpointTestMixin, TestCase):
+    """Admin get.php?direct=true: the tag follows the URL that is emitted."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"m3u-direct-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+        self.account = M3UAccount.objects.create(
+            name=f"direct-{uuid4().hex[:8]}",
+            server_url="http://provider.example",
+            account_type="XC",
+        )
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        super().tearDown()
+
+    def _channel(self, number, name, stream_url, stream_catchup, stream_days):
+        """First stream is what direct=true emits. A second catch-up stream
+        keeps the channel rollup at catch-up/7 either way."""
+        from apps.channels.models import ChannelStream, Stream
+
+        channel = Channel.objects.create(
+            name=name, channel_number=number, channel_group=self.group, user_level=0
+        )
+        first = Stream.objects.create(
+            name=name,
+            url=stream_url,
+            m3u_account=self.account,
+            is_catchup=stream_catchup,
+            catchup_days=stream_days,
+        )
+        backup = Stream.objects.create(
+            name=f"{name} backup",
+            url=f"http://provider.example/live/u/p/{number}99",
+            m3u_account=self.account,
+            is_catchup=True,
+            catchup_days=7,
+        )
+        ChannelStream.objects.create(channel=channel, stream=first, order=0)
+        ChannelStream.objects.create(channel=channel, stream=backup, order=1)
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 7)
+        return channel
+
+    def _entries(self):
+        from apps.output.views import generate_m3u
+
+        request = self.factory.get(
+            "/get.php", {"username": "x", "password": "y", "direct": "true"}
+        )
+        lines = _response_text(generate_m3u(request, None, self.user)).splitlines()
+        return {
+            line.rsplit(",", 1)[1]: (line, lines[i + 1])
+            for i, line in enumerate(lines)
+            if line.startswith("#EXTINF")
+        }
+
+    def test_tag_follows_the_emitted_url(self):
+        self._channel(1, "Archive", "http://provider.example/live/u/p/1", True, 3)
+        self._channel(2, "No Archive", "http://provider.example/live/u/p/2", False, 0)
+        no_url = self._channel(3, "No URL", "", True, 3)
+
+        from apps.output.views import generate_m3u
+
+        request = self.factory.get(
+            "/get.php", {"username": "x", "password": "y", "direct": "true"}
+        )
+        content = _response_text(generate_m3u(request, None, self.user))
+        # Provider URLs use the provider's local time, so omit our UTC header.
+        self.assertNotIn("catchup-timezone=", content.splitlines()[0])
+
+        entries = self._entries()
+
+        extinf, url = entries["Archive"]
+        self.assertEqual(url, "http://provider.example/live/u/p/1")
+        self.assertIn('catchup="xc" catchup-days="3"', extinf)
+
+        extinf, url = entries["No Archive"]
+        self.assertEqual(url, "http://provider.example/live/u/p/2")
+        self.assertNotIn("catchup=", extinf)
+
+        extinf, url = entries["No URL"]
+        self.assertTrue(url.endswith(str(no_url.uuid)))
+        self.assertNotIn("catchup=", extinf)
+
+    def test_no_tag_for_standard_m3u_provider_url(self):
+        """STD provider URLs are not /live/ form, so catchup="xc" is omitted."""
+        self.account.account_type = "STD"
+        self.account.save(update_fields=["account_type"])
+        self._channel(1, "Plain", "http://cdn.example/hls/plain.m3u8", True, 3)
+
+        extinf, url = self._entries()["Plain"]
+        self.assertEqual(url, "http://cdn.example/hls/plain.m3u8")
+        self.assertNotIn("catchup=", extinf)
+
+
+class XcLiveStreamsStreamTypeTests(TestCase):
+    """xc_get_live_streams reports stream_type from the effective radio flag.
+
+    Previously hardcoded to "live" for every entry regardless of what the
+    provider actually said, discarding a real stream_type: "radio_streams"
+    signal some XC providers send.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-radio-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.request = self.factory.get("/player_api.php")
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def test_radio_channel_reports_radio_streams(self):
+        Channel.objects.create(
+            name="Radio Ch",
+            channel_number=1,
+            channel_group=self.group,
+            user_level=0,
+            is_radio=True,
+        )
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["stream_type"], "radio_streams")
+
+    def test_tv_channel_reports_live(self):
+        Channel.objects.create(
+            name="TV Ch",
+            channel_number=2,
+            channel_group=self.group,
+            user_level=0,
+            is_radio=False,
+        )
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["stream_type"], "live")
+
+    def test_override_decides_stream_type(self):
+        radio_to_tv = Channel.objects.create(
+            name="Radio To TV",
+            channel_number=3,
+            channel_group=self.group,
+            user_level=0,
+            is_radio=True,
+        )
+        tv_to_radio = Channel.objects.create(
+            name="TV To Radio",
+            channel_number=4,
+            channel_group=self.group,
+            user_level=0,
+            is_radio=False,
+        )
+        ChannelOverride.objects.create(channel=radio_to_tv, is_radio=False)
+        ChannelOverride.objects.create(channel=tv_to_radio, is_radio=True)
+        streams = {
+            s["name"]: s["stream_type"]
+            for s in xc_get_live_streams(self.request, self.user)
+        }
+        self.assertEqual(streams["Radio To TV"], "live")
+        self.assertEqual(streams["TV To Radio"], "radio_streams")
 
 
 class XcGetEpgCatchupGateTests(TestCase):
@@ -1207,10 +1635,17 @@ class XcGetEpgCatchupGateTests(TestCase):
             item["_title"] = base64.b64decode(item["title"]).decode()
         return listings
 
-    def test_catchup_enabled_expands_lookback_from_catchup_days(self):
+    def test_default_zero_omits_ended_programmes_on_a_catchup_channel(self):
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 7, 0),
+    )
+    def test_system_default_includes_past_programmes_and_marks_the_archive(self, _policy):
         listings = self._listings()
-        titles = [item["_title"] for item in listings]
-        self.assertIn("Past Show", titles)
         past = next(item for item in listings if item["_title"] == "Past Show")
         self.assertEqual(past["has_archive"], 1)
 
@@ -1238,6 +1673,63 @@ class XcGetEpgCatchupGateTests(TestCase):
         self.assertIn("Past Show", titles)
         past = next(item for item in listings if item["_title"] == "Past Show")
         self.assertEqual(past["has_archive"], 0)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 5, 0),
+    )
+    def test_system_default_applies_when_catchup_is_disabled(self, _policy):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        listings = self._listings()
+        past = next(item for item in listings if item["_title"] == "Past Show")
+        self.assertEqual(past["has_archive"], 0)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 30, 5, 0),
+    )
+    def test_explicit_user_window_is_not_extended_to_the_archive(self, _policy):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 1,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+
+    @patch(
+        "core.models.CoreSettings.get_epg_history_policy",
+        return_value=EpgHistoryPolicy(1, 2, 0, 0),
+    )
+    def test_history_maximum_caps_a_requested_lookback(self, _policy):
+        """A requested lookback stops at the history max. Catch-up advertising does not."""
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 7,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    def test_saved_zero_does_not_expand_to_the_archive(self):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "epg_prev_days": 0,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        titles = [item["_title"] for item in self._listings()]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    def test_url_zero_does_not_expand_to_the_archive(self):
+        titles = [item["_title"] for item in self._listings(extra_query={"prev_days": "0"})]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
 
 
 class XcGetEpgDummyTests(TestCase):
@@ -1423,6 +1915,43 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
 
     def setUp(self):
         self.factory = RequestFactory()
+        # Pin the policy so this SimpleTestCase never reads settings from the DB.
+        patcher = patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 0, 0),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_system_default_windows_apply_when_nothing_else_is_set(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 2, 3),
+        ):
+            cache_key = generate_epg(self.factory.get("/epg/"), profile_name="test", user=None)
+
+        self.assertIn(":d=3:p=2:", cache_key)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_url_zero_overrides_the_system_default_windows(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 2, 3),
+        ):
+            cache_key = generate_epg(
+                self.factory.get("/epg/?days=0&prev_days=0"), profile_name="test", user=None
+            )
+
+        self.assertIn(":d=0:p=0:", cache_key)
 
     @patch("apps.output.epg.stream_cached_response")
     @patch("apps.output.epg.Channel.objects")
@@ -1662,12 +2191,12 @@ class XcVodAccessFlagTests(TestCase):
             xc_get_vod_info(self.request, no_movies, self.movie.id)
         # ...but the series detail for the same user still resolves.
         self.assertIn(
-            "info", xc_get_series_info(self.request, no_movies, self.series_relation.id)
+            "info", xc_get_series_info(self.request, no_movies, self.series.id)
         )
 
         no_series = self._user(vod_series_enabled=False)
         with self.assertRaises(Http404):
-            xc_get_series_info(self.request, no_series, self.series_relation.id)
+            xc_get_series_info(self.request, no_series, self.series.id)
         self.assertIn("info", xc_get_vod_info(self.request, no_series, self.movie.id))
 
     def test_flags_apply_to_admins(self):

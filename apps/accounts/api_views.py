@@ -11,16 +11,23 @@ from drf_spectacular.types import OpenApiTypes
 import json
 import secrets
 from .permissions import IsAdmin, Authenticated
-from .throttling import LoginRateThrottle
+from .throttling import LoginRateThrottle, enforce_login_rate_limit
 from dispatcharr.utils import (
     SETUP_ALLOWED_IP_ENV,
     get_client_ip,
     network_access_allowed,
+    proxy_auth_identity,
     setup_ip_allowed,
 )
 
 from .models import User
-from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
+from .serializers import (
+    UserSerializer,
+    GroupSerializer,
+    PermissionSerializer,
+    ProxyLoginResponseSerializer,
+)
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 logger = logging.getLogger(__name__)
@@ -51,6 +58,29 @@ def _setup_forbidden_response(client_ip):
         },
         status=403,
     )
+
+
+def _resolve_proxy_auth_user(identity):
+    """Match a proxy-asserted identity by username, then by unambiguous email.
+
+    Case-insensitive matches must be unique. With case-distinct accounts
+    ("Admin" and "admin") an iexact lookup could otherwise return either one,
+    so only an exact username or a single case-insensitive match resolves.
+    """
+    exact = User.objects.filter(username=identity).first()
+    if exact is not None:
+        return exact
+
+    matches = list(User.objects.filter(username__iexact=identity)[:2])
+    if matches:
+        return matches[0] if len(matches) == 1 else None
+
+    if "@" in identity:
+        matches = list(User.objects.filter(email__iexact=identity)[:2])
+        if len(matches) == 1:
+            return matches[0]
+
+    return None
 
 
 class TokenObtainPairView(TokenObtainPairView):
@@ -214,6 +244,98 @@ class AuthViewSet(viewsets.ViewSet):
         network access checks are handled there."""
         view = TokenObtainPairView.as_view()
         return view(request._request)
+
+    @extend_schema(
+        description=(
+            "Exchange a reverse-proxy-asserted identity for JWT tokens. "
+            "Returns 401 unless reverse proxy auth is enabled, the request "
+            "carries the configured header, and the connecting peer is a "
+            "trusted proxy. Takes no request body."
+        ),
+        request=None,
+        responses={200: ProxyLoginResponseSerializer},
+    )
+    def proxy_login(self, request):
+        """Sign in the user named by the trusted proxy's header."""
+        from core.utils import log_system_event
+
+        client_ip = get_client_ip(request) or "unknown"
+        user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
+
+        if not network_access_allowed(request, "UI"):
+            logger.info(f"Proxy login blocked by network policy: ip={client_ip}")
+            log_system_event(
+                event_type="login_failed",
+                user="proxy_auth",
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason="Network access denied",
+            )
+            return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        identity = proxy_auth_identity(request)
+        if not identity:
+            return Response(
+                {"detail": "Reverse proxy authentication unavailable."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # Shares the `login` budget with password and admin sign-in. Checked
+        # here rather than as a view throttle so the web UI's availability
+        # probe, which returns above without minting anything, does not spend
+        # login attempts the user needs for the password form.
+        throttled = enforce_login_rate_limit(request)
+        if throttled is not None:
+            logger.info(f"Proxy login throttled: identity={identity} ip={client_ip}")
+            response = Response(
+                {"detail": "Too many login attempts. Try again later."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+            retry_after = throttled.get("Retry-After")
+            if retry_after:
+                response["Retry-After"] = retry_after
+            return response
+
+        user = _resolve_proxy_auth_user(identity)
+        if user is None or not user.is_active:
+            reason = (
+                "No matching account"
+                if user is None
+                else "Account inactive"
+            )
+            logger.info(
+                f"Proxy login rejected: identity={identity} ip={client_ip} ({reason})"
+            )
+            log_system_event(
+                event_type="login_failed",
+                user=identity,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason=f"Reverse proxy auth: {reason.lower()}",
+            )
+            return Response(
+                {"detail": "No account matches the authenticated identity."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        from django.utils import timezone
+
+        refresh = RefreshToken.for_user(user)
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
+
+        log_system_event(
+            event_type="login_success",
+            user=user.username,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        logger.info(f"Proxy login success: user={user.username} ip={client_ip}")
+
+        serializer = ProxyLoginResponseSerializer(
+            {"access": str(refresh.access_token), "refresh": str(refresh)}
+        )
+        return Response(serializer.data)
 
     @extend_schema(
         description="Log out the current user",

@@ -115,6 +115,16 @@ class TSConfig(BaseConfig):
     GHOST_CLIENT_MULTIPLIER = 10.0  # How many heartbeat intervals before client considered ghost (10 = 50s, must exceed STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD = 40s)
     CLIENT_WAIT_TIMEOUT = 60  # Seconds to wait for channel to become ready
 
+    # Native HLS output (code-level; not DB / UI Proxy Settings)
+    HLS_SEGMENT_DURATION = 4  # Target segment length in seconds
+    # Floor for HLS segment Redis TTL sizing (not the advertised playlist
+    # length; the playlist tracks surviving Redis chunks).
+    HLS_WINDOW_SIZE = 10
+    # Pull-based HLS clients: treat as ghost after this many missed segment
+    # intervals with no playlist/segment poll (3 x 4s = 12s). Matches the
+    # spirit of the legacy hls_proxy CLIENT_TIMEOUT_FACTOR approach.
+    HLS_CLIENT_GHOST_SEGMENTS = 3
+
     # Stream health and recovery settings
     MAX_HEALTH_RECOVERY_ATTEMPTS = 2     # Maximum times to attempt recovery for a single stream
     MAX_RECONNECT_ATTEMPTS = 3           # Maximum reconnects to try before switching streams

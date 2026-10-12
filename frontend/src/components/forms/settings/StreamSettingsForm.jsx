@@ -18,6 +18,7 @@ import {
   getStreamSettingsFormInitialValues,
   getStreamSettingsFormValidation,
 } from '../../../utils/forms/settings/StreamSettingsFormUtils.js';
+import { M3U_HASH_KEY_OPTIONS } from '../../../utils/m3uHashKey.js';
 
 const STREAM_GROUP = 'stream_settings';
 
@@ -195,10 +196,11 @@ const StreamSettingsForm = React.memo(({ active }) => {
           id="default_output_format"
           name="default_output_format"
           label="Default Output Format"
-          description="Container format used when proxying streams. MPEG-TS is broadly compatible with media players and devices; fMP4 has better support for modern codecs like AV1 and is preferred by some newer clients."
+          description="Container format used when proxying streams. MPEG-TS is broadly compatible with media players and devices; fMP4 has better support for modern codecs like AV1 and is preferred by some newer clients; HLS serves a segmented playlist for native Apple players and web playback."
           data={[
             { value: 'mpegts', label: 'MPEG-TS' },
             { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+            { value: 'hls', label: 'HLS' },
           ]}
         />
         <Select
@@ -228,28 +230,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
           name="m3u_hash_key"
           label="M3U Hash Key"
           description="Fields used to generate a stable identifier for each stream. Changing this requires rehashing all streams."
-          data={[
-            {
-              value: 'name',
-              label: 'Name',
-            },
-            {
-              value: 'url',
-              label: 'URL',
-            },
-            {
-              value: 'tvg_id',
-              label: 'TVG-ID',
-            },
-            {
-              value: 'm3u_id',
-              label: 'M3U ID',
-            },
-            {
-              value: 'group',
-              label: 'Group',
-            },
-          ]}
+          data={M3U_HASH_KEY_OPTIONS}
           {...form.getInputProps('m3u_hash_key')}
         />
 

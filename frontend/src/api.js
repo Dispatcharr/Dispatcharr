@@ -35,6 +35,22 @@ const errorNotification = (message, error) => {
   throw error;
 };
 
+// FormData cannot encode null. Empty string clears hash_key so the account
+// inherits the global M3U Hash Key (same as JSON body sending null).
+const appendPlaylistFormData = (body, values) => {
+  for (const prop in values) {
+    const value = values[prop];
+    if (value === undefined) continue;
+    if (value === null) {
+      if (prop === 'hash_key') {
+        body.append(prop, '');
+      }
+      continue;
+    }
+    body.append(prop, value);
+  }
+};
+
 const request = async (url, options = {}) => {
   if (
     options.body &&
@@ -192,6 +208,18 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Login failed', e);
+    }
+  }
+
+  static async proxyLogin() {
+    try {
+      const response = await request(`${host}/api/accounts/auth/proxy-login/`, {
+        auth: false,
+        method: 'POST',
+      });
+      return response?.access ? response : null;
+    } catch {
+      return null;
     }
   }
 
@@ -1481,10 +1509,7 @@ export default class API {
       let body = null;
       if (values.file) {
         body = new FormData();
-        for (const prop in values) {
-          if (values[prop] === null || values[prop] === undefined) continue;
-          body.append(prop, values[prop]);
-        }
+        appendPlaylistFormData(body, values);
       } else {
         body = { ...values };
         delete body.file;
@@ -1595,10 +1620,7 @@ export default class API {
         delete payload.server_url;
 
         body = new FormData();
-        for (const prop in values) {
-          if (values[prop] === null || values[prop] === undefined) continue;
-          body.append(prop, values[prop]);
-        }
+        appendPlaylistFormData(body, values);
       } else {
         delete payload.file;
         if (!payload.server_url) {

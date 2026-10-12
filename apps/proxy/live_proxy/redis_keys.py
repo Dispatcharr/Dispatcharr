@@ -86,6 +86,14 @@ class RedisKeys:
         return f"live:channel:{channel_id}:input:buffer:chunk_timestamps"
 
     @staticmethod
+    def buffer_discontinuities(channel_id):
+        """Sorted set of input buffer chunk indices where a source discontinuity
+        begins (score == member == chunk index). Consumers such as HLS cut
+        before reading that chunk; in-band TS discontinuity_indicator bits are
+        also stamped into the first packets of each PID in that era."""
+        return f"live:channel:{channel_id}:input:buffer:discontinuities"
+
+    @staticmethod
     def transcode_active(channel_id):
         """Key indicating active transcode process"""
         return f"live:channel:{channel_id}:transcode_active"
@@ -126,7 +134,17 @@ class RedisKeys:
         return f"live:channel:{channel_id}:output:{fmt}:owner"
 
     @staticmethod
+    def output_playlist(channel_id, fmt):
+        """Rolling HLS playlist descriptor (JSON window of segment seq/duration)."""
+        return f"live:channel:{channel_id}:output:{fmt}:playlist"
+
+    @staticmethod
     def output_chunk_timestamps(channel_id, fmt):
         """Sorted set mapping fragment receive-timestamps to fragment indices."""
         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
+
+    @staticmethod
+    def hls_session(token):
+        """Opaque HLS capability URL: maps token to channel_id + client_id."""
+        return f"live:hls:session:{token}"
 

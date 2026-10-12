@@ -394,7 +394,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     [rowHeights]
   );
 
-  const { timeFormat, dateFormat } = useDateTimeFormat();
+  const { timeFormat, dateFormat, dateYearFormat } = useDateTimeFormat();
 
   // Format day label using relative terms when possible (Today, Tomorrow, etc)
   const formatDayLabel = useCallback(
@@ -1495,7 +1495,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
           </Title>
           <Flex align="center" gap="md">
             <Text>
-              {format(now, `dddd, ${dateFormat}, YYYY • ${timeFormat}`)}
+              {format(now, `dddd, ${dateYearFormat} • ${timeFormat}`)}
             </Text>
             <Tooltip label="Jump to current time">
               <ActionIcon

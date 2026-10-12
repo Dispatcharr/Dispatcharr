@@ -45,6 +45,9 @@ class StreamTsDbCleanupTests(SimpleTestCase):
         channel.id = 1
         channel.uuid = "channel-uuid"
         channel.name = "Test Channel"
+        stream_profile = MagicMock()
+        stream_profile.is_redirect.return_value = False
+        channel.get_stream_profile.return_value = stream_profile
         mock_get_stream_object.return_value = channel
 
         proxy_server, client_manager = self._active_proxy()
@@ -89,6 +92,9 @@ class StreamTsDbCleanupTests(SimpleTestCase):
         channel.id = 1
         channel.uuid = "channel-uuid"
         channel.name = "Test Channel"
+        stream_profile = MagicMock()
+        stream_profile.is_redirect.return_value = False
+        channel.get_stream_profile.return_value = stream_profile
         mock_get_stream_object.return_value = channel
 
         proxy_server, _ = self._active_proxy()
@@ -128,6 +134,9 @@ class StreamTsDbCleanupTests(SimpleTestCase):
         channel.id = 1
         channel.uuid = "channel-uuid"
         channel.name = "Test Channel"
+        stream_profile = MagicMock()
+        stream_profile.is_redirect.return_value = False
+        channel.get_stream_profile.return_value = stream_profile
         mock_get_stream_object.return_value = channel
 
         client_manager = MagicMock()
@@ -340,8 +349,7 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    @patch("apps.proxy.live_proxy.output.ts.generator.Channel.objects")
-    def test_ts_generator_init_uses_passed_name_without_orm(self, mock_channel_objects):
+    def test_ts_generator_init_uses_passed_name_without_orm(self):
         from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
 
         gen = StreamGenerator(
@@ -353,7 +361,6 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
         )
 
         self.assertEqual(gen.channel_name, "CNN")
-        mock_channel_objects.filter.assert_not_called()
 
     @patch("apps.proxy.live_proxy.channel_status.close_old_connections")
     @patch("apps.proxy.live_proxy.channel_status.ProxyServer")

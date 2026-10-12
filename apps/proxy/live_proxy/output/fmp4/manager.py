@@ -3,7 +3,7 @@ fMP4 Remux Manager
 
 Reads from the shared TS Redis buffer, pipes data through FFmpeg for container
 remux to fragmented MP4, parses the init segment out of the first output bytes,
-stores it in Redis, and writes subsequent fMP4 fragment chunks to FMP4StreamBuffer.
+stores it in Redis, and writes subsequent fMP4 fragment chunks to OutputStreamBuffer.
 
 One instance per channel per cluster - coordinated via Redis fmp4:owner lock.
 """
@@ -13,7 +13,7 @@ import threading
 import time
 import struct
 from core.utils import RedisClient
-from .buffer import FMP4StreamBuffer
+from ..buffer import OutputStreamBuffer
 from ...redis_keys import RedisKeys
 from ...config_helper import ConfigHelper
 from ...utils import get_logger
@@ -93,7 +93,7 @@ def _find_moof_offset(data: bytes, start: int = 0) -> int:
 class FMP4RemuxManager:
     """
     Reads the TS Redis buffer for a channel, remuxes to fMP4 via FFmpeg,
-    and writes fMP4 chunks to FMP4StreamBuffer.
+    and writes fMP4 chunks to OutputStreamBuffer.
     """
 
     def __init__(self, channel_id, ts_buffer, worker_id, fmt='fmp4'):
@@ -106,7 +106,7 @@ class FMP4RemuxManager:
         self._reader_thread = None
         self._writer_thread = None
         self._stderr_thread = None
-        self.fmp4_buffer = FMP4StreamBuffer(
+        self.fmp4_buffer = OutputStreamBuffer(
             channel_id, redis_client=RedisClient.get_buffer(), fmt=fmt
         )
         self._redis = RedisClient.get_client()
@@ -252,7 +252,7 @@ class FMP4RemuxManager:
     def _flush_complete_fragments(self, frag_buf: bytearray) -> None:
         """
         Extract complete moof+mdat(+...) fragments from `frag_buf` (modifies in-place)
-        and store each one as a single Redis chunk via put_fragment.
+        and store each one as a single Redis chunk via put_chunk.
         A fragment ends where the next moof box begins.
         """
         while len(frag_buf) >= 8:
@@ -280,7 +280,7 @@ class FMP4RemuxManager:
 
             fragment = bytes(frag_buf[:next_moof])
             del frag_buf[:next_moof]
-            self.fmp4_buffer.put_fragment(fragment)
+            self.fmp4_buffer.put_chunk(fragment)
             logger.debug(
                 f"[fMP4Remux:{self.channel_id}] Fragment {self.fmp4_buffer.index}: "
                 f"{len(fragment)} bytes"
@@ -345,7 +345,7 @@ class FMP4RemuxManager:
             logger.error(f"[fMP4Remux:{self.channel_id}] Reader loop error: {e}", exc_info=True)
         finally:
             if frag_buf and init_stored:
-                self.fmp4_buffer.put_fragment(bytes(frag_buf))
+                self.fmp4_buffer.put_chunk(bytes(frag_buf))
             logger.info(f"[fMP4Remux:{self.channel_id}] Reader loop exited")
 
     def _stderr_loop(self):

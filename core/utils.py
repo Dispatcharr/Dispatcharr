@@ -119,6 +119,14 @@ def ensure_custom_properties_dict(value):
     return custom_properties_as_dict(value)
 
 
+def clamp_int(value, default, lo, hi):
+    """Coerce a settings value to an int within [lo, hi], falling back to default on garbage."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def truncate_with_warning(value, max_length, *, label):
     """Clamp a string to ``max_length``, logging a warning when truncated.
 
@@ -245,7 +253,7 @@ class RedisClient:
                             logger.error(f"Redis configuration error: {e}")
 
                 cls._netloc = location
-                logger.info(f"Connected to Redis at {cls._netloc}")
+                logger.debug(f"Connected to Redis at {cls._netloc}")
 
                 return client
 
@@ -347,7 +355,7 @@ def acquire_task_lock(task_name, id):
     lock_acquired = redis_client.set(lock_id, "locked", ex=300, nx=True)
 
     if not lock_acquired:
-        logger.warning(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
+        logger.info(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
 
     return lock_acquired
 
@@ -383,11 +391,12 @@ class TaskLockRenewer:
     slow downloads or large parsing jobs don't lose their lock mid-operation.
     """
 
-    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120, expected_value=None):
         self.task_name = task_name
         self.id = id
         self.ttl = ttl
         self.renewal_interval = renewal_interval
+        self.expected_value = expected_value
         self.lock_id = f"task_lock_{task_name}_{id}"
         self._stop_event = threading.Event()
         self._thread = None
@@ -397,17 +406,24 @@ class TaskLockRenewer:
         while not self._stop_event.wait(self.renewal_interval):
             try:
                 redis_client = RedisClient.get_client()
-                if redis_client.exists(self.lock_id):
-                    redis_client.expire(self.lock_id, self.ttl)
-                    logger.debug(
-                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
-                    )
-                else:
-                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                current = redis_client.get(self.lock_id)
+                if isinstance(current, bytes):
+                    current = current.decode()
+                if current is None:
+                    # Lock was deleted externally (e.g. manual release). Stop renewing.
                     logger.warning(
                         f"Lock {self.lock_id} no longer exists, stopping renewal"
                     )
                     break
+                if self.expected_value is not None and current != self.expected_value:
+                    logger.warning(
+                        f"Lock {self.lock_id} is held by another owner, stopping renewal"
+                    )
+                    break
+                redis_client.expire(self.lock_id, self.ttl)
+                logger.debug(
+                    f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                )
             except Exception as e:
                 logger.error(f"Error renewing lock {self.lock_id}: {e}")
 
@@ -806,6 +822,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         channel_obj = None
         if channel_id:
+            payload["channel_id"] = str(channel_id)
             try:
                 channel_obj = Channel.objects.get(uuid=channel_id)
                 payload["channel_name"] = channel_obj.name
@@ -833,6 +850,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
                 stream_obj = None
 
         # Populate stream details
+        payload["stream_id"] = stream_id
         payload["stream_name"] = getattr(stream_obj, "name", None)
         payload["stream_url"] = getattr(stream_obj, "url", None)
 
@@ -862,9 +880,9 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         payload["profile_used"] = profile_used
 
-        # remove empty keys
+        # remove empty keys (keep falsy values such as speed=0.0)
         for k in list(payload.keys()):
-            if not payload[k]:
+            if payload[k] is None or payload[k] == "":
                 del payload[k]
 
         trigger_event(event_type, payload)
@@ -1045,9 +1063,8 @@ def get_host_and_port(request):
     """
     Returns (host, port) for building absolute URIs.
     - Prefers X-Forwarded-Host/X-Forwarded-Port only from a trusted proxy.
-    - Falls back to Host header.
+    - Falls back to Host header (explicit port wins; bare Host means scheme default).
     - Returns None for port if using standard ports (80/443) to omit from URLs.
-    - In dev, uses 5656 as a guess if port cannot be determined.
     """
     from dispatcharr.utils import request_from_trusted_proxy
 
@@ -1091,26 +1108,13 @@ def _resolve_host_port_scheme(request, trust_forwarded):
     else:
         host = raw_host
 
-    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
+    # 3. Trusted X-Forwarded-Port when Host has no port (e.g. public :8443)
     if trust_forwarded:
         port = request.META.get("HTTP_X_FORWARDED_PORT")
         if port:
             return host, (None if port == standard_port else port), scheme
 
-        # 4. Behind a reverse proxy with no port info - assume standard port
-        if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-            return host, None, scheme
-
-    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
-    port = request.META.get("SERVER_PORT")
-    if port:
-        return host, (None if port == standard_port else port), scheme
-
-    # 6. Dev fallback
-    if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
-        return host, "5656", scheme
-
-    # 7. Final fallback: assume standard port for scheme
+    # Bare Host implies the scheme default port (80/443); omit it from URLs.
     return host, None, scheme
 
 

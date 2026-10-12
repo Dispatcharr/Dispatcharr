@@ -1,14 +1,11 @@
 import logging
 import threading
+from collections import namedtuple
 
-from django.core.cache import cache
-
+from core.models import EPG_DAYS_LIMIT, CoreSettings
 from core.utils import ensure_custom_properties_dict
 
 logger = logging.getLogger(__name__)
-
-PROVIDER_ARCHIVE_CACHE_TTL_SECONDS = 300
-MAX_AUTO_PREV_DAYS = 30
 
 # Bound memory/DB work per chunk for large libraries (20k+ channels).
 EPG_LOGO_APPLY_BATCH_SIZE = 500
@@ -55,64 +52,55 @@ def format_channel_number(value, empty=""):
     return value
 
 
-def compute_provider_archive_days_capped():
-    """Max ``catchup_days`` across active XC catch-up streams (capped, cached).
+EpgWindow = namedtuple("EpgWindow", ["forward_days", "prev_days"])
 
-    Cached briefly so XC XMLTV exports without an explicit ``prev_days`` do not
-    repeat the aggregate query on every request.
+
+def _parse_day_count(raw):
+    """Return an int, or None when raw is missing, blank, or not an integer."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _explicit_days(params, url_key, user_custom, user_key, upper):
+    """Days from the URL, else the user's saved value; None when neither is set.
+
+    A URL value that is present but unreadable counts as 0. A saved 0 is a real
+    value, not "unset".
     """
-    def _scan():
-        from django.db.models import Max
+    if url_key in params:
+        parsed = _parse_day_count(params.get(url_key))
+        return 0 if parsed is None else max(0, min(parsed, upper))
+    parsed = _parse_day_count(user_custom.get(user_key))
+    return None if parsed is None else max(0, min(parsed, upper))
 
-        from apps.channels.models import Stream
 
-        result = Stream.objects.filter(
-            m3u_account__account_type="XC",
-            m3u_account__is_active=True,
-            is_catchup=True,
-        ).aggregate(max_days=Max("catchup_days"))
-        return min(result["max_days"] or 0, MAX_AUTO_PREV_DAYS)
+def resolve_epg_output_window(request, user, *, policy=None):
+    """Resolve the forward and past windows for an EPG export.
 
-    return cache.get_or_set(
-        "channels:provider_archive_days_capped",
-        _scan,
-        PROVIDER_ARCHIVE_CACHE_TTL_SECONDS,
+    ``forward_days`` of 0 means all stored future programmes. ``prev_days`` of
+    0 means no programmes that have already ended.
+
+    A URL value wins, then the user's saved value (a saved 0 is explicit, so a
+    user whose key is missing inherits and one saved at 0 does not). Otherwise
+    the system default applies, for standard XMLTV and XC XMLTV alike.
+    """
+    if policy is None:
+        policy = CoreSettings.get_epg_history_policy()
+    params = request.GET
+    user_custom = ensure_custom_properties_dict(getattr(user, "custom_properties", None))
+
+    forward_days = _explicit_days(params, "days", user_custom, "epg_days", EPG_DAYS_LIMIT)
+    if forward_days is None:
+        forward_days = policy.default_days
+
+    prev_days = _explicit_days(
+        params, "prev_days", user_custom, "epg_prev_days", policy.max_days
     )
-
-
-def resolve_xc_epg_prev_days(request, user, *, auto_detect_fallback=True):
-    """Resolve ``prev_days`` for XC XMLTV and player_api EPG.
-
-    Args:
-        request: HTTP request (reads ``?prev_days=``).
-        user: Authenticated user (reads ``custom_properties.epg_prev_days``).
-        auto_detect_fallback: When True (XC XMLTV), fall back to the largest
-            provider archive depth. When False (per-channel EPG), return 0 so
-            ``xc_get_epg`` can expand to each channel's ``catchup_days``.
-
-    Resolution order:
-        1. URL ``?prev_days=`` (explicit; 0 means no past programmes)
-        2. ``user.custom_properties.epg_prev_days``
-        3. Auto-detect (only when *auto_detect_fallback* is True)
-    """
-    user_custom = (user.custom_properties or {}) if user else {}
-    url_prev = request.GET.get("prev_days")
-    user_prev = user_custom.get("epg_prev_days") if user_custom else None
-
-    if url_prev is not None:
-        try:
-            return max(0, min(int(url_prev), MAX_AUTO_PREV_DAYS))
-        except (ValueError, TypeError):
-            return 0
-    if user_prev not in (None, ""):
-        try:
-            return max(0, min(int(user_prev), MAX_AUTO_PREV_DAYS))
-        except (ValueError, TypeError):
-            return 0
-
-    if auto_detect_fallback:
-        return compute_provider_archive_days_capped()
-    return 0
+    if prev_days is None:
+        prev_days = policy.default_prev_days
+    return EpgWindow(forward_days, prev_days)
 
 
 def is_catchup_enabled(*, user=None):
@@ -123,8 +111,6 @@ def is_catchup_enabled(*, user=None):
     ``system_settings.catchup_enabled`` (default True, Redis-cached) can
     disable catch-up for everyone. Both flags are JSON booleans.
     """
-    from core.models import CoreSettings
-
     if user is not None:
         props = getattr(user, "custom_properties", None) or {}
         if props.get("catchup_enabled") is False:
@@ -145,6 +131,56 @@ def get_channel_catchup_streams(channel):
         channel.streams.filter(is_catchup=True, m3u_account__is_active=True)
         .order_by("channelstream__order")
         .select_related("m3u_account__user_agent")
+    )
+
+
+def rollup_catchup_for_channels(channel_ids):
+    """Set ``is_catchup`` / ``catchup_days`` from active catch-up streams.
+
+    One UPDATE for the whole id list (Exists + Max subqueries). Used by the
+    ChannelStream signal and by bulk paths that skip ``post_save``.
+    Account-scoped import refresh uses ``rollup_channel_catchup_fields`` instead.
+    """
+    from django.db.models import (
+        BooleanField,
+        Case,
+        Exists,
+        IntegerField,
+        Max,
+        OuterRef,
+        Subquery,
+        Value,
+        When,
+    )
+    from django.db.models.functions import Coalesce
+
+    from apps.channels.models import Channel, ChannelStream
+
+    ids = list({cid for cid in channel_ids if cid is not None})
+    if not ids:
+        return
+
+    active_catchup = ChannelStream.objects.filter(
+        channel_id=OuterRef("pk"),
+        stream__is_catchup=True,
+        stream__m3u_account__is_active=True,
+    )
+    max_days = (
+        active_catchup.values("channel_id")
+        .annotate(m=Max("stream__catchup_days"))
+        .values("m")[:1]
+    )
+
+    Channel.objects.filter(pk__in=ids).update(
+        is_catchup=Case(
+            When(Exists(active_catchup), then=Value(True)),
+            default=Value(False),
+            output_field=BooleanField(),
+        ),
+        catchup_days=Coalesce(
+            Subquery(max_days, output_field=IntegerField()),
+            Value(0),
+        ),
     )
 
 

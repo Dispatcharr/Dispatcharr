@@ -1,13 +1,16 @@
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase
 
 from apps.accounts.models import User
 from apps.channels.models import Channel, ChannelStream, Stream
-from apps.channels.utils import is_catchup_enabled, resolve_xc_epg_prev_days
+from apps.channels.utils import (
+    is_catchup_enabled,
+    resolve_epg_output_window,
+)
 from apps.m3u.models import M3UAccount
-from core.models import SYSTEM_SETTINGS_KEY, CoreSettings
+from core.models import SYSTEM_SETTINGS_KEY, CoreSettings, EpgHistoryPolicy
 
 
 class IsCatchupEnabledTests(TestCase):
@@ -65,49 +68,79 @@ class IsCatchupEnabledTests(TestCase):
         self.assertFalse(is_catchup_enabled(user=self.user))
 
 
-class ResolveXcEpgPrevDaysTests(TestCase):
+class ResolveEpgOutputWindowTests(SimpleTestCase):
+    """URL value, then saved user value, then system default (never a stored 0)."""
+
     def setUp(self):
         self.factory = RequestFactory()
         self.user = User(username="xc-prev", custom_properties={})
 
+    def _resolve(self, query="", *, custom=None, **policy):
+        self.user.custom_properties = custom if custom is not None else {}
+        request = self.factory.get(f"/xmltv.php{query}")
+        fields = {"min_days": 1, "max_days": 30, "default_prev_days": 0, "default_days": 0}
+        fields.update(policy)
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(**fields),
+        ):
+            return resolve_epg_output_window(request, self.user)
+
     def test_url_prev_days_zero_is_explicit(self):
-        request = self.factory.get("/xmltv.php?prev_days=0")
-        self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 0)
+        window = self._resolve("?prev_days=0", default_prev_days=7)
+        self.assertEqual(window.prev_days, 0)
 
     def test_user_epg_prev_days_used_when_url_omitted(self):
-        self.user.custom_properties = {"epg_prev_days": 5}
-        request = self.factory.get("/xmltv.php")
-        self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 5)
+        window = self._resolve(custom={"epg_prev_days": 5})
+        self.assertEqual(window.prev_days, 5)
 
-    @patch("apps.channels.utils.compute_provider_archive_days_capped", return_value=14)
-    def test_auto_detect_only_when_no_url_or_user_default(self, mock_compute):
-        request = self.factory.get("/xmltv.php")
-        self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 14)
-        mock_compute.assert_called_once()
+    def test_missing_prev_days_uses_system_default(self):
+        window = self._resolve(default_prev_days=7)
+        self.assertEqual(window.prev_days, 7)
 
-    @patch("apps.channels.utils.compute_provider_archive_days_capped", return_value=14)
-    def test_per_channel_epg_skips_global_auto_detect(self, mock_compute):
-        request = self.factory.get("/player_api.php")
-        self.assertEqual(
-            resolve_xc_epg_prev_days(request, self.user, auto_detect_fallback=False),
-            0,
+    def test_blank_saved_prev_days_uses_system_default(self):
+        window = self._resolve(custom={"epg_prev_days": ""}, default_prev_days=7)
+        self.assertEqual(window.prev_days, 7)
+
+    def test_saved_zero_prev_days_does_not_inherit(self):
+        window = self._resolve(custom={"epg_prev_days": 0}, default_prev_days=7)
+        self.assertEqual(window.prev_days, 0)
+
+    def test_catchup_disabled_still_uses_the_system_default(self):
+        window = self._resolve(
+            custom={"catchup_enabled": False}, default_prev_days=4
         )
-        mock_compute.assert_not_called()
+        self.assertEqual(window.prev_days, 4)
 
-    @patch("apps.channels.utils.compute_provider_archive_days_capped", return_value=14)
-    def test_user_default_prevents_auto_detect(self, mock_compute):
-        self.user.custom_properties = {"epg_prev_days": 3}
-        request = self.factory.get("/xmltv.php")
-        self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 3)
-        mock_compute.assert_not_called()
+    def test_url_prev_days_is_clamped_to_the_history_maximum(self):
+        self.assertEqual(self._resolve("?prev_days=40", max_days=10).prev_days, 10)
 
-    @patch("apps.channels.utils.compute_provider_archive_days_capped", return_value=14)
-    def test_auto_detect_still_runs_when_catchup_disabled(self, mock_compute):
-        """Catchup disable must not suppress historical EPG lookback."""
-        self.user.custom_properties = {"catchup_enabled": False}
+    def test_unreadable_url_values_resolve_to_zero(self):
+        window = self._resolve("?prev_days=abc&days=abc", default_prev_days=7, default_days=5)
+        self.assertEqual((window.forward_days, window.prev_days), (0, 0))
+
+    def test_missing_forward_days_uses_system_default(self):
+        self.assertEqual(self._resolve(default_days=5).forward_days, 5)
+
+    def test_saved_zero_forward_days_means_all_future(self):
+        window = self._resolve(custom={"epg_days": 0}, default_days=5)
+        self.assertEqual(window.forward_days, 0)
+
+    def test_url_forward_days_is_clamped_to_the_future_limit(self):
+        self.assertEqual(self._resolve("?days=9999").forward_days, 365)
+
+    def test_anonymous_request_uses_the_system_defaults(self):
         request = self.factory.get("/xmltv.php")
-        self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 14)
-        mock_compute.assert_called_once()
+        with patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 2, 4),
+        ):
+            window = resolve_epg_output_window(request, None)
+        self.assertEqual((window.forward_days, window.prev_days), (4, 2))
+
+    def test_json_string_custom_properties_are_read(self):
+        window = self._resolve(custom='{"epg_prev_days": 4}')
+        self.assertEqual(window.prev_days, 4)
 
 
 class CatchupRollupActiveAccountTests(TestCase):
@@ -154,5 +187,66 @@ class CatchupRollupActiveAccountTests(TestCase):
         rollup_channel_catchup_fields(self.inactive.id)
 
         channel.refresh_from_db()
+        self.assertFalse(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 0)
+
+
+class BulkCreateChannelsFromStreamsCatchupTests(TestCase):
+    """bulk_create skips ChannelStream post_save; task rolls up catch-up once."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.active = M3UAccount.objects.create(
+            name="bulk-catchup-active",
+            server_url="http://example.test",
+            account_type="XC",
+            is_active=True,
+        )
+        cls.inactive = M3UAccount.objects.create(
+            name="bulk-catchup-inactive",
+            server_url="http://example.test",
+            account_type="XC",
+            is_active=False,
+        )
+
+    @patch("core.utils.send_websocket_update")
+    def test_rolls_up_catchup_from_active_stream(self, _ws):
+        from apps.channels.tasks import bulk_create_channels_from_streams
+
+        stream = Stream.objects.create(
+            name="bulk-catchup",
+            url="http://example.test/catchup",
+            m3u_account=self.active,
+            is_catchup=True,
+            catchup_days=2,
+            is_radio=True,
+        )
+
+        result = bulk_create_channels_from_streams.run([stream.id])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["created_count"], 1)
+        channel = Channel.objects.get(streams=stream)
+        self.assertTrue(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 2)
+        # is_radio is still seeded at create time on this path.
+        self.assertTrue(channel.is_radio)
+
+    @patch("core.utils.send_websocket_update")
+    def test_ignores_catchup_from_inactive_account(self, _ws):
+        from apps.channels.tasks import bulk_create_channels_from_streams
+
+        stream = Stream.objects.create(
+            name="bulk-inactive-catchup",
+            url="http://example.test/inactive-catchup",
+            m3u_account=self.inactive,
+            is_catchup=True,
+            catchup_days=5,
+        )
+
+        result = bulk_create_channels_from_streams.run([stream.id])
+
+        self.assertEqual(result["status"], "completed")
+        channel = Channel.objects.get(streams=stream)
         self.assertFalse(channel.is_catchup)
         self.assertEqual(channel.catchup_days, 0)

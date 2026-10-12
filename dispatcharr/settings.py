@@ -1,4 +1,5 @@
 import os
+import warnings
 import ssl
 from pathlib import Path
 from datetime import timedelta
@@ -118,8 +119,6 @@ if REDIS_TLS_STATUS["enabled"]:
     _verify = "on" if REDIS_TLS_STATUS["verify"] else "off"
     _mtls = "enabled" if REDIS_TLS_STATUS["mtls"] else "disabled"
     startup_log(f"Redis TLS: enabled (verify={_verify}, mTLS={_mtls})")
-else:
-    startup_log("Redis TLS: disabled")
 
 ENABLE_IP_LOOKUP = os.environ.get("DISPATCHARR_ENABLE_IP_LOOKUP", "true").lower() == "true"
 
@@ -346,8 +345,6 @@ else:
 
         _mtls = "enabled" if POSTGRES_SSL_CERT and POSTGRES_SSL_KEY else "disabled"
         startup_log(f"PostgreSQL TLS: enabled (sslmode={POSTGRES_SSL_MODE}, mTLS={_mtls})")
-    else:
-        startup_log("PostgreSQL TLS: disabled")
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -589,18 +586,14 @@ LOG_LEVEL_MAP = {
 }
 
 # Get log level from environment variable, default to INFO if not set
-# Add debugging output to see exactly what's being detected
 env_log_level = os.environ.get("DISPATCHARR_LOG_LEVEL", "")
-startup_log(f"Environment DISPATCHARR_LOG_LEVEL detected as: '{env_log_level}'")
-
-if not env_log_level:
-    startup_log("No DISPATCHARR_LOG_LEVEL found in environment, using default INFO")
-    LOG_LEVEL_NAME = "INFO"
-else:
-    LOG_LEVEL_NAME = env_log_level.upper()
-    startup_log(f"Setting log level to: {LOG_LEVEL_NAME}")
-
+LOG_LEVEL_NAME = env_log_level.upper() if env_log_level else "INFO"
 LOG_LEVEL = LOG_LEVEL_MAP.get(LOG_LEVEL_NAME, 20)  # Default to INFO (20) if invalid
+if LOG_LEVEL_NAME not in LOG_LEVEL_MAP:
+    startup_log(
+        f"Unrecognised DISPATCHARR_LOG_LEVEL '{env_log_level}', using INFO",
+        level="WARNING",
+    )
 
 # Read before Django re-stamps os.environ["TZ"] to TIME_ZONE. Migration 0020
 # seeds the display time zone from this on a fresh install.
@@ -610,6 +603,13 @@ DISPATCHARR_DISPLAY_TZ = (
 
 # Loggers can fire during app loading, before dictConfig runs.
 configure_early_logging(LOG_LEVEL)
+
+# Startup hooks read the database deliberately (scheduler sync, live proxy start).
+warnings.filterwarnings(
+    "ignore",
+    message="Accessing the database during app initialization",
+    category=RuntimeWarning,
+)
 
 # Add this to your existing LOGGING configuration or create one if it doesn't exist
 LOGGING = {

@@ -30,7 +30,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.accounts.models import User
-from apps.channels.models import Channel
+from apps.channels.access import get_channel_for_user
 from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from apps.m3u.connection_pool import (
     pool_has_capacity_for_profile,
@@ -140,10 +140,12 @@ def timeshift_proxy_query(request):
     URL shape (XC catch-up clients): ``/streaming/timeshift.php?username=...
     &password=...&stream=<Channel.id>&start=<UTC programme start>&duration=<minutes>``.
     ``duration`` is preferred over EPG when present (same as the PATH form).
+    ``utc`` is accepted in place of ``start``: the M3U ``catchup-source``
+    uses it, and "shift"-style players set ``?utc=<epoch>`` on their own.
     """
     username = request.GET.get("username", "")
     password = request.GET.get("password", "")
-    timestamp = request.GET.get("start", "")
+    timestamp = request.GET.get("start") or request.GET.get("utc", "")
     channel_id = request.GET.get("stream", "")
     if not (username and password and timestamp and channel_id):
         return _finalize_timeshift_response(
@@ -168,13 +170,16 @@ def _timeshift_proxy_impl(
         return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
     try:
-        channel = Channel.objects.get(id=int(raw_id))
-    except (Channel.DoesNotExist, ValueError, TypeError):
+        channel_pk = int(raw_id)
+    except (ValueError, TypeError):
         close_old_connections()
         raise Http404("Channel not found") from None
 
-    if not _user_can_access_channel(user, channel):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
+    channel = get_channel_for_user(user, id=channel_pk)
+    if channel is None:
+        # Same as XC live: missing and inaccessible both look like not found.
+        close_old_connections()
+        raise Http404("Channel not found")
 
     return _serve_catchup(
         request, user, channel, timestamp,
@@ -268,7 +273,8 @@ def _timeshift_proxy_impl(
             ),
         },
         401: {"description": "Missing or expired authentication / session."},
-        403: {"description": "Access denied or session/channel mismatch."},
+        403: {"description": "Network denied or session/user mismatch."},
+        404: {"description": "Channel not found or not accessible."},
         503: {
             "description": (
                 "No capacity or provider URL available (including Redirect "
@@ -300,6 +306,8 @@ def catchup_proxy(request, channel_id):
     # Direct-auth clients may pass ?duration=; API sessions store their own.
     client_duration_hint = request.GET.get("duration")
 
+    # Valid API session already authorized this user+channel at mint time.
+    session_channel = None
     if session_id:
         resolved = resolve_catchup_playback(session_id, channel_id)
         if resolved is None:
@@ -311,7 +319,7 @@ def catchup_proxy(request, channel_id):
                     )
                 )
         else:
-            session_user, bound_start, bound_duration = resolved
+            session_user, bound_start, bound_duration, session_channel = resolved
             if auth_user is not None and auth_user.id != session_user.id:
                 return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
             user = session_user
@@ -324,14 +332,15 @@ def catchup_proxy(request, channel_id):
             JsonResponse({"error": "Authentication required"}, status=401)
         )
 
-    try:
-        channel = Channel.objects.get(uuid=channel_id)
-    except Channel.DoesNotExist:
-        close_old_connections()
-        raise Http404("Channel not found") from None
-
-    if not _user_can_access_channel(user, channel):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
+    if session_channel is not None:
+        channel = session_channel
+    else:
+        # JWT / direct-auth path: visibility still applies every request.
+        channel = get_channel_for_user(user, uuid=channel_id)
+        if channel is None:
+            # Same as XC live: missing and inaccessible both look like not found.
+            close_old_connections()
+            raise Http404("Channel not found")
 
     if not timestamp:
         return _finalize_timeshift_response(HttpResponseBadRequest("Missing start parameter"))
@@ -768,24 +777,6 @@ def _authenticate_user(username, password):
     if not hmac.compare_digest(str(expected), str(password)):
         return None
     return user
-
-
-def _user_can_access_channel(user, channel):
-    if user.user_level < channel.user_level:
-        return False
-    if user.user_level >= User.UserLevel.ADMIN:
-        return True
-    profile_count = user.channel_profiles.count()
-    if profile_count == 0:
-        return True
-    return (
-        type(channel).objects.filter(
-            id=channel.id,
-            channelprofilemembership__enabled=True,
-            channelprofilemembership__channel_profile__in=user.channel_profiles.all(),
-        )
-        .exists()
-    )
 
 
 # Per-client pool (session_id from 301 redirect or inline adopt when ?session_id=
@@ -1593,11 +1584,31 @@ def _score_pool_fingerprint(entry, client_ip, client_user_agent):
     return score
 
 
+# How long a client may keep the session-mint 301. Same bound as VOD: long
+# enough for a programme, short enough that a stale session_id does not stick
+# forever in a browser redirect cache.
+CATCHUP_SESSION_REDIRECT_CACHE_SECONDS = 6 * 3600
+
+
 def _redirect_with_session(request, session_id):
+    """301 to the same catch-up URL with ``session_id`` in the query string.
+
+    Client-cacheable (``private, max-age=...``) so later Range requests stay on
+    this session. Auth remains on the Location (XC credentials or a native
+    ``token``), so this redirect is never ``no-store``.
+    """
     query_params = {k: request.GET.getlist(k) for k in request.GET}
     query_params["session_id"] = [session_id]
     redirect_url = f"{request.path}?{urlencode(query_params, doseq=True)}"
-    return HttpResponse(status=301, headers={"Location": redirect_url})
+    return HttpResponse(
+        status=301,
+        headers={
+            "Location": redirect_url,
+            "Cache-Control": (
+                f"private, max-age={CATCHUP_SESSION_REDIRECT_CACHE_SECONDS}"
+            ),
+        },
+    )
 
 
 def _redirect_with_new_session(request):
