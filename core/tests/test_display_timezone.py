@@ -5,7 +5,7 @@ from datetime import datetime
 from unittest import mock
 from zoneinfo import ZoneInfo
 from django.db import ProgrammingError
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from core.models import CoreSettings
 from dispatcharr import display_timezone
 from dispatcharr.display_timezone import DisplayTimezoneFormatter, refresh_display_zone
@@ -47,11 +47,11 @@ class DisplayTimezoneFormatterTests(TestCase):
     def _reset_cache():
         display_timezone._cache.update({"zone": None, "checked": 0.0})
 
-    @override_settings(DISPATCHARR_DISPLAY_TZ="Europe/Zurich")
     def test_env_capture_used_before_first_refresh(self):
-        self.assertEqual(
-            self.formatter.formatTime(_record()), _expected("Europe/Zurich")
-        )
+        with mock.patch.object(display_timezone, "_ENV_ZONE_NAME", "Europe/Zurich"):
+            self.assertEqual(
+                self.formatter.formatTime(_record()), _expected("Europe/Zurich")
+            )
 
     def test_settings_change_refreshes_through_signal(self):
         CoreSettings.set_system_time_zone("Pacific/Auckland")
@@ -69,17 +69,17 @@ class DisplayTimezoneFormatterTests(TestCase):
                 self.formatter.formatTime(_record()), _expected("Pacific/Auckland")
             )
 
-    @override_settings(DISPATCHARR_DISPLAY_TZ="Europe/Zurich")
     def test_database_errors_keep_previous_value(self):
-        with mock.patch.object(
-            CoreSettings,
-            "get_system_time_zone",
-            side_effect=ProgrammingError("relation does not exist"),
-        ):
-            refresh_display_zone(force=True)
-        self.assertEqual(
-            self.formatter.formatTime(_record()), _expected("Europe/Zurich")
-        )
+        with mock.patch.object(display_timezone, "_ENV_ZONE_NAME", "Europe/Zurich"):
+            with mock.patch.object(
+                CoreSettings,
+                "get_system_time_zone",
+                side_effect=ProgrammingError("relation does not exist"),
+            ):
+                refresh_display_zone(force=True)
+            self.assertEqual(
+                self.formatter.formatTime(_record()), _expected("Europe/Zurich")
+            )
 
     def test_invalid_stored_zone_keeps_previous_value(self):
         CoreSettings.set_system_time_zone("Pacific/Auckland")

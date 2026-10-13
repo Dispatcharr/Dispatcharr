@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import M3UProfile from '../M3UProfile';
+import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
 
 // ── WebSocket mock ─────────────────────────────────────────────────────────────
 vi.mock('../../../WebSocket', () => ({
@@ -19,7 +20,8 @@ vi.mock('../../../utils/forms/M3uProfileUtils.js', () => ({
   prepareExpDate: vi.fn(),
   resolveProfileExpDate: vi.fn((profile, pendingExpDate) => {
     if (profile?.is_default && pendingExpDate !== undefined) {
-      if (pendingExpDate instanceof Date) return new Date(pendingExpDate.getTime());
+      if (pendingExpDate instanceof Date)
+        return new Date(pendingExpDate.getTime());
       return pendingExpDate ? new Date(pendingExpDate) : null;
     }
     return profile?.exp_date ? new Date(profile.exp_date) : null;
@@ -27,6 +29,10 @@ vi.mock('../../../utils/forms/M3uProfileUtils.js', () => ({
   splitByPattern: vi.fn(),
   updateM3UProfile: vi.fn(),
   validateXcSimple: vi.fn(),
+}));
+
+vi.mock('../../../utils/dateTimeUtils.js', () => ({
+  useDateTimeFormat: vi.fn(),
 }));
 
 // ── react-hook-form mock ───────────────────────────────────────────────────────
@@ -42,11 +48,19 @@ vi.mock('@hookform/resolvers/yup', () => ({
 
 // ── @mantine/dates mock ────────────────────────────────────────────────────────
 vi.mock('@mantine/dates', () => ({
-  DateTimePicker: ({ label, value, onChange, disabled, placeholder }) => (
+  DateTimePicker: ({
+    label,
+    value,
+    onChange,
+    disabled,
+    placeholder,
+    valueFormat,
+  }) => (
     <div data-testid="date-time-picker">
       <label>{label}</label>
       <input
         data-testid="date-time-input"
+        data-value-format={valueFormat}
         value={value ?? ''}
         onChange={(e) => onChange?.(e.target.value)}
         disabled={disabled}
@@ -261,6 +275,10 @@ const setupForm = (overrides = {}) => {
 describe('M3UProfile', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useDateTimeFormat).mockReturnValue({
+      timeFormat: 'HH:mm',
+      dateYearFormat: 'MMM D, YYYY',
+    });
     vi.mocked(M3uProfileUtils.addM3UProfile).mockResolvedValue(undefined);
     vi.mocked(M3uProfileUtils.updateM3UProfile).mockResolvedValue(undefined);
     vi.mocked(M3uProfileUtils.buildProfileSchema).mockReturnValue({});
@@ -361,6 +379,18 @@ describe('M3UProfile', () => {
     it('renders the DateTimePicker for non-XC expiration date', () => {
       render(<M3UProfile {...defaultProps()} />);
       expect(screen.getByTestId('date-time-picker')).toBeInTheDocument();
+    });
+
+    it('uses a day-first expiration format without a comma before the year', () => {
+      vi.mocked(useDateTimeFormat).mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      render(<M3UProfile {...defaultProps()} />);
+      expect(screen.getByTestId('date-time-input')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY HH:mm'
+      );
     });
 
     it('does not render DateTimePicker for XC m3u', () => {

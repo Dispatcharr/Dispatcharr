@@ -37,7 +37,7 @@ const PageContent = () => {
 
 const M3UPage = () => {
   return (
-    <ErrorBoundary>
+    <ErrorBoundary inline>
       <PageContent />
     </ErrorBoundary>
   );

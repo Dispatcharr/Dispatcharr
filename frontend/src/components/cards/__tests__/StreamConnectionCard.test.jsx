@@ -72,6 +72,16 @@ vi.mock('../../../helpers/index.jsx', () => ({
 // ── logo image ────────────────────────────────────────────────────────────────
 vi.mock('../../../images/logo.png', () => ({ default: 'logo.png' }));
 
+vi.mock('../../LazyLogo.jsx', () => ({
+  default: ({ logoId, fallbackSrc, ...props }) => (
+    <img
+      src={logoId ? `logo-${logoId}.png` : fallbackSrc}
+      alt="channel logo"
+      {...props}
+    />
+  ),
+}));
+
 // ── Mantine core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
   ActionIcon: ({ children, onClick, color, disabled }) => (
@@ -162,6 +172,7 @@ vi.mock('lucide-react', () => ({
   FileImage: () => <svg data-testid="icon-file-image" />,
   Webhook: () => <svg data-testid="icon-webhook" />,
   Logs: () => <svg data-testid="icon-logs" />,
+  ScrollText: () => <svg data-testid="icon-scroll-text" />,
   Blocks: () => <svg data-testid="icon-blocks" />,
   MonitorCog: () => <svg data-testid="icon-monitor-cog" />,
   // StreamConnectionCard-specific icons

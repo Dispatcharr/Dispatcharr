@@ -11,10 +11,6 @@ vi.mock('../../../store/users.jsx', () => ({
 
 vi.mock('../../../images/logo.png', () => ({ default: 'default-logo.png' }));
 
-vi.mock('../../../utils/cards/StreamConnectionCardUtils.js', () => ({
-  getLogoUrl: vi.fn(),
-}));
-
 vi.mock('../../../utils/cards/TimeshiftConnectionCardUtils.js', () => ({
   calculateConnectionDuration: vi.fn(() => '5m'),
   calculateConnectionStartTime: vi.fn(() => 'Jan 1 2024 10:00 AM'),
@@ -46,16 +42,24 @@ vi.mock('../../ProgramPreview.jsx', () => ({
   default: () => <div data-testid="program-preview" />,
 }));
 
+vi.mock('../../LazyLogo.jsx', () => ({
+  default: ({ logoId, fallbackSrc, ...props }) => (
+    <img
+      src={logoId ? `logo-${logoId}.png` : fallbackSrc}
+      alt="channel logo"
+      {...props}
+    />
+  ),
+}));
+
 import TimeshiftConnectionCard from '../TimeshiftConnectionCard.jsx';
-import { getLogoUrl } from '../../../utils/cards/StreamConnectionCardUtils.js';
 
 describe('TimeshiftConnectionCard logos', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getLogoUrl.mockReturnValue('/api/channels/logos/77/cache/');
   });
 
-  it('resolves the channel logo via logo_id and the logos store', () => {
+  it('passes the channel logo ID to LazyLogo', () => {
     render(
       <TimeshiftConnectionCard
         timeshiftSession={{
@@ -72,14 +76,10 @@ describe('TimeshiftConnectionCard logos', () => {
             },
           ],
         }}
-        logos={{ 77: { cache_url: '/api/channels/logos/77/cache/' } }}
       />
     );
 
-    expect(getLogoUrl).toHaveBeenCalledWith(77, {
-      77: { cache_url: '/api/channels/logos/77/cache/' },
-    });
     const img = screen.getByAltText('channel logo');
-    expect(img.getAttribute('src')).toBe('/api/channels/logos/77/cache/');
+    expect(img.getAttribute('src')).toBe('logo-77.png');
   });
 });

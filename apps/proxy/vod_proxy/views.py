@@ -12,6 +12,7 @@ from django.http import JsonResponse, Http404, HttpResponse, HttpResponseRedirec
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
+from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from apps.m3u.models import M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import (
     MultiWorkerVODConnectionManager,
@@ -24,11 +25,12 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import AllowAny
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
+from apps.accounts.xc_auth import authorize_xc_client
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
-from core.utils import dispatcharr_user_agent
+from core.utils import dispatcharr_user_agent, RedisClient
 from apps.media_servers.models import MediaLibraryExportTarget, MediaLibrarySource
 from apps.media_servers.export_policy import safe_export_relations
 from apps.media_servers.path_security import resolve_import_path
@@ -106,6 +108,28 @@ def _find_idle_vod_session(
         return None
 
 
+# How long a client may keep the session-mint 301. Long enough for a long
+# playback; short enough that a stale session_id does not stick forever in a
+# browser redirect cache.
+VOD_SESSION_REDIRECT_CACHE_SECONDS = 6 * 3600
+
+
+def _session_redirect_cache_control(request):
+    """Cache-Control for the redirect that puts a session id in the URL.
+
+    This 301 is how later Range requests stay on one session, so it must be
+    cacheable by the client (``private, max-age=...``). ``no-store`` /
+    ``no-cache`` would force every reopen back to the bare URL and a new mint.
+
+    Exception: a request that carried ``?token=`` (browser player auth). The
+    Location drops the token, so a stored copy would replay anonymously and is
+    never stored.
+    """
+    if "token" in request.GET:
+        return "no-store"
+    return f"private, max-age={VOD_SESSION_REDIRECT_CACHE_SECONDS}"
+
+
 def _vod_session_path_redirect(request, session_id, profile_id=None, user=None):
     """
     301 to the same VOD URL with session_id in the path (or XC query string).
@@ -146,7 +170,13 @@ def _vod_session_path_redirect(request, session_id, profile_id=None, user=None):
         except Exception:
             pass
 
-    return HttpResponse(status=301, headers={"Location": redirect_url})
+    return HttpResponse(
+        status=301,
+        headers={
+            "Location": redirect_url,
+            "Cache-Control": _session_redirect_cache_control(request),
+        },
+    )
 
 
 def _select_vod_stream(
@@ -158,6 +188,7 @@ def _select_vod_stream(
     session_id=None,
     media_library_target=None,
     for_redirect=False,
+    allowed_m3u_profiles=None,
 ):
     """
     Resolve content to a provider URL and M3U profile.
@@ -182,25 +213,33 @@ def _select_vod_stream(
     ordered = _order_candidates(candidates, relation)
     if media_library_target:
         ordered = safe_export_relations(ordered)
-    for cand in ordered:
+    if allowed_m3u_profiles is not None:
+        candidate_profiles = [
+            (cand, selected_profile)
+            for cand in ordered
+            for selected_profile in allowed_m3u_profiles.get(cand.m3u_account_id, [])
+        ]
+    else:
+        candidate_profiles = [(cand, None) for cand in ordered]
+
+    for cand, selected_profile in candidate_profiles:
         properties = cand.custom_properties or {}
         if for_redirect and properties.get('managed_source') == 'media_server':
             # Imported media-server and local-file relations require proxy-side
             # credentials, path validation, or connection accounting.
             continue
         cand_account = cand.m3u_account
-        cand_url = _get_stream_url_from_relation(cand)
-        if not cand_url:
-            logger.warning(
-                "[VOD-FAILOVER] No URL for relation on account %s, skipping",
-                cand_account.name,
-            )
-            continue
 
+        restrict_to_profile_ids = (
+            {p.id for p in allowed_m3u_profiles.get(cand.m3u_account_id, [])}
+            if allowed_m3u_profiles is not None
+            else None
+        )
         profile_result = _get_m3u_profile(
             cand_account,
-            profile_id,
+            selected_profile.id if selected_profile else profile_id,
             session_id,
+            restrict_to_profile_ids=restrict_to_profile_ids,
         )
         if not profile_result or not profile_result[0]:
             logger.warning(
@@ -210,18 +249,20 @@ def _select_vod_stream(
             continue
 
         m3u_profile, current_connections = profile_result
-        final_stream_url = _transform_url(cand_url, m3u_profile)
+        final_stream_url = _build_vod_stream_url(cand, m3u_profile, content_type)
         allowed_schemes = (
             ("http://", "https://")
             if for_redirect
             else ("http://", "https://", "file://")
         )
         if not final_stream_url or not final_stream_url.startswith(allowed_schemes):
-            logger.warning(
-                "[VOD-FAILOVER] Invalid stream URL from account %s: %s",
-                cand_account.name,
-                final_stream_url,
-            )
+            if final_stream_url:
+                logger.warning(
+                    "[VOD-FAILOVER] Invalid stream URL from account %s profile %s: %s",
+                    cand_account.name,
+                    getattr(m3u_profile, "id", None),
+                    final_stream_url,
+                )
             continue
 
         logger.info(
@@ -471,56 +512,64 @@ def _order_candidates(candidates, preferred_relation=None):
         ]
     return list(candidates)
 
-def _get_stream_url_from_relation(relation):
-    """Get stream URL from the M3U relation"""
-    try:
-        # Log the relation type and available attributes
-        logger.info(f"[VOD-URL] Relation type: {type(relation).__name__}")
-        logger.info(f"[VOD-URL] Account type: {relation.m3u_account.account_type}")
-        logger.info(f"[VOD-URL] Stream ID: {getattr(relation, 'stream_id', 'N/A')}")
+def _build_vod_stream_url(relation, m3u_profile, content_type):
+    """
+    Build a VOD provider URL using the same credential resolution as Live/catchup.
 
-        properties = relation.custom_properties or {}
-        if properties.get('managed_source') == 'media_server':
-            local_path = str(properties.get('file_path') or '').strip()
-            if local_path:
-                resolved = _resolve_media_library_local_path(relation, local_path)
-                return f'file://{resolved}'
+    XC relations use relation.get_stream_url(profile), which applies
+    get_transformed_credentials(). Failed transforms and non-XC accounts
+    return None. Media Library relations (managed_source == media_server)
+    resolve to a local file:// path or a validated remote URL instead.
+    """
+    properties = relation.custom_properties or {}
+    if properties.get('managed_source') == 'media_server':
+        return _media_library_relation_url(relation)
 
-            source_url = str(properties.get('source_url') or '').strip()
-            source_id = properties.get('integration_id')
-            source = MediaLibrarySource.objects.filter(
-                id=source_id,
-                enabled=True,
-            ).only('base_url').first()
-            if not source or not source_url:
-                return None
-            source_origin = urlsplit(source.base_url)
-            stream_origin = urlsplit(source_url)
-            if (
-                stream_origin.scheme not in {'http', 'https'}
-                or stream_origin.scheme != source_origin.scheme
-                or stream_origin.netloc != source_origin.netloc
-            ):
-                logger.error(
-                    '[VOD-URL] Rejected media library source URL outside configured origin'
-                )
-                return None
-            return source_url
-
-        # First try the get_stream_url method (this should build URLs dynamically)
-        if hasattr(relation, 'get_stream_url'):
-            url = relation.get_stream_url()
-            if url:
-                logger.info("[VOD-URL] Built URL from relation")
-                return url
-            else:
-                logger.warning(f"[VOD-URL] get_stream_url() returned None")
-
-        logger.error(f"[VOD-URL] Relation has no get_stream_url method or it failed")
+    account = relation.m3u_account
+    if getattr(account, "account_type", None) != "XC":
         return None
+
+    if content_type not in ("movie", "series", "episode"):
+        logger.error("[VOD-URL] Unsupported VOD content_type: %s", content_type)
+        return None
+
+    url = relation.get_stream_url(m3u_profile)
+    if url:
+        logger.info("[VOD-URL] Built XC URL from transformed credentials: %s", url)
+    return url
+
+
+def _media_library_relation_url(relation):
+    try:
+        properties = relation.custom_properties or {}
+        local_path = str(properties.get('file_path') or '').strip()
+        if local_path:
+            resolved = _resolve_media_library_local_path(relation, local_path)
+            return f'file://{resolved}'
+
+        source_url = str(properties.get('source_url') or '').strip()
+        source_id = properties.get('integration_id')
+        source = MediaLibrarySource.objects.filter(
+            id=source_id,
+            enabled=True,
+        ).only('base_url').first()
+        if not source or not source_url:
+            return None
+        source_origin = urlsplit(source.base_url)
+        stream_origin = urlsplit(source_url)
+        if (
+            stream_origin.scheme not in {'http', 'https'}
+            or stream_origin.scheme != source_origin.scheme
+            or stream_origin.netloc != source_origin.netloc
+        ):
+            logger.error(
+                '[VOD-URL] Rejected media library source URL outside configured origin'
+            )
+            return None
+        return source_url
     except Exception as exc:
         logger.error(
-            "[VOD-URL] Error resolving stream URL from relation (%s)",
+            "[VOD-URL] Error resolving media library stream URL (%s)",
             type(exc).__name__,
         )
         return None
@@ -577,13 +626,18 @@ def _media_library_target_for_request(request, target_public_id):
         raise Http404('Media library playback target not found')
     return target
 
-def _get_m3u_profile(m3u_account, profile_id, session_id=None):
+
+def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profile_ids=None):
     """Get appropriate M3U profile for streaming using Redis-based viewer counts
 
     Args:
         m3u_account: M3UAccount instance
         profile_id: Optional specific profile ID requested
         session_id: Optional session ID to check for existing connections
+        restrict_to_profile_ids: When set, only these profile IDs on this account
+            may be selected (session reuse and capacity fallback included). Used
+            for the Redirect-mode allowlist so a full/unavailable allowed profile
+            never falls back to a profile the caller isn't permitted to use.
 
     Returns:
         tuple: (M3UAccountProfile, current_connections) or None if no profile found
@@ -597,13 +651,29 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         redis_client = RedisClient.get_client()
 
         if not redis_client:
-            logger.warning("Redis not available, falling back to default profile")
-            default_profile = M3UAccountProfile.objects.filter(
-                m3u_account=m3u_account,
-                is_active=True,
-                is_default=True
+            logger.warning("Redis not available, selecting the requested or default profile")
+            profile_filters = {
+                "m3u_account": m3u_account,
+                "is_active": True,
+            }
+            if restrict_to_profile_ids is not None:
+                profile_filters["id__in"] = restrict_to_profile_ids
+            if profile_id:
+                profile_filters["id"] = profile_id
+            else:
+                profile_filters["is_default"] = True
+            selected_profile = M3UAccountProfile.objects.filter(
+                **profile_filters
             ).select_related('m3u_account__user_agent').first()
-            return (default_profile, 0) if default_profile else None
+            if not selected_profile and restrict_to_profile_ids is not None:
+                # Requested/default profile isn't in the allowlist; fall back to
+                # any allowed profile on this account rather than failing outright.
+                profile_filters.pop("id", None)
+                profile_filters.pop("is_default", None)
+                selected_profile = M3UAccountProfile.objects.filter(
+                    **profile_filters
+                ).select_related('m3u_account__user_agent').first()
+            return (selected_profile, 0) if selected_profile else None
 
         # Check if this session already has an active connection
         if session_id:
@@ -614,6 +684,11 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 existing_profile_id = connection_data.get('m3u_profile_id')
                 if existing_profile_id:
                     try:
+                        if (
+                            restrict_to_profile_ids is not None
+                            and int(existing_profile_id) not in restrict_to_profile_ids
+                        ):
+                            raise M3UAccountProfile.DoesNotExist
                         existing_profile = M3UAccountProfile.objects.select_related(
                             'm3u_account__user_agent'
                         ).get(
@@ -628,7 +703,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                         logger.info(f"[PROFILE-SELECTION] Session {session_id} reusing existing profile {existing_profile.id}: {current_connections}/{existing_profile.max_streams} connections")
                         return (existing_profile, current_connections)
                     except (M3UAccountProfile.DoesNotExist, ValueError):
-                        logger.warning(f"[PROFILE-SELECTION] Session {session_id} has invalid profile ID {existing_profile_id}, selecting new profile")
+                        logger.warning(f"[PROFILE-SELECTION] Session {session_id} has invalid or disallowed profile ID {existing_profile_id}, selecting new profile")
                     except Exception as e:
                         logger.warning(f"[PROFILE-SELECTION] Error checking existing profile for session {session_id}: {e}")
                 else:
@@ -637,7 +712,9 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                     )
 
         # If specific profile requested, try to use it
-        if profile_id:
+        if profile_id and (
+            restrict_to_profile_ids is None or profile_id in restrict_to_profile_ids
+        ):
             try:
                 profile = M3UAccountProfile.objects.select_related(
                     'm3u_account__user_agent'
@@ -660,14 +737,24 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
             m3u_account=m3u_account,
             is_active=True
         ).select_related('m3u_account__user_agent')
+        if restrict_to_profile_ids is not None:
+            m3u_profiles = m3u_profiles.filter(id__in=restrict_to_profile_ids)
 
         default_profile = m3u_profiles.filter(is_default=True).first()
         if not default_profile:
-            logger.error(f"[PROFILE-SELECTION] No default profile found for M3U account {m3u_account.id}")
-            return None
-
-        # Check profiles in order: default first, then others
-        profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
+            if restrict_to_profile_ids is not None:
+                # No allowed profile is flagged default; fall through to
+                # capacity-order the allowed set instead of failing outright.
+                profiles = list(m3u_profiles)
+                if not profiles:
+                    logger.error(f"[PROFILE-SELECTION] No allowed profile found for M3U account {m3u_account.id}")
+                    return None
+            else:
+                logger.error(f"[PROFILE-SELECTION] No default profile found for M3U account {m3u_account.id}")
+                return None
+        else:
+            # Check profiles in order: default first, then others
+            profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
 
         for profile in profiles:
             current_connections = get_profile_connection_count(profile, redis_client)
@@ -689,30 +776,21 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         logger.error(f"Error getting M3U profile: {e}")
         return None
 
-def _transform_url(original_url, m3u_profile):
-    """Transform URL based on M3U profile settings"""
-    try:
-        import regex
+def _user_from_vod_request(request, user=None):
+    """Prefer an explicit user, then an authenticated request.user, else None."""
+    if user is None and hasattr(request, "user") and request.user.is_authenticated:
+        return request.user
+    return user
 
-        if not original_url:
-            return None
 
-        search_pattern = m3u_profile.search_pattern
-        replace_pattern = m3u_profile.replace_pattern
-        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
-        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
-        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
+def _vod_playback_allowed(content_type, user):
+    """True when *user* is allowed to play this proxy content_type."""
+    if content_type == "movie":
+        return is_vod_movies_enabled(user=user)
+    if content_type in ("series", "episode"):
+        return is_vod_series_enabled(user=user)
+    return True
 
-        if search_pattern and replace_pattern:
-            # regex module accepts JS-style (?<name>...) named groups natively
-            transformed_url = regex.sub(search_pattern, safe_replace_pattern, original_url)
-            return transformed_url
-
-        return original_url
-
-    except Exception as e:
-        logger.error(f"Error transforming URL: {e}")
-        return original_url
 
 @api_view(["GET", "HEAD"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
@@ -725,6 +803,8 @@ def stream_vod(
     profile_id=None,
     user=None,
     target_public_id=None,
+    *,
+    check_network=True,
 ):
     """
     Stream VOD content (movies or series episodes) with session-based connection reuse
@@ -734,14 +814,15 @@ def stream_vod(
         content_id: ID of the content
         session_id: Optional session ID from URL path (for persistent connections)
         profile_id: Optional M3U profile ID for authentication
+        check_network: When False, skip the STREAMS allowlist. XC movie/episode
+            entry points call authorize_xc_client (XC_API) first, then pass
+            False so STREAMS is not required as well.
     """
     media_library_target = _media_library_target_for_request(
         request,
         target_public_id,
     )
-    if media_library_target is False:
-        return JsonResponse({"error": "Forbidden"}, status=403)
-    if not network_access_allowed(request, "STREAMS"):
+    if check_network and not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
     if request.method == 'HEAD':
         return head_vod(
@@ -752,8 +833,9 @@ def stream_vod(
             profile_id=profile_id,
             media_library_target=media_library_target,
         )
-    if user is None and hasattr(request, "user") and request.user.is_authenticated:
-        user = request.user
+    user = _user_from_vod_request(request, user)
+    if not _vod_playback_allowed(content_type, user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
 
@@ -870,6 +952,8 @@ def stream_vod(
 
                 # 301 to provider (no session mint, no slot hold, no probe).
                 # Capacity still gates provider selection.
+                from apps.m3u.utils import get_allowed_m3u_profiles
+
                 selected = _select_vod_stream(
                     content_type,
                     content_id,
@@ -877,6 +961,7 @@ def stream_vod(
                     preferred_stream_id,
                     profile_id,
                     for_redirect=True,
+                    allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                 )
                 if not selected:
                     logger.error(
@@ -1040,6 +1125,9 @@ def head_vod(
     """
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
+    user = _user_from_vod_request(request)
+    if not _vod_playback_allowed(content_type, user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
 
     logger.info(f"[VOD-HEAD] HEAD request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
 
@@ -1073,6 +1161,8 @@ def head_vod(
                     client_user_agent,
                 )
                 if not matched_session_id:
+                    from apps.m3u.utils import get_allowed_m3u_profiles
+
                     selected = _select_vod_stream(
                         content_type,
                         content_id,
@@ -1080,6 +1170,7 @@ def head_vod(
                         preferred_stream_id,
                         profile_id,
                         for_redirect=True,
+                        allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                     )
                     if not selected:
                         logger.error(
@@ -1201,23 +1292,7 @@ def head_vod(
 
         # Store the total content length in Redis for the persistent connection to use
         try:
-            import redis
-            from django.conf import settings
-            redis_host = getattr(settings, 'REDIS_HOST', 'localhost')
-            redis_port = int(getattr(settings, 'REDIS_PORT', 6379))
-            redis_db = int(getattr(settings, 'REDIS_DB', 0))
-            redis_password = getattr(settings, 'REDIS_PASSWORD', '')
-            redis_user = getattr(settings, 'REDIS_USER', '')
-            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-            r = redis.StrictRedis(
-                host=redis_host,
-                port=redis_port,
-                db=redis_db,
-                password=redis_password if redis_password else None,
-                username=redis_user if redis_user else None,
-                decode_responses=True,
-                **ssl_params
-            )
+            r = RedisClient().get_client()
             content_length_key = f"vod_content_length:{session_id}"
             r.set(content_length_key, total_size, ex=1800)  # Store for 30 minutes
             logger.info(f"[VOD-HEAD] Stored total content length {total_size} for session {session_id}")
@@ -1601,28 +1676,19 @@ def stop_vod_client(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc_movie(request, username, password, stream_id, extension):
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-
     from apps.vod.models import M3UMovieRelation
 
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
+    user, error = authorize_xc_client(request, username, password, "XC_API")
+    if error is not None:
+        return error
 
-    if not network_access_allowed(request, 'STREAMS', user):
-        return Response({"error": "Forbidden"}, status=403)
+    if not is_vod_movies_enabled(user=user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
 
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to VOD from all active M3U accounts
+    # Users with movie access get it from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
 
     try:
@@ -1633,38 +1699,44 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
         return JsonResponse({"error": "Movie not found"}, status=404)
 
-    return stream_vod(request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request,
+        'movie',
+        movie_relation.movie.uuid,
+        session_id,
+        profile_id,
+        user,
+        check_network=False,
+    )
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc_episode(request, username, password, stream_id, extension):
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-
     from apps.vod.models import M3UEpisodeRelation
 
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
+    user, error = authorize_xc_client(request, username, password, "XC_API")
+    if error is not None:
+        return error
 
-    if not network_access_allowed(request, 'STREAMS', user):
-        return Response({"error": "Forbidden"}, status=403)
+    if not is_vod_series_enabled(user=user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
 
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to series/episodes from all active M3U accounts
+    # Users with series access get episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
 
-    try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-    except M3UEpisodeRelation.DoesNotExist:
+    episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+    if not episode_relation:
         return JsonResponse({"error": "Episode not found"}, status=404)
 
-    return stream_vod(request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request,
+        'episode',
+        episode_relation.episode.uuid,
+        session_id,
+        profile_id,
+        user,
+        check_network=False,
+    )

@@ -109,9 +109,16 @@ class Series(models.Model):
     genre = models.CharField(max_length=255, blank=True, null=True)
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='series')
 
-    # Metadata IDs for deduplication - these should be globally unique when present
-    tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
-    imdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="IMDB ID for metadata")
+    # Metadata IDs for deduplication - unique per language when present
+    tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
+    imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
+    # '' rather than NULL so untagged rows collide in the unique constraints
+    language = models.CharField(
+        max_length=2,
+        blank=True,
+        default='',
+        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
+    )
 
     # Additional metadata and properties
     custom_properties = models.JSONField(blank=True, null=True, help_text='Additional metadata and properties for the series')
@@ -123,12 +130,23 @@ class Series(models.Model):
         verbose_name = 'Series'
         verbose_name_plural = 'Series'
         ordering = ['name']
-        # Only enforce name+year uniqueness when no external IDs are present
+        # Identity is (external ID, language), falling back to
+        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['name', 'year'],
+                fields=['tmdb_id', 'language'],
+                condition=models.Q(tmdb_id__isnull=False),
+                name='unique_series_tmdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['imdb_id', 'language'],
+                condition=models.Q(imdb_id__isnull=False),
+                name='unique_series_imdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['name', 'year', 'language'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_series_name_year_no_external_id'
+                name='unique_series_name_year_language_no_external_id'
             ),
         ]
 
@@ -148,9 +166,16 @@ class Movie(models.Model):
     duration_secs = models.IntegerField(blank=True, null=True, help_text="Duration in seconds")
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='movie')
 
-    # Metadata IDs for deduplication - these should be globally unique when present
-    tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
-    imdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="IMDB ID for metadata")
+    # Metadata IDs for deduplication - unique per language when present
+    tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
+    imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
+    # '' rather than NULL so untagged rows collide in the unique constraints
+    language = models.CharField(
+        max_length=2,
+        blank=True,
+        default='',
+        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
+    )
 
     is_adult = models.BooleanField(
         default=False,
@@ -168,12 +193,23 @@ class Movie(models.Model):
         verbose_name = 'Movie'
         verbose_name_plural = 'Movies'
         ordering = ['name']
-        # Only enforce name+year uniqueness when no external IDs are present
+        # Identity is (external ID, language), falling back to
+        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['name', 'year'],
+                fields=['tmdb_id', 'language'],
+                condition=models.Q(tmdb_id__isnull=False),
+                name='unique_movie_tmdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['imdb_id', 'language'],
+                condition=models.Q(imdb_id__isnull=False),
+                name='unique_movie_imdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['name', 'year', 'language'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_movie_name_year_no_external_id'
+                name='unique_movie_name_year_language_no_external_id'
             ),
         ]
 
@@ -273,20 +309,35 @@ class M3UMovieRelation(models.Model):
     def __str__(self):
         return f"{self.m3u_account.name} - {self.movie.name}"
 
-    def get_stream_url(self):
-        """Get the full stream URL for this movie from this provider"""
-        if self.m3u_account.account_type == 'XC':
-            from core.xtream_codes import normalize_server_url
+    def get_stream_url(self, profile=None):
+        """Build the XC movie URL using the same credential resolution as playback.
 
-            normalized_url = normalize_server_url(self.m3u_account.server_url)
-            if not normalized_url:
-                return None
-            username = self.m3u_account.username
-            password = self.m3u_account.password
-            return f"{normalized_url}/movie/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
-        else:
-            # For other account types, we would need another way to build URLs
+        When *profile* is omitted, the account's first active profile is used
+        (identity patterns keep base credentials). Returns None for non-XC
+        accounts or when credential transform fails.
+        """
+        if self.m3u_account.account_type != "XC":
             return None
+
+        from apps.m3u.credentials import (
+            build_xc_playback_url,
+            get_transformed_credentials,
+        )
+
+        server_url, username, password = get_transformed_credentials(
+            self.m3u_account, profile
+        )
+        if not (server_url and username and password and self.stream_id):
+            return None
+
+        return build_xc_playback_url(
+            server_url,
+            username,
+            password,
+            content_path="movie",
+            stream_id=str(self.stream_id),
+            extension=self.container_extension or "mp4",
+        )
 
 
 class M3UEpisodeRelation(models.Model):
@@ -322,21 +373,35 @@ class M3UEpisodeRelation(models.Model):
     def __str__(self):
         return f"{self.m3u_account.name} - {self.episode}"
 
-    def get_stream_url(self):
-        """Get the full stream URL for this episode from this provider"""
-        if self.m3u_account.account_type == 'XC':
-            from core.xtream_codes import normalize_server_url
+    def get_stream_url(self, profile=None):
+        """Build the XC series/episode URL using the same credential resolution as playback.
 
-            normalized_url = normalize_server_url(self.m3u_account.server_url)
-            if not normalized_url:
-                return None
-            username = self.m3u_account.username
-            password = self.m3u_account.password
-            return f"{normalized_url}/series/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
-        else:
-            # We might support non XC accounts in the future
-            # For now, return None
+        When *profile* is omitted, the account's first active profile is used
+        (identity patterns keep base credentials). Returns None for non-XC
+        accounts or when credential transform fails.
+        """
+        if self.m3u_account.account_type != "XC":
             return None
+
+        from apps.m3u.credentials import (
+            build_xc_playback_url,
+            get_transformed_credentials,
+        )
+
+        server_url, username, password = get_transformed_credentials(
+            self.m3u_account, profile
+        )
+        if not (server_url and username and password and self.stream_id):
+            return None
+
+        return build_xc_playback_url(
+            server_url,
+            username,
+            password,
+            content_path="series",
+            stream_id=str(self.stream_id),
+            extension=self.container_extension or "mp4",
+        )
 
 class M3UVODCategoryRelation(models.Model):
     """Links M3U accounts to categories with provider-specific information"""

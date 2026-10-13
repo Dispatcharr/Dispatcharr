@@ -1206,7 +1206,7 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
 
             <Divider size="sm" orientation="vertical" />
 
-            {/* Col 3: Behavior/Access - Stream Profile, User Level, Mature Content, Hidden */}
+            {/* Col 3: Behavior/Access - Stream Profile, User Level, Radio, Mature Content, Hidden */}
             <Stack justify="flex-start" style={{ flex: 1, minWidth: 0 }}>
               <Select
                 id="stream_profile_id"
@@ -1262,6 +1262,40 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                 error={errors.user_level?.message}
               />
 
+              <Tooltip
+                label="Classify this channel as Radio (audio-only) instead of TV in M3U/XC output"
+                withArrow
+              >
+                <Box>
+                  <Switch
+                    label="Radio"
+                    checked={watch('is_radio')}
+                    onChange={(event) =>
+                      setValue('is_radio', event.currentTarget.checked, {
+                        shouldDirty: true,
+                      })
+                    }
+                    size="md"
+                  />
+                  <ProviderHintRow
+                    channel={channel}
+                    field="is_radio"
+                    formValue={watch('is_radio')}
+                    hintText={
+                      channel?.auto_created
+                        ? `Provider: ${channel.is_radio ? 'Radio' : 'TV'}`
+                        : null
+                    }
+                    onReset={() =>
+                      setValue(
+                        'is_radio',
+                        getProviderFormValue(channel, 'is_radio'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
+                </Box>
+              </Tooltip>
               <Tooltip label="Mark as mature/adult content (18+)" withArrow>
                 <Box>
                   <Switch

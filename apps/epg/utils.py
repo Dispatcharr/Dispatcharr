@@ -1,16 +1,97 @@
 """
 Shared EPG utilities.
 
-Season/episode extraction, WebSocket progress updates, and SD poster proxy URL
-helpers live here so serializers, XMLTV output, and tasks can import without
-circular dependencies.
+Season/episode extraction, original-air-date helpers, WebSocket progress updates,
+and SD poster proxy URL helpers live here so serializers, XMLTV output, and tasks
+can import without circular dependencies.
 """
 
 import gc
 import hashlib
 import re
+from datetime import timedelta
 
+from django.db.models import Max, Q
+from django.utils import timezone as dj_timezone
+
+from core.models import CoreSettings
 from core.utils import send_websocket_update
+
+
+def epg_retention_cutoffs(epg_ids, *, now=None):
+    """
+    Map each epg_id to the oldest ProgramData.end_time worth keeping.
+
+    A programme that ended before its epg's cutoff is removed on the next
+    refresh. The cutoff is the largest catchup_days among catchup-enabled
+    channels mapped to that epg, then raised to the history minimum and
+    capped at the history maximum. An epg with no catchup-enabled channel
+    still gets the minimum. Default days back only affects what a client is
+    served; it does not change how much is kept.
+
+    A channel's effective epg is its own Channel.epg_data, unless a
+    ChannelOverride redirects it elsewhere -- ChannelOverride has no
+    is_catchup/catchup_days of its own, so the base Channel's catchup fields
+    still apply either way. Both paths are checked so an override-only
+    mapping (which bulk parsing already treats as mapped, see
+    _epg_ids_mapped_to_channels) doesn't silently fall back to the
+    configured minimum for a channel that actually wants more.
+    """
+    from apps.channels.models import Channel
+
+    epg_ids = list(epg_ids)
+    if not epg_ids:
+        return {}
+
+    if now is None:
+        now = dj_timezone.now()
+
+    policy = CoreSettings.get_epg_history_policy()
+
+    max_catchup_days = {}
+
+    def _merge_max(rows):
+        for epg_id, days in rows:
+            if days is None:
+                continue
+            if days > max_catchup_days.get(epg_id, -1):
+                max_catchup_days[epg_id] = days
+
+    _merge_max(
+        Channel.objects.filter(epg_data_id__in=epg_ids, is_catchup=True)
+        .filter(Q(override__isnull=True) | Q(override__epg_data_id__isnull=True))
+        .values("epg_data_id")
+        .annotate(days=Max("catchup_days"))
+        .values_list("epg_data_id", "days")
+    )
+    _merge_max(
+        Channel.objects.filter(override__epg_data_id__in=epg_ids, is_catchup=True)
+        .values("override__epg_data_id")
+        .annotate(days=Max("catchup_days"))
+        .values_list("override__epg_data_id", "days")
+    )
+
+    cutoffs = {}
+    for epg_id in epg_ids:
+        days = max_catchup_days.get(epg_id) or 0
+        days = min(max(days, policy.min_days), policy.max_days)
+        cutoffs[epg_id] = now - timedelta(days=days)
+    return cutoffs
+
+
+def epg_first_start(start_times, cutoff):
+    """
+    Earliest programme start in a new pull that falls at or after the cutoff.
+
+    Starts before the cutoff are ignored, so one bad early timestamp cannot
+    pull the replace point back over retained history. Returns None when
+    every start in the pull is before the cutoff. The caller keeps a stored
+    row whose end is at or before that instant, and replaces a row that ends
+    later, including one that started before the cutoff and runs past it.
+    """
+    in_window = [start for start in start_times if start >= cutoff]
+    return min(in_window) if in_window else None
+
 
 # Matches patterns like "S12 E6", "S3E21", "S8 E8 P2/2"
 _ONSCREEN_RE = re.compile(r'S(\d+)\s*E(\d+)', re.IGNORECASE)
@@ -92,6 +173,40 @@ def extract_season_episode(cp, description=None):
         if episode is None:
             episode = d_episode
     return season, episode
+
+
+def fill_original_air_date_if_missing(custom_props, candidate):
+    """
+    Set previously_shown_details.start from candidate when that field is absent.
+
+    Mutates and returns ``custom_props`` for convenience. Callers may ignore the
+    return value and rely on the in-place update.
+
+    Used for Gracenote-style episode-num system="original-air-date" and Schedules
+    Direct originalAirDate. Does not use XMLTV <date>, which is production /
+    copyright date per the DTD, not original air date.
+    """
+    if not isinstance(custom_props, dict) or candidate is None:
+        return custom_props
+
+    try:
+        value = str(candidate).strip()
+    except Exception:
+        return custom_props
+    if not value:
+        return custom_props
+
+    details = custom_props.get('previously_shown_details')
+    if isinstance(details, dict) and details.get('start'):
+        return custom_props
+
+    if isinstance(details, dict):
+        updated = dict(details)
+    else:
+        updated = {}
+    updated['start'] = value
+    custom_props['previously_shown_details'] = updated
+    return custom_props
 
 
 def send_epg_update(source_id, action, progress, **kwargs):

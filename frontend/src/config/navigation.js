@@ -14,6 +14,7 @@ import {
   Webhook,
   MonitorCog,
   LibraryBig,
+  ScrollText,
 } from 'lucide-react';
 
 // Shared by the top-level `settings` entry and the nested entry under
@@ -94,6 +95,7 @@ export const NAV_ITEMS = {
       { label: 'Users', icon: User, path: '/users' },
       { label: 'Logo Manager', icon: FileImage, path: '/logos' },
       { label: 'Connect', icon: Webhook, path: '/connect' },
+      { label: 'Logs', icon: ScrollText, path: '/logs', requires: 'logPersist' },
       { ...SETTINGS_NAV_BASE },
     ],
   },
@@ -127,8 +129,41 @@ export const DEFAULT_USER_ORDER = [
 export const isGroupBoundary = (navItems, idx) =>
   idx > 0 && Boolean(navItems[idx].paths || navItems[idx - 1].paths);
 
-export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
-  const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
+/**
+ * Default nav order for a user. For standard users, inserts 'vods' after
+ * 'channels' when canViewVod, and 'dvr' after 'guide' when canViewDvr.
+ * Shared by getOrderedNavItems and any caller (e.g. NavOrderForm) that needs
+ * the default order on its own, such as to reset to defaults or revert an
+ * optimistic update.
+ */
+export const getDefaultOrder = (
+  isAdmin,
+  { canViewDvr = false, canViewVod = false } = {}
+) => {
+  let order = isAdmin ? [...DEFAULT_ADMIN_ORDER] : [...DEFAULT_USER_ORDER];
+
+  if (!isAdmin && canViewVod && !order.includes('vods')) {
+    const channelsIdx = order.indexOf('channels');
+    const insertAt = channelsIdx >= 0 ? channelsIdx + 1 : 0;
+    order = [...order.slice(0, insertAt), 'vods', ...order.slice(insertAt)];
+  }
+
+  if (!isAdmin && canViewDvr && !order.includes('dvr')) {
+    const guideIdx = order.indexOf('guide');
+    const insertAt = guideIdx >= 0 ? guideIdx + 1 : order.length - 1;
+    order = [...order.slice(0, insertAt), 'dvr', ...order.slice(insertAt)];
+  }
+
+  return order;
+};
+
+export const getOrderedNavItems = (
+  userOrder,
+  isAdmin,
+  channelIds = [],
+  access = {}
+) => {
+  const defaultOrder = getDefaultOrder(isAdmin, access);
 
   let order;
   if (userOrder && Array.isArray(userOrder) && userOrder.length > 0) {
@@ -155,7 +190,10 @@ export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
         id: item.id,
         label: item.label,
         icon: item.icon,
-        paths: item.paths,
+        // A missing flag keeps the entry.
+        paths: item.paths.filter(
+          (entry) => !entry.requires || access[entry.requires] !== false
+        ),
         canHide: item.canHide,
       };
     }

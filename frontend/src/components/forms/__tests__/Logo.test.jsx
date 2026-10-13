@@ -4,6 +4,7 @@ import LogoForm from '../Logo';
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../utils/forms/LogoUtils.js', () => ({
+  LOGO_NAME_MAX_LENGTH: 255,
   createLogo: vi.fn(),
   updateLogo: vi.fn(),
   uploadLogo: vi.fn(),
@@ -407,7 +408,8 @@ describe('LogoForm', () => {
       await waitFor(() => {
         expect(LogoUtils.uploadLogo).toHaveBeenCalledWith(
           file,
-          expect.any(Object)
+          expect.any(Object),
+          false
         );
       });
     });

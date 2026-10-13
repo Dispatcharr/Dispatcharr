@@ -23,7 +23,7 @@ services:
       redis:
         condition: service_healthy
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
 
     # --- Environment Configuration ---
     environment:
@@ -46,6 +46,9 @@ services:
       # Redis Connection
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      # Per-process redis-py / django-redis pool cap (default 50). Raise if streams
+      # queue on Redis under heavy concurrent load.
+      #- REDIS_MAX_CONNECTIONS=50
       # Redis Authentication (Optional)
       # Uncomment and set if your Redis requires authentication:
       #- REDIS_PASSWORD=your_strong_redis_password
@@ -70,6 +73,8 @@ services:
       # Outer reverse proxy trust (optional). When unset, private/loopback peers
       # may set X-Real-IP / X-Forwarded-For (typical Docker/Traefik setups).
       # Set to a specific IP/CIDR to narrow trust, or none to ignore proxy headers.
+      # Reverse Proxy Auth (Settings) needs this set explicitly: the unset default
+      # is never trusted for sign-in.
       #- DISPATCHARR_TRUSTED_PROXIES=172.18.0.0/16
       #- DISPATCHARR_TRUSTED_PROXIES=none
 
@@ -82,6 +87,12 @@ services:
       # Lower values = higher priority. Range: -20 (highest) to 19 (lowest)
       # Negative values require cap_add: SYS_NICE (see below)
       #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
+
+      # Worker count (Optional, tune memory vs throughput; range: 1-20)
+      #- UWSGI_WORKERS=4       # uWSGI gevent workers (default: 4; debug mode default: 1)
+
+      # Soft open-file limit for uwsgi/daphne (Optional, default: 65536)
+      #- DISPATCHARR_NOFILE=65536
 
     # --- Advanced Configuration ---
     # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
@@ -126,8 +137,8 @@ services:
       # Mount your host media folder at /media; the import/export roots below allow Media Library to use that container path.
       #- /path/to/media:/media
     extra_hosts:
-      - "host.docker.internal:host-gateway"
-    entrypoint: ["/app/docker/entrypoint.celery.sh"]
+      - 'host.docker.internal:host-gateway'
+    entrypoint: ['/app/docker/entrypoint.celery.sh']
 
     # --- Environment Configuration ---
     environment:
@@ -158,6 +169,7 @@ services:
       # Redis — must match web service settings
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      #- REDIS_MAX_CONNECTIONS=50
       #- REDIS_PASSWORD=your_strong_redis_password
       #- REDIS_USER=your_redis_username
       # Redis TLS — must match web service
@@ -175,6 +187,10 @@ services:
 
       # Process Priority Configuration (Optional)
       #- CELERY_NICE_LEVEL=5  # Celery/EPG/Background tasks (default: 5, low priority; Range: -20 to 19)
+
+      # Celery prefork autoscale (Optional, tune memory vs throughput; range: 1-20)
+      #- CELERY_MAX_WORKERS=6  # Max prefork workers (default: 6)
+      #- CELERY_MIN_WORKERS=1  # Min prefork workers (default: 1; must be <= max)
 
       # Legacy CPU Support (Optional)
       # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
@@ -197,8 +213,6 @@ services:
     image: postgres:17
     container_name: dispatcharr_db
     restart: unless-stopped
-    ports:
-      - "5436:5432"
     environment:
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
@@ -206,7 +220,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dispatch -d dispatcharr"]
+      test: ['CMD-SHELL', 'pg_isready -U dispatch -d dispatcharr']
       interval: 5s
       timeout: 5s
       retries: 5
@@ -218,13 +232,16 @@ services:
     image: redis:latest
     container_name: dispatcharr_redis
     restart: unless-stopped
+    # Close idle clients after REDIS_IDLE_TIMEOUT seconds (default 300). Blocked
+    # Celery BRPOP waiters are exempt. Override with e.g. --timeout 600.
+    command: ['redis-server', '--timeout', '300']
 
     # --- Authentication Configuration (Optional) ---
     # By default, Redis runs without authentication.
     # Choose ONE of the following options if authentication is required:
 
     # Option 1: Password-only authentication (Redis <6 or default user)
-    #command: ["redis-server", "--requirepass", "your_strong_redis_password"]
+    #command: ["redis-server", "--requirepass", "your_strong_redis_password", "--timeout", "300"]
 
     # Option 2: Redis 6+ ACL with username + password (requires custom config file - see Redis documentation for configuration)
     #command: ["redis-server", "/etc/redis/redis.conf"]
@@ -234,7 +251,7 @@ services:
     # --- Health Check Configuration ---
     healthcheck:
       # Default: No authentication
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
 
       # If using Option 1 (password-only), uncomment this instead:
       #test: ["CMD", "redis-cli", "-a", "your_strong_redis_password", "ping"]

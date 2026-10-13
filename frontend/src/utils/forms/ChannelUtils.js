@@ -11,6 +11,7 @@ export const OVERRIDABLE_FIELDS = [
   'tvc_guide_stationid',
   'epg_data_id',
   'stream_profile_id',
+  'is_radio',
 ];
 
 // Display labels for the override fields above.
@@ -23,6 +24,7 @@ export const OVERRIDE_FIELD_LABELS = {
   tvc_guide_stationid: 'Gracenote Station ID',
   epg_data_id: 'EPG',
   stream_profile_id: 'Stream Profile',
+  is_radio: 'Radio',
 };
 
 export const matchChannelEpg = (channel) => {
@@ -205,6 +207,7 @@ export const getChannelFormDefaultValues = (channel, channelGroups) => {
     logo_id: logoId ? `${logoId}` : '',
     user_level: `${channel?.user_level ?? '0'}`,
     is_adult: channel?.is_adult ?? false,
+    is_radio: effective(channel, 'is_radio') ?? false,
     hidden_from_output: channel?.hidden_from_output ?? false,
   };
 };

@@ -114,6 +114,18 @@ class UserSerializer(serializers.ModelSerializer):
                 "XC password may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)"
             )
 
+        allowed_m3u_profile_ids = value.get("allowed_m3u_profile_ids")
+        if allowed_m3u_profile_ids is not None and (
+            not isinstance(allowed_m3u_profile_ids, list)
+            or any(
+                not isinstance(profile_id, int) or isinstance(profile_id, bool) or profile_id <= 0
+                for profile_id in allowed_m3u_profile_ids
+            )
+        ):
+            raise serializers.ValidationError(
+                "allowed_m3u_profile_ids must be a list of positive integer IDs"
+            )
+
         return value
 
     def create(self, validated_data):
@@ -163,3 +175,10 @@ class UserSerializer(serializers.ModelSerializer):
             instance.channel_profiles.set(channel_profiles)
 
         return instance
+
+
+class ProxyLoginResponseSerializer(serializers.Serializer):
+    """JWT pair returned by the reverse proxy sign-in endpoint."""
+
+    access = serializers.CharField()
+    refresh = serializers.CharField()

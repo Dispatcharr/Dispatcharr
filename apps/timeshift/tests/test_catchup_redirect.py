@@ -1,4 +1,4 @@
-"""Catch-up honors Redirect as the default stream profile like VOD."""
+"""Catch-up honors Redirect via the channel's effective stream profile."""
 
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
@@ -18,6 +18,15 @@ from apps.timeshift.tests.test_views import (
     _proxy_url,
     _seed_pool_session,
 )
+
+
+def _channel_with_redirect(is_redirect, **kwargs):
+    """Channel mock whose effective stream profile reports Redirect or not."""
+    channel = MagicMock(**kwargs)
+    profile = MagicMock()
+    profile.is_redirect.return_value = is_redirect
+    channel.get_stream_profile.return_value = profile
+    return channel, profile.is_redirect
 
 
 class ClientTimeshiftUrlLayoutTests(SimpleTestCase):
@@ -77,31 +86,24 @@ class CatchupRedirectViewTests(SimpleTestCase):
 
     def _enter_common(self, stack, *, is_redirect, stream=None, redis=None):
         stream = stream or _make_catchup_stream(provider_tz="UTC")
-        channel_cls = stack.enter_context(patch.object(views, "Channel"))
+        channel_lookup = stack.enter_context(
+            patch.object(views, "get_channel_for_user")
+        )
         redis_cls = stack.enter_context(patch.object(views, "RedisClient"))
         stack.enter_context(
-            patch.object(views, "_authenticate_user", return_value=MagicMock(id=1))
-        )
-        stack.enter_context(
-            patch.object(views, "network_access_allowed", return_value=True)
-        )
-        stack.enter_context(
-            patch.object(views, "_user_can_access_channel", return_value=True)
+            patch.object(views, "authorize_xc_client", return_value=(MagicMock(id=1), None))
         )
         stack.enter_context(
             patch.object(views, "get_channel_catchup_streams", return_value=[stream])
+        )
+        stack.enter_context(
+            patch.object(views, "is_catchup_enabled", return_value=True)
         )
         stack.enter_context(
             patch.object(views, "resolve_catchup_duration", return_value=40)
         )
         stack.enter_context(
             patch.object(views, "parse_catchup_timestamp", return_value=True)
-        )
-        is_redirect_mock = stack.enter_context(
-            patch(
-                "core.models.CoreSettings.is_default_stream_profile_redirect",
-                return_value=is_redirect,
-            )
         )
         stack.enter_context(
             patch.object(
@@ -117,8 +119,11 @@ class CatchupRedirectViewTests(SimpleTestCase):
             )
         )
         redis_cls.get_client.return_value = redis if redis is not None else _FakeRedis()
-        channel_cls.objects.get.return_value = MagicMock(id=8, name="Ch", logo_id=None)
-        return channel_cls, redis_cls, stream, is_redirect_mock
+        channel, is_redirect_mock = _channel_with_redirect(
+            is_redirect, id=8, name="Ch", logo_id=None,
+        )
+        channel_lookup.return_value = channel
+        return channel_lookup, redis_cls, stream, is_redirect_mock
 
     def test_redirect_on_path_hands_off_provider_url(self):
         request = self.factory.get(_proxy_url(session_id=None))
@@ -154,6 +159,32 @@ class CatchupRedirectViewTests(SimpleTestCase):
         self.assertIn("stream=22372", response["Location"])
         self.assertNotIn("session_id=", response["Location"])
 
+    def test_query_accepts_utc_in_place_of_start(self):
+        request = self.factory.get(
+            "/streaming/timeshift.php",
+            {"username": "u", "password": "p", "stream": "8", "utc": "1790530200"},
+        )
+        with patch.object(views, "_timeshift_proxy_impl") as impl:
+            views.timeshift_proxy_query(request)
+
+        self.assertEqual(impl.call_args.args[3], "1790530200")
+
+    def test_query_prefers_start_over_utc(self):
+        request = self.factory.get(
+            "/streaming/timeshift.php",
+            {
+                "username": "u",
+                "password": "p",
+                "stream": "8",
+                "start": "2026-06-08:17-00",
+                "utc": "1790530200",
+            },
+        )
+        with patch.object(views, "_timeshift_proxy_impl") as impl:
+            views.timeshift_proxy_query(request)
+
+        self.assertEqual(impl.call_args.args[3], "2026-06-08:17-00")
+
     def test_redirect_off_still_mints_session(self):
         request = self.factory.get(_proxy_url(session_id=None))
         with ExitStack() as stack:
@@ -164,6 +195,31 @@ class CatchupRedirectViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 301)
         self.assertIn("session_id=", response["Location"])
+        self.assertEqual(
+            response["Cache-Control"],
+            f"private, max-age={views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS}",
+        )
+
+    def test_channel_redirect_ignores_system_default(self):
+        """Channel effective Redirect wins even when the system default is not."""
+        request = self.factory.get(_proxy_url(session_id=None))
+        with ExitStack() as stack:
+            self._enter_common(stack, is_redirect=True)
+            stack.enter_context(
+                patch(
+                    "core.models.CoreSettings.is_default_stream_profile_redirect",
+                    return_value=False,
+                )
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
+            )
+
+        self.assertIsInstance(response, HttpResponseRedirect)
+        self.assertEqual(
+            response["Location"],
+            "http://provider.test/timeshift/pu/pp/40/2026-06-08:17-00/22372.ts",
+        )
 
     def test_pool_match_skips_provider_redirect(self):
         existing = "existingbusy1"
@@ -257,3 +313,49 @@ class CatchupRedirectViewTests(SimpleTestCase):
             )
 
         self.assertEqual(response.status_code, 503)
+
+
+class SessionRedirectCacheControlTests(SimpleTestCase):
+    """Catch-up session mint must be client-cacheable (same rule as VOD).
+
+    Auth stays on the Location here, so the redirect is always
+    ``private, max-age=...`` (never ``no-store``).
+    """
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_xc_path_mint_is_cacheable_by_the_client_only(self):
+        response = views._redirect_with_session(
+            self.factory.get("/timeshift/u/p/40/2026-06-08:17-00/8.ts"),
+            "sess123",
+        )
+
+        self.assertEqual(response.status_code, 301)
+        self.assertIn("session_id=sess123", response["Location"])
+        cache_control = response["Cache-Control"]
+        self.assertIn("private", cache_control)
+        self.assertIn(
+            f"max-age={views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS}",
+            cache_control,
+        )
+        self.assertNotIn("no-store", cache_control)
+        self.assertNotIn("no-cache", cache_control)
+
+    def test_token_stays_on_location_and_redirect_remains_cacheable(self):
+        """Native JWT auth is kept on the Location, unlike VOD which drops it."""
+        response = views._redirect_with_session(
+            self.factory.get(
+                "/api/catchup/channel-uuid/?token=jwt-value&start=2026-06-08:17-00"
+            ),
+            "sess123",
+        )
+
+        self.assertIn("token=jwt-value", response["Location"])
+        self.assertIn("session_id=sess123", response["Location"])
+        self.assertNotIn("no-store", response["Cache-Control"])
+        self.assertIn("private", response["Cache-Control"])
+
+    def test_lifetime_is_bounded_and_covers_a_long_programme(self):
+        self.assertGreaterEqual(views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS, 4 * 3600)
+        self.assertLessEqual(views.CATCHUP_SESSION_REDIRECT_CACHE_SECONDS, 24 * 3600)

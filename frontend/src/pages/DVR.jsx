@@ -38,6 +38,8 @@ import {
   getShowVideoUrl,
 } from '../utils/cards/RecordingCardUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+import useAuthStore from '../store/auth';
+import { canManageDvr } from '../utils/dvrAccess';
 
 const STATUS_OPTIONS = [
   { value: 'recording', label: 'Recording' },
@@ -51,6 +53,7 @@ const RecordingList = ({
   onOpenDetails,
   onOpenRecurring,
   channelsById,
+  canManage,
 }) => {
   return list.map((rec) => (
     <RecordingCard
@@ -59,6 +62,7 @@ const RecordingList = ({
       onOpenDetails={onOpenDetails}
       onOpenRecurring={onOpenRecurring}
       channel={channelsById?.[rec.channel]}
+      canManage={canManage}
     />
   ));
 };
@@ -68,6 +72,8 @@ const DVRPage = () => {
   const recordings = useChannelsStore((s) => s.recordings);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
+  const authUser = useAuthStore((s) => s.user);
+  const canManage = canManageDvr(authUser);
   const [channelsById, setChannelsById] = useState({});
   const { toUserTime, userNow } = useTimeHelpers();
 
@@ -97,6 +103,10 @@ const DVRPage = () => {
   const closeDetails = () => setDetailsOpen(false);
 
   const openRuleModal = (recording, isDelete) => {
+    if (!canManage) {
+      openDetails(recording);
+      return;
+    }
     const ruleId = recording?.custom_properties?.rule?.id;
     if (!ruleId) {
       openDetails(recording);
@@ -117,8 +127,10 @@ const DVRPage = () => {
 
   useEffect(() => {
     fetchRecordings();
-    fetchRecurringRules();
-  }, [fetchRecordings, fetchRecurringRules]);
+    if (canManage) {
+      fetchRecurringRules();
+    }
+  }, [fetchRecordings, fetchRecurringRules, canManage]);
 
   // Load channel details for recordings via lightweight summary API
   useEffect(() => {
@@ -238,21 +250,23 @@ const DVRPage = () => {
   return (
     <Box p={10}>
       <Flex gap="md" align="center" wrap="wrap" mb={12}>
-        <Button
-          leftSection={<SquarePlus size={18} />}
-          variant="light"
-          size="sm"
-          onClick={openRecordingModal}
-          p={5}
-          color={theme.tailwind.green[5]}
-          style={{
-            borderWidth: '1px',
-            borderColor: theme.tailwind.green[5],
-            color: 'white',
-          }}
-        >
-          New Recording
-        </Button>
+        {canManage && (
+          <Button
+            leftSection={<SquarePlus size={18} />}
+            variant="light"
+            size="sm"
+            onClick={openRecordingModal}
+            p={5}
+            color={theme.tailwind.green[5]}
+            style={{
+              borderWidth: '1px',
+              borderColor: theme.tailwind.green[5],
+              color: 'white',
+            }}
+          >
+            New Recording
+          </Button>
+        )}
 
         <TextInput
           placeholder="Search recordings..."
@@ -323,6 +337,7 @@ const DVRPage = () => {
                 onOpenDetails={openDetails}
                 onOpenRecurring={openRuleModal}
                 channelsById={channelsById}
+                canManage={canManage}
               />
             }
             {filteredInProgress.length === 0 && (
@@ -358,6 +373,7 @@ const DVRPage = () => {
                 onOpenDetails={openDetails}
                 onOpenRecurring={openRuleModal}
                 channelsById={channelsById}
+                canManage={canManage}
               />
             }
             {filteredUpcoming.length === 0 && (
@@ -393,6 +409,7 @@ const DVRPage = () => {
                 onOpenDetails={openDetails}
                 onOpenRecurring={openRuleModal}
                 channelsById={channelsById}
+                canManage={canManage}
               />
             }
             {filteredCompleted.length === 0 && (
@@ -406,31 +423,37 @@ const DVRPage = () => {
         </div>
       </Stack>
 
-      <RecordingForm
-        isOpen={recordingModalOpen}
-        onClose={closeRecordingModal}
-      />
+      {canManage && (
+        <RecordingForm
+          isOpen={recordingModalOpen}
+          onClose={closeRecordingModal}
+        />
+      )}
 
-      <RecordingForm
-        isOpen={Boolean(editRecording)}
-        recording={editRecording}
-        onClose={() => setEditRecording(null)}
-      />
+      {canManage && (
+        <RecordingForm
+          isOpen={Boolean(editRecording)}
+          recording={editRecording}
+          onClose={() => setEditRecording(null)}
+        />
+      )}
 
-      <RecurringRuleModal
-        opened={ruleModal.open}
-        onClose={closeRuleModal}
-        ruleId={ruleModal.ruleId}
-        recording={ruleModal.recording}
-        onEditOccurrence={(occ) => {
-          setRuleModal({ open: false, ruleId: null });
-          setEditRecording(occ);
-        }}
-      />
+      {canManage && (
+        <RecurringRuleModal
+          opened={ruleModal.open}
+          onClose={closeRuleModal}
+          ruleId={ruleModal.ruleId}
+          recording={ruleModal.recording}
+          onEditOccurrence={(occ) => {
+            setRuleModal({ open: false, ruleId: null });
+            setEditRecording(occ);
+          }}
+        />
+      )}
 
       {/* Details Modal */}
       {detailsRecording && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<Text>Loading...</Text>}>
             <RecordingDetailsModal
               opened={detailsOpen}
@@ -445,10 +468,15 @@ const DVRPage = () => {
               env_mode={useSettingsStore.getState().environment.env_mode}
               onWatchLive={handleOnWatchLive}
               onWatchRecording={handleOnWatchRecording}
-              onEdit={(rec) => {
-                setEditRecording(rec);
-                closeDetails();
-              }}
+              canManage={canManage}
+              onEdit={
+                canManage
+                  ? (rec) => {
+                      setEditRecording(rec);
+                      closeDetails();
+                    }
+                  : undefined
+              }
             />
           </Suspense>
         </ErrorBoundary>

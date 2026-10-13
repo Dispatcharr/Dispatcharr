@@ -19,6 +19,7 @@ import {
   Timer,
 } from 'lucide-react';
 import ProgramPreview from '../ProgramPreview.jsx';
+import LazyLogo from '../LazyLogo.jsx';
 import {
   calculateConnectionDuration,
   calculateConnectionStartTime,
@@ -26,7 +27,6 @@ import {
   getConnectionDurationSeconds,
 } from '../../utils/cards/TimeshiftConnectionCardUtils.js';
 import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
-import { getLogoUrl } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useUsersStore from '../../store/users.jsx';
 
 const ClientDetails = ({ connection, connectionStartTime }) => (
@@ -109,7 +109,6 @@ const TimeshiftConnectionCard = ({
   timeshiftSession,
   currentProgram,
   stopTimeshiftSession,
-  logos,
 }) => {
   const { fullDateTimeFormat } = useDateTimeFormat();
   const [isClientExpanded, setIsClientExpanded] = useState(false);
@@ -134,8 +133,6 @@ const TimeshiftConnectionCard = ({
   const connection =
     timeshiftSession.individual_connection ||
     (timeshiftSession.connections && timeshiftSession.connections[0]);
-
-  const logoUrl = getLogoUrl(timeshiftSession.logo_id, logos) || logo;
 
   const programmePreview = useMemo(() => {
     if (currentProgram?.title) {
@@ -224,8 +221,9 @@ const TimeshiftConnectionCard = ({
             h={70}
             display="flex"
           >
-            <img
-              src={logoUrl}
+            <LazyLogo
+              logoId={timeshiftSession.logo_id}
+              fallbackSrc={logo}
               style={{
                 maxWidth: '100%',
                 maxHeight: '100%',

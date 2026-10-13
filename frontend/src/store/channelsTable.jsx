@@ -1,14 +1,22 @@
 import { create } from 'zustand';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
 
 // Stable empty array to avoid creating new references in getChannelStreams
 const emptyStreams = [];
+
+const DEFAULT_CHANNELS_SORTING = [{ id: 'channel_number', desc: false }];
+const CHANNELS_SORTING_KEY = 'channels-table-sorting';
 
 const useChannelsTableStore = create((set, get) => ({
   channels: [],
   pageCount: 0,
   totalCount: 0,
   hasUnassignedEPGChannels: false,
-  sorting: [{ id: 'channel_number', desc: false }],
+  sorting: readStoredJSON(
+    CHANNELS_SORTING_KEY,
+    DEFAULT_CHANNELS_SORTING,
+    'session'
+  ),
   pagination: {
     pageIndex: 0,
     pageSize:
@@ -19,11 +27,13 @@ const useChannelsTableStore = create((set, get) => ({
   allQueryIds: [],
   isUnlocked: false,
 
-  queryChannels: ({ results, count, has_unassigned_epg_channels }, params) => {
+  queryChannels: ({ results, count, has_unassigned_epg_channels } = {}, params) => {
     set((state) => ({
-      channels: results,
-      totalCount: count,
-      pageCount: Math.ceil(count / params.get('page_size')),
+      // Never store a non-array; a missing results field would crash
+      // ChannelsTable (and any .map/.find consumers) on the next render.
+      channels: Array.isArray(results) ? results : [],
+      totalCount: count ?? 0,
+      pageCount: Math.ceil((count ?? 0) / (Number(params?.get('page_size')) || 1)),
       ...(has_unassigned_epg_channels !== undefined && {
         hasUnassignedEPGChannels: has_unassigned_epg_channels,
       }),
@@ -60,7 +70,8 @@ const useChannelsTableStore = create((set, get) => ({
   },
 
   setSorting: (sorting) => {
-    set((state) => ({
+    writeStoredJSON(CHANNELS_SORTING_KEY, sorting, 'session');
+    set(() => ({
       sorting,
     }));
   },

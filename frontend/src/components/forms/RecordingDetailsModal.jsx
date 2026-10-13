@@ -50,9 +50,10 @@ const EpisodeRow = ({
   channelsById,
   livePosterUrl,
   toUserTime,
-  dateformat,
+  dateYearFormat,
   timeformat,
   onOpenChild,
+  canManage = true,
 }) => {
   const cp = rec.custom_properties || {};
   const pr = cp.program || {};
@@ -113,14 +114,16 @@ const EpisodeRow = ({
             )}
           </Group>
           <Text size="xs">
-            {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
+            {format(start, `${dateYearFormat} ${timeformat}`)} –{' '}
             {format(end, timeformat)}
           </Text>
         </Stack>
         <Group gap={6}>
-          <Button size="xs" color="red" variant="light" onClick={onRemove}>
-            Remove
-          </Button>
+          {canManage && (
+            <Button size="xs" color="red" variant="light" onClick={onRemove}>
+              Remove
+            </Button>
+          )}
         </Group>
       </Flex>
     </Card>
@@ -137,6 +140,7 @@ const RecordingDetailsModal = ({
   onWatchRecording,
   env_mode,
   onEdit,
+  canManage = true,
 }) => {
   const allRecordings = useChannelsStore((s) => s.recordings);
   // Local channel cache to avoid the global channels map
@@ -144,8 +148,7 @@ const RecordingDetailsModal = ({
   const { toUserTime, userNow } = useTimeHelpers();
   const [childOpen, setChildOpen] = useState(false);
   const [childRec, setChildRec] = useState(null);
-  const { timeFormat: timeformat, dateFormat: dateformat } =
-    useDateTimeFormat();
+  const { timeFormat: timeformat, dateYearFormat } = useDateTimeFormat();
 
   const [editing, setEditing] = useState(false);
 
@@ -428,8 +431,9 @@ const RecordingDetailsModal = ({
             channelsById={channelsById}
             livePosterUrl={livePosterUrl}
             toUserTime={toUserTime}
-            dateformat={dateformat}
+            dateYearFormat={dateYearFormat}
             timeformat={timeformat}
+            canManage={canManage}
             onOpenChild={(rec) => {
               setChildRec(rec);
               setChildOpen(true);
@@ -450,6 +454,7 @@ const RecordingDetailsModal = ({
             env_mode={env_mode}
             onWatchLive={handleOnWatchLive}
             onWatchRecording={handleOnWatchRecording}
+            canManage={canManage}
           />
         )}
       </Stack>
@@ -469,16 +474,18 @@ const RecordingDetailsModal = ({
             alt={recordingName}
             fallbackSrc={getChannelLogoUrl(channel) || defaultLogo}
           />
-          <Button
-            size="compact-xs"
-            variant="subtle"
-            color="dimmed"
-            leftSection={<RefreshCcw size={12} />}
-            onClick={handleRefreshArtwork}
-            styles={{ root: { fontWeight: 400 } }}
-          >
-            Refresh artwork
-          </Button>
+          {canManage && (
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              color="dimmed"
+              leftSection={<RefreshCcw size={12} />}
+              onClick={handleRefreshArtwork}
+              styles={{ root: { fontWeight: 400 } }}
+            >
+              Refresh artwork
+            </Button>
+          )}
         </Stack>
         <Stack gap={8} style={{ flex: 1 }}>
           <Group justify="space-between" align="center">
@@ -488,10 +495,11 @@ const RecordingDetailsModal = ({
             <Group gap={8}>
               {onWatchLive && <WatchLive />}
               {onWatchRecording && <WatchRecording />}
-              {onEdit && isAfter(start, userNow()) && <Edit />}
-              {(customProps.status === 'completed' ||
-                customProps.status === 'stopped' ||
-                customProps.status === 'interrupted') &&
+              {canManage && onEdit && isAfter(start, userNow()) && <Edit />}
+              {canManage &&
+                (customProps.status === 'completed' ||
+                  customProps.status === 'stopped' ||
+                  customProps.status === 'interrupted') &&
                 (!customProps?.comskip ||
                   customProps?.comskip?.status !== 'completed') && (
                   <Button
@@ -506,7 +514,7 @@ const RecordingDetailsModal = ({
             </Group>
           </Group>
           <Text size="sm">
-            {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
+            {format(start, `${dateYearFormat} ${timeformat}`)} –{' '}
             {format(end, timeformat)}
           </Text>
           {rating && (
@@ -595,7 +603,7 @@ const RecordingDetailsModal = ({
                   ? recordingName
                   : `${recordingName}${program.sub_title ? ` - ${program.sub_title}` : ''}`}
             </span>
-            {!isSeriesGroup && (
+            {!isSeriesGroup && canManage && (
               <ActionIcon
                 size="sm"
                 variant="subtle"

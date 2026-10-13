@@ -23,7 +23,7 @@ from apps.proxy.vod_proxy.multi_worker_connection_manager import (
 )
 from apps.proxy.vod_proxy.views import (
     _get_content_and_relation,
-    _get_stream_url_from_relation,
+    _media_library_relation_url,
     _get_upstream_headers_from_relation,
     _media_library_target_for_request,
 )
@@ -783,7 +783,7 @@ class MediaLibraryDatabaseTests(TestCase):
                 "source_url": "https://jellyfin.example/Videos/1/stream?Static=true",
             },
         )
-        self.assertNotIn("server-secret", _get_stream_url_from_relation(relation))
+        self.assertNotIn("server-secret", _media_library_relation_url(relation))
         self.assertEqual(
             _get_upstream_headers_from_relation(relation),
             {"X-Emby-Token": "server-secret"},
@@ -2146,7 +2146,7 @@ class DVRMediaLibraryTests(TestCase):
                 "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
                 return_value=str(root),
             ), override_settings(MEDIA_LIBRARY_IMPORT_ROOTS=("/unrelated",)):
-                stream_url = _get_stream_url_from_relation(relation)
+                stream_url = _media_library_relation_url(relation)
                 manager_path = (
                     MultiWorkerVODConnectionManager._revalidate_local_media_path(
                         str(recording),

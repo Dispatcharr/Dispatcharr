@@ -16,6 +16,8 @@ DEFAULT_LOCK_TTL = 120
 DEFAULT_POLL_INTERVAL = 0.05
 DEFAULT_MAX_FOLLOWER_WAIT = 600
 
+EPG_CACHE_GENERATION_KEY = "epg_content_generation"
+
 
 def _chunks_key(base_key):
     return f"{base_key}:chunks"
@@ -93,10 +95,23 @@ def _refresh_build_ttl(redis, base_key, lock_ttl):
     redis.expire(_chunks_key(base_key), lock_ttl)
 
 
-def _stream_ready(redis, base_key):
-    offset = 0
+def _refresh_ready_ttl(redis, base_key, cache_ttl):
+    redis.expire(_chunks_key(base_key), cache_ttl)
+    redis.expire(_status_key(base_key), cache_ttl)
+    redis.expire(_ready_key(base_key), cache_ttl)
+
+
+def _stream_ready(redis, base_key, cache_ttl):
     chunks_key = _chunks_key(base_key)
+    refresh_interval = max(1, cache_ttl // 4)
+    _refresh_ready_ttl(redis, base_key, cache_ttl)
+    last_refresh = time.monotonic()
+    offset = 0
     while True:
+        now = time.monotonic()
+        if now - last_refresh >= refresh_interval:
+            _refresh_ready_ttl(redis, base_key, cache_ttl)
+            last_refresh = now
         chunk = redis.lindex(chunks_key, offset)
         if chunk is None:
             break
@@ -148,11 +163,17 @@ def _stream_follow(redis, base_key, source, cache_ttl, lock_ttl, poll_interval, 
     idle_polls = 0
     chunks_key = _chunks_key(base_key)
     lock_key = _lock_key(base_key)
+    refresh_interval = max(1, cache_ttl // 4)
+    last_refresh = 0.0
 
     while True:
         chunk = redis.lindex(chunks_key, offset)
         if chunk is not None:
             idle_polls = 0
+            now = time.monotonic()
+            if now - last_refresh >= refresh_interval:
+                _refresh_ready_ttl(redis, base_key, cache_ttl)
+                last_refresh = now
             yield _decode_chunk(chunk)
             offset += 1
             continue
@@ -201,6 +222,7 @@ def stream_cached_response(
     poll_interval=DEFAULT_POLL_INTERVAL,
     max_follower_wait=DEFAULT_MAX_FOLLOWER_WAIT,
     redis=None,
+    generation_key=None,
 ):
     """
     Stream a large response with single-flight Redis chunk caching.
@@ -208,13 +230,21 @@ def stream_cached_response(
     ``source`` must be a callable returning a chunk iterator. Only the leader
     invokes it; concurrent followers replay chunks already written to Redis, so
     the expensive ``source`` runs at most once per ``cache_key``.
+
+    If ``generation_key`` is given, the current value of that Redis counter is
+    appended to ``cache_key``; incrementing the counter retires every entry
+    without touching builds or reads that are still in flight.
     """
     if redis is None:
         redis = _get_redis()
 
+    if generation_key:
+        generation = _decode_chunk(redis.get(generation_key)) or "0"
+        cache_key = f"{cache_key}:g={generation}"
+
     if redis.get(_ready_key(cache_key)):
         logger.debug("Serving response from chunk cache")
-        stream = _stream_ready(redis, cache_key)
+        stream = _stream_ready(redis, cache_key, cache_ttl)
     else:
         status = _get_status(redis, cache_key)
         if status == STATUS_ERROR:
@@ -244,20 +274,51 @@ def stream_cached_response(
 
 def invalidate_epg_chunk_cache():
     """
-    Drop all XMLTV /output/epg chunk-cache entries.
+    Retire all XMLTV /output/epg chunk-cache entries.
 
-    EPG assignment changes (channel or override) and programme imports do not
-    change the cache key, so without this the next /output/epg can keep serving
-    stale programmes for up to DEFAULT_CACHE_TTL while XC (uncached) is already
-    correct.
+    EPG assignment changes (channel or override), programme imports, and
+    finished EPG refreshes (XMLTV and Schedules Direct) do not change the
+    cache params, so without this the next /output/epg can keep serving stale
+    programmes for up to DEFAULT_CACHE_TTL while the in-app guide (uncached)
+    is already correct. M3U refreshes that rewrite channels also call this so
+    channel names, numbers, and logos in the XMLTV channel list stay current.
+
+    Advances the cache generation instead of deleting keys: a build that is
+    still streaming keeps writing to its own (now unreachable) key, so it can
+    never publish a partial chunk list, and in-flight readers are not cut off.
+    Retired entries expire on their existing TTLs.
     """
     try:
-        redis = _get_redis()
-        deleted = 0
-        for key in redis.scan_iter(match="epg_content:*", count=200):
-            redis.delete(key)
-            deleted += 1
-        if deleted:
-            logger.debug("Invalidated %s epg_content cache key(s)", deleted)
+        _get_redis().incr(EPG_CACHE_GENERATION_KEY)
     except Exception:
         logger.warning("Failed to invalidate EPG chunk cache", exc_info=True)
+
+
+def invalidate_m3u_content_cache():
+    """
+    Drop Django-cache M3U playlist entries (`m3u_content:*`).
+
+    Channel list, names, numbers, logos, and stream URLs can change when an
+    M3U account finishes refreshing (including auto channel sync). The playlist
+    cache key does not include those inputs, so clear it on refresh completion.
+    """
+    try:
+        from django.core.cache import cache
+
+        delete_pattern = getattr(cache, "delete_pattern", None)
+        if not callable(delete_pattern):
+            logger.warning(
+                "Cache backend has no delete_pattern; skipping M3U content cache invalidate"
+            )
+            return
+        deleted = delete_pattern("m3u_content:*")
+        if deleted:
+            logger.debug("Invalidated %s m3u_content cache key(s)", deleted)
+    except Exception:
+        logger.warning("Failed to invalidate M3U content cache", exc_info=True)
+
+
+def invalidate_output_caches_after_m3u_refresh():
+    """Clear M3U playlist and XMLTV caches after a successful M3U refresh."""
+    invalidate_m3u_content_cache()
+    invalidate_epg_chunk_cache()

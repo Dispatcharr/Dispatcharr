@@ -19,7 +19,7 @@ import useChannelsStore from '../store/channels';
 import API from '../api';
 import useLogosStore from '../store/logos';
 import useStreamProfilesStore from '../store/streamProfiles';
-import useLocalStorage from '../hooks/useLocalStorage';
+import useBrowserStorage from '../hooks/useBrowserStorage';
 import SystemEvents from '../components/SystemEvents';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
@@ -59,8 +59,6 @@ const Connections = ({
   currentPrograms,
   catchupPrograms,
 }) => {
-  const logos = useLogosStore((s) => s.logos);
-
   return combinedConnections.length === 0 ? (
     <Box
       ta="center"
@@ -74,7 +72,7 @@ const Connections = ({
       </Text>
     </Box>
   ) : (
-    <ErrorBoundary>
+    <ErrorBoundary inline>
       <Suspense fallback={<LoadingOverlay />}>
         {combinedConnections.map((connection) => {
           if (connection.type === 'stream') {
@@ -85,7 +83,6 @@ const Connections = ({
                 clients={clients}
                 stopClient={stopClient}
                 stopChannel={stopChannel}
-                logos={logos}
                 channelsByUUID={channelsByUUID}
                 channels={channels}
                 currentProgram={currentPrograms[connection.data.channel_id]}
@@ -106,7 +103,6 @@ const Connections = ({
                 timeshiftSession={connection.data}
                 currentProgram={catchupPrograms[connection.data.session_id]}
                 stopTimeshiftSession={handleStopTimeshiftSession}
-                logos={logos}
               />
             );
           }
@@ -124,6 +120,7 @@ const StatsPage = () => {
   const setVodStats = useChannelsStore((s) => s.setVodStats);
   const timeshiftSessions = useChannelsStore((s) => s.activeTimeshiftSessions);
   const setTimeshiftStats = useChannelsStore((s) => s.setTimeshiftStats);
+  const enableLogoRendering = useLogosStore((s) => s.enableLogoRendering);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
 
   const [clients, setClients] = useState([]);
@@ -133,6 +130,10 @@ const StatsPage = () => {
   const [catchupPrograms, setCatchupPrograms] = useState({});
   const [channels, setChannels] = useState({}); // id -> channel
   const [channelsByUUID, setChannelsByUUID] = useState({}); // uuid -> id
+
+  useEffect(() => {
+    enableLogoRendering();
+  }, [enableLogoRendering]);
 
   // Compute needed channel UUIDs from the current active channels.
   // Stream previews use a non-UUID hash as channel_id; filter those out.
@@ -182,7 +183,7 @@ const StatsPage = () => {
   }, [neededUUIDs.join(',')]);
 
   // Use localStorage for stats refresh interval (in seconds)
-  const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useLocalStorage(
+  const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useBrowserStorage(
     'stats-refresh-interval',
     5
   );

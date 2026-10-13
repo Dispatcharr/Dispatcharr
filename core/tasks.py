@@ -6,7 +6,12 @@ import logging
 import re
 import time
 import os
-from core.utils import RedisClient, send_websocket_update, acquire_task_lock, release_task_lock
+import uuid
+from core.utils import (
+    RedisClient,
+    TaskLockRenewer,
+    send_websocket_update,
+)
 from apps.proxy.live_proxy.channel_status import build_live_channel_stats_data
 from apps.m3u.models import M3UAccount
 from apps.epg.models import EPGSource
@@ -441,53 +446,292 @@ def fetch_channel_stats():
         collect_garbage=True
     )
 
-@shared_task
-def rehash_streams(keys):
+def get_account_hash_key_overrides():
+    """Map account id -> parsed hash key override list.
+
+    Accounts with a missing/empty/invalid ``custom_properties["hash_key"]``
+    are omitted (they inherit the global default).
     """
-    Regenerate stream hashes for all streams based on current hash key configuration.
+    from apps.m3u.models import M3UAccount
+    from apps.m3u.utils import parse_m3u_hash_keys
+
+    overrides = {}
+    for aid, custom_props in M3UAccount.objects.filter(
+        custom_properties__has_key="hash_key"
+    ).values_list("id", "custom_properties"):
+        override_keys = parse_m3u_hash_keys((custom_props or {}).get("hash_key"))
+        if override_keys:
+            overrides[aid] = override_keys
+    return overrides
+
+
+def get_rehash_lock_account_ids(account_id=None, override_account_ids=None):
+    """Account IDs that must hold the refresh lock for a rehash.
+
+    Scoped (``account_id`` set): that account when it exists.
+    Unscoped: every account without a hash_key override. Override accounts
+    are skipped because a global key change does not rewrite their streams.
+    Inactive accounts are included. Their streams are still rehashed, and
+    the account can be activated while that task is running.
+    """
+    from apps.m3u.models import M3UAccount
+
+    if override_account_ids is None:
+        override_account_ids = set(get_account_hash_key_overrides())
+
+    if account_id is not None:
+        if M3UAccount.objects.filter(id=account_id).exists():
+            return [account_id]
+        return []
+    return list(
+        M3UAccount.objects.exclude(id__in=override_account_ids).values_list(
+            "id", flat=True
+        )
+    )
+
+
+# Handoff window for a rehash lock taken in the request before the Celery
+# worker starts. Two hours covers a worker stuck behind another long job.
+REHASH_LOCK_HANDOFF_TTL = 2 * 60 * 60
+# Once the task is running, locks use the same 300 second TTL as an M3U
+# refresh and TaskLockRenewer keeps them alive.
+REHASH_LOCK_TTL = 300
+_RELEASE_REHASH_LOCK_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
+
+
+def _rehash_lock_key(account_id):
+    return f"task_lock_refresh_single_m3u_account_{account_id}"
+
+
+def _decode_lock_value(value):
+    if isinstance(value, bytes):
+        return value.decode()
+    return value
+
+
+def try_acquire_rehash_locks(account_id=None):
+    """Atomically acquire refresh locks needed for a rehash.
+
+    Returns ``(acquired_ids, blocked_ids, token)``. The token is stored as
+    the lock value so a later rehash task can tell its own locks from a
+    refresh that acquired the key after expiry. When ``blocked_ids`` is
+    non-empty, every lock this call acquired has already been released, so
+    the caller should fail closed and not save the hash key change.
+    """
+    token = uuid.uuid4().hex
+    account_ids = get_rehash_lock_account_ids(account_id=account_id)
+    redis_client = RedisClient.get_client()
+    acquired = []
+    blocked = []
+    for aid in account_ids:
+        if redis_client.set(
+            _rehash_lock_key(aid), token, ex=REHASH_LOCK_HANDOFF_TTL, nx=True
+        ):
+            acquired.append(aid)
+        else:
+            blocked.append(aid)
+
+    if blocked:
+        release_rehash_locks(acquired, token)
+        return [], blocked, token
+    return acquired, [], token
+
+
+def release_rehash_locks(account_ids, token):
+    """Release rehash locks still owned by ``token``.
+
+    A lock whose value is no longer ``token`` is left alone, so this cannot
+    delete a refresh lock that replaced an expired rehash lock.
+    """
+    if not account_ids or not token:
+        return
+    redis_client = RedisClient.get_client()
+    if redis_client is None:
+        return
+    for aid in account_ids:
+        try:
+            redis_client.eval(
+                _RELEASE_REHASH_LOCK_SCRIPT,
+                1,
+                _rehash_lock_key(aid),
+                token,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to release rehash lock for account %s", aid
+            )
+
+
+def confirm_preacquired_rehash_locks(account_ids, token):
+    """Re-check locks acquired before this task was queued.
+
+    Returns ``(owned_ids, blocked_ids)``. A lock still storing ``token`` is
+    ours and its TTL is refreshed. A missing lock is taken again with
+    SET NX. A lock storing any other value is held by someone else, and
+    this call releases only the locks it still owns.
+    """
+    account_ids = list(account_ids or [])
+    if not account_ids:
+        return [], []
+    if not token:
+        return [], account_ids
+
+    redis_client = RedisClient.get_client()
+    owned = []
+    blocked = []
+    for aid in account_ids:
+        lock_key = _rehash_lock_key(aid)
+        current = _decode_lock_value(redis_client.get(lock_key))
+        if current == token:
+            # Shrink the handoff TTL down to the running-task TTL before
+            # the renewer takes over.
+            redis_client.expire(lock_key, REHASH_LOCK_TTL)
+            owned.append(aid)
+            continue
+        if current is None and redis_client.set(
+            lock_key, token, ex=REHASH_LOCK_TTL, nx=True
+        ):
+            owned.append(aid)
+            continue
+        blocked.append(aid)
+
+    if blocked:
+        release_rehash_locks(owned, token)
+        return [], blocked
+    return owned, []
+
+
+def _start_rehash_lock_renewers(account_ids, token):
+    """Keep rehash refresh locks from expiring during a long run.
+
+    Each held lock is renewed on the same schedule as an M3U refresh.
+    Renewal stops if the lock value is no longer ``token``.
+    """
+    renewers = []
+    for aid in account_ids or []:
+        renewer = TaskLockRenewer(
+            "refresh_single_m3u_account",
+            aid,
+            ttl=REHASH_LOCK_TTL,
+            expected_value=token,
+        )
+        renewer.start()
+        renewers.append(renewer)
+    return renewers
+
+
+def _stop_rehash_lock_renewers(renewers):
+    """Stop background lock renewal threads."""
+    for renewer in renewers or []:
+        try:
+            renewer.stop()
+        except Exception:
+            logger.exception("Failed to stop rehash lock renewer")
+
+
+@shared_task
+def rehash_streams(
+    keys,
+    account_id=None,
+    locks_preacquired=False,
+    preacquired_lock_ids=None,
+    preacquired_lock_token=None,
+):
+    """
+    Regenerate stream hashes based on the current hash key configuration.
     This task checks for and blocks M3U refresh tasks to prevent conflicts.
+
+    ``keys`` is a parsed default/global hash key field list, used for any
+    stream whose M3U account has no ``hash_key`` override of its own (and
+    for streams with no M3U account at all). Callers parse the CSV at the
+    edge (settings save, rehash endpoint, ``get_effective_hash_keys()``)
+    before queueing. The override, when present, lives at
+    ``M3UAccount.custom_properties["hash_key"]``.
+
+    When ``account_id`` is given, only that account's streams are rehashed
+    (used when a single account's hash key override changes) - the account
+    is locked and rehashed regardless of whether it has its own override.
+
+    Otherwise (``account_id`` is ``None``, used when the global default
+    changes or the user manually triggers a full rehash) the run is scoped
+    to streams that actually use ``keys``: accounts with their own
+    ``hash_key`` override are skipped entirely (not locked, not loaded,
+    not rewritten) since a global key change does not affect them. Every
+    other account is locked, active or inactive, because those streams are
+    rewritten and the account can be activated while the task is running.
+    Streams with no M3U account are always rehashed.
+
+    Callers that gate a settings save on the lock (account hash_key override
+    or global M3U Hash Key) should acquire via ``try_acquire_rehash_locks``
+    before saving, then pass ``locks_preacquired=True``, the acquired ids,
+    and the lock token. This task checks those locks again before writing:
+    a token that is still present is refreshed, a missing key is taken
+    again, and a key held by someone else aborts the rehash. Owned locks
+    are released in ``finally``.
     """
     from apps.channels.models import Stream
-    from apps.m3u.models import M3UAccount
 
     logger.info("Starting stream rehash process")
 
-    # Get all M3U account IDs for locking
-    m3u_account_ids = list(M3UAccount.objects.filter(is_active=True).values_list('id', flat=True))
+    # Per-account hash key overrides, resolved once up front. Streams whose
+    # m3u_account isn't in this map fall back to the global `keys` default.
+    account_hash_overrides = get_account_hash_key_overrides()
+    override_account_ids = set(account_hash_overrides.keys())
 
-    # Check if any M3U refresh tasks are currently running
-    blocked_accounts = []
-    for account_id in m3u_account_ids:
-        if not acquire_task_lock('refresh_single_m3u_account', account_id):
-            blocked_accounts.append(account_id)
+    # Lock targets and stream scope (see get_rehash_lock_account_ids).
+    # (note: use a different name than the ``account_id`` parameter - that
+    # value is still needed below to scope the stream queries)
+    m3u_account_ids = get_rehash_lock_account_ids(
+        account_id=account_id, override_account_ids=override_account_ids
+    )
+    excluded_account_ids = set() if account_id is not None else override_account_ids
 
+    lock_token = None
+    if locks_preacquired:
+        # The request acquired these locks before queueing. Confirm we still
+        # own them (or take them back if they expired) before writing.
+        acquired_locks, blocked_accounts = confirm_preacquired_rehash_locks(
+            preacquired_lock_ids, preacquired_lock_token
+        )
+        lock_token = preacquired_lock_token
+    else:
+        acquired_locks, blocked_accounts, lock_token = try_acquire_rehash_locks(
+            account_id=account_id
+        )
     if blocked_accounts:
-        # Release any locks we did acquire
-        for account_id in m3u_account_ids:
-            if account_id not in blocked_accounts:
-                release_task_lock('refresh_single_m3u_account', account_id)
-
-        logger.warning(f"Rehash blocked: M3U refresh tasks running for accounts: {blocked_accounts}")
-
-        # Send WebSocket notification to inform user
+        logger.warning(
+            f"Rehash blocked: M3U refresh tasks running for accounts: "
+            f"{blocked_accounts}"
+        )
         send_websocket_update(
-            'updates',
-            'update',
+            "updates",
+            "update",
             {
                 "success": False,
                 "type": "stream_rehash",
                 "action": "blocked",
                 "blocked_accounts": len(blocked_accounts),
                 "total_accounts": len(m3u_account_ids),
-                "message": f"Stream rehash blocked: M3U refresh tasks are currently running for {len(blocked_accounts)} accounts. Please try again later."
-            }
+                "message": (
+                    f"Stream rehash blocked: M3U refresh tasks are currently "
+                    f"running for {len(blocked_accounts)} accounts. "
+                    f"Please try again after the refresh finishes."
+                ),
+            },
+        )
+        return (
+            f"Rehash blocked: M3U refresh tasks running for "
+            f"{len(blocked_accounts)} accounts"
         )
 
-        return f"Rehash blocked: M3U refresh tasks running for {len(blocked_accounts)} accounts"
-
-    acquired_locks = m3u_account_ids.copy()
-
+    lock_renewers = []
     try:
+        lock_renewers = _start_rehash_lock_renewers(acquired_locks, lock_token)
         batch_size = 1000
 
         # Track statistics
@@ -499,8 +743,20 @@ def rehash_streams(keys):
         deleted_stream_ids = set()
 
         # Get initial count for progress reporting
-        initial_total_records = Stream.objects.count()
-        logger.info(f"Starting rehash of {initial_total_records} streams with keys: {keys}")
+        base_stream_qs = Stream.objects.all()
+        if account_id is not None:
+            base_stream_qs = base_stream_qs.filter(m3u_account_id=account_id)
+        elif excluded_account_ids:
+            # Unscoped run: accounts with their own override aren't affected
+            # by a global key change, so their streams are left untouched.
+            # Streams with no M3U account, and streams on accounts without
+            # an override (active or inactive), are still processed.
+            base_stream_qs = base_stream_qs.exclude(m3u_account_id__in=excluded_account_ids)
+        initial_total_records = base_stream_qs.count()
+        logger.info(
+            f"Starting rehash of {initial_total_records} streams "
+            f"(account_id={account_id}) with default keys: {keys}"
+        )
 
         # Send initial WebSocket update
         send_websocket_update(
@@ -529,8 +785,13 @@ def rehash_streams(keys):
             with transaction.atomic():
                 # Fetch batch by ID ordering, using select_for_update to lock records
                 # This prevents race conditions and ensures we process each record exactly once
+                batch_qs = Stream.objects.filter(id__gt=last_processed_id)
+                if account_id is not None:
+                    batch_qs = batch_qs.filter(m3u_account_id=account_id)
+                elif excluded_account_ids:
+                    batch_qs = batch_qs.exclude(m3u_account_id__in=excluded_account_ids)
                 batch = list(
-                    Stream.objects.filter(id__gt=last_processed_id)
+                    batch_qs
                     .select_for_update(skip_locked=True, of=('self',))
                     .select_related('channel_group', 'm3u_account')
                     .order_by('id')[:batch_size]
@@ -548,9 +809,12 @@ def rehash_streams(keys):
                     group_name = obj.channel_group.name if obj.channel_group else None
                     account_type = obj.m3u_account.account_type if obj.m3u_account else None
                     stream_id_val = obj.stream_id if hasattr(obj, 'stream_id') else None
+                    # Use the stream's account-specific hash key override when
+                    # one exists, otherwise fall back to the default `keys`.
+                    effective_keys = account_hash_overrides.get(obj.m3u_account_id, keys)
 
                     new_hash = Stream.generate_hash_key(
-                        obj.name, obj.url, obj.tvg_id, keys,
+                        obj.name, obj.url, obj.tvg_id, effective_keys,
                         m3u_id=obj.m3u_account_id, group=group_name,
                         account_type=account_type, stream_id=stream_id_val
                     )
@@ -679,9 +943,10 @@ def rehash_streams(keys):
         logger.error(f"Error during stream rehash: {e}", exc_info=True)
         raise
     finally:
-        # Always release all acquired M3U locks
-        for account_id in acquired_locks:
-            release_task_lock('refresh_single_m3u_account', account_id)
+        # Stop renewal before releasing so a late expire cannot extend a
+        # lock we just dropped.
+        _stop_rehash_lock_renewers(lock_renewers)
+        release_rehash_locks(acquired_locks, lock_token)
         logger.info(f"Released M3U task locks for {len(acquired_locks)} accounts")
 
 

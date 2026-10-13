@@ -11,6 +11,7 @@ from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
 import json
 import logging
+import uuid
 from .tasks import run_recording, prefetch_recording_artwork
 from datetime import timedelta
 
@@ -234,7 +235,7 @@ def refresh_epg_programs_for_override(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender=ChannelProfile)
 def create_profile_memberships(sender, instance, created, **kwargs):
-    if created:
+    if created and not getattr(instance, "_start_empty", False):
         channels = Channel.objects.all()
         ChannelProfileMembership.objects.bulk_create([
             ChannelProfileMembership(channel_profile=instance, channel=channel)
@@ -246,21 +247,41 @@ def _dvr_task_name(recording_id):
     return f"dvr-recording-{recording_id}"
 
 
-def schedule_recording_task(instance, eta=None):
-    """Schedule a recording task via ClockedSchedule + one-off PeriodicTask.
+def _delete_periodic_task_named(name):
+    """Delete a django-celery-beat PeriodicTask and its unused ClockedSchedule."""
+    try:
+        pt = PeriodicTask.objects.get(name=name)
+    except PeriodicTask.DoesNotExist:
+        return False
+    old_clocked = pt.clocked
+    pt.delete()
+    if old_clocked and not PeriodicTask.objects.filter(clocked=old_clocked).exists():
+        old_clocked.delete()
+    return True
 
-    The task is stored in the database and dispatched by Celery Beat at the
-    scheduled time with no countdown.  This avoids the Redis visibility_timeout
-    redelivery bug that caused duplicate recordings when using apply_async
-    with long countdowns.
+
+def schedule_recording_task(instance, eta=None):
+    """Schedule a recording task for Celery.
+
+    Future start times use ClockedSchedule + a one-off PeriodicTask so Celery
+    Beat dispatches at the scheduled time with no countdown. That avoids the
+    Redis visibility_timeout redelivery bug that caused duplicate recordings
+    when using apply_async with long countdowns.
+
+    Start times that are already due are sent to the worker immediately via
+    apply_async. A ClockedSchedule whose clocked_time is "now" is easy for
+    Beat to miss until the next schedule sync, so the recording would sit
+    scheduled and never start. Recovery already uses apply_async for the
+    same reason. Immediate dispatch has no long countdown, so
+    visibility_timeout does not apply. on_commit waits until the Recording
+    row is visible to the worker (and TestCase rollbacks never publish to
+    the broker). The Celery task_id is unique per dispatch so a later
+    revoke cannot poison a reused id.
     """
     if eta is None:
         eta = instance.start_time
     if eta is not None and not is_aware(eta):
         eta = make_aware(eta)
-    # Clamp to now so Beat dispatches immediately for past/current start times
-    if eta <= now():
-        eta = now()
 
     task_args = [
         instance.id,
@@ -268,9 +289,20 @@ def schedule_recording_task(instance, eta=None):
         str(instance.start_time),
         str(instance.end_time),
     ]
+    task_name = _dvr_task_name(instance.id)
+
+    if eta is None or eta <= now():
+        immediate_task_id = f"dvr-now-{instance.id}-{uuid.uuid4().hex}"
+
+        def _dispatch():
+            run_recording.apply_async(args=task_args, task_id=immediate_task_id)
+
+        # Drop a leftover Beat row so a previous future schedule cannot also fire.
+        _delete_periodic_task_named(task_name)
+        transaction.on_commit(_dispatch)
+        return immediate_task_id
 
     clocked, _ = ClockedSchedule.objects.get_or_create(clocked_time=eta)
-    task_name = _dvr_task_name(instance.id)
     PeriodicTask.objects.update_or_create(
         name=task_name,
         defaults={
@@ -290,23 +322,16 @@ def schedule_recording_task(instance, eta=None):
 def revoke_task(task_id):
     """Cancel a pending recording task.
 
-    task_id is normally a PeriodicTask name (e.g. "dvr-recording-42").
-    For backwards compatibility with legacy Celery async-result UUIDs,
-    falls back to AsyncResult.revoke().
+    task_id is normally a PeriodicTask name (e.g. "dvr-recording-42") or an
+    immediate-dispatch Celery id (e.g. "dvr-now-42-<hex>"). For backwards
+    compatibility with legacy Celery async-result UUIDs, falls back to
+    AsyncResult.revoke().
     """
     if not task_id:
         return
-    # Primary path: delete the PeriodicTask and clean up its ClockedSchedule
-    try:
-        pt = PeriodicTask.objects.get(name=task_id)
-        old_clocked = pt.clocked
-        pt.delete()
-        if old_clocked and not PeriodicTask.objects.filter(clocked=old_clocked).exists():
-            old_clocked.delete()
+    if _delete_periodic_task_named(task_id):
         return
-    except PeriodicTask.DoesNotExist:
-        pass
-    # Fallback for legacy Celery task UUIDs
+    # Fallback for immediate-dispatch ids and legacy Celery task UUIDs
     try:
         AsyncResult(task_id).revoke()
     except Exception:
@@ -357,13 +382,14 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
             current_time = now()
 
             if start_time > current_time - timedelta(seconds=1):
-                # Future recording — schedule at start_time
+                # Future recording: schedule at start_time
                 logger.info(f"Recording {instance.id}: scheduling task at {start_time}")
                 task_id = schedule_recording_task(instance, eta=start_time)
                 instance.task_id = task_id
                 instance.save(update_fields=['task_id'])
             elif end_time and end_time > current_time:
-                # Currently-playing — start immediately (e.g. series rule for in-progress program)
+                # Currently playing: start immediately (e.g. series rule for
+                # an in-progress programme).
                 logger.info(f"Recording {instance.id}: start_time in past but end_time still future, scheduling immediately")
                 task_id = schedule_recording_task(instance, eta=current_time)
                 instance.task_id = task_id
@@ -379,12 +405,10 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
         if rec_status not in ("recording", "completed", "stopped", "interrupted"):
             try:
                 prefetch_recording_artwork.apply_async(args=[instance.id], countdown=1)
-            except Exception as e:
-                print("Error scheduling artwork prefetch:", e)
-    except Exception as e:
-        import traceback
-        print("Error in post_save signal:", e)
-        traceback.print_exc()
+            except Exception:
+                logger.exception("Error scheduling artwork prefetch")
+    except Exception:
+        logger.exception("Error scheduling recording on save")
 
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
@@ -402,15 +426,6 @@ def revoke_task_on_delete(sender, instance, **kwargs):
 @receiver([post_save, post_delete], sender=ChannelStream)
 def update_channel_catchup_fields(sender, instance, **kwargs):
     """Roll up catch-up flags from active streams (UI path; import uses SQL rollup)."""
-    from django.db.models import Max
+    from apps.channels.utils import rollup_catchup_for_channels
 
-    channel = instance.channel
-    catchup_qs = channel.streams.filter(
-        is_catchup=True,
-        m3u_account__is_active=True,
-    )
-    max_days = catchup_qs.aggregate(max_days=Max("catchup_days"))["max_days"]
-    Channel.objects.filter(pk=channel.pk).update(
-        is_catchup=catchup_qs.exists(),
-        catchup_days=max_days or 0,
-    )
+    rollup_catchup_for_channels([instance.channel_id])

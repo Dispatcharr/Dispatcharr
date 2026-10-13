@@ -9,6 +9,70 @@ lock = threading.Lock()
 active_streams_map = {}
 logger = logging.getLogger(__name__)
 
+# Fields accepted by Stream.generate_hash_key / the M3U Hash Key UI.
+M3U_HASH_KEY_FIELDS = frozenset({"name", "url", "tvg_id", "m3u_id", "group"})
+
+
+def parse_m3u_hash_keys(value, *, strict=False):
+    """Parse a comma-separated M3U hash key CSV into field names.
+
+    Accepts ``None`` or a CSV string from settings, custom_properties, or
+    API input. Strips whitespace, drops blanks, and keeps only known
+    fields from ``M3U_HASH_KEY_FIELDS``. Order is preserved; duplicates
+    are removed.
+
+    Callers that already have a field list (for example
+    ``get_effective_hash_keys()``) should pass that list through and not
+    call this helper again.
+
+    When ``strict`` is True, unknown tokens raise ``ValueError`` instead of
+    being dropped (used by the API serializer so bad overrides are rejected
+    before they can collapse stream hashes).
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        raise TypeError(
+            "parse_m3u_hash_keys expects a CSV string or None; "
+            "pass an already-parsed field list through directly."
+        )
+
+    keys = []
+    seen = set()
+    invalid = []
+    for token in str(value).split(","):
+        key = token.strip()
+        if not key:
+            continue
+        if key not in M3U_HASH_KEY_FIELDS:
+            if key not in invalid:
+                invalid.append(key)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+
+    if strict and invalid:
+        allowed = ", ".join(sorted(M3U_HASH_KEY_FIELDS))
+        bad = ", ".join(invalid)
+        raise ValueError(
+            f"Invalid hash key field(s): {bad}. Allowed fields: {allowed}."
+        )
+    return keys
+
+
+def hash_key_fields(value, *, strict=False):
+    """Return the frozenset of hash key fields for change detection.
+
+    ``value`` is a CSV string or ``None`` (same inputs as
+    ``parse_m3u_hash_keys``). Order does not affect
+    Stream.generate_hash_key (sort_keys=True), so reordering the same
+    fields is treated as unchanged. Empty or unset values yield an empty
+    frozenset.
+    """
+    return frozenset(parse_m3u_hash_keys(value, strict=strict))
+
 
 def convert_js_numbered_backreferences(replacement):
     """Translate JS-style ``$1``/``$2`` backreferences to Python ``\\1``/``\\2``.
@@ -141,3 +205,76 @@ def calculate_tuner_count(minimum=1, unlimited_default=10):
     except Exception as e:
         logger.error(f"Error calculating tuner count: {e}")
         return minimum  # Fallback to minimum value
+
+
+ALLOWED_M3U_PROFILE_IDS_KEY = "allowed_m3u_profile_ids"
+
+
+def get_allowed_m3u_profiles(user):
+    """Return active allowed profiles by account, or None when unrestricted.
+
+    Tri-state on ``custom_properties.allowed_m3u_profile_ids`` (same shape as
+    channel-creation profile targeting):
+
+    - key absent: unrestricted (all profiles)
+    - key present with ``[]``: allow none
+    - key present with ``[ids]``: only those active profiles
+    """
+    from apps.m3u.models import M3UAccountProfile
+
+    custom_properties = getattr(user, "custom_properties", None)
+    if not isinstance(custom_properties, dict):
+        return None
+
+    if ALLOWED_M3U_PROFILE_IDS_KEY not in custom_properties:
+        return None
+
+    profile_ids = custom_properties.get(ALLOWED_M3U_PROFILE_IDS_KEY)
+    # Stale null (e.g. create payload before key scrub) means unrestricted.
+    if profile_ids is None:
+        return None
+    if not isinstance(profile_ids, list):
+        # Malformed value: fail closed (explicit allowlist, nothing usable).
+        return {}
+
+    if not profile_ids:
+        return {}
+
+    profiles = (
+        M3UAccountProfile.objects.select_related("m3u_account__user_agent")
+        .filter(
+            id__in=profile_ids,
+            is_active=True,
+            m3u_account__is_active=True,
+        )
+        .order_by("m3u_account_id", "-is_default", "id")
+    )
+    profiles_by_account = {}
+    for profile in profiles:
+        profiles_by_account.setdefault(profile.m3u_account_id, []).append(profile)
+    return profiles_by_account
+
+
+def scrub_allowed_m3u_profile_id(profile_id):
+    """Remove ``profile_id`` from every user's allowlist.
+
+    Keeps the key when the list becomes empty so the user stays restricted
+    (NONE) instead of becoming unrestricted (ALL).
+    """
+    from apps.accounts.models import User
+
+    users = User.objects.exclude(custom_properties=None).filter(
+        custom_properties__has_key=ALLOWED_M3U_PROFILE_IDS_KEY
+    )
+    for user in users.iterator():
+        custom = user.custom_properties
+        if not isinstance(custom, dict):
+            continue
+        ids = custom.get(ALLOWED_M3U_PROFILE_IDS_KEY)
+        if not isinstance(ids, list) or profile_id not in ids:
+            continue
+        custom[ALLOWED_M3U_PROFILE_IDS_KEY] = [
+            item for item in ids if item != profile_id
+        ]
+        user.custom_properties = custom
+        user.save(update_fields=["custom_properties"])

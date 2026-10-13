@@ -241,6 +241,19 @@ describe('SeriesRecordingModal', () => {
       expect(screen.getByText(/New episodes/)).toBeInTheDocument();
     });
 
+    it('mentions untagged-as-new when the flag is set', () => {
+      render(
+        <SeriesRecordingModal
+          {...defaultProps({
+            rules: [makeRule({ mode: 'new', untagged_is_new: true })],
+          })}
+        />
+      );
+      expect(
+        screen.getByText(/New episodes \(untagged as new\)/)
+      ).toBeInTheDocument();
+    });
+
     it('shows "Every episode" for mode all', () => {
       render(
         <SeriesRecordingModal

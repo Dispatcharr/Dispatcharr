@@ -20,6 +20,14 @@ services:
       # Allowed container paths for Media Library imports and STRM/NFO exports.
       - MEDIA_LIBRARY_IMPORT_ROOTS=/media
       - MEDIA_LIBRARY_EXPORT_ROOTS=/media
+      # Port nginx listens on (default 9191). Must match the container port in
+      # ports: above (e.g. DISPATCHARR_PORT=8080 with "8080:8080").
+      #- DISPATCHARR_PORT=9191
+
+      # Redis idle-client timeout in seconds, and per-process redis-py /
+      # django-redis pool cap (Optional, defaults: 300 / 50)
+      #- REDIS_IDLE_TIMEOUT=300
+      #- REDIS_MAX_CONNECTIONS=50
       # First-time web setup from a public IP (optional). When unset, only
       # local/private networks may POST to initialize-superuser.
       #- DISPATCHARR_SETUP_ALLOWED_IP=203.0.113.50
@@ -27,6 +35,8 @@ services:
       # Outer reverse proxy trust (optional). When unset, private/loopback peers
       # may set X-Real-IP / X-Forwarded-For (typical Docker/Traefik setups).
       # Set to a specific IP/CIDR to narrow trust, or none to ignore proxy headers.
+      # Reverse Proxy Auth (Settings) needs this set explicitly: the unset default
+      # is never trusted for sign-in.
       #- DISPATCHARR_TRUSTED_PROXIES=172.18.0.0/16
       #- DISPATCHARR_TRUSTED_PROXIES=none
 
@@ -39,6 +49,14 @@ services:
       # Negative values require cap_add: SYS_NICE (uncomment below)
       #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
       #- CELERY_NICE_LEVEL=5   # Celery/EPG/Background tasks (default: 5, low priority)
+
+      # Worker count (Optional, tune memory vs throughput; range: 1-20)
+      #- UWSGI_WORKERS=4       # uWSGI gevent workers (default: 4)
+      #- CELERY_MAX_WORKERS=6  # Celery prefork autoscale max (default: 6)
+      #- CELERY_MIN_WORKERS=1  # Celery prefork autoscale min (default: 1; must be <= max)
+
+      # Soft open-file limit for uwsgi/daphne/celery (Optional, default: 65536)
+      #- DISPATCHARR_NOFILE=65536
     #
     # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
     #cap_add:

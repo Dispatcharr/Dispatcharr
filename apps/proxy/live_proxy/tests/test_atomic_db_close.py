@@ -9,8 +9,14 @@ from apps.channels.models import Channel, ChannelGroup
 
 class CleanRedisKeysUsesStandardCloseTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.server.close_old_connections")
-    @patch("apps.proxy.live_proxy.server.Stream.objects.get", side_effect=Exception("no stream"))
-    @patch("apps.proxy.live_proxy.server.Channel.objects.get", side_effect=Exception("no channel"))
+    @patch(
+        "apps.proxy.live_proxy.url_utils.Stream.objects.get",
+        side_effect=Exception("no stream"),
+    )
+    @patch(
+        "apps.proxy.live_proxy.url_utils.Channel.objects.get",
+        side_effect=Exception("no channel"),
+    )
     def test_clean_redis_keys_uses_close_old_connections(
         self, _channel_get, _stream_get, mock_close
     ):

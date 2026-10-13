@@ -76,6 +76,7 @@ describe('DvrSettingsFormUtils', () => {
         comskip_hw_accel: 'none',
         pre_offset_minutes: 0,
         post_offset_minutes: 0,
+        output_profile_id: null,
       });
     });
 

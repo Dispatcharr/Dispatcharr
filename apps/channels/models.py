@@ -6,6 +6,7 @@ from core.utils import RedisClient, custom_properties_as_dict
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 import logging
+import time
 import uuid
 from django.utils import timezone
 import hashlib
@@ -17,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 # If you have an M3UAccount model in apps.m3u, you can still import it:
 from apps.m3u.models import M3UAccount
-from apps.m3u.connection_pool import reserve_profile_slot, release_profile_slot
+from apps.m3u.connection_pool import (
+    pool_has_capacity_for_profile,
+    release_profile_slot,
+    reserve_profile_slot,
+)
 
 
 # Add fallback functions if Redis isn't available
@@ -146,6 +151,12 @@ class Stream(models.Model):
         help_text="Number of days of catch-up archive available (tv_archive_duration)",
     )
 
+    is_radio = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this stream is a radio (audio-only) stream, per the provider",
+    )
+
     class Meta:
         # If you use m3u_account, you might do unique_together = ('name','url','m3u_account')
         verbose_name = "Stream"
@@ -158,8 +169,16 @@ class Stream(models.Model):
     @classmethod
     def generate_hash_key(cls, name, url, tvg_id, keys=None, m3u_id=None, group=None,
                           account_type=None, stream_id=None):
+        """Build a stable stream hash from the selected field list.
+
+        ``keys`` must be a parsed field list (for example from
+        ``get_effective_hash_keys()``). When omitted, the global M3U Hash
+        Key CSV is parsed once here.
+        """
+        from apps.m3u.utils import parse_m3u_hash_keys
+
         if keys is None:
-            keys = CoreSettings.get_m3u_hash_key().split(",")
+            keys = parse_m3u_hash_keys(CoreSettings.get_m3u_hash_key())
 
         # For XC accounts, use stream_id instead of url when 'url' is in the hash keys
         # This ensures credential/URL changes don't break stream identity
@@ -216,15 +235,67 @@ class Stream(models.Model):
 
         return stream_profile
 
-    def get_stream(self, requester=None):
+    def get_stream(self, requester=None, preferred_profile_id=None):
         """
         Finds an available profile for this stream and reserves a connection slot.
+
+        preferred_profile_id: when set (profile-scoped preview worker), only that
+        M3U account profile is considered, and Redis keys are scoped with
+        ``:p{id}`` so another profile on the same stream can run separately.
+        The live worker id itself uses ``{stream_hash}.p{id}`` (no colon) so it
+        does not break ``live:channel:{id}:…`` key parsers.
 
         Returns:
             Tuple[Optional[int], Optional[int], Optional[str], bool]:
             (stream_id, profile_id, error_reason, slot_reserved)
         """
         redis_client = RedisClient.get_client()
+
+        if preferred_profile_id is not None:
+            try:
+                preferred_profile_id = int(preferred_profile_id)
+            except (TypeError, ValueError):
+                return None, None, "Invalid M3U profile id", False
+
+            scoped_key = f"stream_profile:{self.id}:p{preferred_profile_id}"
+            if redis_client.get(scoped_key):
+                if self._scoped_preview_assignment_is_reusable(
+                    redis_client, preferred_profile_id
+                ):
+                    return self.id, preferred_profile_id, None, False
+                logger.info(
+                    "Stream %s: releasing stale profile-scoped assignment "
+                    "(profile=%s, preview worker not active)",
+                    self.id,
+                    preferred_profile_id,
+                )
+                # Only the caller that actually removes the key releases the slot.
+                if redis_client.delete(scoped_key):
+                    release_profile_slot(preferred_profile_id, redis_client)
+
+            m3u_account = self.m3u_account
+            if not m3u_account:
+                return None, None, "Stream has no M3U account", False
+
+            profile = m3u_account.profiles.filter(
+                id=preferred_profile_id, is_active=True
+            ).first()
+            if profile is None:
+                return None, None, "Requested M3U profile is unavailable", False
+
+            reserved, _count, _failure_reason = reserve_profile_slot(
+                profile, redis_client
+            )
+            if reserved:
+                redis_client.set(scoped_key, preferred_profile_id)
+                return self.id, preferred_profile_id, None, True
+            return (
+                None,
+                None,
+                "All active M3U profiles have reached maximum connection limits",
+                False,
+            )
+
         profile_id = redis_client.get(f"stream_profile:{self.id}")
         if profile_id:
             profile_id = int(profile_id)
@@ -256,9 +327,38 @@ class Stream(models.Model):
 
         return None, None, "All active M3U profiles have reached maximum connection limits", False
 
-    def release_stream(self):
+    def _scoped_preview_assignment_is_reusable(self, redis_client, m3u_profile_id):
+        """Reuse a .p{id} worker slot only while that preview worker is still live.
+
+        Mirrors Channel._stream_assignment_is_reusable: a key with no metadata
+        yet is the gap between reserve and initialize, so it stays reusable.
+        Metadata that exists but is not an active state is a leftover slot.
+        """
+        if not self.stream_hash:
+            return False
+        worker_id = f"{self.stream_hash}.p{int(m3u_profile_id)}"
+        metadata_key = RedisKeys.channel_metadata(worker_id)
+        if not redis_client.exists(metadata_key):
+            return True
+        state = redis_client.hget(metadata_key, ChannelMetadataField.STATE)
+        if state is None:
+            return False
+        if isinstance(state, bytes):
+            state = state.decode()
+        return state in (
+            ChannelState.ACTIVE,
+            ChannelState.WAITING_FOR_CLIENTS,
+            ChannelState.BUFFERING,
+            ChannelState.INITIALIZING,
+            ChannelState.CONNECTING,
+        )
+
+    def release_stream(self, m3u_profile_id=None):
         """
         Called when a stream is finished to release the lock.
+
+        m3u_profile_id: when set, release the profile-scoped preview assignment
+        (``stream_profile:{id}:p{profile_id}``) instead of the unscoped key.
 
         Returns:
             bool: True if stream was successfully released, False if
@@ -267,6 +367,31 @@ class Stream(models.Model):
         redis_client = RedisClient.get_client()
 
         stream_id = self.id
+        if m3u_profile_id is not None:
+            try:
+                m3u_profile_id = int(m3u_profile_id)
+            except (TypeError, ValueError):
+                return False
+            scoped_key = f"stream_profile:{stream_id}:p{m3u_profile_id}"
+            if not redis_client.get(scoped_key):
+                logger.debug(
+                    f"Stream {stream_id}: no profile found in {scoped_key}"
+                )
+                return False
+            redis_client.delete(scoped_key)
+            # Clear worker metadata so stop-chain metadata fallback does not DECR again.
+            if self.stream_hash:
+                metadata_key = RedisKeys.channel_metadata(
+                    f"{self.stream_hash}.p{m3u_profile_id}"
+                )
+                redis_client.hdel(
+                    metadata_key,
+                    ChannelMetadataField.STREAM_ID,
+                    ChannelMetadataField.M3U_PROFILE,
+                )
+            release_profile_slot(m3u_profile_id, redis_client)
+            return True
+
         # Get the matched profile for cleanup
         profile_id = redis_client.get(f"stream_profile:{stream_id}")
         if not profile_id:
@@ -282,6 +407,16 @@ class Stream(models.Model):
         logger.debug(
             f"Stream {stream_id}: found profile_id={profile_id}"
         )
+
+        # Same as Channel.release_stream: clear metadata before DECR so a later
+        # metadata-only fallback cannot release the slot a second time.
+        if self.stream_hash:
+            metadata_key = RedisKeys.channel_metadata(self.stream_hash)
+            redis_client.hdel(
+                metadata_key,
+                ChannelMetadataField.STREAM_ID,
+                ChannelMetadataField.M3U_PROFILE,
+            )
 
         release_profile_slot(profile_id, redis_client)
 
@@ -384,6 +519,14 @@ class Channel(models.Model):
     catchup_days = models.PositiveIntegerField(
         default=0,
         help_text="Max catch-up archive days across all streams on this channel",
+    )
+
+    # Copied from the source stream at creation and on auto-sync, like name
+    # and logo. Not rolled up across streams like is_catchup: radio is a
+    # classification, not a capability. ChannelOverride.is_radio wins when set.
+    is_radio = models.BooleanField(
+        default=False,
+        help_text="Whether this channel is a radio channel, copied from its source stream",
     )
 
     # Hidden channels are excluded from HDHR, M3U, EPG, and XC output queries.
@@ -495,9 +638,6 @@ class Channel(models.Model):
         except Exception:
             ch_ids = set()
 
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
         # 2) Fallback: scan metadata keys and filter by m3u_profile == profile_id
         if not ch_ids:
             cursor = 0
@@ -526,13 +666,14 @@ class Channel(models.Model):
                 if cursor == 0:
                     break
 
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
         if not ch_ids:
             return None
 
-        # 3) Score candidates
+        logger.debug(
+            "Preemption candidates for profile %s: %s",
+            profile_id,
+            sorted(ch_ids),
+        )
         for ch_id in ch_ids:
             if ch_id in exclude_channel_ids:
                 continue
@@ -689,7 +830,7 @@ class Channel(models.Model):
         redis_client.delete(f"channel_stream:{self.id}")
         redis_client.delete(f"stream_profile:{stream_id}")
 
-    def get_stream(self, requester=None):
+    def get_stream(self, requester=None, allowed_m3u_profiles=None):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
 
@@ -704,6 +845,22 @@ class Channel(models.Model):
         if not self.streams.exists():
             error_reason = "No streams assigned to channel"
             return None, None, error_reason, False
+
+        if requester and self.get_stream_profile().is_redirect():
+            from apps.m3u.utils import get_allowed_m3u_profiles
+
+            if allowed_m3u_profiles is None:
+                allowed_m3u_profiles = get_allowed_m3u_profiles(requester)
+
+            if allowed_m3u_profiles is not None:
+                # Redirect URLs are issued to individual users, so do not create a
+                # channel-wide assignment that another viewer could reuse.
+                streams = list(self.streams.all().order_by("channelstream__order"))
+                for stream in streams:
+                    for profile in allowed_m3u_profiles.get(stream.m3u_account_id, []):
+                        if pool_has_capacity_for_profile(profile, redis_client):
+                            return stream.id, profile.id, None, False
+                return None, None, "No compatible active profile found for any assigned stream", False
 
         # Reuse assignment only when this channel is still active in the proxy.
         # Stale channel_stream keys after stop/disconnect skip INCR and break pool
@@ -1049,6 +1206,11 @@ class ChannelOverride(models.Model):
         blank=True,
         related_name="+",
     )
+    is_radio = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="User override for is_radio; null follows the channel value",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1067,6 +1229,7 @@ class ChannelOverride(models.Model):
                 "tvc_guide_stationid",
                 "epg_data_id",
                 "stream_profile_id",
+                "is_radio",
             )
         )
 

@@ -1,11 +1,14 @@
 """Tests for recent DVR fixes.
 
 Covers:
-  1. Collision avoidance: _build_output_paths checks both .mkv and .ts files
-  2. Logo guard: _resolve_poster_for_program skips external APIs when title ≈ channel name
-  3. Recording status lifecycle: status transitions visible via API
-  4. Concat flags: error-tolerant ffmpeg flags used for segment concatenation
-  5. Recovery skip-list: "recording" status NOT in terminal skip list
+  1. Original-air date handling for TV fallback DVR paths
+  2. Collision avoidance: _build_output_paths checks existing .mkv files
+  3. Logo guard: _resolve_poster_for_program skips external APIs when title ≈ channel name
+  4. Recording status lifecycle: status transitions visible via API
+  5. Finalize remux: HLS playlist remux
+  6. Recovery skip-list: "recording" status NOT in terminal skip list
+  7. FFmpeg in-process retry behavior
+  8. Frontend recording-status data contract
 """
 import os
 import datetime as dt
@@ -21,6 +24,7 @@ from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.channels.models import Channel, Recording
+from apps.epg.models import EPGData, EPGSource, ProgramData
 
 # Fixed wall time for collision tests: 10:30 avoids _2 appearing inside
 # %Y%m%d_%H%M%S timestamps (e.g. hour 20 produces ..._205331 which contains "_2").
@@ -65,7 +69,165 @@ def _make_recording(channel, **overrides):
 
 
 # =========================================================================
-# 1. Collision avoidance — _build_output_paths
+# 1. Original-air date in TV fallback paths
+# =========================================================================
+
+class DvrOriginalAirDateTemplateTests(TestCase):
+    def setUp(self):
+        self.epg_source = EPGSource.objects.create(
+            name="DVR Original Air Test", source_type="xmltv"
+        )
+        self.epg = EPGData.objects.create(
+            tvg_id="original-air.test",
+            name="Original Air Test",
+            epg_source=self.epg_source,
+        )
+        self.channel = _make_channel("Test Channel", 90)
+        self.start = COLLISION_TEST_START
+        self.end = self.start + timedelta(hours=1)
+
+    def _program(self, custom_properties, title="Auf Streife",
+                 sub_title="Die blonde Sünderin"):
+        program = ProgramData.objects.create(
+            epg=self.epg,
+            title=title,
+            sub_title=sub_title,
+            start_time=self.start,
+            end_time=self.end,
+            custom_properties=custom_properties,
+        )
+        return {
+            "id": program.id,
+            "title": program.title,
+            "sub_title": program.sub_title,
+        }
+
+    def _build(self, program, *, tv_template=None, tv_fallback=None,
+               movie_template=None, movie_fallback=None):
+        tv_template = tv_template or "TV/{show}/S{season:02d}E{episode:02d}.mkv"
+        tv_fallback = tv_fallback or (
+            "TV/{show}/{show} - {original_air_date} - {sub_title}.mkv"
+        )
+        movie_template = movie_template or "Movies/{title} ({year}).mkv"
+        movie_fallback = movie_fallback or "Movies/{start}.mkv"
+
+        with patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_tv_template",
+            return_value=tv_template,
+        ), patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
+            return_value=tv_fallback,
+        ), patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_movie_template",
+            return_value=movie_template,
+        ), patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_movie_fallback_template",
+            return_value=movie_fallback,
+        ), patch("os.stat", side_effect=OSError), patch("os.makedirs"):
+            from apps.channels.tasks import _build_output_paths
+            return _build_output_paths(
+                self.channel, program, self.start, self.end, recording_id=1
+            )[0]
+
+    def test_fallback_normalizes_supported_original_air_date_formats(self):
+        cases = (
+            ("2016-12-15", "2016-12-15"),
+            ("20161215", "2016-12-15"),
+            ("20161215000000 +0100", "2016-12-15"),
+            ("2016-12-15T00:00:00", "2016-12-15"),
+            ("2016-12-15 00:00:00", "2016-12-15"),
+        )
+        for raw_value, expected in cases:
+            with self.subTest(raw_value=raw_value):
+                program = self._program({
+                    "date": "2026-07-31",
+                    "previously_shown_details": {"start": raw_value},
+                })
+                final_path = self._build(program)
+                self.assertTrue(final_path.endswith(
+                    f"TV/Auf Streife/Auf Streife - {expected} "
+                    "- Die blonde Sünderin.mkv"
+                ))
+                self.assertNotIn("2026-07-31", final_path)
+
+    def test_missing_original_air_date_is_empty_without_broadcast_fallback(self):
+        program = self._program({"date": "2026-07-31"})
+        final_path = self._build(program)
+        self.assertTrue(final_path.endswith(
+            "TV/Auf Streife/Auf Streife -  - Die blonde Sünderin.mkv"
+        ))
+        self.assertNotIn("2026-07-31", final_path)
+        self.assertNotIn(self.start.strftime("%Y-%m-%d"), final_path)
+
+    def test_valid_season_episode_uses_normal_tv_template(self):
+        program = self._program({
+            "season": 1,
+            "episode": 2,
+            "previously_shown_details": {"start": "2016-12-15"},
+        })
+        final_path = self._build(program)
+        self.assertTrue(final_path.endswith("TV/Auf Streife/S01E02.mkv"))
+        self.assertNotIn("2016-12-15", final_path)
+
+    def test_original_air_date_is_not_available_to_normal_tv_template(self):
+        program = self._program({
+            "season": 1,
+            "episode": 2,
+            "previously_shown_details": {"start": "2016-12-15"},
+        })
+        final_path = self._build(
+            program,
+            tv_template="TV/{original_air_date}.mkv",
+        )
+        self.assertTrue(final_path.endswith(
+            "TV_Shows/Auf Streife/S01E02.mkv"
+        ))
+        self.assertNotIn("2016-12-15", final_path)
+
+    def test_movie_template_behavior_is_unchanged(self):
+        program = self._program({
+            "categories": ["Movie"],
+            "date": "1999-04-10",
+            "previously_shown_details": {"start": "2016-12-15"},
+        }, title="A Film", sub_title=None)
+        final_path = self._build(program)
+        self.assertTrue(final_path.endswith("Movies/A Film (1999).mkv"))
+        self.assertNotIn("2016-12-15", final_path)
+
+    def test_original_air_date_is_not_available_to_movie_templates(self):
+        program = self._program({
+            "categories": ["Movie"],
+            "date": "1999-04-10",
+            "previously_shown_details": {"start": "2016-12-15"},
+        }, title="A Film", sub_title=None)
+        final_path = self._build(
+            program,
+            movie_template="Movies/{original_air_date}.mkv",
+        )
+        self.assertTrue(final_path.endswith(
+            f"Movies/{self.start.strftime('%Y%m%d_%H%M%S')}.mkv"
+        ))
+        self.assertNotIn("2016-12-15", final_path)
+
+    def test_nonstandard_original_air_date_is_path_safe(self):
+        program = self._program({
+            "previously_shown_details": {
+                "start": "../../unexpected:date"
+            },
+        })
+        final_path = self._build(
+            program,
+            tv_fallback="TV/{show}/{original_air_date}.mkv",
+        )
+        self.assertTrue(final_path.startswith("/data/recordings/TV/"))
+        self.assertTrue(final_path.endswith(
+            "TV/Auf Streife/unexpecteddate.mkv"
+        ))
+        self.assertNotIn("..", final_path)
+
+
+# =========================================================================
+# 2. Collision avoidance — _build_output_paths
 # =========================================================================
 
 class CollisionAvoidanceTests(TestCase):
@@ -530,7 +692,7 @@ class RecordingNfoTests(TestCase):
 
 
 # =========================================================================
-# 2. Logo guard — _resolve_poster_for_program
+# 3. Logo guard — _resolve_poster_for_program
 # =========================================================================
 
 class LogoGuardTests(TestCase):
@@ -704,7 +866,7 @@ class LogoGuardTests(TestCase):
 
 
 # =========================================================================
-# 3. Recording status lifecycle via API
+# 4. Recording status lifecycle via API
 # =========================================================================
 
 class RecordingStatusLifecycleTests(TestCase):
@@ -827,41 +989,77 @@ class RecordingStatusLifecycleTests(TestCase):
 
 
 # =========================================================================
-# 4. Concat flags — error-tolerant ffmpeg
+# 5. Finalize remux — HLS playlist
 # =========================================================================
 
-class ConcatFlagsTests(TestCase):
-    """Verify error-tolerant FFmpeg flags on the HLS segment concat command."""
+class PlaylistRemuxTests(TestCase):
+    """Verify FFmpeg finalize helpers for HLS playlist remux."""
 
-    def test_hls_concat_cmd_includes_error_tolerant_flags(self):
-        from apps.channels.tasks import _dvr_build_hls_concat_cmd
+    def test_hls_playlist_remux_cmd_structure(self):
+        from apps.channels.tasks import _dvr_build_hls_playlist_remux_cmd
 
-        cmd = _dvr_build_hls_concat_cmd("/data/concat.txt", "/data/out.mkv")
-        self.assertIn("+genpts+igndts+discardcorrupt", cmd)
+        cmd = _dvr_build_hls_playlist_remux_cmd("/data/hls/index.m3u8", "/data/out.mkv")
+        self.assertEqual(cmd[0], "ffmpeg")
+        self.assertIn("-fflags", cmd)
+        self.assertEqual(cmd[cmd.index("-fflags") + 1], "+genpts+discardcorrupt")
         self.assertIn("-err_detect", cmd)
         self.assertEqual(cmd[cmd.index("-err_detect") + 1], "ignore_err")
+        self.assertIn("-i", cmd)
+        self.assertEqual(cmd[cmd.index("-i") + 1], "/data/hls/index.m3u8")
+        self.assertIn("-map", cmd)
+        self.assertIn("0:v?", cmd)
+        self.assertIn("0:a?", cmd)
+        self.assertNotIn("0:s?", cmd)
+        self.assertIn("-c", cmd)
+        self.assertEqual(cmd[cmd.index("-c") + 1], "copy")
         self.assertIn("-avoid_negative_ts", cmd)
         self.assertEqual(cmd[cmd.index("-avoid_negative_ts") + 1], "make_zero")
-        self.assertIn("concat", cmd)
         self.assertEqual(cmd[-1], "/data/out.mkv")
+        self.assertNotIn("concat", cmd)
+        self.assertNotIn("igndts", cmd)
 
-    def test_hls_concat_cmd_supports_mp4_fallback_extra_args(self):
-        from apps.channels.tasks import _dvr_build_hls_concat_cmd
+    def test_hls_playlist_remux_cmd_supports_extra_args(self):
+        from apps.channels.tasks import _dvr_build_hls_playlist_remux_cmd
 
-        cmd = _dvr_build_hls_concat_cmd(
-            "/data/concat.txt",
+        cmd = _dvr_build_hls_playlist_remux_cmd(
+            "/data/hls/index.m3u8",
             "/data/intermediate.mp4",
             extra_args=["-bsf:a", "aac_adtstoasc"],
         )
         self.assertIn("aac_adtstoasc", cmd)
         self.assertEqual(cmd[-1], "/data/intermediate.mp4")
 
-    def test_run_recording_uses_hls_concat_helper(self):
+    def test_remux_timeout_budget_is_thirty_minutes(self):
+        from apps.channels.tasks import _DVR_HLS_REMUX_TIMEOUT_SECONDS
+
+        self.assertEqual(_DVR_HLS_REMUX_TIMEOUT_SECONDS, 30 * 60)
+
+    def test_ensure_hls_endlist_appends_when_missing(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_ensure_hls_endlist
+
+        body = (
+            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n"
+            "#EXTINF:4.0,\nseg_00000.ts\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "index.m3u8")
+            with open(path, "w") as f:
+                f.write(body)
+            self.assertTrue(_dvr_ensure_hls_endlist(path))
+            text = open(path).read()
+            self.assertEqual(text.count("#EXT-X-ENDLIST"), 1)
+            self.assertTrue(text.endswith("#EXT-X-ENDLIST\n"))
+            # Second call is a no-op.
+            self.assertTrue(_dvr_ensure_hls_endlist(path))
+            self.assertEqual(open(path).read().count("#EXT-X-ENDLIST"), 1)
+
+    def test_run_recording_uses_shared_remux_helper(self):
         import inspect
         from apps.channels.tasks import run_recording
 
         source = inspect.getsource(run_recording)
-        self.assertIn("_dvr_build_hls_concat_cmd", source)
+        self.assertIn("_dvr_remux_hls_to_mkv", source)
 
     def test_completed_recording_queues_media_library_sync(self):
         import inspect
@@ -876,12 +1074,185 @@ class ConcatFlagsTests(TestCase):
             ),
         )
 
-    def test_recover_recordings_uses_hls_concat_helper(self):
+    def test_recover_recordings_uses_shared_remux_helper(self):
         import inspect
         from apps.channels.tasks import recover_recordings_on_startup
 
         source = inspect.getsource(recover_recordings_on_startup)
-        self.assertIn("_dvr_build_hls_concat_cmd", source)
+        self.assertIn("_dvr_remux_hls_to_mkv", source)
+        self.assertIn('cp.pop("_hls_dir"', source)
+        self.assertIn("/file/", source)
+
+    def test_omit_endlist_playlist_remux_finishes(self):
+        """omit_endlist capture playlists must remux without hanging."""
+        import shutil
+        import subprocess
+        import tempfile
+        import unittest
+
+        from apps.channels.tasks import _dvr_remux_hls_to_mkv
+
+        if not shutil.which("ffmpeg"):
+            raise unittest.SkipTest("ffmpeg not available")
+
+        ff = ["ffmpeg", "-y", "-v", "error"]
+        with tempfile.TemporaryDirectory() as tmp:
+            hls = os.path.join(tmp, "hls")
+            os.makedirs(hls)
+            src = os.path.join(tmp, "src.mp4")
+            m3u8 = os.path.join(hls, "index.m3u8")
+            out = os.path.join(tmp, "out.mkv")
+            subprocess.run(
+                ff
+                + [
+                    "-f", "lavfi", "-i", "testsrc2=rate=25:size=64x64",
+                    "-f", "lavfi", "-i", "sine",
+                    "-t", "6",
+                    "-c:v", "libx264", "-preset", "ultrafast",
+                    "-c:a", "aac",
+                    src,
+                ],
+                check=True,
+                timeout=60,
+            )
+            subprocess.run(
+                ff
+                + [
+                    "-i", src,
+                    "-c", "copy",
+                    "-f", "hls",
+                    "-hls_time", "4",
+                    "-hls_list_size", "0",
+                    "-hls_flags", "omit_endlist+independent_segments",
+                    "-hls_segment_filename", os.path.join(hls, "seg_%05d.ts"),
+                    m3u8,
+                ],
+                check=True,
+                timeout=60,
+            )
+            self.assertNotIn("#EXT-X-ENDLIST", open(m3u8).read())
+
+            ok, via_mp4 = _dvr_remux_hls_to_mkv(m3u8, out, "test-remux", 4242)
+            self.assertTrue(ok)
+            self.assertFalse(via_mp4)
+            self.assertTrue(os.path.getsize(out) > 0)
+            self.assertIn("#EXT-X-ENDLIST", open(m3u8).read())
+            self.assertFalse(
+                os.path.exists(os.path.join(hls, ".dvr_4242_intermediate.mp4"))
+            )
+
+    def test_mp4_fallback_uses_recording_id_in_intermediate_name(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_remux_hls_to_mkv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hls = os.path.join(tmp, "hls")
+            os.makedirs(hls)
+            m3u8 = os.path.join(hls, "index.m3u8")
+            out = os.path.join(tmp, "out.mkv")
+            with open(m3u8, "w") as f:
+                f.write(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:4\n"
+                    "#EXTINF:4.0,\nseg_00000.ts\n"
+                )
+            open(os.path.join(hls, "seg_00000.ts"), "wb").write(b"\x00")
+
+            intermediate = os.path.join(hls, ".dvr_99_intermediate.mp4")
+            seen = []
+
+            def fake_budget(cmd, log_label, step_label, deadline):
+                seen.append(cmd[-1])
+                result = MagicMock()
+                result.stderr = ""
+                if len(seen) == 1:
+                    result.returncode = 1
+                    return result
+                if cmd[-1] == intermediate:
+                    open(intermediate, "wb").write(b"fake-mp4")
+                    result.returncode = 0
+                    return result
+                if cmd[-1] == out:
+                    open(out, "wb").write(b"fake-mkv")
+                    result.returncode = 0
+                    return result
+                result.returncode = 1
+                return result
+
+            with patch(
+                "apps.channels.tasks._dvr_run_ffmpeg_with_budget",
+                side_effect=fake_budget,
+            ):
+                ok, via_mp4 = _dvr_remux_hls_to_mkv(m3u8, out, "test-mp4", 99)
+
+            self.assertTrue(ok)
+            self.assertTrue(via_mp4)
+            self.assertIn(intermediate, seen)
+            self.assertFalse(os.path.exists(intermediate))
+
+    @patch("core.utils.RedisClient")
+    @patch("apps.channels.tasks.run_recording")
+    @patch("core.utils.send_websocket_update", side_effect=lambda *a, **kw: None)
+    @patch("apps.channels.tasks._dvr_remux_hls_to_mkv", return_value=(True, False))
+    def test_expired_recovery_points_at_file_after_remux(
+        self, mock_remux, _ws, mock_run, mock_redis_cls
+    ):
+        """Expired remux success must clear HLS pointers and use /file/."""
+        import tempfile
+
+        mock_redis_conn = MagicMock()
+        mock_redis_conn.set.return_value = True
+        mock_redis_conn.exists.return_value = False
+        mock_redis_cls.get_client.return_value = mock_redis_conn
+
+        channel = _make_channel("Expired Remux Recovery", 302)
+        now = timezone.now()
+        with tempfile.TemporaryDirectory() as tmp:
+            hls = os.path.join(tmp, "hls")
+            os.makedirs(hls)
+            m3u8 = os.path.join(hls, "index.m3u8")
+            with open(m3u8, "w") as f:
+                f.write("#EXTM3U\n#EXTINF:4.0,\nseg_00000.ts\n")
+            mkv = os.path.join(tmp, "show.mkv")
+            open(mkv, "wb").write(b"")
+
+            rec = _make_recording(
+                channel,
+                start_time=now - timedelta(hours=2),
+                end_time=now - timedelta(minutes=5),
+                custom_properties={
+                    "status": "recording",
+                    "file_path": mkv,
+                    "_hls_dir": hls,
+                    "file_url": f"/api/channels/recordings/PLACEHOLDER/hls/index.m3u8",
+                    "output_file_url": (
+                        f"/api/channels/recordings/PLACEHOLDER/hls/index.m3u8"
+                    ),
+                },
+            )
+            # Fix placeholder URLs now that we have the real id.
+            cp = rec.custom_properties
+            cp["file_url"] = f"/api/channels/recordings/{rec.id}/hls/index.m3u8"
+            cp["output_file_url"] = cp["file_url"]
+            rec.custom_properties = cp
+            rec.save(update_fields=["custom_properties"])
+
+            from apps.channels.tasks import recover_recordings_on_startup
+
+            with patch("apps.channels.signals.revoke_task"):
+                recover_recordings_on_startup()
+
+            rec.refresh_from_db()
+            cp = rec.custom_properties or {}
+            self.assertTrue(mock_remux.called)
+            self.assertEqual(cp.get("remux_success"), True)
+            self.assertEqual(cp.get("status"), "interrupted")
+            self.assertEqual(
+                cp.get("file_url"),
+                f"/api/channels/recordings/{rec.id}/file/",
+            )
+            self.assertEqual(cp.get("output_file_url"), cp.get("file_url"))
+            self.assertNotIn("_hls_dir", cp)
+            self.assertFalse(os.path.isdir(hls))
 
 
 class ComskipMediaLibraryRefreshTests(TestCase):
@@ -1073,7 +1444,7 @@ class ComskipMediaLibraryRefreshTests(TestCase):
 
 
 # =========================================================================
-# 5. Recovery skip-list
+# 6. Recovery skip-list
 # =========================================================================
 
 class RecoverySkipListTests(TestCase):
@@ -1217,11 +1588,19 @@ class FfmpegRetryTests(TestCase):
         )
         self.assertIn("-start_number", cmd)
         self.assertEqual(cmd[cmd.index("-start_number") + 1], "42")
+        self.assertIn("-hls_playlist_type", cmd)
+        self.assertEqual(cmd[cmd.index("-hls_playlist_type") + 1], "event")
         hls_flags = cmd[cmd.index("-hls_flags") + 1]
         self.assertIn("append_list", hls_flags)
         self.assertIn("omit_endlist", hls_flags)
         self.assertIn("-err_detect", cmd)
         self.assertEqual(cmd[cmd.index("-err_detect") + 1], "ignore_err")
+        self.assertIn("-map", cmd)
+        self.assertIn("0:v?", cmd)
+        self.assertIn("0:a?", cmd)
+        self.assertNotIn("0:s?", cmd)
+        self.assertIn("-c", cmd)
+        self.assertEqual(cmd[cmd.index("-c") + 1], "copy")
 
     def test_run_recording_has_retry_loop(self):
         import inspect
@@ -1239,7 +1618,7 @@ class FfmpegRetryTests(TestCase):
 
 
 # =========================================================================
-# 6. Frontend red-dot filter (guideUtils.mapRecordingsByProgramId)
+# 8. Frontend red-dot filter (guideUtils.mapRecordingsByProgramId)
 # =========================================================================
 
 class MapRecordingsByProgramIdTests(TestCase):

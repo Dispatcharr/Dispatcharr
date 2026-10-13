@@ -5,6 +5,7 @@ import logging
 from django.conf import settings as django_settings
 from django.db import models
 from rest_framework import viewsets, status
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -36,12 +37,16 @@ import os
 import time
 from django.core.exceptions import ValidationError
 from django.core.cache import cache
-from core.tasks import rehash_streams
+from core.tasks import (
+    rehash_streams,
+    release_rehash_locks,
+    try_acquire_rehash_locks,
+)
+from apps.m3u.utils import hash_key_fields, parse_m3u_hash_keys
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
-    IsStandardUser,
-    permission_classes_by_action,
+    permissions_for_action,
 )
 from dispatcharr.utils import get_client_ip
 from .path_browser import browse_directories, create_directory
@@ -128,13 +133,20 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     serializer_class = UserAgentSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
-class StreamProfileViewSet(viewsets.ModelViewSet):
+class LockedProfileViewSet(viewsets.ModelViewSet):
+    """ModelViewSet that refuses to delete a locked profile."""
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.locked:
+            raise DRFValidationError("This profile is locked and cannot be deleted.")
+        return super().destroy(request, *args, **kwargs)
+
+
+class StreamProfileViewSet(LockedProfileViewSet):
     """
     API endpoint that allows stream profiles to be viewed, created, edited, or deleted.
     """
@@ -143,13 +155,10 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
     serializer_class = StreamProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
-class OutputProfileViewSet(viewsets.ModelViewSet):
+class OutputProfileViewSet(LockedProfileViewSet):
     """
     API endpoint that allows output profiles to be viewed, created, edited, or deleted.
     """
@@ -158,10 +167,7 @@ class OutputProfileViewSet(viewsets.ModelViewSet):
     serializer_class = OutputProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
@@ -174,45 +180,84 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     serializer_class = CoreSettingsSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         old_value = instance.value
-        response = super().update(request, *args, **kwargs)
+        preacquired_locks = []
+        lock_token = None
+        pending_global_rehash_keys = None
 
-        # If stream settings changed and m3u_hash_key is different, rehash streams
+        # Fail closed on a global M3U Hash Key change: acquire locks for every
+        # account that would actually be rehashed (no per-account override)
+        # before saving, active or inactive. Override accounts are ignored.
         if instance.key == STREAM_SETTINGS_KEY:
             new_value = request.data.get("value", {})
             if isinstance(new_value, dict) and isinstance(old_value, dict):
                 old_hash = old_value.get("m3u_hash_key", "")
                 new_hash = new_value.get("m3u_hash_key", "")
-                if old_hash != new_hash:
-                    hash_keys = new_hash.split(",") if isinstance(new_hash, str) else new_hash
-                    rehash_streams.delay(hash_keys)
+                new_keys = parse_m3u_hash_keys(new_hash)
+                # Stream.generate_hash_key sorts field names, so reordering
+                # the same fields does not change hashes and must not gate
+                # the save or queue a rehash.
+                if hash_key_fields(old_hash) != frozenset(new_keys):
+                    preacquired_locks, blocked, lock_token = try_acquire_rehash_locks(
+                        account_id=None
+                    )
+                    if blocked:
+                        return Response(
+                            {
+                                "detail": (
+                                    "Cannot change the M3U Hash Key while one or more "
+                                    "accounts that use the global default are "
+                                    "refreshing. Wait for those refreshes to finish, "
+                                    "then try again."
+                                ),
+                                "m3u_hash_key": [
+                                    "One or more M3U accounts are currently "
+                                    "refreshing. Try again later."
+                                ],
+                                "blocked_accounts": blocked,
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    pending_global_rehash_keys = new_keys
 
-        # If DVR settings changed and pre/post offsets are different, reschedule upcoming recordings
-        if instance.key == DVR_SETTINGS_KEY:
-            new_value = request.data.get("value", {})
-            if isinstance(new_value, dict) and isinstance(old_value, dict):
-                old_pre = old_value.get("pre_offset_minutes")
-                new_pre = new_value.get("pre_offset_minutes")
-                old_post = old_value.get("post_offset_minutes")
-                new_post = new_value.get("post_offset_minutes")
-                if old_pre != new_pre or old_post != new_post:
-                    try:
-                        # Prefer async task if Celery is available
-                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
-                        reschedule_upcoming_recordings_for_offset_change.delay()
-                    except Exception:
-                        # Fallback to synchronous implementation
-                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
-                        reschedule_upcoming_recordings_for_offset_change_impl()
+        try:
+            response = super().update(request, *args, **kwargs)
 
-        return response
+            if pending_global_rehash_keys is not None:
+                lock_ids = list(preacquired_locks)
+                rehash_streams.delay(
+                    pending_global_rehash_keys,
+                    locks_preacquired=True,
+                    preacquired_lock_ids=lock_ids,
+                    preacquired_lock_token=lock_token,
+                )
+                preacquired_locks = []
+
+            # If DVR settings changed and pre/post offsets are different, reschedule upcoming recordings
+            if instance.key == DVR_SETTINGS_KEY:
+                new_value = request.data.get("value", {})
+                if isinstance(new_value, dict) and isinstance(old_value, dict):
+                    old_pre = old_value.get("pre_offset_minutes")
+                    new_pre = new_value.get("pre_offset_minutes")
+                    old_post = old_value.get("post_offset_minutes")
+                    new_post = new_value.get("post_offset_minutes")
+                    if old_pre != new_pre or old_post != new_post:
+                        try:
+                            # Prefer async task if Celery is available
+                            from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
+                            reschedule_upcoming_recordings_for_offset_change.delay()
+                        except Exception:
+                            # Fallback to synchronous implementation
+                            from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
+                            reschedule_upcoming_recordings_for_offset_change_impl()
+
+            return response
+        finally:
+            release_rehash_locks(preacquired_locks, lock_token)
 
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
@@ -231,7 +276,12 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
         return response
-    @action(detail=False, methods=["post"], url_path="check")
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="check",
+        permission_classes=[IsAdmin],
+    )
     def check(self, request, *args, **kwargs):
         data = request.data
 
@@ -282,9 +332,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
     serializer_class = ProxySettingsSerializer
 
     def get_permissions(self):
-        if self.action in ('list', 'retrieve'):
-            return [IsStandardUser()]
-        return [IsAdmin()]
+        return permissions_for_action(self)
 
     def _get_or_create_settings(self):
         """Get or create the proxy settings CoreSettings entry"""
@@ -301,6 +349,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "validate_redirect_urls": True,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,
@@ -350,7 +399,11 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 
         return Response(serializer.validated_data)
 
-    @action(detail=False, methods=['get', 'patch'])
+    @action(
+        detail=False,
+        methods=['get', 'patch'],
+        permission_classes=[IsAdmin],
+    )
     def settings(self, request):
         """Get or update the proxy settings."""
         if request.method == 'GET':
@@ -486,11 +539,11 @@ def environment(request):
             "ip_lookup_env_disabled": ip_lookup_env_disabled,
             "ip_lookup_pending": ip_lookup_pending,
             "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
-            "redis_tls": {
-                "enabled": getattr(django_settings, "REDIS_SSL", False),
-                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
-                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
-            },
+            "redis_tls": getattr(
+                django_settings,
+                "REDIS_TLS_STATUS",
+                {"enabled": False, "verify": False, "mtls": False},
+            ),
             "postgres_tls": {
                 "enabled": postgres_ssl,
                 "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,
@@ -521,16 +574,38 @@ def version(request):
     description="Trigger rehashing of all streams",
 )
 @api_view(["POST"])
-@permission_classes([Authenticated])
+@permission_classes([IsAdmin])
 def rehash_streams_endpoint(request):
     """Trigger the rehash streams task"""
+    preacquired_locks = []
+    lock_token = None
     try:
         # Get the current hash keys from settings
-        hash_key = CoreSettings.get_m3u_hash_key()
-        hash_keys = hash_key.split(",") if isinstance(hash_key, str) else hash_key
+        hash_keys = parse_m3u_hash_keys(CoreSettings.get_m3u_hash_key())
 
-        # Queue the rehash task
-        task = rehash_streams.delay(hash_keys)
+        preacquired_locks, blocked, lock_token = try_acquire_rehash_locks(account_id=None)
+        if blocked:
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "Stream rehash blocked: one or more M3U accounts that use "
+                        "the global hash key are currently refreshing. Try again "
+                        "after those refreshes finish."
+                    ),
+                    "blocked_accounts": blocked,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        lock_ids = list(preacquired_locks)
+        task = rehash_streams.delay(
+            hash_keys,
+            locks_preacquired=True,
+            preacquired_lock_ids=lock_ids,
+            preacquired_lock_token=lock_token,
+        )
+        preacquired_locks = []
 
         return Response({
             "success": True,
@@ -539,17 +614,13 @@ def rehash_streams_endpoint(request):
         }, status=status.HTTP_200_OK)
 
     except Exception as e:
+        logger.error(f"Error triggering rehash streams: {e}")
         return Response({
             "success": False,
             "message": f"Error triggering rehash: {str(e)}"
         }, status=status.HTTP_400_BAD_REQUEST)
-
-    except Exception as e:
-        logger.error(f"Error triggering rehash streams: {e}")
-        return Response({
-            "success": False,
-            "message": "Failed to trigger rehash task"
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    finally:
+        release_rehash_locks(preacquired_locks, lock_token)
 
 
 # ─────────────────────────────
@@ -673,15 +744,18 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
     serializer_class = SystemNotificationSerializer
 
     def get_permissions(self):
+        # Every signed-in user can read and dismiss their own notifications.
+        # Anything not listed here (create, update, partial_update, destroy,
+        # and any action added later) is admin only.
         if self.action in (
-            "create",
-            "update",
-            "partial_update",
-            "destroy",
+            "list",
+            "retrieve",
+            "dismiss",
+            "dismiss_all",
+            "unread_count",
         ):
-            return [IsAdmin()]
-        # list, retrieve, dismiss, dismiss_all, unread_count
-        return [IsAuthenticated()]
+            return [IsAuthenticated()]
+        return [IsAdmin()]
 
     def get_queryset(self):
         """

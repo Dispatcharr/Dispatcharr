@@ -6,8 +6,12 @@ import os
 import threading
 from pathlib import Path
 import re
+
+from random import uniform
+
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
+from core.redis_connection import RedisUrlError, build_redis_client
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
@@ -115,6 +119,14 @@ def ensure_custom_properties_dict(value):
     return custom_properties_as_dict(value)
 
 
+def clamp_int(value, default, lo, hi):
+    """Coerce a settings value to an int within [lo, hi], falling back to default on garbage."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def truncate_with_warning(value, max_length, *, label):
     """Clamp a string to ``max_length``, logging a warning when truncated.
 
@@ -146,76 +158,108 @@ class RedisClient:
     _client = None
     _buffer = None
     _pubsub_client = None
+    _netloc = None
+    _lock = threading.Lock()
 
     @classmethod
-    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1):
+    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1, max_retry_interval=None, no_socket_timeout=False, disable_persistence=True, exponential_backoff=True, backoff_jitter=False):
+        # Connection settings do not change between retries. Read them once so the
+        # retry handlers can always see ssl_params, including when setup itself fails.
+        ssl_params = {}
+        try:
+            redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+            redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+            redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+            redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', None))
+            redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', None))
+            redis_url = os.environ.get("REDIS_URL", getattr(settings, 'REDIS_URL', ''))
+
+            # Use standardized settings, consistent with the defaults from settings.py
+            socket_timeout = None if no_socket_timeout else getattr(settings, 'REDIS_SOCKET_TIMEOUT', 60)
+            socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
+            health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 15)
+            socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
+            retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+            max_connections = int(getattr(settings, 'REDIS_MAX_CONNECTIONS', 50))
+            pool_timeout = float(getattr(settings, 'REDIS_POOL_TIMEOUT', 20))
+
+            # TLS params from settings (empty dict when TLS is disabled)
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
+            client_kwargs = dict(
+                redis_url=redis_url,
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                username=redis_user,
+                password=redis_password,
+                ssl_params=ssl_params,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=socket_connect_timeout,
+                socket_keepalive=socket_keepalive,
+                health_check_interval=health_check_interval,
+                retry_on_timeout=retry_on_timeout,
+                max_connections=max_connections,
+                pool_timeout=pool_timeout,
+                decode_responses=decode_responses,
+            )
+
+        except Exception as e:
+            _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
+            logger.error(f"Unexpected error connecting to Redis: {e}{_tls_hint}")
+            return None
+
         retry_count = 0
         while retry_count < max_retries:
             try:
-                # Get connection parameters from settings or environment
-                redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
-
-                # Use standardized settings
-                socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
-                socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-
-                # TLS params from settings (empty dict when TLS is disabled)
-                ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-
-                # Create Redis client with better defaults
-                client = redis.Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    db=redis_db,
-                    password=redis_password if redis_password else None,
-                    username=redis_user if redis_user else None,
-                    socket_timeout=socket_timeout,
-                    socket_connect_timeout=socket_connect_timeout,
-                    socket_keepalive=socket_keepalive,
-                    health_check_interval=health_check_interval,
-                    retry_on_timeout=retry_on_timeout,
-                    decode_responses=decode_responses,
-                    **ssl_params
-                )
+                # A blank REDIS_URL is treated as unset inside build_redis_client.
+                client, location = build_redis_client(**client_kwargs)
 
                 # Validate connection with ping
                 client.ping()
 
-                # Disable persistence on first connection - improves performance
-                # Only try to disable if not in a read-only environment
-                try:
-                    client.config_set('save', '')  # Disable RDB snapshots
-                    client.config_set('appendonly', 'no')  # Disable AOF logging
+                if disable_persistence:
 
-                    # Disable protected mode when in debug mode
-                    if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
-                        client.config_set('protected-mode', 'no')  # Disable protected mode in debug
-                        logger.warning("Redis protected mode disabled for debug environment")
+                    # Disable persistence on first connection - improves performance
+                    # Only try to disable if not in a read-only environment
+                    try:
+                        client.config_set('save', '')  # Disable RDB snapshots
+                        client.config_set('appendonly', 'no')  # Disable AOF logging
 
-                    logger.trace("Redis persistence disabled for better performance")
-                except redis.exceptions.ResponseError as e:
-                    # Improve error handling for Redis configuration errors
-                    if "OOM" in str(e):
-                        logger.error(f"Redis OOM during configuration: {e}")
-                        # Try to increase maxmemory as an emergency measure
-                        try:
-                            client.config_set('maxmemory', '768mb')
-                            logger.warning("Applied emergency Redis memory increase to 768MB")
-                        except:
-                            pass
-                    else:
-                        logger.error(f"Redis configuration error: {e}")
+                        # Close idle clients after REDIS_IDLE_TIMEOUT seconds with
+                        # no commands (0 = disabled). Blocked Celery BRPOP waiters
+                        # are exempt. Best-effort: managed Redis may reject CONFIG SET.
+                        idle_timeout = int(getattr(settings, 'REDIS_IDLE_TIMEOUT', 300))
+                        if idle_timeout > 0:
+                            client.config_set('timeout', str(idle_timeout))
 
-                logger.info(f"Connected to Redis at {redis_host}:{redis_port}/{redis_db}")
+                        # Disable protected mode when in debug mode
+                        if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
+                            client.config_set('protected-mode', 'no')  # Disable protected mode in debug
+                            logger.warning("Redis protected mode disabled for debug environment")
+
+                        logger.trace("Redis persistence disabled for better performance")
+                    except redis.exceptions.ResponseError as e:
+                        # Improve error handling for Redis configuration errors
+                        if "OOM" in str(e):
+                            logger.error(f"Redis OOM during configuration: {e}")
+                            # Try to increase maxmemory as an emergency measure
+                            try:
+                                client.config_set('maxmemory', '768mb')
+                                logger.warning("Applied emergency Redis memory increase to 768MB")
+                            except Exception:
+                                logger.debug("Emergency Redis maxmemory increase failed", exc_info=True)
+                        else:
+                            logger.error(f"Redis configuration error: {e}")
+
+                cls._netloc = location
+                logger.debug(f"Connected to Redis at {cls._netloc}")
 
                 return client
+
+            except RedisUrlError:
+                logger.error("Ill-formatted REDIS_URL: Unable to parse connection string parameters")
+                return None
 
             except (ConnectionError, TimeoutError) as e:
                 retry_count += 1
@@ -224,101 +268,83 @@ class RedisClient:
                     logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}{_tls_hint}")
                     return None
                 else:
-                    # Use exponential backoff for retries
-                    wait_time = retry_interval * (2 ** (retry_count - 1))
+                    if max_retry_interval is not None:
+                        wait_time = min(retry_interval * (2 ** (retry_count - 1)) if exponential_backoff else retry_interval, max_retry_interval)
+                    else:
+                        wait_time = retry_interval * (2 ** (retry_count - 1)) if exponential_backoff else retry_interval
+
+                    if backoff_jitter:
+                        wait_time += uniform(0, 0.5 * wait_time)
+
                     logger.warning(f"Redis connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
                     time.sleep(wait_time)
 
             except Exception as e:
-                _tls_hint = ""
-                try:
-                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
-                except NameError:
-                    pass
+                _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
                 logger.error(f"Unexpected error connecting to Redis: {e}{_tls_hint}")
                 return None
 
         return None
 
     @classmethod
-    def get_client(cls, max_retries=5, retry_interval=1):
+    def _get_cached(cls, attr, **kwargs):
+        """Return the cached client for attr, creating it once under _lock."""
+        client = getattr(cls, attr)
+        if client is None:
+            with cls._lock:
+                client = getattr(cls, attr)
+                if client is None:
+                    client = cls._init_client(**kwargs)
+                    # A failed connect stays None so the next caller can retry.
+                    if client is not None:
+                        setattr(cls, attr, client)
+        return client
+
+    @classmethod
+    def get_client(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = True):
         """Get Redis client optimized for non-binary data (decoded responses)"""
-        if cls._client is None:
-            cls._client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval)
-        return cls._client
+        return cls._get_cached(
+            "_client",
+            decode_responses=True,
+            max_retries=max_retries,
+            retry_interval=retry_interval,
+            max_retry_interval=max_retry_interval,
+            disable_persistence=disable_persistence,
+        )
 
     @classmethod
-    def get_buffer(cls, max_retries=5, retry_interval=1):
+    def get_buffer(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = True):
         """Get Redis client optimized for binary data (no decoding)"""
-        if cls._buffer is None:
-            cls._buffer = cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval)
-        return cls._buffer
+        return cls._get_cached(
+            "_buffer",
+            decode_responses=False,
+            max_retries=max_retries,
+            retry_interval=retry_interval,
+            max_retry_interval=max_retry_interval,
+            disable_persistence=disable_persistence,
+        )
 
     @classmethod
-    def get_pubsub_client(cls, max_retries=5, retry_interval=1):
-        """Get Redis client optimized for PubSub operations"""
-        if cls._pubsub_client is None:
-            retry_count = 0
-            while retry_count < max_retries:
-                try:
-                    # Get connection parameters from settings or environment
-                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                    redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                    redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+    def get_pubsub_client(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = False):
+        """Get Redis client optimized for PubSub operations (no socket timeout)"""
+        return cls._get_cached(
+            "_pubsub_client",
+            decode_responses=True,
+            max_retries=max_retries,
+            retry_interval=retry_interval,
+            max_retry_interval=max_retry_interval,
+            no_socket_timeout=True,
+            disable_persistence=disable_persistence,
+        )
 
-                    # Use standardized settings but without socket timeouts for PubSub
-                    # Important: socket_timeout is None for PubSub operations
-                    socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                    socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                    health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                    retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+    @classmethod
+    def get_test_client(cls, max_retries = 30, retry_interval = 2, max_retry_interval = None, decode_responses = False, disable_persistence = False):
+        """Get Redis test client for wait_for_redis script (no decoding, no persistence disabling, no exponential retry intervals)"""
+        return cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval = max_retry_interval, exponential_backoff=False, disable_persistence=disable_persistence)
 
-                    ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-
-                    # Create Redis client with PubSub-optimized settings - no timeout
-                    client = redis.Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        password=redis_password if redis_password else None,
-                        username=redis_user if redis_user else None,
-                        socket_timeout=None,  # Critical: No timeout for PubSub operations
-                        socket_connect_timeout=socket_connect_timeout,
-                        socket_keepalive=socket_keepalive,
-                        health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout,
-                        decode_responses=True,
-                        **ssl_params
-                    )
-
-                    # Validate connection with ping
-                    client.ping()
-                    logger.info(f"Connected to Redis for PubSub at {redis_host}:{redis_port}/{redis_db}")
-
-                    # We don't need the keepalive thread anymore since we're using proper PubSub handling
-                    cls._pubsub_client = client
-                    break
-
-                except (ConnectionError, TimeoutError) as e:
-                    retry_count += 1
-                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
-                    if retry_count >= max_retries:
-                        logger.error(f"Failed to connect to Redis for PubSub after {max_retries} attempts: {e}{_tls_hint}")
-                        return None
-                    else:
-                        # Use exponential backoff for retries
-                        wait_time = retry_interval * (2 ** (retry_count - 1))
-                        logger.warning(f"Redis PubSub connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
-                        time.sleep(wait_time)
-
-                except Exception as e:
-                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
-                    logger.error(f"Unexpected error connecting to Redis for PubSub: {e}{_tls_hint}")
-                    return None
-
-        return cls._pubsub_client
+    @classmethod
+    def get_net_location(cls):
+        return cls._netloc
 
 def acquire_task_lock(task_name, id):
     """Acquire a lock to prevent concurrent task execution."""
@@ -329,7 +355,7 @@ def acquire_task_lock(task_name, id):
     lock_acquired = redis_client.set(lock_id, "locked", ex=300, nx=True)
 
     if not lock_acquired:
-        logger.warning(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
+        logger.info(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
 
     return lock_acquired
 
@@ -365,11 +391,12 @@ class TaskLockRenewer:
     slow downloads or large parsing jobs don't lose their lock mid-operation.
     """
 
-    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120, expected_value=None):
         self.task_name = task_name
         self.id = id
         self.ttl = ttl
         self.renewal_interval = renewal_interval
+        self.expected_value = expected_value
         self.lock_id = f"task_lock_{task_name}_{id}"
         self._stop_event = threading.Event()
         self._thread = None
@@ -379,17 +406,24 @@ class TaskLockRenewer:
         while not self._stop_event.wait(self.renewal_interval):
             try:
                 redis_client = RedisClient.get_client()
-                if redis_client.exists(self.lock_id):
-                    redis_client.expire(self.lock_id, self.ttl)
-                    logger.debug(
-                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
-                    )
-                else:
-                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                current = redis_client.get(self.lock_id)
+                if isinstance(current, bytes):
+                    current = current.decode()
+                if current is None:
+                    # Lock was deleted externally (e.g. manual release). Stop renewing.
                     logger.warning(
                         f"Lock {self.lock_id} no longer exists, stopping renewal"
                     )
                     break
+                if self.expected_value is not None and current != self.expected_value:
+                    logger.warning(
+                        f"Lock {self.lock_id} is held by another owner, stopping renewal"
+                    )
+                    break
+                redis_client.expire(self.lock_id, self.ttl)
+                logger.debug(
+                    f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                )
             except Exception as e:
                 logger.error(f"Error renewing lock {self.lock_id}: {e}")
 
@@ -788,6 +822,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         channel_obj = None
         if channel_id:
+            payload["channel_id"] = str(channel_id)
             try:
                 channel_obj = Channel.objects.get(uuid=channel_id)
                 payload["channel_name"] = channel_obj.name
@@ -815,6 +850,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
                 stream_obj = None
 
         # Populate stream details
+        payload["stream_id"] = stream_id
         payload["stream_name"] = getattr(stream_obj, "name", None)
         payload["stream_url"] = getattr(stream_obj, "url", None)
 
@@ -844,9 +880,9 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         payload["profile_used"] = profile_used
 
-        # remove empty keys
+        # remove empty keys (keep falsy values such as speed=0.0)
         for k in list(payload.keys()):
-            if not payload[k]:
+            if payload[k] is None or payload[k] == "":
                 del payload[k]
 
         trigger_event(event_type, payload)
@@ -975,6 +1011,113 @@ def _send_async(channel_layer, group, message):
     _do()
 
 
+# Admin inbox notices when auth rate limiting trips. Cooldown is shared across
+# workers via the default Redis cache so spray does not refill the bell;
+# deleting the row clears dismissals so a later window can notify again.
+XC_AUTH_LOCKOUT_NOTICE_KEY = "xc-auth-lockout"
+XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY = "xc_auth_lockout_notice_cooldown"
+XC_AUTH_LOCKOUT_COOLDOWN_SECONDS = 3600
+
+LOGIN_RATE_LIMIT_NOTICE_KEY = "login-rate-limit"
+LOGIN_RATE_LIMIT_COOLDOWN_CACHE_KEY = "login_rate_limit_notice_cooldown"
+LOGIN_RATE_LIMIT_COOLDOWN_SECONDS = 3600
+
+API_KEY_AUTH_LOCKOUT_NOTICE_KEY = "api-key-auth-lockout"
+API_KEY_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY = "api_key_auth_lockout_notice_cooldown"
+API_KEY_AUTH_LOCKOUT_COOLDOWN_SECONDS = 3600
+
+
+def _notify_auth_lockout_inbox(
+    *,
+    notification_key,
+    cooldown_cache_key,
+    cooldown_seconds,
+    title,
+    message,
+):
+    """Create or refresh a cooldown-gated auth lockout admin inbox notice.
+
+    Claims the cooldown with ``cache.add`` first so overlapping trips produce
+    one notice. If creating the row fails after the claim, the cooldown key is
+    cleared so a later attempt can try again. Returns the notification when
+    one was created, otherwise None.
+    """
+    from django.core.cache import cache
+
+    from core.models import SystemNotification
+
+    if not cache.add(cooldown_cache_key, True, timeout=cooldown_seconds):
+        return None
+
+    try:
+        SystemNotification.objects.filter(notification_key=notification_key).delete()
+        notification = SystemNotification.objects.create(
+            notification_key=notification_key,
+            notification_type=SystemNotification.NotificationType.WARNING,
+            priority=SystemNotification.Priority.HIGH,
+            source=SystemNotification.Source.SYSTEM,
+            title=title,
+            message=message,
+            action_data={
+                "action_url": "/stats",
+                "action_text": "Open Stats",
+            },
+            is_active=True,
+            admin_only=True,
+        )
+    except Exception:
+        cache.delete(cooldown_cache_key)
+        raise
+
+    send_websocket_notification(notification)
+    return notification
+
+
+def notify_xc_auth_lockout_inbox():
+    """Create or refresh the cooldown-gated XC lockout admin inbox notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=XC_AUTH_LOCKOUT_NOTICE_KEY,
+        cooldown_cache_key=XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=XC_AUTH_LOCKOUT_COOLDOWN_SECONDS,
+        title="XC authentication rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "failed XC credential attempts. Check System Events on the Stats "
+            "page for IP addresses and details."
+        ),
+    )
+
+
+def notify_login_rate_limit_inbox():
+    """Create or refresh the cooldown-gated JWT/admin login lockout notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=LOGIN_RATE_LIMIT_NOTICE_KEY,
+        cooldown_cache_key=LOGIN_RATE_LIMIT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=LOGIN_RATE_LIMIT_COOLDOWN_SECONDS,
+        title="Login rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "login attempts (JWT, reverse-proxy headers, or Django admin). Check "
+            "System Events on the Stats page for IP addresses and details."
+        ),
+    )
+
+
+def notify_api_key_auth_lockout_inbox():
+    """Create or refresh the cooldown-gated API-key lockout admin inbox notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=API_KEY_AUTH_LOCKOUT_NOTICE_KEY,
+        cooldown_cache_key=API_KEY_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=API_KEY_AUTH_LOCKOUT_COOLDOWN_SECONDS,
+        title="API key authentication rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "failed API key attempts. Check System Events on the Stats page "
+            "for IP addresses and details."
+        ),
+    )
+
+
 def send_websocket_notification(notification):
     """
     Send a system notification to all connected WebSocket clients.
@@ -1026,68 +1169,90 @@ def send_websocket_notification(notification):
 def get_host_and_port(request):
     """
     Returns (host, port) for building absolute URIs.
-    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
-    - Falls back to Host header.
+    - Prefers X-Forwarded-Host/X-Forwarded-Port only from a trusted proxy.
+    - Falls back to Host header (explicit port wins; bare Host means scheme default).
     - Returns None for port if using standard ports (80/443) to omit from URLs.
-    - In dev, uses 5656 as a guess if port cannot be determined.
     """
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    from dispatcharr.utils import request_from_trusted_proxy
+
+    host, port, _scheme = _resolve_host_port_scheme(
+        request, request_from_trusted_proxy(request)
+    )
+    return host, port
+
+
+def _resolve_host_port_scheme(request, trust_forwarded):
+    """Shared (host, port, scheme) resolution for get_host_and_port /
+    build_absolute_uri_with_port, taking a precomputed trust_forwarded so
+    callers needing both host/port and scheme don't redo the trusted-proxy
+    and scheme checks."""
+    scheme = _request_scheme(request, trust_forwarded=trust_forwarded)
     standard_port = "443" if scheme == "https" else "80"
 
-    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
-    xfh = request.META.get("HTTP_X_FORWARDED_HOST")
-    if xfh:
-        if ":" in xfh:
-            host, port = xfh.split(":", 1)
-            if port == standard_port:
-                return host, None
-            return host, port
-        else:
-            host = xfh
+    # 1. Try X-Forwarded-Host (may include port) when the peer is trusted
+    if trust_forwarded:
+        xfh = request.META.get("HTTP_X_FORWARDED_HOST")
+        if xfh:
+            if ":" in xfh:
+                host, port = xfh.split(":", 1)
+                if port == standard_port:
+                    return host, None, scheme
+                return host, port, scheme
+            else:
+                host = xfh
 
-        port = request.META.get("HTTP_X_FORWARDED_PORT")
-        if port:
-            return host, None if port == standard_port else port
-        if request.META.get("HTTP_X_FORWARDED_PROTO"):
-            return host, None
+            port = request.META.get("HTTP_X_FORWARDED_PORT")
+            if port:
+                return host, (None if port == standard_port else port), scheme
+            if request.META.get("HTTP_X_FORWARDED_PROTO"):
+                return host, None, scheme
 
     # 2. Try Host header
     raw_host = request.get_host()
     if ":" in raw_host:
         host, port = raw_host.split(":", 1)
-        return host, None if port == standard_port else port
+        return host, (None if port == standard_port else port), scheme
     else:
         host = raw_host
 
-    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
-    port = request.META.get("HTTP_X_FORWARDED_PORT")
-    if port:
-        return host, None if port == standard_port else port
+    # 3. Trusted X-Forwarded-Port when Host has no port (e.g. public :8443)
+    if trust_forwarded:
+        port = request.META.get("HTTP_X_FORWARDED_PORT")
+        if port:
+            return host, (None if port == standard_port else port), scheme
 
-    # 4. Behind a reverse proxy with no port info - assume standard port
-    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-        return host, None
+    # Bare Host implies the scheme default port (80/443); omit it from URLs.
+    return host, None, scheme
 
-    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
-    port = request.META.get("SERVER_PORT")
-    if port:
-        return host, None if port == standard_port else port
 
-    # 6. Dev fallback
-    if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
-        return host, "5656"
+def _request_scheme(request, *, trust_forwarded: bool) -> str:
+    """Return the URL scheme, honoring forwarded proto only for trusted peers.
 
-    # 7. Final fallback: assume standard port for scheme
-    return host, None
+    Django's ``request.scheme`` also consults ``SECURE_PROXY_SSL_HEADER``, so
+    for untrusted peers we fall back to the raw WSGI scheme and ignore
+    ``X-Forwarded-Proto``.
+    """
+    if trust_forwarded:
+        forwarded = (request.META.get("HTTP_X_FORWARDED_PROTO") or "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+        return request.scheme
+    get_scheme = getattr(request, "_get_scheme", None)
+    if callable(get_scheme):
+        return get_scheme()
+    return "http"
 
 
 def build_absolute_uri_with_port(request, path):
     """
     Build an absolute URI with optional port.
     Port is omitted from URL if None (standard port for scheme).
+    Forwarded scheme is used only when the peer is a trusted proxy.
     """
-    host, port = get_host_and_port(request)
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    from dispatcharr.utils import request_from_trusted_proxy
+
+    trust_forwarded = request_from_trusted_proxy(request)
+    host, port, scheme = _resolve_host_port_scheme(request, trust_forwarded)
     if port:
         return f"{scheme}://{host}:{port}{path}"
     return f"{scheme}://{host}{path}"

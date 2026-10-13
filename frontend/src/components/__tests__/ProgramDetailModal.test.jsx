@@ -216,6 +216,19 @@ describe('ProgramDetailModal', () => {
     expect(screen.getByText('Record')).toBeInTheDocument();
   });
 
+  it('hides Record button when onRecord is not provided', async () => {
+    render(
+      <ProgramDetailModal
+        program={baseProgram}
+        channel={baseChannel}
+        opened={true}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText('Record')).not.toBeInTheDocument();
+  });
+
   it('hides Record button for past programs', async () => {
     const pastProgram = { ...baseProgram, isPast: true, isLive: false };
     render(

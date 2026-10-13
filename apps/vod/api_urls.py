@@ -19,4 +19,28 @@ router.register(r'categories', VODCategoryViewSet, basename='vodcategory')
 router.register(r'all', UnifiedContentViewSet, basename='unified-content')
 router.register(r'vodlogos', VODLogoViewSet, basename='vodlogo')
 
-urlpatterns = router.urls
+urlpatterns = [
+    # Some clients strip trailing slashes from artwork URLs. Serve the same
+    # views directly (no redirect) so image fetches still return bytes.
+    path(
+        'vodlogos/<int:pk>/cache',
+        VODLogoViewSet.as_view({'get': 'cache'}),
+        name='vodlogo-cache-noslash',
+    ),
+    path(
+        'movies/<int:pk>/image',
+        MovieViewSet.as_view({'get': 'image'}),
+        name='movie-image-noslash',
+    ),
+    path(
+        'series/<int:pk>/image',
+        SeriesViewSet.as_view({'get': 'image'}),
+        name='series-image-noslash',
+    ),
+    path(
+        'episodes/<int:pk>/image',
+        EpisodeViewSet.as_view({'get': 'image'}),
+        name='episode-image-noslash',
+    ),
+]
+urlpatterns += router.urls

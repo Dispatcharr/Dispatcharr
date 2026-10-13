@@ -2,15 +2,26 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import useChannelsTableStore from '../channelsTable';
 
+const createStorageMock = () => {
+  let store = {};
+  return {
+    getItem: vi.fn((key) => (key in store ? store[key] : null)),
+    setItem: vi.fn((key, value) => {
+      store[key] = value.toString();
+    }),
+    clear: vi.fn(() => {
+      store = {};
+    }),
+    removeItem: vi.fn((key) => {
+      delete store[key];
+    }),
+  };
+};
+
 describe('useChannelsTableStore', () => {
   beforeEach(() => {
-    // Mock localStorage
-    const mockLocalStorage = {
-      getItem: vi.fn(),
-      setItem: vi.fn(),
-      clear: vi.fn(),
-    };
-    global.localStorage = mockLocalStorage;
+    globalThis.localStorage = createStorageMock();
+    globalThis.sessionStorage = createStorageMock();
 
     vi.clearAllMocks();
 
@@ -105,6 +116,29 @@ describe('useChannelsTableStore', () => {
       expect(result.current.channels).toEqual([]);
       expect(result.current.totalCount).toBe(0);
       expect(result.current.pageCount).toBe(0);
+    });
+
+    it('should default to an empty channels array when results is missing', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      act(() => {
+        result.current.queryChannels({ count: 0 }, new URLSearchParams({ page_size: '50' }));
+      });
+
+      expect(result.current.channels).toEqual([]);
+      expect(result.current.totalCount).toBe(0);
+      expect(result.current.pageCount).toBe(0);
+    });
+
+    it('should default to an empty channels array when payload is empty', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      act(() => {
+        result.current.queryChannels({}, new URLSearchParams({ page_size: '50' }));
+      });
+
+      expect(result.current.channels).toEqual([]);
+      expect(result.current.totalCount).toBe(0);
     });
   });
 
@@ -257,6 +291,20 @@ describe('useChannelsTableStore', () => {
       });
 
       expect(result.current.sorting).toEqual(newSorting);
+    });
+
+    it('should persist sorting to sessionStorage', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+      const newSorting = [{ id: 'name', desc: true }];
+
+      act(() => {
+        result.current.setSorting(newSorting);
+      });
+
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-table-sorting',
+        JSON.stringify(newSorting)
+      );
     });
 
     it('should handle multiple sorting columns', () => {

@@ -107,6 +107,20 @@ describe('CustomTable', () => {
       const box = screen.getByTestId('table-box');
       expect(box.className).toContain('table-size-default');
     });
+
+    it('owns vertical scrolling when the table fills its container', () => {
+      render(<CustomTable table={makeTable({ fillHeight: true })} />);
+      const box = screen.getByTestId('table-box');
+
+      expect(box.style.height).toBe('100%');
+      expect(box.style.minHeight).toBe('0');
+      expect(box.style.overflowY).toBe('auto');
+    });
+
+    it('does not create a vertical scroll container for content-sized tables', () => {
+      render(<CustomTable table={makeTable()} />);
+      expect(screen.getByTestId('table-box').style.overflowY).toBe('');
+    });
   });
 
   // ── Min table width ────────────────────────────────────────────────────────
@@ -194,6 +208,23 @@ describe('CustomTable', () => {
       expect(box.style.getPropertyValue('--header-grow-col-size')).toBe('');
       expect(box.style.getPropertyValue('--header-col1-size')).toBe('100px');
     });
+
+    it('injects ratio variables for ratio-based grow columns', () => {
+      const headers = [
+        {
+          ...makeHeader('grow-col', 500, true, 80),
+          column: { columnDef: { grow: true, flexRatio: true, minSize: 80 } },
+        },
+      ];
+      const table = makeTable({
+        getHeaderGroups: () => [{ headers }],
+        getFlatHeaders: () => headers,
+      });
+      render(<CustomTable table={table} />);
+      const box = screen.getByTestId('table-box');
+      expect(box.style.getPropertyValue('--header-grow-col-ratio')).toBe('500');
+    });
+
   });
 
   // ── Props forwarding ───────────────────────────────────────────────────────
