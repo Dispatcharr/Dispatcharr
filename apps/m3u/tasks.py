@@ -179,10 +179,10 @@ _EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
 def _open_m3u_text_source(source_path):
     """Open an on-disk M3U (or .m3u.gz / .m3u.xz) file for line-by-line parsing."""
     if source_path.endswith(".gz"):
-        return gzip.open(source_path, "rt", encoding="utf-8")
+        return gzip.open(source_path, "rt", encoding="utf-8", errors="ignore")
     if source_path.endswith(".xz"):
-        return lzma.open(source_path, "rt", encoding="utf-8")
-    return open(source_path, "r", encoding="utf-8")
+        return lzma.open(source_path, "rt", encoding="utf-8", errors="ignore")
+    return open(source_path, "r", encoding="utf-8", errors="ignore")
 
 
 def fetch_m3u_lines(account, use_cache=False):
@@ -546,7 +546,7 @@ def fetch_m3u_lines(account, use_cache=False):
                         if name.endswith(".m3u"):
                             with zip_file.open(name) as f:
                                 return [
-                                    line.decode("utf-8") for line in f.readlines()
+                                    line.decode("utf-8", errors="ignore") for line in f.readlines()
                                 ], True
 
                     error_msg = (
