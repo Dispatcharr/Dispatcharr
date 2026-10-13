@@ -142,6 +142,7 @@ jobs:
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
             TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
+            FFMPEG_IMAGE=ghcr.io/${{ needs.prepare.outputs.repo_owner }}/ffmpeg:9.0.1-nvenc130
 
   create-manifest:
     needs: [prepare, docker]
