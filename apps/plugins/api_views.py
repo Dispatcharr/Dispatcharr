@@ -116,7 +116,15 @@ class PluginReloadAPIView(PluginAuthMixin, APIView):
         return Response({"success": True, "count": len(pm._registry)})
 
 
-def _install_plugin_from_zip(zip_file, plugins_dir, *, file_name="plugin.zip", allow_overwrite_key=None, allow_overwrite=False):
+def _install_plugin_from_zip(
+    zip_file,
+    plugins_dir,
+    *,
+    file_name="plugin.zip",
+    allow_overwrite_key=None,
+    install_key=None,
+    allow_overwrite=False,
+):
     """Extract and install a plugin from a zip file-like object.
 
     Args:
@@ -124,6 +132,7 @@ def _install_plugin_from_zip(zip_file, plugins_dir, *, file_name="plugin.zip", a
         plugins_dir: Path to the plugins directory.
         file_name: Name hint for deriving plugin key when the zip has flat contents.
         allow_overwrite_key: If set, allow overwriting this specific plugin directory.
+        install_key: Existing plugin key to retain when installing a managed update.
         allow_overwrite: If True, allow overwriting any existing plugin with the same key.
 
     Returns:
@@ -188,6 +197,8 @@ def _install_plugin_from_zip(zip_file, plugins_dir, *, file_name="plugin.zip", a
         plugin_key = _sanitize_plugin_key(plugin_key)
         if len(plugin_key) > 128:
             plugin_key = plugin_key[:128]
+        if install_key:
+            plugin_key = install_key
 
         # Extract logo (prefer one inside the chosen plugin dir, then shallowest)
         logo_bytes = None
@@ -1224,14 +1235,20 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                 {"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND
             )
 
-        # Resolve the plugin key and look up any existing install
+        # Prefer the persisted managed-install relationship. The registry slug
+        # is not necessarily the directory key produced by the release ZIP.
         plugin_key = _sanitize_plugin_key(slug)
         if len(plugin_key) > 128:
             plugin_key = plugin_key[:128]
 
-        existing_cfg = PluginConfig.objects.filter(key=plugin_key).first()
-        # Backward compat: if no match, also try with dashes (legacy entries saved before
-        # normalization was enforced) so overwrite is still allowed on update.
+        managed_configs = list(
+            PluginConfig.objects.filter(source_repo=repo, slug=slug).order_by("id")
+        )
+        existing_cfg = managed_configs[0] if managed_configs else None
+        # Preserve the legacy key lookups for installs that predate managed
+        # repository metadata or use a normalized key as their registry slug.
+        if not existing_cfg:
+            existing_cfg = PluginConfig.objects.filter(key=plugin_key).first()
         if not existing_cfg:
             dash_key = plugin_key.replace("_", "-")
             if dash_key != plugin_key:
@@ -1318,7 +1335,8 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                     tmp_file,
                     pm.plugins_dir,
                     file_name=f"{slug}.zip",
-                    allow_overwrite_key=plugin_key if existing_cfg else None,
+                    allow_overwrite_key=existing_cfg.key if existing_cfg else None,
+                    install_key=existing_cfg.key if managed_configs else None,
                 )
         finally:
             resp.close()
@@ -1329,6 +1347,24 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             )
 
         actual_key = result["plugin_key"]
+
+        stale_configs = [
+            cfg for cfg in managed_configs if cfg.pk != existing_cfg.pk
+        ] if managed_configs else []
+        for stale_cfg in stale_configs:
+            stale_dir = os.path.join(pm.plugins_dir, stale_cfg.key)
+            try:
+                shutil.rmtree(stale_dir)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logger.exception("Failed to remove stale plugin directory %s", stale_dir)
+                return Response(
+                    {"success": False, "error": f"Failed to remove stale plugin: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        if stale_configs:
+            PluginConfig.objects.filter(pk__in=[cfg.pk for cfg in stale_configs]).delete()
 
         # Create/update PluginConfig with managed fields
         # Use defaults for creation only; explicitly update fields on existing records
