@@ -24,7 +24,9 @@ env:
 
 jobs:
   label:
-    if: github.event_name == 'pull_request_target'
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      !contains(fromJSON('["COLLABORATOR", "MEMBER", "OWNER"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@v2
@@ -80,6 +82,7 @@ jobs:
               });
 
               for (const pullRequest of pullRequests) {
+                if (['COLLABORATOR', 'MEMBER', 'OWNER'].includes(pullRequest.author_association)) continue;
                 if (pullRequest.labels.length !== 0) continue;
                 eligiblePullRequests += 1;
 
