@@ -173,3 +173,62 @@ class ManagedPluginRepoInstallTests(TestCase):
         self.assertTrue(config.enabled)
         self.assertEqual(config.settings, {"keep": "this"})
         response.close.assert_called_once()
+
+    def test_update_matches_the_zip_key_when_managed_slug_is_duplicated(self):
+        old_config = PluginConfig.objects.create(
+            key="old_zip_plugin",
+            name="Old ZIP plugin",
+            version="1.0.0",
+            slug="registry-plugin",
+            source_repo=self.repo,
+        )
+        matching_config = PluginConfig.objects.create(
+            key="zip_plugin",
+            name="ZIP plugin",
+            version="1.0.0",
+            slug="registry-plugin",
+            source_repo=self.repo,
+            settings={"keep": "this"},
+        )
+
+        with tempfile.TemporaryDirectory() as plugins_dir:
+            existing_dir = os.path.join(plugins_dir, matching_config.key)
+            os.makedirs(existing_dir)
+            with open(os.path.join(existing_dir, "plugin.py"), "w") as plugin_file:
+                plugin_file.write("UPDATED = False\n")
+
+            plugin_manager = Mock(plugins_dir=plugins_dir)
+            plugin_manager.list_plugins.return_value = []
+            response = self._zip_response(matching_config.key)
+
+            with (
+                patch(
+                    "apps.plugins.api_views.get_with_validated_redirects",
+                    return_value=response,
+                ),
+                patch(
+                    "apps.plugins.api_views.PluginManager.get",
+                    return_value=plugin_manager,
+                ),
+            ):
+                result = self.client.post(
+                    "/api/plugins/repos/install/",
+                    {
+                        "repo_id": self.repo.id,
+                        "slug": "registry-plugin",
+                        "version": "2.0.0",
+                        "download_url": "https://plugins.example.test/registry-plugin.zip",
+                    },
+                    format="json",
+                )
+
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(PluginConfig.objects.count(), 2)
+            matching_config.refresh_from_db()
+            self.assertEqual(matching_config.version, "2.0.0")
+            self.assertEqual(matching_config.settings, {"keep": "this"})
+            old_config.refresh_from_db()
+            self.assertEqual(old_config.version, "1.0.0")
+
+            with open(os.path.join(existing_dir, "plugin.py")) as plugin_file:
+                self.assertEqual(plugin_file.read(), "UPDATED = True\n")
