@@ -540,6 +540,7 @@ def _build_vod_stream_url(relation, m3u_profile, content_type):
 
 
 def _media_library_relation_url(relation):
+    """Return a file:// URL for a local Media Library file, or a same-origin source URL"""
     try:
         properties = relation.custom_properties or {}
         local_path = str(properties.get('file_path') or '').strip()

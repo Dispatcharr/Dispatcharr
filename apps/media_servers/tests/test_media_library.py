@@ -23,8 +23,8 @@ from apps.proxy.vod_proxy.multi_worker_connection_manager import (
 )
 from apps.proxy.vod_proxy.views import (
     _get_content_and_relation,
-    _media_library_relation_url,
     _get_upstream_headers_from_relation,
+    _media_library_relation_url,
     _media_library_target_for_request,
 )
 from apps.vod.models import (

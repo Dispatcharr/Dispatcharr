@@ -4112,9 +4112,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
             pass
 
         # 3. Defer slow teardown to a background thread.
-        from apps.media_servers.dvr_library import resolve_dvr_library_path
+        from apps.media_servers.dvr_library import (
+            dvr_library_root,
+            resolve_dvr_library_path,
+        )
 
-        recordings_root = os.path.normpath(CoreSettings.get_dvr_library_dir())
+        recordings_root = str(dvr_library_root())
 
         def _safe_remove(path: str):
             if not path or not isinstance(path, str):

@@ -1356,7 +1356,6 @@ class MultiWorkerVODConnectionManager:
         # Reservations to undo if setup fails before the generator runs
         profile_connections_incremented = False
         media_library_target_reserved = False
-
         active_streams_reserved = False
         redis_connection = None
         existing_state = None
@@ -1465,7 +1464,6 @@ class MultiWorkerVODConnectionManager:
                             media_library_target_id,
                             session_id,
                         )
-
                     if active_streams_reserved:
                         redis_connection.decrement_active_streams()
                         active_streams_reserved = False
@@ -2115,6 +2113,7 @@ class MultiWorkerVODConnectionManager:
                     status=429,
                 )
 
+            create_result = None
             if not existing_state:
                 if not self._reserve_media_library_target_slot(
                     media_library_target_id,
@@ -2149,32 +2148,24 @@ class MultiWorkerVODConnectionManager:
                 state.total_content_size = file_size
                 state.connection_type = "local_file"
                 redis_connection._save_connection_state(state)
-                if create_result == "created":
-                    # create_connection seeded active_streams=1 for this request.
-                    active_incremented = True
-                    if not self._check_and_reserve_profile_slot(m3u_profile):
-                        redis_connection.decrement_active_streams()
-                        active_incremented = False
-                        self._release_media_library_target_slot(
-                            media_library_target_id,
-                            session_id,
-                        )
-                        redis_connection.cleanup(current_worker_id=self.worker_id)
-                        return HttpResponse("Connection limit exceeded for profile", status=429)
-                    profile_reserved = True
-                else:
-                    # Another worker won the create race: join as a sibling.
-                    active_count = redis_connection.increment_active_streams()
-                    if active_count <= 0:
-                        return HttpResponse("Failed to reserve stream", status=500)
-                    active_incremented = True
-                    if active_count == 1:
-                        if not self._check_and_reserve_profile_slot(m3u_profile):
-                            redis_connection.decrement_active_streams()
-                            active_incremented = False
-                            return HttpResponse("Connection limit exceeded for profile", status=429)
-                        profile_reserved = True
+
+            if create_result == "created":
+                # create_connection seeded active_streams=1 for this request.
+                active_incremented = True
+                if not self._check_and_reserve_profile_slot(m3u_profile):
+                    redis_connection.decrement_active_streams()
+                    active_incremented = False
+                    self._release_media_library_target_slot(
+                        media_library_target_id,
+                        session_id,
+                    )
+                    redis_connection.cleanup(current_worker_id=self.worker_id)
+                    return HttpResponse("Connection limit exceeded for profile", status=429)
+                profile_reserved = True
             else:
+                # Existing session, or another worker won the create race. INCR first
+                # so we know whether we took the count from 0 to 1 (must hold a
+                # profile slot) or joined a stream that already holds one.
                 active_count = redis_connection.increment_active_streams()
                 if active_count <= 0:
                     return HttpResponse("Failed to reserve stream", status=500)
