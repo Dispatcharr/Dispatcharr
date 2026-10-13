@@ -145,6 +145,28 @@ class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
 
 
 class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
+    def test_colliding_package_names_keep_separate_schedule_ownership(self):
+        self._install("bad-folder", custom="dash_unique.tick")
+        self._install("bad_folder", custom="underscore_unique.tick")
+        dash = self._schedule("dash", "dash_unique.tick")
+        underscore = self._schedule("underscore", "underscore_unique.tick")
+        dash_config = PluginConfig.objects.get(key="bad-folder")
+        underscore_config = PluginConfig.objects.get(key="bad_folder")
+        self.assertIn(dash.task, dash_config.owned_tasks)
+        self.assertNotIn(underscore.task, dash_config.owned_tasks)
+        self.assertIn(underscore.task, underscore_config.owned_tasks)
+        self.assertNotIn(dash.task, underscore_config.owned_tasks)
+
+        self._set_enabled("bad-folder", False)
+
+        self.assertFalse(PeriodicTask.objects.get(pk=dash.pk).enabled)
+        self.assertTrue(PeriodicTask.objects.get(pk=underscore.pk).enabled)
+        self._reset_registry("bad-folder")
+        self._delete("bad-folder")
+        self.assertFalse(PeriodicTask.objects.filter(pk=dash.pk).exists())
+        self.assertTrue(PeriodicTask.objects.get(pk=underscore.pk).enabled)
+        self.assertTrue(PluginConfig.objects.get(key="bad_folder").enabled)
+
     def _replace_plugin_from_zip(self, key, source):
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as zipped:

@@ -337,21 +337,9 @@ class PluginManager:
         return None
 
     def _registered_task_names(self, key: str) -> set:
-        """Celery tasks registered in this process whose module is in the plugin's package or its alias."""
-        from dispatcharr.celery import app as celery_app
-
-        roots = [self._resolve_package_name(key)]
-        alias = self._own_alias(key)
-        if alias:
-            roots.append(alias)
-        names = set()
-        for task_name, task in celery_app.tasks.items():
-            module = getattr(task, "__module__", None) or getattr(
-                getattr(task, "run", None), "__module__", ""
-            )
-            if module and any(module == root or module.startswith(f"{root}.") for root in roots):
-                names.add(task_name)
-        return names
+        """Celery tasks whose callable is defined in this plugin's directory."""
+        # Different folder names can resolve to the same internal package name.
+        return self._task_names_from_path(self.get_plugin_path(key))
 
     def _record_owned_tasks(self, key: str, cfg: Optional[PluginConfig]) -> None:
         if cfg is None:
