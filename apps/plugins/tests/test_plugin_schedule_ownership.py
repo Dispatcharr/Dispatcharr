@@ -10,21 +10,122 @@ import threading
 import time
 import zipfile
 from unittest import skipUnless
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.db import DatabaseError, connection, connections, transaction
 from django.test import TestCase, TransactionTestCase
 from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
-from apps.plugins.api_views import _install_plugin_from_zip
+from apps.plugins.api_views import PluginInstallFromRepoAPIView, _install_plugin_from_zip
 from apps.plugins.loader import PluginManager
-from apps.plugins.models import PluginConfig
+from apps.plugins.models import PluginConfig, PluginRepo
 from apps.plugins.tests.test_plugin_schedule_lifecycle import (
     LifecycleFixture,
     _JOBS_PY,
     _PLUGIN_PY,
 )
 from dispatcharr.celery import app as celery_app
+
+
+class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo = PluginRepo.objects.create(
+            name="Test plugins", url="https://plugins.example.test/manifest.json"
+        )
+        self._install("retained")
+        self._install("duplicate")
+        PluginConfig.objects.filter(key__in=["retained", "duplicate"]).update(
+            source_repo=self.repo, slug="registry-plugin"
+        )
+        self.shared = self._schedule("shared", self._custom_name("retained"))
+        self.old = self._schedule("old", self._custom_name("duplicate"), enabled=False)
+        self.other = self._schedule("other", "unrelated.tick")
+        PluginConfig.objects.filter(key="duplicate").update(
+            owned_tasks=[self.old.task, self.shared.task],
+            suspended_schedules=[self.old.pk, self.shared.pk],
+        )
+
+    def _update(self):
+        response = Mock()
+        response.iter_content.return_value = [b"archive"]
+        request = self._factory.post(
+            "/api/plugins/repos/install/",
+            {
+                "repo_id": self.repo.pk, "slug": "registry-plugin",
+                "version": "2.0", "download_url": "https://plugins.example.test/plugin.zip",
+            },
+            format="json",
+        )
+        with (
+            patch.object(PluginInstallFromRepoAPIView, "get_permissions", return_value=[]),
+            patch("apps.plugins.api_views.get_with_validated_redirects", return_value=response),
+            patch("apps.plugins.api_views._install_plugin_from_zip", return_value={
+                "success": True, "plugin_key": "retained",
+            }),
+        ):
+            return PluginInstallFromRepoAPIView.as_view()(request)
+
+    def test_duplicate_history_survives_consolidation_and_cold_delete(self):
+        cfg = PluginConfig.objects.get(key="retained")
+        before = set(cfg.owned_tasks)
+        PluginConfig.objects.filter(pk=cfg.pk).update(suspended_schedules=[self.other.pk])
+
+        self.assertEqual(self._update().status_code, 200)
+
+        cfg.refresh_from_db()
+        self.assertEqual(set(cfg.owned_tasks), before | {self.old.task, self.shared.task})
+        self.assertEqual(set(cfg.suspended_schedules), {self.old.pk, self.shared.pk, self.other.pk})
+        self.assertFalse(PluginConfig.objects.filter(key="duplicate").exists())
+        self.assertTrue(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+        self._reset_registry("retained")
+        self._delete("retained")
+        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
+        self.assertTrue(PeriodicTask.objects.filter(pk=self.other.pk).exists())
+
+    def test_enable_restores_only_current_tasks_from_consolidated_history(self):
+        self._set_enabled("retained", False)
+        self.assertEqual(self._update().status_code, 200)
+        self._reset_registry("retained")
+
+        self._set_enabled("retained", True)
+
+        self.assertTrue(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertEqual(PluginConfig.objects.get(key="retained").suspended_schedules, [])
+
+    def test_file_removal_failure_retains_both_histories_for_retry(self):
+        before = list(PluginConfig.objects.order_by("pk").values_list(
+            "key", "owned_tasks", "suspended_schedules"
+        ))
+        with patch("apps.plugins.api_views.shutil.rmtree", side_effect=OSError("injected")):
+            self.assertEqual(self._update().status_code, 500)
+        self.assertEqual(list(PluginConfig.objects.order_by("pk").values_list(
+            "key", "owned_tasks", "suspended_schedules"
+        )), before)
+        self.assertEqual(self._update().status_code, 200)
+        self._reset_registry("retained")
+        self._delete("retained")
+        self.assertFalse(PeriodicTask.objects.filter(pk=self.old.pk).exists())
+
+    def test_database_failure_after_file_removal_retains_history_for_retry(self):
+        real_save = PluginConfig.save
+
+        def fail_transfer(cfg, *args, **kwargs):
+            if cfg.key == "retained" and "owned_tasks" in kwargs.get("update_fields", []):
+                raise DatabaseError("injected")
+            return real_save(cfg, *args, **kwargs)
+
+        with patch.object(PluginConfig, "save", fail_transfer):
+            self.assertEqual(self._update().status_code, 500)
+        self.assertTrue(PluginConfig.objects.filter(key="duplicate").exists())
+        self.assertFalse(os.path.exists(os.path.join(self._plugins_dir, "duplicate")))
+        self.assertEqual(self._update().status_code, 200)
+        self._reset_registry("retained")
+        self._delete("retained")
+        self.assertFalse(PeriodicTask.objects.filter(pk=self.old.pk).exists())
 
 
 class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):

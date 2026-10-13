@@ -1373,20 +1373,40 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
         stale_configs = [
             cfg for cfg in managed_configs if cfg.pk != existing_cfg.pk
         ] if managed_configs else []
-        for stale_cfg in stale_configs:
-            stale_dir = os.path.join(pm.plugins_dir, stale_cfg.key)
+        if stale_configs:
             try:
-                shutil.rmtree(stale_dir)
-            except FileNotFoundError:
-                pass
+                with transaction.atomic():
+                    configs = list(PluginConfig.objects.select_for_update().filter(
+                        pk__in=[cfg.pk for cfg in managed_configs],
+                        source_repo=repo, slug=slug,
+                    ).order_by("pk"))
+                    retained = next(cfg for cfg in configs if cfg.pk == existing_cfg.pk)
+                    owned_tasks = set(retained.owned_tasks or [])
+                    suspended = set(retained.suspended_schedules or [])
+                    for stale_cfg in configs:
+                        if stale_cfg.pk == retained.pk:
+                            continue
+                        stale_dir = os.path.join(pm.plugins_dir, stale_cfg.key)
+                        try:
+                            shutil.rmtree(stale_dir)
+                        except FileNotFoundError:
+                            pass
+                        owned_tasks.update(stale_cfg.owned_tasks or [])
+                        suspended.update(stale_cfg.suspended_schedules or [])
+                        stale_cfg.delete()
+                    # Duplicate installs are the same plugin. Retain cleanup
+                    # history without deleting schedules the surviving install uses.
+                    retained.owned_tasks = sorted(owned_tasks)
+                    retained.suspended_schedules = sorted(suspended)
+                    retained.save(update_fields=[
+                        "owned_tasks", "suspended_schedules", "updated_at",
+                    ])
             except Exception as e:
-                logger.exception("Failed to remove stale plugin directory %s", stale_dir)
+                logger.exception("Failed to consolidate managed plugin '%s'", slug)
                 return Response(
                     {"success": False, "error": f"Failed to remove stale plugin: {e}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
-        if stale_configs:
-            PluginConfig.objects.filter(pk__in=[cfg.pk for cfg in stale_configs]).delete()
 
         # Create/update PluginConfig with managed fields
         # Use defaults for creation only; explicitly update fields on existing records
