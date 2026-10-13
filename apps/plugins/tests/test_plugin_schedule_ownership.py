@@ -96,6 +96,22 @@ class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
         self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
         self.assertEqual(PluginConfig.objects.get(key="retained").suspended_schedules, [])
 
+    def test_disabled_install_suspends_enabled_duplicate_schedules_on_update(self):
+        self._set_enabled("retained", False)
+        PeriodicTask.objects.filter(pk=self.old.pk).update(enabled=True)
+
+        self.assertEqual(self._update().status_code, 200)
+
+        cfg = PluginConfig.objects.get(key="retained")
+        self.assertFalse(cfg.enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertIn(self.old.pk, cfg.suspended_schedules)
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+        self._set_enabled("retained", False)
+        self._set_enabled("retained", True)
+        self.assertTrue(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+
     def test_file_removal_failure_retains_both_histories_for_retry(self):
         before = list(PluginConfig.objects.order_by("pk").values_list(
             "key", "owned_tasks", "suspended_schedules"

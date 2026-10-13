@@ -1401,6 +1401,8 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                     retained.save(update_fields=[
                         "owned_tasks", "suspended_schedules", "updated_at",
                     ])
+                    if not retained.enabled:
+                        pm.suspend_schedules(retained)
             except Exception as e:
                 logger.exception("Failed to consolidate managed plugin '%s'", slug)
                 return Response(
