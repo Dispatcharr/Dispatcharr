@@ -2,6 +2,7 @@ import hashlib
 import logging
 import json
 import re
+import errno
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, serializers
@@ -80,6 +81,21 @@ def _sanitize_plugin_key(value: str) -> str:
     return base or "plugin"
 
 
+def _create_plugin_import_dir(plugins_dir):
+    staging_dir = os.path.join(plugins_dir, ".staging")
+    try:
+        os.makedirs(staging_dir, exist_ok=True)
+        return tempfile.mkdtemp(prefix="plugin_import_", dir=staging_dir)
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EPERM):
+            raise
+        logger.warning(
+            "Cannot use plugin staging directory %s; falling back to the system temporary directory",
+            staging_dir,
+        )
+        return tempfile.mkdtemp(prefix="plugin_import_")
+
+
 def _absolutize_logo_url(request, url: str | None) -> str | None:
     if not url or not request:
         return url
@@ -143,7 +159,7 @@ def _install_plugin_from_zip(
     except zipfile.BadZipFile:
         return {"success": False, "error": "Invalid zip file"}
 
-    tmp_root = tempfile.mkdtemp(prefix="plugin_import_")
+    tmp_root = _create_plugin_import_dir(plugins_dir)
     try:
         file_members = [m for m in zf.infolist() if not m.is_dir()]
         if not file_members:
