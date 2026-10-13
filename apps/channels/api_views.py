@@ -3663,7 +3663,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
     def _user_owns_recording(self, user, recording):
         return RecordingRequest.objects.filter(
-            recording=recording, user=user, is_owner=True
+            recording_id=recording.pk, user_id=user.pk, is_owner=True
         ).exists()
 
     def _playable_recording(self, request, pk):
