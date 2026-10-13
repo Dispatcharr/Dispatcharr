@@ -122,7 +122,7 @@ def _install_plugin_from_zip(
     *,
     file_name="plugin.zip",
     allow_overwrite_key=None,
-    allow_overwrite_keys=None,
+    install_key=None,
     allow_overwrite=False,
 ):
     """Extract and install a plugin from a zip file-like object.
@@ -132,7 +132,7 @@ def _install_plugin_from_zip(
         plugins_dir: Path to the plugins directory.
         file_name: Name hint for deriving plugin key when the zip has flat contents.
         allow_overwrite_key: If set, allow overwriting this specific plugin directory.
-        allow_overwrite_keys: Additional plugin directory keys that may be overwritten.
+        install_key: Existing plugin key to retain when installing a managed update.
         allow_overwrite: If True, allow overwriting any existing plugin with the same key.
 
     Returns:
@@ -197,6 +197,8 @@ def _install_plugin_from_zip(
         plugin_key = _sanitize_plugin_key(plugin_key)
         if len(plugin_key) > 128:
             plugin_key = plugin_key[:128]
+        if install_key:
+            plugin_key = install_key
 
         # Extract logo (prefer one inside the chosen plugin dir, then shallowest)
         logo_bytes = None
@@ -218,10 +220,7 @@ def _install_plugin_from_zip(
             logo_bytes = None
 
         final_dir = os.path.join(plugins_dir, plugin_key)
-        overwrite_keys = set(allow_overwrite_keys or [])
-        if allow_overwrite_key:
-            overwrite_keys.add(allow_overwrite_key)
-        should_overwrite = plugin_key in overwrite_keys or allow_overwrite
+        should_overwrite = (allow_overwrite_key and plugin_key == allow_overwrite_key) or allow_overwrite
         if os.path.exists(final_dir):
             if should_overwrite:
                 # Atomic swap: rename old to backup, move new in, delete backup
@@ -1243,7 +1242,7 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             plugin_key = plugin_key[:128]
 
         managed_configs = list(
-            PluginConfig.objects.filter(source_repo=repo, slug=slug)
+            PluginConfig.objects.filter(source_repo=repo, slug=slug).order_by("id")
         )
         existing_cfg = managed_configs[0] if managed_configs else None
         # Preserve the legacy key lookups for installs that predate managed
@@ -1337,7 +1336,7 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                     pm.plugins_dir,
                     file_name=f"{slug}.zip",
                     allow_overwrite_key=existing_cfg.key if existing_cfg else None,
-                    allow_overwrite_keys=[cfg.key for cfg in managed_configs],
+                    install_key=existing_cfg.key if managed_configs else None,
                 )
         finally:
             resp.close()
@@ -1348,6 +1347,24 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             )
 
         actual_key = result["plugin_key"]
+
+        stale_configs = [
+            cfg for cfg in managed_configs if cfg.pk != existing_cfg.pk
+        ] if managed_configs else []
+        for stale_cfg in stale_configs:
+            stale_dir = os.path.join(pm.plugins_dir, stale_cfg.key)
+            try:
+                shutil.rmtree(stale_dir)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logger.exception("Failed to remove stale plugin directory %s", stale_dir)
+                return Response(
+                    {"success": False, "error": f"Failed to remove stale plugin: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        if stale_configs:
+            PluginConfig.objects.filter(pk__in=[cfg.pk for cfg in stale_configs]).delete()
 
         # Create/update PluginConfig with managed fields
         # Use defaults for creation only; explicitly update fields on existing records

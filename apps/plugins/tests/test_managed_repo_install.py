@@ -50,7 +50,7 @@ class ManagedPluginRepoInstallTests(TestCase):
 
             plugin_manager = Mock(plugins_dir=plugins_dir)
             plugin_manager.list_plugins.return_value = []
-            response = self._zip_response(config.key)
+            response = self._zip_response("archive_plugin")
 
             with (
                 patch(
@@ -83,6 +83,7 @@ class ManagedPluginRepoInstallTests(TestCase):
             self.assertEqual(config.source_repo, self.repo)
             self.assertTrue(config.enabled)
             self.assertEqual(config.settings, {"keep": "this"})
+            self.assertFalse(os.path.exists(os.path.join(plugins_dir, "archive_plugin")))
 
             with open(os.path.join(existing_dir, "plugin.py")) as plugin_file:
                 self.assertEqual(plugin_file.read(), "UPDATED = True\n")
@@ -126,6 +127,7 @@ class ManagedPluginRepoInstallTests(TestCase):
 
         self.assertEqual(result.status_code, 200)
         self.assertEqual(install.call_args.kwargs["allow_overwrite_key"], "legacy_plugin")
+        self.assertIsNone(install.call_args.kwargs["install_key"])
 
     def test_failed_managed_update_preserves_existing_configuration(self):
         config = PluginConfig.objects.create(
@@ -174,32 +176,37 @@ class ManagedPluginRepoInstallTests(TestCase):
         self.assertEqual(config.settings, {"keep": "this"})
         response.close.assert_called_once()
 
-    def test_update_matches_the_zip_key_when_managed_slug_is_duplicated(self):
-        old_config = PluginConfig.objects.create(
-            key="old_zip_plugin",
-            name="Old ZIP plugin",
+    def test_update_consolidates_duplicate_managed_slug_records(self):
+        config = PluginConfig.objects.create(
+            key="stable_plugin",
+            name="Stable plugin",
             version="1.0.0",
             slug="registry-plugin",
             source_repo=self.repo,
-        )
-        matching_config = PluginConfig.objects.create(
-            key="zip_plugin",
-            name="ZIP plugin",
-            version="1.0.0",
-            slug="registry-plugin",
-            source_repo=self.repo,
+            enabled=True,
             settings={"keep": "this"},
+        )
+        stale_config = PluginConfig.objects.create(
+            key="archive_plugin",
+            name="Archive plugin",
+            version="1.0.0",
+            slug="registry-plugin",
+            source_repo=self.repo,
         )
 
         with tempfile.TemporaryDirectory() as plugins_dir:
-            existing_dir = os.path.join(plugins_dir, matching_config.key)
-            os.makedirs(existing_dir)
-            with open(os.path.join(existing_dir, "plugin.py"), "w") as plugin_file:
+            stable_dir = os.path.join(plugins_dir, config.key)
+            stale_dir = os.path.join(plugins_dir, stale_config.key)
+            os.makedirs(stable_dir)
+            os.makedirs(stale_dir)
+            with open(os.path.join(stable_dir, "plugin.py"), "w") as plugin_file:
                 plugin_file.write("UPDATED = False\n")
+            with open(os.path.join(stale_dir, "plugin.py"), "w") as plugin_file:
+                plugin_file.write("STALE = True\n")
 
             plugin_manager = Mock(plugins_dir=plugins_dir)
             plugin_manager.list_plugins.return_value = []
-            response = self._zip_response(matching_config.key)
+            response = self._zip_response(stale_config.key)
 
             with (
                 patch(
@@ -223,12 +230,13 @@ class ManagedPluginRepoInstallTests(TestCase):
                 )
 
             self.assertEqual(result.status_code, 200)
-            self.assertEqual(PluginConfig.objects.count(), 2)
-            matching_config.refresh_from_db()
-            self.assertEqual(matching_config.version, "2.0.0")
-            self.assertEqual(matching_config.settings, {"keep": "this"})
-            old_config.refresh_from_db()
-            self.assertEqual(old_config.version, "1.0.0")
+            self.assertEqual(PluginConfig.objects.count(), 1)
+            config.refresh_from_db()
+            self.assertEqual(config.key, "stable_plugin")
+            self.assertEqual(config.version, "2.0.0")
+            self.assertTrue(config.enabled)
+            self.assertEqual(config.settings, {"keep": "this"})
+            self.assertFalse(os.path.exists(stale_dir))
 
-            with open(os.path.join(existing_dir, "plugin.py")) as plugin_file:
+            with open(os.path.join(stable_dir, "plugin.py")) as plugin_file:
                 self.assertEqual(plugin_file.read(), "UPDATED = True\n")
