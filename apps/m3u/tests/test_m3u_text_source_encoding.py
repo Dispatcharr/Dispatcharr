@@ -19,6 +19,7 @@ from apps.m3u.tasks import _open_m3u_text_source, fetch_m3u_lines
 # a provider logo URL observed in production.
 BAD_LINE = b'#EXTINF:-1 tvg-logo="http://cdn.example.com/cha\xeene.png",Some Channel\n'
 SAMPLE_BAD_M3U = b"#EXTM3U\n" + BAD_LINE + b"http://example.com/stream1\n"
+EXPECTED_LOGO_URL = "http://cdn.example.com/chane.png"
 
 
 class OpenM3uTextSourceEncodingTests(SimpleTestCase):
@@ -32,6 +33,7 @@ class OpenM3uTextSourceEncodingTests(SimpleTestCase):
                 content = f.read()
             self.assertIn("Some Channel", content)
             self.assertIn("http://example.com/stream1", content)
+            self.assertIn(EXPECTED_LOGO_URL, content)
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -69,3 +71,4 @@ class FetchM3uLinesZipEncodingTests(TestCase):
 
         self.assertTrue(success)
         self.assertTrue(any("Some Channel" in line for line in lines))
+        self.assertTrue(any(EXPECTED_LOGO_URL in line for line in lines))
