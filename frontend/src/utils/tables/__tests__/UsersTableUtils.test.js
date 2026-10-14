@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+
 import {
+  buildUserXcUrls,
   getFilteredUsers,
   getSortedUsers,
   getUserFullName,
@@ -246,5 +248,50 @@ describe('getFilteredUsers', () => {
       }),
     ];
     expect(usernames(getFilteredUsers(sparse, 'ghost'))).toEqual(['ghost']);
+  });
+});
+
+// ── buildUserXcUrls ─────────────────────────────────────────────────────────
+describe('buildUserXcUrls', () => {
+  const origin = `${window.location.protocol}//${window.location.host}`;
+
+  it('returns null when no XC password is set', () => {
+    expect(buildUserXcUrls(makeUser())).toBeNull();
+    expect(
+      buildUserXcUrls(makeUser({ custom_properties: { xc_password: '' } }))
+    ).toBeNull();
+  });
+
+  it('builds XC URLs with the user credentials', () => {
+    const urls = buildUserXcUrls(
+      makeUser({ custom_properties: { xc_password: 'secret123' } })
+    );
+    expect(urls).toEqual({
+      server: origin,
+      m3u: `${origin}/get.php?username=testuser&password=secret123`,
+      epg: `${origin}/xmltv.php?username=testuser&password=secret123`,
+    });
+  });
+
+  it('encodes special characters in XC credentials', () => {
+    const urls = buildUserXcUrls(
+      makeUser({
+        username: 'jo hn',
+        custom_properties: { xc_password: 'a&b#c=d' },
+      })
+    );
+    const params = new URL(urls.m3u).searchParams;
+    expect(params.get('username')).toBe('jo hn');
+    expect(params.get('password')).toBe('a&b#c=d');
+  });
+
+  it('points to the backend port in dev mode', () => {
+    const urls = buildUserXcUrls(
+      makeUser({ custom_properties: { xc_password: 'secret123' } }),
+      'dev'
+    );
+    expect(urls.server).toBe(
+      `${window.location.protocol}//${window.location.hostname}:5656`
+    );
   });
 });
