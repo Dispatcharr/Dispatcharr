@@ -270,6 +270,37 @@ class PluginScheduleLifecycleTests(LifecycleFixture, TestCase):
 
         self.assertTrue(PeriodicTask.objects.get(pk=kept.pk).enabled)
 
+    def test_disable_suspends_a_schedule_created_by_stop(self):
+        key = "stopcreates"
+        task_name = self._custom_name(key)
+        existing_name = f"{key}.existing"
+        created_name = f"{key}.from_stop"
+        self._install(
+            key,
+            class_body=f'''
+    def stop(self, context):
+        from django_celery_beat.models import PeriodicTask
+        source = PeriodicTask.objects.get(name="{existing_name}")
+        PeriodicTask.objects.create(
+            name="{created_name}",
+            task="{task_name}",
+            crontab=source.crontab,
+        )
+''',
+        )
+        existing = self._schedule(existing_name, task_name)
+
+        self._set_enabled(key, False)
+
+        created = PeriodicTask.objects.get(name=created_name)
+        for schedule_id in (existing.pk, created.pk):
+            self.assertFalse(PeriodicTask.objects.get(pk=schedule_id).enabled)
+        config = PluginConfig.objects.get(key=key)
+        self.assertEqual(
+            config.suspended_schedules,
+            sorted([existing.pk, created.pk]),
+        )
+
     def test_delete_removes_custom_and_default_named_rows_of_an_enabled_plugin(self):
         self._install("vod2mlib")
         self._install("vod2mlib_extra")

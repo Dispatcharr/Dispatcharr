@@ -253,43 +253,44 @@ class ManagedPluginScheduleCommitTests(ManagedPluginScheduleFixture, Transaction
         PluginManager._instance = peer
         self.assertIs(celery_app.tasks[self.old.task], old_task)
 
+    def _assert_inherited_schedules_suspended(self):
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+
+    def _assert_inherited_schedules_deleted(self):
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+
     def test_warm_peer_disable_suspends_inherited_schedule(self):
         self._consolidate_with_warm_peer()
 
         self._set_enabled("retained", False)
 
-        self.assertNotIn(self.old.task, celery_app.tasks)
-        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
-        self.assertFalse(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
-        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+        self._assert_inherited_schedules_suspended()
 
     def test_warm_peer_delete_removes_inherited_schedule(self):
         self._consolidate_with_warm_peer()
 
         self._delete("retained")
 
-        self.assertNotIn(self.old.task, celery_app.tasks)
-        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
-        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+        self._assert_inherited_schedules_deleted()
 
     def test_disabled_peer_disable_suspends_inherited_schedule(self):
         self._consolidate_with_warm_peer(disabled_duplicate=True)
 
         self._set_enabled("retained", False)
 
-        self.assertNotIn(self.old.task, celery_app.tasks)
-        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
-        self.assertFalse(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
-        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+        self._assert_inherited_schedules_suspended()
 
     def test_disabled_peer_delete_removes_inherited_schedule(self):
         self._consolidate_with_warm_peer(disabled_duplicate=True)
 
         self._delete("retained")
 
-        self.assertNotIn(self.old.task, celery_app.tasks)
-        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
-        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+        self._assert_inherited_schedules_deleted()
 
     def test_successful_update_retires_duplicate_tasks_before_returning(self):
         self.assertIn(self.old.task, celery_app.tasks)
