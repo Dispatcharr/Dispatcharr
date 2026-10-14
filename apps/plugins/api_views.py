@@ -485,6 +485,7 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
             return Response({"success": False, "error": "Invalid 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             pm = PluginManager.get()
+            pm.refresh_task_ownership()
             try:
                 with transaction.atomic():
                     cfg = PluginConfig.objects.select_for_update().get(key=key)
@@ -558,6 +559,7 @@ class PluginLogoAPIView(APIView):
 class PluginDeleteAPIView(PluginAuthMixin, APIView):
     def delete(self, request, key):
         pm = PluginManager.get()
+        pm.refresh_task_ownership()
         plugins_dir = pm.plugins_dir
         target_dir = pm.get_plugin_path(key)
         # Safety: ensure path inside plugins_dir
@@ -578,7 +580,7 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
                 # even though the plugin files have already been removed.
                 if os.path.isdir(target_dir):
                     shutil.rmtree(target_dir)
-                pm.delete_plugin_periodic_tasks(key)
+                pm.delete_plugin_periodic_tasks(key, path=target_dir)
                 if cfg is not None:
                     cfg.delete()
         except Exception as e:
@@ -1386,6 +1388,8 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                     for stale_cfg in configs:
                         if stale_cfg.pk == retained.pk:
                             continue
+                        if not retained.enabled:
+                            pm.suspend_schedules(stale_cfg)
                         stale_dir = os.path.join(pm.plugins_dir, stale_cfg.key)
                         try:
                             shutil.rmtree(stale_dir)
@@ -1394,6 +1398,10 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                         owned_tasks.update(stale_cfg.owned_tasks or [])
                         suspended.update(stale_cfg.suspended_schedules or [])
                         stale_cfg.delete()
+                        # Retire removed installs only after their history transfer commits.
+                        transaction.on_commit(
+                            lambda path=stale_dir: pm._unregister_tasks_from_path(path)
+                        )
                     # Duplicate installs are the same plugin. Retain cleanup
                     # history without deleting schedules the surviving install uses.
                     retained.owned_tasks = sorted(owned_tasks)

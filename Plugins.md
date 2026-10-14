@@ -182,6 +182,9 @@ Export a `Plugin` class. Supported attributes and behavior:
 - `stop(context)` (optional callable): Invoked when the plugin is disabled, deleted, or reloaded so you can gracefully shut down any processes you started. If `stop()` is not defined but you have an action with id `stop`, Dispatcharr will call `run("stop", {}, context)` as a fallback. On disable and delete, `stop()` runs inside the database transaction while the plugin's row is locked, so keep it short and do not close database connections in it. If `stop()` hits a database error, its database changes are rolled back and the disable or delete still completes.
 
 ### Scheduled Celery tasks
+
+Import scheduled task modules from the plugin entrypoint so their tasks register when the plugin loads.
+
 Dispatcharr records the Celery tasks your plugin registers in its own modules (`@shared_task`, with or without `name=`) each time it loads while enabled, and keeps names from earlier versions for deletion. django-celery-beat `PeriodicTask` rows whose `task` is a recorded name are disabled when the plugin is disabled and deleted with it. On enable, Dispatcharr reloads the installed plugin and restores only previously enabled rows whose tasks are still present. Removed tasks stay disabled. A plugin that has not been loaded while enabled since this behavior was introduced has no recorded task names, so its schedules are left untouched.
 
 Deleting a plugin keeps shared interval and crontab definitions. These do not run without a `PeriodicTask` row.

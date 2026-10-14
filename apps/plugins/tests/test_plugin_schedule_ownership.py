@@ -1,8 +1,10 @@
 import io
 import importlib.util
+import inspect
 import json
 import os
 import py_compile
+import shutil
 import stat
 import subprocess
 import sys
@@ -27,7 +29,7 @@ from apps.plugins.tests.test_plugin_schedule_lifecycle import (
 from dispatcharr.celery import app as celery_app
 
 
-class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
+class ManagedPluginScheduleFixture(LifecycleFixture):
     def setUp(self):
         super().setUp()
         self.repo = PluginRepo.objects.create(
@@ -66,6 +68,12 @@ class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
         ):
             return PluginInstallFromRepoAPIView.as_view()(request)
 
+
+class ManagedPluginScheduleConsolidationTests(ManagedPluginScheduleFixture, TestCase):
+    def _update(self, execute_callbacks=True):
+        with self.captureOnCommitCallbacks(execute=execute_callbacks):
+            return super()._update()
+
     def test_duplicate_history_survives_consolidation_and_cold_delete(self):
         cfg = PluginConfig.objects.get(key="retained")
         before = set(cfg.owned_tasks)
@@ -95,6 +103,71 @@ class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
         self.assertTrue(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
         self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
         self.assertEqual(PluginConfig.objects.get(key="retained").suspended_schedules, [])
+
+    def test_duplicate_history_survives_consolidation_and_warm_delete(self):
+        self.assertIn(self.old.task, celery_app.tasks)
+        self.assertEqual(self._update().status_code, 200)
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertIn(self.shared.task, celery_app.tasks)
+
+        self._delete("retained")
+
+        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
+        self.assertTrue(PeriodicTask.objects.filter(pk=self.other.pk).exists())
+
+    def test_disabled_update_and_warm_delete_preserve_a_foreign_callable_in_history(self):
+        self._set_enabled("retained", False)
+        removed = self._schedule("duplicate.removed", self._default_name("duplicate"))
+        source = _PLUGIN_PY[_PLUGIN_PY.index("class Plugin:"):].replace("__KEY__", "duplicate")
+        with open(os.path.join(self._plugins_dir, "duplicate", "plugin.py"), "w") as plugin:
+            plugin.write(source)
+        celery_app.tasks.pop(self.old.task)
+        self._install("foreign", custom=self.old.task)
+        PluginManager.get().discover_plugins(sync_db=True)
+        foreign = celery_app.tasks[self.old.task]
+        self.assertTrue(foreign.run.__globals__["__file__"].startswith(
+            os.path.join(self._plugins_dir, "foreign") + os.sep
+        ))
+        self.assertIn(self.old.task, PluginConfig.objects.get(key="duplicate").owned_tasks)
+        self.assertIn(removed.task, PluginConfig.objects.get(key="duplicate").owned_tasks)
+        PeriodicTask.objects.filter(pk=self.old.pk).update(enabled=True)
+        PluginConfig.objects.filter(key="duplicate").update(suspended_schedules=[])
+        before = self._payload(self.old)
+
+        self.assertEqual(self._update().status_code, 200)
+
+        self.assertIs(celery_app.tasks[self.old.task], foreign)
+        self.assertNotIn(removed.task, celery_app.tasks)
+        self.assertTrue(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=removed.pk).enabled)
+        cfg = PluginConfig.objects.get(key="retained")
+        self.assertIn(removed.pk, cfg.suspended_schedules)
+        self.assertNotIn(self.old.pk, cfg.suspended_schedules)
+        self._delete("retained")
+
+        self.assertTrue(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertEqual(self._payload(self.old), before)
+        self.assertFalse(PeriodicTask.objects.filter(pk=removed.pk).exists())
+        self.assertTrue(PluginConfig.objects.get(key="foreign").enabled)
+        self.assertTrue(os.path.isfile(os.path.join(self._plugins_dir, "foreign", "plugin.py")))
+
+    def test_retirement_rechecks_a_task_replaced_after_consolidation(self):
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            self.assertEqual(self._update(execute_callbacks=False).status_code, 200)
+        self.assertEqual(len(callbacks), 2)
+        self.assertIn(self.old.task, celery_app.tasks)
+        celery_app.tasks.pop(self.old.task)
+        self._install("foreign", custom=self.old.task)
+        foreign = celery_app.tasks[self.old.task]
+
+        for callback in callbacks:
+            callback()
+
+        self.assertIs(celery_app.tasks[self.old.task], foreign)
+        PeriodicTask.objects.filter(pk=self.old.pk).update(enabled=True)
+        self._delete("retained")
+        self.assertTrue(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertTrue(PluginConfig.objects.get(key="foreign").enabled)
 
     def test_disabled_install_suspends_enabled_duplicate_schedules_on_update(self):
         self._set_enabled("retained", False)
@@ -128,6 +201,7 @@ class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
 
     def test_database_failure_after_file_removal_retains_history_for_retry(self):
         real_save = PluginConfig.save
+        old_task = celery_app.tasks[self.old.task]
 
         def fail_transfer(cfg, *args, **kwargs):
             if cfg.key == "retained" and "owned_tasks" in kwargs.get("update_fields", []):
@@ -138,13 +212,283 @@ class ManagedPluginScheduleConsolidationTests(LifecycleFixture, TestCase):
             self.assertEqual(self._update().status_code, 500)
         self.assertTrue(PluginConfig.objects.filter(key="duplicate").exists())
         self.assertFalse(os.path.exists(os.path.join(self._plugins_dir, "duplicate")))
+        self.assertIs(celery_app.tasks[self.old.task], old_task)
+        PluginManager.get().discover_plugins(sync_db=False, force_reload=True)
+        self.assertIs(celery_app.tasks[self.old.task], old_task)
         self.assertEqual(self._update().status_code, 200)
         self._reset_registry("retained")
         self._delete("retained")
         self.assertFalse(PeriodicTask.objects.filter(pk=self.old.pk).exists())
 
 
+class ManagedPluginScheduleCommitTests(ManagedPluginScheduleFixture, TransactionTestCase):
+    def _consolidate_with_warm_peer(self, *, disabled_duplicate=False):
+        current = PluginManager.get()
+        old_task = celery_app.tasks[self.old.task]
+        if disabled_duplicate:
+            self._set_enabled("duplicate", False)
+            self.assertFalse(PluginConfig.objects.get(key="duplicate").enabled)
+            self.assertFalse(current._registry["duplicate"].loaded)
+            self.assertNotIn("duplicate", current._package_names)
+            self.assertEqual(
+                current._registry["duplicate"].path,
+                os.path.join(self._plugins_dir, "duplicate"),
+            )
+            self.assertIs(celery_app.tasks[self.old.task], old_task)
+        peer = PluginManager()
+        peer._registry = dict(current._registry)
+        peer._package_names = dict(current._package_names)
+        peer._alias_names = dict(current._alias_names)
+        peer._last_reload_token = current._last_reload_token
+        peer._discovery_completed = True
+        PeriodicTask.objects.filter(pk=self.old.pk).update(enabled=True)
+
+        self.assertEqual(self._update().status_code, 200)
+        self.assertFalse(PluginConfig.objects.filter(key="duplicate").exists())
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertIn(self.old.task, PluginConfig.objects.get(key="retained").owned_tasks)
+
+        # Simulate a peer's unchanged registrations after another process commits.
+        celery_app.tasks[self.old.task] = old_task
+        PluginManager._instance = peer
+        self.assertIs(celery_app.tasks[self.old.task], old_task)
+
+    def test_warm_peer_disable_suspends_inherited_schedule(self):
+        self._consolidate_with_warm_peer()
+
+        self._set_enabled("retained", False)
+
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+
+    def test_warm_peer_delete_removes_inherited_schedule(self):
+        self._consolidate_with_warm_peer()
+
+        self._delete("retained")
+
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+
+    def test_disabled_peer_disable_suspends_inherited_schedule(self):
+        self._consolidate_with_warm_peer(disabled_duplicate=True)
+
+        self._set_enabled("retained", False)
+
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.old.pk).enabled)
+        self.assertFalse(PeriodicTask.objects.get(pk=self.shared.pk).enabled)
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+
+    def test_disabled_peer_delete_removes_inherited_schedule(self):
+        self._consolidate_with_warm_peer(disabled_duplicate=True)
+
+        self._delete("retained")
+
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
+        self.assertTrue(PeriodicTask.objects.get(pk=self.other.pk).enabled)
+
+    def test_successful_update_retires_duplicate_tasks_before_returning(self):
+        self.assertIn(self.old.task, celery_app.tasks)
+
+        self.assertEqual(self._update().status_code, 200)
+
+        self.assertFalse(connection.in_atomic_block)
+        self.assertNotIn(self.old.task, celery_app.tasks)
+        self.assertIn(self.shared.task, celery_app.tasks)
+        self._delete("retained")
+        self.assertFalse(PeriodicTask.objects.filter(pk__in=[self.old.pk, self.shared.pk]).exists())
+
+
 class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
+    def test_cold_delete_does_not_import_enabled_plugin(self):
+        self._install("cold_owner")
+        owned = self._schedule("cold.owner", self._custom_name("cold_owner"))
+        other = self._schedule("other.owner", "unrelated.tick")
+        self._reset_registry("cold_owner")
+        imports_before = self._import_count("cold_owner")
+
+        self._delete("cold_owner")
+
+        self.assertEqual(self._import_count("cold_owner"), imports_before)
+        self.assertFalse(PeriodicTask.objects.filter(pk=owned.pk).exists())
+        self.assertTrue(PeriodicTask.objects.filter(pk=other.pk).exists())
+        self.assertFalse(PluginConfig.objects.filter(key="cold_owner").exists())
+        self.assertNotIn(self._custom_name("cold_owner"), celery_app.tasks)
+
+    def _assert_historical_name_registered_elsewhere(self, action, key, folder, alias=False):
+        foreign_key = folder.replace(" ", "_").lower()
+        moved_name = self._custom_name(foreign_key)
+        removed_name = f"{key}.removed"
+        self._task_names.add(removed_name)
+        self._install(key, custom=moved_name, class_body=f'''
+@shared_task(name="{removed_name}")
+def removed_task():
+    return "ok"
+''')
+        moved = self._schedule("moved", moved_name, kwargs='{"value": 1}', queue="default")
+        removed = self._schedule("removed", removed_name)
+        cfg = PluginConfig.objects.get(key=key)
+        self.assertIn(moved_name, cfg.owned_tasks)
+        self.assertIn(removed.task, cfg.owned_tasks)
+
+        source = _PLUGIN_PY[_PLUGIN_PY.index("class Plugin:"):].replace("__KEY__", key)
+        self._replace_plugin_from_zip(key, source)
+        celery_app.tasks.pop(moved_name)
+        celery_app.tasks.pop(removed.task)
+        if alias:
+            self._install_jobs_plugin(folder, f"from {folder}.jobs import scan")
+        else:
+            self._install(folder, custom=moved_name)
+        PluginManager.get().discover_plugins(sync_db=True)
+        foreign_path = os.path.join(self._plugins_dir, folder)
+        registered = celery_app.tasks[moved_name]
+        self.assertTrue(registered.run.__globals__["__file__"].startswith(foreign_path + os.sep))
+        if alias:
+            self.assertEqual(registered.__module__, f"{folder}.jobs")
+        else:
+            self.assertEqual(registered.__module__, f"_dispatcharr_plugin_{foreign_key}.plugin")
+        self.assertNotIn(removed.task, celery_app.tasks)
+        before = self._payload(moved)
+        foreign_before = list(PluginConfig.objects.filter(key=foreign_key).values())
+        PluginManager._instance = None
+
+        if action == "disable":
+            self._set_enabled(key, False)
+            cfg.refresh_from_db()
+            self.assertFalse(cfg.enabled)
+            self.assertEqual(cfg.suspended_schedules, [removed.pk])
+            self.assertFalse(PeriodicTask.objects.get(pk=removed.pk).enabled)
+        else:
+            self._delete(key)
+            self.assertFalse(PluginConfig.objects.filter(key=key).exists())
+            self.assertFalse(PeriodicTask.objects.filter(pk=removed.pk).exists())
+            self.assertFalse(os.path.exists(os.path.join(self._plugins_dir, key)))
+
+        self.assertTrue(PeriodicTask.objects.filter(pk=moved.pk).exists())
+        self.assertTrue(PeriodicTask.objects.get(pk=moved.pk).enabled)
+        self.assertEqual(self._payload(moved), before)
+        self.assertEqual(list(PluginConfig.objects.filter(key=foreign_key).values()), foreign_before)
+        self.assertTrue(os.path.isfile(os.path.join(foreign_path, "plugin.py")))
+
+    def test_disable_ignores_historical_name_now_registered_outside_plugin(self):
+        self._assert_historical_name_registered_elsewhere("disable", "bad-folder", "bad_folder")
+
+    def test_delete_ignores_historical_name_now_registered_outside_plugin(self):
+        self._assert_historical_name_registered_elsewhere("delete", "bad-folder", "bad_folder")
+
+    def test_disable_ignores_historical_name_now_registered_through_foreign_alias(self):
+        self._assert_historical_name_registered_elsewhere(
+            "disable", "alias_owner", "alias_owner_extra", alias=True,
+        )
+
+    def test_delete_ignores_historical_name_now_registered_through_foreign_alias(self):
+        self._assert_historical_name_registered_elsewhere(
+            "delete", "alias_owner", "alias_owner_extra", alias=True,
+        )
+
+    def test_registered_callable_without_source_keeps_historical_cleanup(self):
+        key = "unknownsource"
+        self._install(key)
+        name = self._custom_name(key)
+        row = self._schedule("unknown.source", name)
+        self.assertIn(name, PluginConfig.objects.get(key=key).owned_tasks)
+        celery_app.tasks.pop(name)
+        namespace = {"__name__": "unknown_source"}
+        exec("def tick(): return 'ok'", namespace)
+        celery_app.task(name=name)(namespace["tick"])
+        self.assertNotIn("__file__", celery_app.tasks[name].run.__globals__)
+
+        self._set_enabled(key, False)
+
+        self.assertFalse(PeriodicTask.objects.get(pk=row.pk).enabled)
+        self.assertEqual(PluginConfig.objects.get(key=key).suspended_schedules, [row.pk])
+        self._delete(key)
+        self.assertFalse(PeriodicTask.objects.filter(pk=row.pk).exists())
+
+    def _mixed_case_registered_tasks(self):
+        folder = "Mixed Case"
+        key = self._install_jobs_plugin(folder, "from .jobs import scan")
+        jobs_path = os.path.join(self._plugins_dir, folder, "jobs.py")
+        moved_name = f"{key}.moved"
+        self._task_names.add(moved_name)
+        original = _JOBS_PY.replace("__KEY__", key)
+        with open(jobs_path, "w") as jobs:
+            jobs.write(original + f'''
+@shared_task(name="{moved_name}")
+def moved():
+    return "ok"
+''')
+        PluginManager.get().discover_plugins(force_reload=True)
+        self.assertIn(moved_name, PluginConfig.objects.get(key=key).owned_tasks)
+        with open(jobs_path, "w") as jobs:
+            jobs.write(original)
+        celery_app.tasks.pop(moved_name)
+        self._install("foreign", custom=moved_name)
+        own = self._schedule("mixed.owned", self._custom_name(key))
+        moved = self._schedule("mixed.moved", moved_name)
+        self.assertIn(own.task, celery_app.tasks)
+        self.assertTrue(celery_app.tasks[own.task].run.__globals__["__file__"].startswith(
+            os.path.join(self._plugins_dir, folder) + os.sep
+        ))
+        self.assertTrue(celery_app.tasks[moved_name].run.__globals__["__file__"].startswith(
+            os.path.join(self._plugins_dir, "foreign") + os.sep
+        ))
+        return folder, key, own, moved
+
+    def _assert_mixed_case_deleted(self, folder, key, own, moved):
+        self.assertFalse(PeriodicTask.objects.filter(pk=own.pk).exists())
+        self.assertFalse(PluginConfig.objects.filter(key=key).exists())
+        self.assertFalse(os.path.exists(os.path.join(self._plugins_dir, folder)))
+        self.assertTrue(PeriodicTask.objects.filter(pk=moved.pk).exists())
+        self.assertTrue(PeriodicTask.objects.get(pk=moved.pk).enabled)
+        self.assertTrue(PluginConfig.objects.get(key="foreign").enabled)
+        self.assertTrue(os.path.isfile(os.path.join(self._plugins_dir, "foreign", "plugin.py")))
+
+    def test_cold_delete_uses_actual_folder_for_warm_registered_tasks(self):
+        folder, key, own, moved = self._mixed_case_registered_tasks()
+        PluginManager._instance = None
+
+        self._delete(key)
+
+        self._assert_mixed_case_deleted(folder, key, own, moved)
+
+    def test_failed_cleanup_can_retry_with_missing_folder_and_warm_registered_tasks(self):
+        folder, key, own, moved = self._mixed_case_registered_tasks()
+        config_table = PluginConfig._meta.db_table
+        own_task = celery_app.tasks[own.task]
+        moved_task = celery_app.tasks[moved.task]
+        failed = []
+
+        def fail_config_delete(execute, sql, params, many, context):
+            if sql.lstrip().upper().startswith(f'DELETE FROM "{config_table}"'.upper()):
+                failed.append((
+                    not os.path.exists(os.path.join(self._plugins_dir, folder)),
+                    not PeriodicTask.objects.filter(pk=own.pk).exists(),
+                    PeriodicTask.objects.filter(pk=moved.pk).exists(),
+                ))
+                return execute("DELETE FROM history_missing_schedule_table", None, False, context)
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(fail_config_delete):
+            self._delete(key, status_code=500)
+
+        self.assertEqual(failed, [(True, True, True)])
+        self.assertFalse(os.path.exists(os.path.join(self._plugins_dir, folder)))
+        self.assertTrue(PeriodicTask.objects.get(pk=own.pk).enabled)
+        self.assertTrue(PeriodicTask.objects.get(pk=moved.pk).enabled)
+        self.assertIn(own.task, PluginConfig.objects.get(key=key).owned_tasks)
+        self.assertIs(celery_app.tasks[own.task], own_task)
+        self.assertIs(celery_app.tasks[moved.task], moved_task)
+        PluginManager._instance = None
+
+        self._delete(key)
+
+        self._assert_mixed_case_deleted(folder, key, own, moved)
+
     def test_colliding_package_names_keep_separate_schedule_ownership(self):
         self._install("bad-folder", custom="dash_unique.tick")
         self._install("bad_folder", custom="underscore_unique.tick")
@@ -174,7 +518,9 @@ class PluginScheduleOwnershipTests(LifecycleFixture, TestCase):
             with open(os.path.join(self._plugins_dir, key, "plugin.json"), "rb") as f:
                 zipped.writestr(f"{key}/plugin.json", f.read())
         archive.seek(0)
-        result = _install_plugin_from_zip(archive, self._plugins_dir, allow_overwrite_key=key)
+        result = _install_plugin_from_zip(
+            archive, self._plugins_dir, allow_overwrite_key=key, install_key=key,
+        )
         self.assertTrue(result["success"], result)
 
     def _upgrade_while_disabled(self, cold_registry):
@@ -786,3 +1132,206 @@ class PluginScheduleOwnershipDeleteTests(LifecycleFixture, TransactionTestCase):
         self._delete("vod2mlib")
         self.assertFalse(PeriodicTask.objects.filter(pk=row.pk).exists())
         self.assertFalse(PluginConfig.objects.filter(key="vod2mlib").exists())
+
+
+class PluginScheduleRegistryTests(LifecycleFixture, TestCase):
+    def test_discovery_keeps_registration_when_removed_folder_has_config(self):
+        pm = self._install("registry_owner")
+        name = self._custom_name("registry_owner")
+        task = celery_app.tasks[name]
+        shutil.rmtree(os.path.join(self._plugins_dir, "registry_owner"))
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            pm.discover_plugins(sync_db=False, force_reload=True)
+
+        self.assertEqual(callbacks, [])
+        self.assertIs(celery_app.tasks[name], task)
+
+    def test_discovery_keeps_registration_when_removed_config_has_folder(self):
+        pm = self._install("registry_owner")
+        name = self._custom_name("registry_owner")
+        task = celery_app.tasks[name]
+        PluginConfig.objects.filter(key="registry_owner").delete()
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            pm.discover_plugins(sync_db=False, force_reload=True)
+
+        self.assertEqual(callbacks, [])
+        self.assertIs(celery_app.tasks[name], task)
+
+    def test_discovery_keeps_registration_when_configs_cannot_be_read(self):
+        pm = self._install("registry_owner")
+        name = self._custom_name("registry_owner")
+        task = celery_app.tasks[name]
+        shutil.rmtree(os.path.join(self._plugins_dir, "registry_owner"))
+        PluginConfig.objects.filter(key="registry_owner").delete()
+
+        with (
+            self.captureOnCommitCallbacks(execute=True) as callbacks,
+            patch.object(PluginConfig.objects, "all", side_effect=DatabaseError("injected")),
+        ):
+            pm.discover_plugins(sync_db=False, force_reload=True)
+
+        self.assertEqual(callbacks, [])
+        self.assertIs(celery_app.tasks[name], task)
+        self.assertFalse(pm._discovery_completed)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            pm.discover_plugins(sync_db=False, use_cache=True)
+
+        self.assertNotIn(name, celery_app.tasks)
+
+    def test_rolled_back_discovery_can_retry_registration_retirement(self):
+        pm = self._install("registry_owner")
+        name = self._custom_name("registry_owner")
+        task = celery_app.tasks[name]
+        shutil.rmtree(os.path.join(self._plugins_dir, "registry_owner"))
+        PluginConfig.objects.filter(key="registry_owner").delete()
+
+        with self.assertRaisesMessage(ValueError, "injected rollback"):
+            with transaction.atomic():
+                pm.discover_plugins(sync_db=False, force_reload=True)
+                self.assertIs(celery_app.tasks[name], task)
+                raise ValueError("injected rollback")
+
+        self.assertIs(celery_app.tasks[name], task)
+        self.assertFalse(pm._discovery_completed)
+        with self.captureOnCommitCallbacks(execute=True):
+            pm.discover_plugins(sync_db=False, use_cache=True)
+
+        self.assertNotIn(name, celery_app.tasks)
+
+    def test_deferred_retirement_preserves_a_reinstalled_plugin(self):
+        pm = self._install("registry_owner")
+        name = self._custom_name("registry_owner")
+        path = os.path.join(self._plugins_dir, "registry_owner")
+        shutil.rmtree(path)
+        PluginConfig.objects.filter(key="registry_owner").delete()
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            pm.discover_plugins(sync_db=False, force_reload=True)
+        self.assertEqual(len(callbacks), 1)
+        self._install("registry_owner")
+        task = celery_app.tasks[name]
+
+        callbacks[0]()
+
+        self.assertIs(celery_app.tasks[name], task)
+        self.assertTrue(PluginConfig.objects.get(key="registry_owner").enabled)
+        self.assertTrue(os.path.isfile(os.path.join(path, "plugin.py")))
+
+    def test_failed_retirement_config_read_can_retry(self):
+        pm = self._install("registry_owner")
+        name = self._custom_name("registry_owner")
+        task = celery_app.tasks[name]
+        shutil.rmtree(os.path.join(self._plugins_dir, "registry_owner"))
+        PluginConfig.objects.filter(key="registry_owner").delete()
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            pm.discover_plugins(sync_db=False, force_reload=True)
+        self.assertEqual(len(callbacks), 1)
+
+        with patch.object(PluginConfig.objects, "filter", side_effect=DatabaseError("injected")):
+            callbacks[0]()
+
+        self.assertIs(celery_app.tasks[name], task)
+        self.assertFalse(pm._discovery_completed)
+        with self.captureOnCommitCallbacks(execute=True):
+            pm.discover_plugins(sync_db=False, use_cache=True)
+
+        self.assertNotIn(name, celery_app.tasks)
+
+    def _prepare_foreign_schedule(self):
+        self._install("registry_owner")
+        self._install("registry_foreign")
+        cfg = PluginConfig.objects.get(key="registry_owner")
+        cfg.owned_tasks = sorted(set(cfg.owned_tasks) | {"registry_foreign.scheduled_rescan"})
+        cfg.save(update_fields=["owned_tasks"])
+        row = self._schedule("registry_foreign.row", "registry_foreign.scheduled_rescan")
+        own_row = self._schedule("registry_owner.row", "registry_owner.scheduled_rescan")
+        return row, own_row
+
+    def _change_registry_during_scan(self, action):
+        foreign_row, own_row = self._prepare_foreign_schedule()
+        pm = PluginManager.get()
+        foreign_task = celery_app.tasks["registry_foreign.scheduled_rescan"]
+        foreign_run = foreign_task.run
+        foreign_path = pm._task_source_path(foreign_task)
+        self.assertTrue(foreign_path.startswith(os.path.join(self._plugins_dir, "registry_foreign")))
+        started, registered = threading.Event(), threading.Event()
+        intercepted = []
+        errors = []
+        task_name = "registry_concurrent.tick"
+        self._task_names.add(task_name)
+        source_path = os.path.join(self._plugins_dir, "registration.py")
+        source = "def tick(): return 'ok'\n"
+        with open(source_path, "w") as file:
+            file.write(source)
+        task_globals = {"__file__": source_path, "__name__": "registry_concurrent"}
+        exec(compile(source, source_path, "exec"), task_globals)
+        old_unwrap = inspect.unwrap
+
+        def unwrap(run):
+            if run is foreign_run and not intercepted:
+                intercepted.append(True)
+                started.set()
+                if not registered.wait(10):
+                    raise AssertionError("registration did not reach barrier")
+            return old_unwrap(run)
+
+        def register():
+            try:
+                if not started.wait(10):
+                    raise AssertionError("source scan did not reach barrier")
+                celery_app.task(name=task_name, lazy=False)(task_globals["tick"])
+            except Exception as error:
+                errors.append(error)
+            finally:
+                registered.set()
+
+        thread = threading.Thread(target=register)
+        thread.start()
+        try:
+            with patch.object(inspect, "unwrap", side_effect=unwrap):
+                if action == "disable":
+                    self._set_enabled("registry_owner", False)
+                else:
+                    self._delete("registry_owner")
+        finally:
+            started.set()
+            registered.set()
+            thread.join(12)
+        self.assertFalse(thread.is_alive(), "registration thread retained")
+        self.assertFalse(errors, errors)
+        self.assertEqual(intercepted, [True])
+        self.assertIn(task_name, celery_app.tasks)
+        self.assertIs(celery_app.tasks["registry_foreign.scheduled_rescan"], foreign_task)
+        self.assertEqual(pm._task_source_path(foreign_task), foreign_path)
+        if action == "disable":
+            self.assertFalse(PeriodicTask.objects.get(pk=own_row.pk).enabled)
+            self.assertTrue(PeriodicTask.objects.get(pk=foreign_row.pk).enabled)
+        else:
+            self.assertFalse(PeriodicTask.objects.filter(pk=own_row.pk).exists())
+            self.assertTrue(PeriodicTask.objects.filter(pk=foreign_row.pk).exists())
+
+    def test_disable_preserves_foreign_row_during_concurrent_registration(self):
+        self._change_registry_during_scan("disable")
+
+    def test_delete_preserves_foreign_row_during_concurrent_registration(self):
+        self._change_registry_during_scan("delete")
+
+    def test_disable_preserves_current_foreign_task_when_discovery_fails(self):
+        row, _ = self._prepare_foreign_schedule()
+        pm = PluginManager.get()
+        with patch.object(pm, "_task_names_from_path", side_effect=RuntimeError(
+            "dictionary changed size during iteration"
+        )):
+            self._set_enabled("registry_owner", False)
+        self.assertTrue(PeriodicTask.objects.get(pk=row.pk).enabled)
+
+    def test_delete_preserves_current_foreign_task_when_discovery_fails(self):
+        row, _ = self._prepare_foreign_schedule()
+        pm = PluginManager.get()
+        with patch.object(pm, "_task_names_from_path", side_effect=RuntimeError(
+            "dictionary changed size during iteration"
+        )):
+            self._delete("registry_owner")
+        self.assertTrue(PeriodicTask.objects.filter(pk=row.pk).exists())
