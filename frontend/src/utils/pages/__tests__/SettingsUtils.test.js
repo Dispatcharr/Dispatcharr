@@ -64,6 +64,7 @@ describe('SettingsUtils', () => {
             default_stream_profile: 3,
             default_output_format: 'fmp4',
             hdhr_output_profile_id: 9,
+            hdhr_output_format: 'fmp4',
             m3u_hash_key: 'name,url',
           },
         },
@@ -82,10 +83,21 @@ describe('SettingsUtils', () => {
         default_stream_profile: '3',
         default_output_format: 'fmp4',
         hdhr_output_profile_id: '9',
+        hdhr_output_format: 'fmp4',
         m3u_hash_key: ['name', 'url'],
       });
       expect(result).not.toHaveProperty('output_profile_id');
       expect(result).not.toHaveProperty('comskip_enabled');
+    });
+
+    it('defaults hdhr_output_format to mpegts when unset, even if the global default is fmp4', () => {
+      const result = SettingsUtils.parseGroupSettings(
+        { stream_settings: { value: { default_output_format: 'fmp4' } } },
+        'stream_settings'
+      );
+
+      expect(result.default_output_format).toBe('fmp4');
+      expect(result.hdhr_output_format).toBe('mpegts');
     });
 
     it('parses dvr output_profile_id as a string and maps qsv to hwassist', () => {
@@ -229,6 +241,25 @@ describe('SettingsUtils', () => {
           'stream_settings'
         )
       ).toEqual({});
+    });
+
+    it('emits hdhr_output_format when it differs from the stored value', () => {
+      const settings = {
+        stream_settings: {
+          value: {
+            default_output_format: 'fmp4',
+            hdhr_output_format: 'mpegts',
+          },
+        },
+      };
+
+      const changes = SettingsUtils.getChangedGroupSettings(
+        { default_output_format: 'fmp4', hdhr_output_format: 'fmp4' },
+        settings,
+        'stream_settings'
+      );
+
+      expect(changes).toEqual({ hdhr_output_format: 'fmp4' });
     });
 
     it('includes only changed fields for the group', () => {

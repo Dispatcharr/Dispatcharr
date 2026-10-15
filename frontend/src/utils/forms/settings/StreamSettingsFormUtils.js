@@ -7,6 +7,7 @@ export const getStreamSettingsFormInitialValues = () => {
     m3u_hash_key: [],
     default_output_format: 'mpegts',
     hdhr_output_profile_id: null,
+    hdhr_output_format: 'mpegts',
   };
 };
 
