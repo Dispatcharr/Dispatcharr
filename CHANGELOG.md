@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TV Guide trackpad scrolling preserves vertical movement.** Diagonal gestures now move the guide vertically while panning the timeline horizontally instead of requiring an exactly vertical swipe.
 - **M3U refreshes no longer fail on invalid UTF-8 bytes in provider playlists.** Plain, gzip, xz, and ZIP sources now skip invalid bytes while decoding so a malformed metadata value does not abort the entire refresh. - Thanks [@locomike](https://github.com/locomike)
 - **Plugin-owned schedules now follow plugin state.** They pause when a plugin is disabled, resume only for tasks still present after an upgrade, and are removed when the plugin is deleted. (Fixes #1749) - Thanks [@JonathanAlbarran](https://github.com/JonathanAlbarran)
 - **Managed plugin marketplace updates no longer fail when the registry slug differs from the ZIP directory key.** Updates retain the existing managed plugin key even when a release archive uses a different folder name. Historical duplicate records created by earlier updates are consolidated and their stale directories are removed. (Fixes #1801)
