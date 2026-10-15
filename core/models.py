@@ -536,6 +536,7 @@ class CoreSettings(models.Model):
             "m3u_hash_key": "",
             "default_output_format": "mpegts",
             "hdhr_output_profile_id": None,
+            "hdhr_output_format": "mpegts",
         })
 
     @classmethod
@@ -901,6 +902,14 @@ class CoreSettings(models.Model):
             return int(raw) if raw is not None else None
         except (ValueError, TypeError):
             return None
+
+    @classmethod
+    def get_hdhr_output_format(cls):
+        """HDHR output format, falling back to MPEG-TS for missing or invalid values."""
+        raw = cls.get_stream_settings().get("hdhr_output_format")
+        if raw in ("mpegts", "fmp4"):
+            return raw
+        return "mpegts"
 
     @classmethod
     def get_dvr_output_profile_id(cls):

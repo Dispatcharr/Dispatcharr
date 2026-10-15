@@ -31,6 +31,7 @@ const GROUP_CONFIG = {
       m3u_hash_key: { type: 'm3u_hash_key', default: [] },
       default_output_format: { type: 'string', default: 'mpegts' },
       hdhr_output_profile_id: { type: 'id' },
+      hdhr_output_format: { type: 'string', default: 'mpegts' },
     },
   },
   epg_settings: {
