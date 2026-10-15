@@ -538,37 +538,39 @@ export default function TVChannelGuide({ startDate, endDate }) {
       const guide = guideRef.current;
       const timeline = timelineRef.current;
 
-      if (!guide) {
+      if (!guide || !guide.contains(event.target)) {
         return;
       }
 
-      if (event.deltaX !== 0 || (event.shiftKey && event.deltaY !== 0)) {
-        event.preventDefault();
-        event.stopPropagation();
+      event.preventDefault();
+      event.stopPropagation();
 
-        const delta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
-        const newScrollLeft = guide.scrollLeft + delta;
+      const deltaX = event.shiftKey ? event.deltaY : event.deltaX;
+      const deltaY = event.shiftKey ? 0 : event.deltaY;
+      const newScrollLeft = guide.scrollLeft + deltaX;
 
-        // Set both guide and timeline scroll positions
-        if (typeof guide.scrollTo === 'function') {
-          guide.scrollTo({ left: newScrollLeft, behavior: 'auto' });
-        } else {
-          guide.scrollLeft = newScrollLeft;
-        }
-
-        // Also sync timeline immediately
-        if (timeline) {
-          if (typeof timeline.scrollTo === 'function') {
-            timeline.scrollTo({ left: newScrollLeft, behavior: 'auto' });
-          } else {
-            timeline.scrollLeft = newScrollLeft;
-          }
-        }
-
-        // Update the ref to keep state in sync
-        guideScrollLeftRef.current = newScrollLeft;
-        updateNowLine();
+      if (typeof guide.scrollTo === 'function') {
+        guide.scrollTo({
+          left: newScrollLeft,
+          top: guide.scrollTop + deltaY,
+          behavior: 'auto',
+        });
+      } else {
+        guide.scrollLeft = newScrollLeft;
+        guide.scrollTop += deltaY;
       }
+
+      // Keep the timeline aligned immediately while the guide scroll event runs.
+      if (timeline) {
+        if (typeof timeline.scrollTo === 'function') {
+          timeline.scrollTo({ left: newScrollLeft, behavior: 'auto' });
+        } else {
+          timeline.scrollLeft = newScrollLeft;
+        }
+      }
+
+      guideScrollLeftRef.current = newScrollLeft;
+      updateNowLine();
     };
 
     tvGuide.addEventListener('wheel', handleContainerWheel, {
@@ -1109,14 +1111,17 @@ export default function TVChannelGuide({ startDate, endDate }) {
   }, []);
 
   const handleTimelineWheel = useCallback((event) => {
-    if (!timelineRef.current) {
+    const guide = guideRef.current;
+    if (!guide) {
       return;
     }
 
     event.preventDefault();
-    const scrollAmount = event.shiftKey ? 250 : 125;
-    const delta = event.deltaY > 0 ? scrollAmount : -scrollAmount;
-    timelineRef.current.scrollBy({ left: delta, behavior: 'smooth' });
+    guide.scrollBy({
+      left: event.shiftKey ? event.deltaY : event.deltaX,
+      top: event.shiftKey ? 0 : event.deltaY,
+      behavior: 'auto',
+    });
   }, []);
 
   const handleTimeClick = useCallback(
