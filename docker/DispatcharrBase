@@ -4,10 +4,12 @@
 # builds the legacy (CPU-baseline=none) NumPy wheel. None of these compilers end
 # up in the final image, only the artifacts below are copied forward.
 #
-# Base image: ghcr.io/dispatcharr/ffmpeg (Ubuntu 24.04 + redistributable FFmpeg 9,
-# GPL v3, no nonfree, NVENC API 13.0). Built from github.com/Dispatcharr/FFmpeg.
+# Base image: ghcr.io/dispatcharr/ffmpeg:latest (Ubuntu 26.04 + redistributable
+# FFmpeg, GPL v3, no nonfree, NVENC API 13.0). Built from github.com/Dispatcharr/FFmpeg.
+# latest moves only when that image is published, and the NVENC series stays 13.0
+# until the pin in that repository changes.
 # ==============================================================================
-ARG FFMPEG_IMAGE=ghcr.io/dispatcharr/ffmpeg:9.0.1-nvenc130
+ARG FFMPEG_IMAGE=ghcr.io/dispatcharr/ffmpeg:latest
 FROM ${FFMPEG_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -95,7 +97,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # Same ffmpeg base, but installs only the runtime system libraries (no compilers)
 # and copies the prebuilt virtual environment + NumPy wheel from the builder.
 # ==============================================================================
-ARG FFMPEG_IMAGE=ghcr.io/dispatcharr/ffmpeg:9.0.1-nvenc130
+ARG FFMPEG_IMAGE=ghcr.io/dispatcharr/ffmpeg:latest
 FROM ${FFMPEG_IMAGE} AS final
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -108,7 +110,8 @@ ENV UV_LINK_MODE=copy
 # --- Install runtime system dependencies (no build toolchain) ---
 # python3.13 + libpython3.13 back the copied venv; libpcre2-8-0 backs uWSGI;
 # libopenblas0 backs the legacy NumPy wheel; libargtable2-0 and distro libav*
-# are for comskip; ca-certificates/gnupg2/curl/wget and software-properties-common
+# are for comskip. SONAMEs are Ubuntu 26.04 (resolute).
+# ca-certificates/gnupg2/curl/wget and software-properties-common
 # are kept for TLS and the AIO runtime apt step.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates software-properties-common gnupg2 curl wget \
@@ -118,7 +121,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
     libpcre2-8-0 libopenblas0 procps pciutils \
     nginx libargtable2-0 \
-    libavformat60 libavcodec60 libavutil58 libswscale7 \
+    libavformat62 libavcodec62 libavutil60 libswscale9 \
     vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
