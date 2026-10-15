@@ -297,6 +297,18 @@ describe('StreamSettingsForm', () => {
       expect(screen.getByTestId('m3u_hash_key')).toBeInTheDocument();
     });
 
+    it('renders the HDHR Default Output Format select with only MPEG-TS and fMP4', () => {
+      render(<StreamSettingsForm active={true} />);
+      const select = screen.getByTestId('hdhr_output_format');
+      expect(
+        screen.getByLabelText('HDHR Default Output Format')
+      ).toBe(select);
+      const options = within(select)
+        .getAllByRole('option')
+        .map((o) => o.value);
+      expect(options).toEqual(['mpegts', 'fmp4']);
+    });
+
     it('populates user agent options from store', () => {
       render(<StreamSettingsForm active={true} />);
       expect(screen.getByText('Chrome')).toBeInTheDocument();
@@ -781,6 +793,11 @@ describe('StreamSettingsForm', () => {
       expect(formMock.getInputProps).toHaveBeenCalledWith(
         'default_output_format'
       );
+    });
+
+    it('calls getInputProps for hdhr_output_format', () => {
+      render(<StreamSettingsForm active={true} />);
+      expect(formMock.getInputProps).toHaveBeenCalledWith('hdhr_output_format');
     });
 
     it('calls getInputProps for m3u_hash_key', () => {

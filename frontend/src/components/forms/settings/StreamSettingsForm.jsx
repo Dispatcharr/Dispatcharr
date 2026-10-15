@@ -224,6 +224,17 @@ const StreamSettingsForm = React.memo(({ active }) => {
             .filter((p) => p.is_active)
             .map((p) => ({ value: `${p.id}`, label: p.name }))}
         />
+        <Select
+          {...form.getInputProps('hdhr_output_format')}
+          id="hdhr_output_format"
+          name="hdhr_output_format"
+          label="HDHR Default Output Format"
+          description="Container format used for HDHR stream URLs, independent of the Default Output Format above. Most HDHR clients expect MPEG-TS, like a real HDHomeRun tuner; only choose fMP4 if every HDHR client you use supports it."
+          data={[
+            { value: 'mpegts', label: 'MPEG-TS' },
+            { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+          ]}
+        />
 
         <MultiSelect
           id="m3u_hash_key"
