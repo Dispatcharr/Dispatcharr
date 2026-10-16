@@ -69,6 +69,14 @@ class ChannelReadEndpointVisibilityTests(TestCase):
     def test_streams_on_an_accessible_channel(self):
         response = self._get(self.standard, self._streams_path(self.allowed))
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], self.stream.id)
+        # Provider URLs are admin-only; Standard users still get stream metadata.
+        self.assertNotIn("url", response.data[0])
+
+    def test_admin_sees_provider_url_on_channel_streams(self):
+        response = self._get(self.admin, self._streams_path(self.allowed))
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data[0]["url"], PROVIDER_URL)
 
     def test_streams_outside_assigned_profiles_are_not_found(self):
