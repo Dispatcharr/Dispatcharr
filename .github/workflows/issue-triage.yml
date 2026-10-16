@@ -30,11 +30,10 @@ jobs:
           provider-key: ${{ secrets.OPENROUTER_API_KEY }}
           provider-base-url: https://openrouter.ai/api/v1
           provider-model: ${{ vars.TRIAGE_MODEL }}
-          # context-repository: Dispatcharr/Dispatcharr
           context-branch: dev
           context-files: README.md,CHANGELOG.md,pyproject.toml
+          inference-timeout-seconds: 900
           max-context-bytes: 8000
           max-context-total-bytes: 24000
           max-related-issues: 5
-          # allow-retriage: true
           dry-run: false
