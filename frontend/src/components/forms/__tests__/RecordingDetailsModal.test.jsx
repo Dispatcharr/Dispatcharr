@@ -197,6 +197,7 @@ const setupMocks = ({ recording = makeRecording(), now = NOW } = {}) => {
   vi.mocked(useDateTimeFormat).mockReturnValue({
     timeFormat: 'HH:mm',
     dateFormat: 'MM/DD',
+    dateYearFormat: 'MMM D, YYYY',
   });
 
   vi.mocked(format).mockImplementation((moment, fmt) => moment.format(fmt));
@@ -290,6 +291,21 @@ describe('RecordingDetailsModal', () => {
     it('renders the recording title', () => {
       render(<RecordingDetailsModal {...defaultProps()} />);
       expect(screen.getByText(/Test Show/i)).toBeInTheDocument();
+    });
+
+    it('renders a day-first time without a comma before the year', () => {
+      vi.mocked(useDateTimeFormat).mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      render(<RecordingDetailsModal {...defaultProps()} />);
+      const timeLine = screen.getByText(/–/);
+      expect(timeLine).toHaveTextContent(/\d{1,2} [A-Za-z]{3} \d{4} \d{2}:\d{2}/);
+      expect(timeLine.textContent).not.toMatch(/, \d{4}/);
+      expect(format).toHaveBeenCalledWith(
+        expect.anything(),
+        'D MMM YYYY HH:mm'
+      );
     });
 
     it('renders "Custom Recording" when no program title', () => {

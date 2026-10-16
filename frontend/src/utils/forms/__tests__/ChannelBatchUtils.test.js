@@ -519,6 +519,26 @@ describe('ChannelBatchUtils', () => {
       expect(result.is_adult).toBe(false);
     });
 
+    it('removes is_radio when it is "-1" or absent', () => {
+      expect(
+        buildSubmitValues({ ...baseFormValues, is_radio: '-1' }, null, null)
+      ).not.toHaveProperty('is_radio');
+      expect(buildSubmitValues(baseFormValues, null, null)).not.toHaveProperty(
+        'is_radio'
+      );
+    });
+
+    it('converts is_radio to a boolean', () => {
+      expect(
+        buildSubmitValues({ ...baseFormValues, is_radio: 'true' }, null, null)
+          .is_radio
+      ).toBe(true);
+      expect(
+        buildSubmitValues({ ...baseFormValues, is_radio: 'false' }, null, null)
+          .is_radio
+      ).toBe(false);
+    });
+
     it('sets channel_group_id as integer when selectedChannelGroup is valid', () => {
       const result = buildSubmitValues(baseFormValues, '5', null);
       expect(result.channel_group_id).toBe(5);

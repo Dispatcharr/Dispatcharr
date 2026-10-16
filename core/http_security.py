@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from typing import Any
+from urllib.parse import urljoin, urlparse
+
+import requests
+
+# Shared default for hop-by-hop redirect following (plugins, similar fetchers).
+DEFAULT_MAX_REDIRECTS = 5
 
 
 def validate_outbound_http_url(
@@ -75,3 +81,52 @@ def validate_outbound_http_url(
 
     if not saw_ip:
         raise ValueError(f"Could not resolve hostname '{hostname}' to an IP address.")
+
+
+def get_with_validated_redirects(
+    url: str,
+    *,
+    timeout: float | tuple[float, float] = 15,
+    max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    allow_private: bool = False,
+    allow_loopback: bool = False,
+    stream: bool = False,
+    headers: dict[str, str] | None = None,
+    session: Any | None = None,
+):
+    """GET *url*, re-validating SSRF policy on every redirect hop.
+
+    Automatic redirects are disabled. Each ``Location`` is joined against the
+    current URL, then passed through :func:`validate_outbound_http_url` before
+    the next request. Intermediate redirect responses are closed.
+
+    Returns the final non-redirect ``requests.Response``. The caller must close
+    it (``with`` or ``.close()``). Raises ``ValueError`` for policy violations
+    or redirect loops, and propagates ``requests`` transport errors.
+    """
+    getter = session.get if session is not None else requests.get
+    current_url = url
+
+    for _ in range(max_redirects + 1):
+        validate_outbound_http_url(
+            current_url,
+            allow_private=allow_private,
+            allow_loopback=allow_loopback,
+        )
+        response = getter(
+            current_url,
+            timeout=timeout,
+            allow_redirects=False,
+            stream=stream,
+            headers=headers,
+        )
+        if response.status_code not in (301, 302, 303, 307, 308):
+            return response
+
+        location = response.headers.get("Location")
+        response.close()
+        if not location:
+            raise ValueError("Redirect response missing Location header.")
+        current_url = urljoin(current_url, location)
+
+    raise ValueError(f"Exceeded maximum of {max_redirects} redirects.")

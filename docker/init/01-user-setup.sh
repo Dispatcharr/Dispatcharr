@@ -111,7 +111,7 @@ if [ -e "/dev/dri/renderD128" ]; then
         fi
     fi
 else
-    echo "Warning: /dev/dri/renderD128 not found. GPU acceleration may not be available."
+    echo "ℹ️ /dev/dri/renderD128 not found. GPU acceleration may not be available."
 fi
 
 # Always add user to video group for hardware acceleration if it exists

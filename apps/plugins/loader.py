@@ -264,7 +264,9 @@ class PluginManager:
                     self._last_reload_token = token
                 self._discovery_completed = True
 
-            logger.info(f"Discovered {len(new_registry)} plugin(s)")
+            (logger.info if new_registry else logger.debug)(
+                f"Discovered {len(new_registry)} plugin(s)"
+            )
         except FileNotFoundError:
             logger.warning(f"Plugins directory not found: {self.plugins_dir}")
 
@@ -836,7 +838,7 @@ class PluginManager:
         if not path:
             return
         root = os.path.abspath(path)
-        for name, module in list(sys.modules.items()):
+        for name, module in sorted(sys.modules.items(), reverse=True):
             if not module:
                 continue
             mod_path = getattr(module, "__file__", None)
@@ -848,13 +850,13 @@ class PluginManager:
                         continue
                 except Exception:
                     pass
-            mod_paths = getattr(module, "__path__", None)
-            if mod_paths:
-                try:
+            try:
+                mod_paths = getattr(module, "__path__", None)
+                if mod_paths is not None:
                     for pkg_path in mod_paths:
                         abs_pkg = os.path.abspath(pkg_path)
                         if abs_pkg == root or abs_pkg.startswith(f"{root}{os.sep}"):
                             sys.modules.pop(name, None)
                             break
-                except Exception:
-                    continue
+            except Exception:
+                continue

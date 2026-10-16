@@ -56,6 +56,7 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "validate_redirect_urls": True,
             }
 
         finally:
@@ -114,6 +115,16 @@ class TSConfig(BaseConfig):
     GHOST_CLIENT_MULTIPLIER = 10.0  # How many heartbeat intervals before client considered ghost (10 = 50s, must exceed STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD = 40s)
     CLIENT_WAIT_TIMEOUT = 60  # Seconds to wait for channel to become ready
 
+    # Native HLS output (code-level; not DB / UI Proxy Settings)
+    HLS_SEGMENT_DURATION = 4  # Target segment length in seconds
+    # Floor for HLS segment Redis TTL sizing (not the advertised playlist
+    # length; the playlist tracks surviving Redis chunks).
+    HLS_WINDOW_SIZE = 10
+    # Pull-based HLS clients: treat as ghost after this many missed segment
+    # intervals with no playlist/segment poll (3 x 4s = 12s). Matches the
+    # spirit of the legacy hls_proxy CLIENT_TIMEOUT_FACTOR approach.
+    HLS_CLIENT_GHOST_SEGMENTS = 3
+
     # Stream health and recovery settings
     MAX_HEALTH_RECOVERY_ATTEMPTS = 2     # Maximum times to attempt recovery for a single stream
     MAX_RECONNECT_ATTEMPTS = 3           # Maximum reconnects to try before switching streams
@@ -155,6 +166,12 @@ class TSConfig(BaseConfig):
         settings = cls.get_proxy_settings()
         return settings.get("channel_client_wait_period", 5)
 
+    @classmethod
+    def get_validate_redirect_urls(cls):
+        """Whether Redirect mode probes the provider URL (HEAD/GET) before handing off."""
+        settings = cls.get_proxy_settings()
+        return bool(settings.get("validate_redirect_urls", True))
+
     # Dynamic property access for these settings
     @property
     def CHANNEL_SHUTDOWN_DELAY(self):
@@ -175,3 +192,7 @@ class TSConfig(BaseConfig):
     @property
     def CHANNEL_CLIENT_WAIT_PERIOD(self):
         return self.get_channel_client_wait_period()
+
+    @property
+    def VALIDATE_REDIRECT_URLS(self):
+        return self.get_validate_redirect_urls()

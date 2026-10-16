@@ -152,7 +152,9 @@ describe('RecordingCardUtils', () => {
       const channel = { uuid: 'channel-123' };
       const result = getShowVideoUrl(channel, 'production');
 
-      expect(result).toBe('/proxy/ts/stream/channel-123?output_format=mpegts');
+      expect(result).toBe(
+        '/proxy/ts/stream/channel-123?output_format=mpegts&skip_redirect=true'
+      );
     });
 
     it('includes output_profile when set in player prefs', () => {
@@ -164,7 +166,7 @@ describe('RecordingCardUtils', () => {
       const result = getShowVideoUrl(channel, 'production');
 
       expect(result).toBe(
-        '/proxy/ts/stream/channel-123?output_format=mpegts&output_profile=5'
+        '/proxy/ts/stream/channel-123?output_format=mpegts&skip_redirect=true&output_profile=5'
       );
     });
 
@@ -173,7 +175,7 @@ describe('RecordingCardUtils', () => {
       const result = getShowVideoUrl(channel, 'dev');
 
       expect(result).toMatch(
-        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123\?output_format=mpegts$/
+        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123\?output_format=mpegts&skip_redirect=true$/
       );
     });
   });
@@ -214,7 +216,29 @@ describe('RecordingCardUtils', () => {
       });
       expect(API.deleteSeriesRule).toHaveBeenCalledWith(
         'series-123',
-        'Test Series'
+        'Test Series',
+        undefined
+      );
+    });
+
+    it('passes epg_source_id when deleting a sourced rule', async () => {
+      API.bulkRemoveSeriesRecordings.mockResolvedValue();
+      API.deleteSeriesRule.mockResolvedValue();
+      await deleteSeriesAndRule({
+        tvg_id: 'series-123',
+        title: 'Test Series',
+        epg_source_id: 11,
+      });
+      expect(API.bulkRemoveSeriesRecordings).toHaveBeenCalledWith({
+        tvg_id: 'series-123',
+        title: 'Test Series',
+        scope: 'title',
+        epg_source_id: 11,
+      });
+      expect(API.deleteSeriesRule).toHaveBeenCalledWith(
+        'series-123',
+        'Test Series',
+        11
       );
     });
 
@@ -232,7 +256,8 @@ describe('RecordingCardUtils', () => {
       });
       expect(API.deleteSeriesRule).toHaveBeenCalledWith(
         undefined,
-        'Title-Only Show'
+        'Title-Only Show',
+        undefined
       );
     });
 
@@ -279,7 +304,9 @@ describe('RecordingCardUtils', () => {
     });
 
     it('returns output_file_url when file_url is not available', () => {
-      const customProps = { output_file_url: '/api/channels/recordings/1/file/' };
+      const customProps = {
+        output_file_url: '/api/channels/recordings/1/file/',
+      };
       const result = getRecordingUrl(customProps, 'production');
 
       expect(result).toBe('/api/channels/recordings/1/file/');
@@ -296,7 +323,9 @@ describe('RecordingCardUtils', () => {
     });
 
     it('prepends dev server URL in dev mode for relative paths', () => {
-      const customProps = { file_url: '/api/channels/recordings/4/hls/index.m3u8' };
+      const customProps = {
+        file_url: '/api/channels/recordings/4/hls/index.m3u8',
+      };
       const result = getRecordingUrl(customProps, 'dev');
 
       expect(result).toMatch(
@@ -378,6 +407,21 @@ describe('RecordingCardUtils', () => {
       expect(result).toEqual({
         tvg_id: 'series-123',
         title: 'Test Series',
+      });
+    });
+
+    it('includes epg_source_id when the program snapshot has one', () => {
+      const result = getSeriesInfo({
+        program: {
+          tvg_id: 'series-123',
+          title: 'Test Series',
+          epg_source_id: 11,
+        },
+      });
+      expect(result).toEqual({
+        tvg_id: 'series-123',
+        title: 'Test Series',
+        epg_source_id: 11,
       });
     });
 

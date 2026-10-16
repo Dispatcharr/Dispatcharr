@@ -5,13 +5,14 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 import django_filters
 import logging
 from types import SimpleNamespace
 from apps.accounts.permissions import (
     Authenticated,
-    permission_classes_by_action,
+    IsAdmin,
+    permissions_for_action,
 )
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
@@ -25,7 +26,13 @@ from .serializers import (
     VODLogoSerializer,
     M3UMovieRelationSerializer,
     M3USeriesRelationSerializer,
-    M3UEpisodeRelationSerializer
+    EpisodeWithProvidersSerializer,
+    MovieProviderInfoSerializer,
+    SeriesProviderInfoSerializer,
+    UnifiedContentListSerializer,
+    VODLogoBulkDeleteRequestSerializer,
+    VODLogoBulkDeleteResponseSerializer,
+    VODLogoCleanupResponseSerializer,
 )
 from .image_proxy import (
     is_proxyable_image_url,
@@ -37,11 +44,24 @@ from .image_proxy import (
     vod_image_url_parts,
     vodlogo_cache_url,
 )
+from core.image_proxy import RawImageContentNegotiationMixin
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
+from drf_spectacular.types import OpenApiTypes
 from .tasks import refresh_series_episodes, refresh_movie_advanced_data
+from .utils import is_vod_movies_enabled, is_vod_series_enabled, parse_category_filter_value
 from django.utils import timezone
 from datetime import timedelta
+from rest_framework.utils.urls import replace_query_param, remove_query_param
 
 logger = logging.getLogger(__name__)
+
+
+def _authenticated_user(request):
+    """Return the request user when authenticated, else None."""
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        return user
+    return None
 
 
 class VODPagination(PageNumberPagination):
@@ -68,19 +88,17 @@ class MovieFilter(django_filters.FilterSet):
         if not value:
             return queryset
 
-        # Handle the format 'category_name|category_type'
-        if '|' in value:
-            category_name, category_type = value.rsplit('|', 1)
+        valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
+        category_name, category_type = parse_category_filter_value(value, valid_types)
+        if category_type is not None:
             return queryset.filter(
                 m3u_relations__category__name=category_name,
-                m3u_relations__category__category_type=category_type
+                m3u_relations__category__category_type=category_type,
             )
-        else:
-            # Fallback: treat as category name only
-            return queryset.filter(m3u_relations__category__name=value)
+        return queryset.filter(m3u_relations__category__name=category_name)
 
 
-class MovieViewSet(viewsets.ReadOnlyModelViewSet):
+class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Movie content"""
     queryset = Movie.objects.all()
     serializer_class = MovieSerializer
@@ -93,29 +111,32 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'image':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
+        user = _authenticated_user(self.request)
+        if not is_vod_movies_enabled(user=user):
+            return Movie.objects.none()
+
         # Only return movies that have active M3U relations
         qs = Movie.objects.filter(
             m3u_relations__m3u_account__is_active=True
         ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
-        user = getattr(self.request, 'user', None)
         if (
             user is not None
-            and getattr(user, 'is_authenticated', False)
             and user.user_level < 10
             and (user.custom_properties or {}).get('hide_adult_content', False)
         ):
             qs = qs.filter(is_adult=False)
         return qs
 
-    @action(detail=True, methods=['get'], url_path='providers')
+    @extend_schema(responses=M3UMovieRelationSerializer(many=True))
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='providers',
+        permission_classes=[Authenticated],
+    )
     def get_providers(self, request, pk=None):
         """Get all providers (M3U accounts) that have this movie"""
         movie = self.get_object()
@@ -128,7 +149,35 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(serializer.data)
 
 
-    @action(detail=True, methods=['get'], url_path='provider-info')
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name='relation_id',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Specific M3U movie relation ID to use',
+            ),
+            OpenApiParameter(
+                name='force_refresh',
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Force refresh of advanced provider data',
+            ),
+        ],
+        responses={
+            200: MovieProviderInfoSerializer,
+            400: OpenApiResponse(description='Invalid relation or no active provider'),
+            404: OpenApiResponse(description='Relation not found or not active'),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='provider-info',
+        permission_classes=[Authenticated],
+    )
     def provider_info(self, request, pk=None):
         """Get detailed movie information from the original provider, throttled to 24h."""
         movie = self.get_object()
@@ -213,47 +262,72 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         else:
             movie_image = ''
 
-        # Build response with available data
+        # Coerce loose provider values so serializer output matches OpenAPI types.
+        raw_rating = movie.rating or info.get('rating')
+        if raw_rating is None or raw_rating == '':
+            rating_value = None
+        else:
+            rating_value = str(raw_rating)
+
+        year_value = movie.year if movie.year is not None else info.get('year')
+        try:
+            year_value = int(year_value) if year_value not in (None, '') else None
+        except (TypeError, ValueError):
+            year_value = movie.year
+
+        duration_value = movie.duration_secs if movie.duration_secs is not None else info.get('duration_secs')
+        try:
+            duration_value = int(duration_value) if duration_value not in (None, '') else None
+        except (TypeError, ValueError):
+            duration_value = movie.duration_secs
+
+        try:
+            bitrate_value = int(info.get('bitrate', 0) or 0)
+        except (TypeError, ValueError):
+            bitrate_value = 0
+
+        # Build response with available data, then coerce through the serializer so
+        # runtime JSON types match the OpenAPI schema used by generated clients.
         response_data = {
             'id': movie.id,
             'uuid': movie.uuid,
             'stream_id': relation.stream_id,
             'name': info.get('name', movie.name),
-            'o_name': info.get('o_name', ''),
+            'o_name': info.get('o_name', '') or '',
             'description': info.get('description', info.get('plot', movie.description)),
             'plot': info.get('plot', info.get('description', movie.description)),
-            'year': movie.year or info.get('year'),
-            'release_date': (movie.custom_properties or {}).get('release_date') or info.get('release_date') or info.get('releasedate', ''),
-            'genre': movie.genre or info.get('genre', ''),
-            'director': (movie.custom_properties or {}).get('director') or info.get('director', ''),
-            'actors': (movie.custom_properties or {}).get('actors') or info.get('actors', ''),
-            'country': (movie.custom_properties or {}).get('country') or info.get('country', ''),
-            'rating': movie.rating or info.get('rating', movie.rating or 0),
-            'tmdb_id': movie.tmdb_id or info.get('tmdb_id', ''),
-            'imdb_id': movie.imdb_id or info.get('imdb_id', ''),
-            'youtube_trailer': (movie.custom_properties or {}).get('youtube_trailer') or info.get('youtube_trailer') or info.get('trailer', ''),
-            'duration_secs': movie.duration_secs or info.get('duration_secs'),
-            'age': info.get('age', ''),
+            'year': year_value,
+            'release_date': (movie.custom_properties or {}).get('release_date') or info.get('release_date') or info.get('releasedate', '') or '',
+            'genre': movie.genre or info.get('genre', '') or '',
+            'director': (movie.custom_properties or {}).get('director') or info.get('director', '') or '',
+            'actors': (movie.custom_properties or {}).get('actors') or info.get('actors', '') or '',
+            'country': (movie.custom_properties or {}).get('country') or info.get('country', '') or '',
+            'rating': rating_value,
+            'tmdb_id': movie.tmdb_id or info.get('tmdb_id') or None,
+            'imdb_id': movie.imdb_id or info.get('imdb_id') or None,
+            'youtube_trailer': (movie.custom_properties or {}).get('youtube_trailer') or info.get('youtube_trailer') or info.get('trailer', '') or '',
+            'duration_secs': duration_value,
+            'age': info.get('age', '') or '',
             'backdrop_path': backdrop_path,
             # All three mirror the resolved cover so the UI never falls back to a
             # raw provider URL that bypasses the proxy.
             'cover': movie_image,
             'cover_big': movie_image,
             'movie_image': movie_image,
-            'bitrate': info.get('bitrate', 0),
-            'video': info.get('video', {}),
-            'audio': info.get('audio', {}),
-            'container_extension': movie_data.get('container_extension', 'mp4'),
-            'direct_source': movie_data.get('direct_source', ''),
-            'category_id': movie_data.get('category_id', ''),
-            'added': movie_data.get('added', ''),
+            'bitrate': bitrate_value,
+            'video': info.get('video', {}) or {},
+            'audio': info.get('audio', {}) or {},
+            'container_extension': movie_data.get('container_extension', 'mp4') or 'mp4',
+            'direct_source': movie_data.get('direct_source', '') or '',
+            'category_id': str(movie_data.get('category_id', '') or ''),
+            'added': movie_data.get('added', '') or '',
             'm3u_account': {
                 'id': relation.m3u_account.id,
                 'name': relation.m3u_account.name,
                 'account_type': relation.m3u_account.account_type
             }
         }
-        return Response(response_data)
+        return Response(MovieProviderInfoSerializer(response_data).data)
 
     @action(detail=True, methods=['get'], url_path='image', permission_classes=[AllowAny])
     def image(self, request, pk=None):
@@ -290,19 +364,17 @@ class SeriesFilter(django_filters.FilterSet):
         if not value:
             return queryset
 
-        # Handle the format 'category_name|category_type'
-        if '|' in value:
-            category_name, category_type = value.rsplit('|', 1)
+        valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
+        category_name, category_type = parse_category_filter_value(value, valid_types)
+        if category_type is not None:
             return queryset.filter(
                 m3u_relations__category__name=category_name,
-                m3u_relations__category__category_type=category_type
+                m3u_relations__category__category_type=category_type,
             )
-        else:
-            # Fallback: treat as category name only
-            return queryset.filter(m3u_relations__category__name=value)
+        return queryset.filter(m3u_relations__category__name=category_name)
 
 
-class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
+class EpisodeViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Episode content"""
     queryset = Episode.objects.all()
     serializer_class = EpisodeSerializer
@@ -315,14 +387,14 @@ class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['series__name', 'season_number', 'episode_number']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'image':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
+        user = _authenticated_user(self.request)
+        if not is_vod_series_enabled(user=user):
+            return Episode.objects.none()
+
+        # Only return episodes that have active M3U relations
         return Episode.objects.select_related('series').filter(
             m3u_relations__m3u_account__is_active=True
         ).distinct()
@@ -333,7 +405,7 @@ class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
         return vod_image_action(self, request, 'episode')
 
 
-class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
+class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Series management"""
     queryset = Series.objects.all()
     serializer_class = SeriesSerializer
@@ -346,20 +418,25 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'image':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
+        user = _authenticated_user(self.request)
+        if not is_vod_series_enabled(user=user):
+            return Series.objects.none()
+
         # Only return series that have active M3U relations.
         return Series.objects.filter(
             m3u_relations__m3u_account__is_active=True
         ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
 
-    @action(detail=True, methods=['get'], url_path='providers')
+    @extend_schema(responses=M3USeriesRelationSerializer(many=True))
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='providers',
+        permission_classes=[Authenticated],
+    )
     def get_providers(self, request, pk=None):
         """Get all providers (M3U accounts) that have this series"""
         series = self.get_object()
@@ -371,31 +448,73 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = M3USeriesRelationSerializer(relations, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['get'], url_path='episodes')
+    @extend_schema(responses=EpisodeWithProvidersSerializer(many=True))
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='episodes',
+        permission_classes=[Authenticated],
+    )
     def get_episodes(self, request, pk=None):
         """Get episodes for this series with provider information"""
         series = self.get_object()
         episodes = Episode.objects.filter(series=series).prefetch_related(
-            'm3u_relations__m3u_account'
+            Prefetch(
+                'm3u_relations',
+                queryset=M3UEpisodeRelation.objects.filter(
+                    m3u_account__is_active=True
+                ).select_related('m3u_account'),
+            )
         ).order_by('season_number', 'episode_number')
 
-        episodes_data = []
-        for episode in episodes:
-            episode_serializer = EpisodeSerializer(episode)
-            episode_data = episode_serializer.data
+        return Response(
+            EpisodeWithProvidersSerializer(episodes, many=True).data
+        )
 
-            # Add provider information
-            relations = M3UEpisodeRelation.objects.filter(
-                episode=episode,
-                m3u_account__is_active=True
-            ).select_related('m3u_account')
-
-            episode_data['providers'] = M3UEpisodeRelationSerializer(relations, many=True).data
-            episodes_data.append(episode_data)
-
-        return Response(episodes_data)
-
-    @action(detail=True, methods=['get'], url_path='provider-info')
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name='relation_id',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Specific M3U series relation ID to use',
+            ),
+            OpenApiParameter(
+                name='force_refresh',
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Force refresh of series/episode data from provider',
+            ),
+            OpenApiParameter(
+                name='refresh_interval',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Hours before provider data is considered stale (default 24)',
+            ),
+            OpenApiParameter(
+                name='include_episodes',
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Include episodes grouped by season (default true)',
+            ),
+        ],
+        responses={
+            200: SeriesProviderInfoSerializer,
+            400: OpenApiResponse(description='Invalid relation or no active provider'),
+            404: OpenApiResponse(description='Relation not found or not active'),
+            500: OpenApiResponse(description='Failed to fetch series information'),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='provider-info',
+        permission_classes=[Authenticated],
+    )
     def series_info(self, request, pk=None):
         """Get detailed series information, refreshing from provider if needed"""
         logger.debug(f"SeriesViewSet.series_info called for series ID: {pk}")
@@ -603,7 +722,8 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                 response_data['episodes'] = {}
 
             logger.debug(f"Returning series info response for series {series.id}")
-            return Response(response_data)
+            # Coerce through the serializer so runtime JSON types match OpenAPI.
+            return Response(SeriesProviderInfoSerializer(response_data).data)
 
         except Exception as e:
             logger.error(f"Error fetching series info for series {pk}: {str(e)}")
@@ -621,7 +741,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
 class VODCategoryFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(lookup_expr="icontains")
     category_type = django_filters.ChoiceFilter(choices=VODCategory.CATEGORY_TYPE_CHOICES)
-    m3u_account = django_filters.NumberFilter(field_name="m3u_account__id")
+    m3u_account = django_filters.NumberFilter(field_name="m3u_relations__m3u_account__id")
 
     class Meta:
         model = VODCategory
@@ -639,10 +759,20 @@ class VODCategoryViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
+
+    def get_queryset(self):
+        qs = VODCategory.objects.all()
+        user = _authenticated_user(self.request)
+        movies_allowed = is_vod_movies_enabled(user=user)
+        series_allowed = is_vod_series_enabled(user=user)
+        if movies_allowed and series_allowed:
+            return qs
+        if movies_allowed:
+            return qs.filter(category_type="movie")
+        if series_allowed:
+            return qs.filter(category_type="series")
+        return qs.none()
 
     def list(self, request, *args, **kwargs):
         """Override list to ensure Uncategorized categories and relations exist for all XC accounts with VOD enabled"""
@@ -710,11 +840,38 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name='category',
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Category filter. Supports 'name' or 'name|movie' / 'name|series'",
+            ),
+            OpenApiParameter(
+                name='search',
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name='page',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+            OpenApiParameter(
+                name='page_size',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+            ),
+        ],
+        responses=UnifiedContentListSerializer,
+    )
     def list(self, request, *args, **kwargs):
         """Override list to handle unified content properly - database-level approach"""
         import logging
@@ -724,6 +881,14 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
         logger.error("=== UnifiedContentViewSet.list() called ===")
 
         try:
+            user = _authenticated_user(request)
+            movies_allowed = is_vod_movies_enabled(user=user)
+            series_allowed = is_vod_series_enabled(user=user)
+            if not movies_allowed and not series_allowed:
+                return Response(
+                    {"count": 0, "next": None, "previous": None, "results": []}
+                )
+
             # Get pagination parameters
             page_size = int(request.query_params.get('page_size', 24))
             page_number = int(request.query_params.get('page', 1))
@@ -749,31 +914,46 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             movie_params = []
             series_params = []
 
+            if not movies_allowed:
+                where_conditions[0] = "1=0"
+            if not series_allowed:
+                where_conditions[1] = "1=0"
+
             if search:
-                where_conditions[0] += " AND LOWER(movies.name) LIKE %s"
-                where_conditions[1] += " AND LOWER(series.name) LIKE %s"
                 search_param = f"%{search.lower()}%"
-                movie_params.append(search_param)
-                series_params.append(search_param)
+                if movies_allowed:
+                    where_conditions[0] += " AND LOWER(movies.name) LIKE %s"
+                    movie_params.append(search_param)
+                if series_allowed:
+                    where_conditions[1] += " AND LOWER(series.name) LIKE %s"
+                    series_params.append(search_param)
 
             if category:
-                if '|' in category:
-                    cat_name, cat_type = category.rsplit('|', 1)
-                    if cat_type == 'movie':
+                valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
+                cat_name, cat_type = parse_category_filter_value(category, valid_types)
+                if cat_type == 'movie':
+                    if movies_allowed:
                         where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
-                        where_conditions[1] = "1=0"  # Exclude series
                         movie_params.append(cat_name)
-                        series_params = []  # no params needed for "1=0"
-                    elif cat_type == 'series':
+                    else:
+                        where_conditions[0] = "1=0"
+                    where_conditions[1] = "1=0"  # Exclude series
+                    series_params = []  # no params needed for "1=0"
+                elif cat_type == 'series':
+                    if series_allowed:
                         where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
-                        where_conditions[0] = "1=0"  # Exclude movies
                         series_params.append(cat_name)
-                        movie_params = []  # no params needed for "1=0"
+                    else:
+                        where_conditions[1] = "1=0"
+                    where_conditions[0] = "1=0"  # Exclude movies
+                    movie_params = []  # no params needed for "1=0"
                 else:
-                    where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
-                    where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
-                    movie_params.append(category)
-                    series_params.append(category)
+                    if movies_allowed:
+                        where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
+                        movie_params.append(cat_name)
+                    if series_allowed:
+                        where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
+                        series_params.append(cat_name)
 
             params = movie_params + series_params
 
@@ -859,7 +1039,8 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                             'is_used': True
                         }
 
-                    # Convert to the format expected by frontend
+                    # Keep datetimes as native objects; UnifiedContentItemSerializer
+                    # emits format: date-time for generated clients (e.g. time.Time).
                     formatted_item = {
                         'id': item_dict['id'],
                         'uuid': str(item_dict['uuid']),
@@ -869,8 +1050,8 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                         'rating': float(item_dict['rating']) if item_dict['rating'] else 0.0,
                         'genre': item_dict['genre'] or '',
                         'duration': item_dict['duration'],
-                        'created_at': item_dict['created_at'].isoformat() if item_dict['created_at'] else None,
-                        'updated_at': item_dict['updated_at'].isoformat() if item_dict['updated_at'] else None,
+                        'created_at': item_dict['created_at'],
+                        'updated_at': item_dict['updated_at'],
                         'custom_properties': item_dict['custom_properties'] or {},
                         'logo': logo_data,
                         'content_type': item_dict['content_type']
@@ -895,14 +1076,30 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 cursor.execute(count_sql, count_params)
                 total_count = cursor.fetchone()[0]
 
+            # Standard DRF-style next/previous page URIs (null when absent)
+            base_url = request.build_absolute_uri()
+            if offset + page_size < total_count:
+                next_url = replace_query_param(base_url, 'page', page_number + 1)
+            else:
+                next_url = None
+
+            if page_number > 1:
+                prev_page = page_number - 1
+                if prev_page == 1:
+                    previous_url = remove_query_param(base_url, 'page')
+                else:
+                    previous_url = replace_query_param(base_url, 'page', prev_page)
+            else:
+                previous_url = None
+
             response_data = {
                 'count': total_count,
-                'next': offset + page_size < total_count,
-                'previous': page_number > 1,
+                'next': next_url,
+                'previous': previous_url,
                 'results': results
             }
 
-            return Response(response_data)
+            return Response(UnifiedContentListSerializer(response_data).data)
 
         except Exception as e:
             logger.error(f"Error in UnifiedContentViewSet.list(): {e}")
@@ -917,7 +1114,7 @@ class VODLogoPagination(PageNumberPagination):
     max_page_size = 1000
 
 
-class VODLogoViewSet(viewsets.ModelViewSet):
+class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
     """ViewSet for VOD Logo management"""
     queryset = VODLogo.objects.all()
     serializer_class = VODLogoSerializer
@@ -928,12 +1125,7 @@ class VODLogoViewSet(viewsets.ModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'cache':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""
@@ -981,13 +1173,33 @@ class VODLogoViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    @extend_schema(
+        responses={
+            (200, 'image/*'): OpenApiTypes.BINARY,
+            404: OpenApiResponse(description='Logo not found or unreachable'),
+            500: OpenApiResponse(description='Error serving logo file'),
+        },
+    )
     @action(detail=True, methods=["get"], permission_classes=[AllowAny])
     def cache(self, request, pk=None):
         """Streams the VOD logo file, whether it's local or remote."""
         logo = self.get_object()
         return serve_vod_image(logo.url)
 
-    @action(detail=False, methods=["delete"], url_path="bulk-delete")
+    @extend_schema(
+        request=VODLogoBulkDeleteRequestSerializer,
+        responses={
+            200: VODLogoBulkDeleteResponseSerializer,
+            400: OpenApiResponse(description='No logo IDs provided'),
+            500: OpenApiResponse(description='Bulk delete failed'),
+        },
+    )
+    @action(
+        detail=False,
+        methods=["delete"],
+        url_path="bulk-delete",
+        permission_classes=[IsAdmin],
+    )
     def bulk_delete(self, request):
         """Delete multiple VOD logos at once"""
         logo_ids = request.data.get('logo_ids', [])
@@ -1017,7 +1229,14 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    @action(detail=False, methods=["post"])
+    @extend_schema(
+        request=None,
+        responses={
+            200: VODLogoCleanupResponseSerializer,
+            500: OpenApiResponse(description='Cleanup failed'),
+        },
+    )
+    @action(detail=False, methods=["post"], permission_classes=[IsAdmin])
     def cleanup(self, request):
         """Delete all VOD logos that are not used by any movies or series"""
         try:

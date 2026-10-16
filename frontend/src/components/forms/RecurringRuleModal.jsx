@@ -52,8 +52,7 @@ const RecurringRuleModal = ({
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
   const recordings = useChannelsStore((s) => s.recordings);
   const { toUserTime, userNow } = useTimeHelpers();
-  const { timeFormat: timeformat, dateFormat: dateformat } =
-    useDateTimeFormat();
+  const { timeFormat: timeformat, dateYearFormat } = useDateTimeFormat();
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -260,7 +259,7 @@ const RecurringRuleModal = ({
               <Group justify="space-between" align="center">
                 <Stack gap={2} flex={1}>
                   <Text fw={600} size="sm">
-                    {format(occStart, `${dateformat}, YYYY`)}
+                    {format(occStart, dateYearFormat)}
                   </Text>
                   <Text size="xs" c="dimmed">
                     {format(occStart, timeformat)} –{' '}
@@ -346,13 +345,13 @@ const RecurringRuleModal = ({
                 label="Start date"
                 value={form.values.start_date}
                 onChange={handleStartDateChange}
-                valueFormat="MMM D, YYYY"
+                valueFormat={dateYearFormat}
               />
               <DatePickerInput
                 label="End date"
                 value={form.values.end_date}
                 onChange={handleEndDateChange}
-                valueFormat="MMM D, YYYY"
+                valueFormat={dateYearFormat}
                 minDate={form.values.start_date || undefined}
               />
             </Group>

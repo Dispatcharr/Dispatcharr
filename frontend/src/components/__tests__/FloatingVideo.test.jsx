@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import FloatingVideo from '../FloatingVideo';
 import useVideoStore from '../../store/useVideoStore';
@@ -246,6 +252,343 @@ describe('FloatingVideo', () => {
       await mediaInfoCallback();
 
       expect(mockPlayer.play).toHaveBeenCalled();
+    });
+  });
+
+  describe('Live stream reconnect', () => {
+    beforeEach(() => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl: 'http://example.com/stream.ts',
+          contentType: 'live',
+          metadata: null,
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+    });
+
+    // Shared mockPlayer accumulates .on registrations across recreate; use the
+    // latest ERROR handler (current player), not the first.
+    const getErrorCallback = () =>
+      mockPlayer.on.mock.calls
+        .filter((call) => call[0] === mpegts.Events.ERROR)
+        .at(-1)?.[1];
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('should destroy immediately and recreate after backoff on NetworkError', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+
+      expect(
+        screen.getByText(/reconnecting\.\.\. \(attempt 1\/5\)/i)
+      ).toBeInTheDocument();
+      expect(mockPlayer.destroy).toHaveBeenCalledTimes(1);
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(999);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+    });
+
+    it('should give up after 5 NetworkError attempts and show a permanent error', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const delays = [1000, 2000, 4000, 8000, 10000];
+      for (let i = 0; i < delays.length; i++) {
+        const errorCallback = getErrorCallback();
+        act(() => {
+          errorCallback('NetworkError', 'connection lost');
+        });
+        expect(
+          screen.getByText(new RegExp(`attempt ${i + 1}/5`, 'i'))
+        ).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delays[i]);
+        });
+      }
+
+      // 6th NetworkError: no retry, surface the real error.
+      const finalErrorCallback = getErrorCallback();
+      act(() => {
+        finalErrorCallback('NetworkError', 'connection lost');
+      });
+
+      expect(
+        screen.getByText(/NetworkError - connection lost/i)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+    });
+
+    it('should not retry a MediaError (non-transient, retrying would not help)', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('MediaError', 'AC3 codec not supported');
+      });
+
+      expect(
+        screen.getByText(/Audio codec not supported/i)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reset the retry budget after MEDIA_INFO (stream is viable again)', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      let errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+
+      const mediaInfoCallback = mockPlayer.on.mock.calls
+        .filter((call) => call[0] === mpegts.Events.MEDIA_INFO)
+        .at(-1)?.[1];
+      act(() => {
+        mediaInfoCallback();
+      });
+
+      errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+    });
+
+    it('should not reset the retry budget on LOADING_COMPLETE (EOF, not recovery)', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      let errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+
+      const loadingCompleteCallback = mockPlayer.on.mock.calls
+        .filter((call) => call[0] === mpegts.Events.LOADING_COMPLETE)
+        .at(-1)?.[1];
+      act(() => {
+        loadingCompleteCallback();
+      });
+
+      errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 2\/5/i)).toBeInTheDocument();
+    });
+
+    it('should not stack reconnect timers on repeated NetworkErrors before recreate', async () => {
+      vi.useFakeTimers();
+      const instances = [];
+      mpegts.createPlayer.mockImplementation(() => {
+        const instance = {
+          attachMediaElement: vi.fn(),
+          load: vi.fn(),
+          play: vi.fn(() => Promise.resolve()),
+          pause: vi.fn(),
+          destroy: vi.fn(),
+          on: vi.fn(),
+        };
+        instances.push(instance);
+        return instance;
+      });
+      render(<FloatingVideo />);
+      expect(instances).toHaveLength(1);
+
+      act(() => {
+        instances[0].on.mock.calls.find(
+          (call) => call[0] === mpegts.Events.ERROR
+        )[1]('NetworkError', 'connection lost');
+      });
+      expect(instances[0].destroy).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+
+      act(() => {
+        instances[0].on.mock.calls.find(
+          (call) => call[0] === mpegts.Events.ERROR
+        )[1]('NetworkError', 'connection lost again');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(instances).toHaveLength(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(instances).toHaveLength(2);
+    });
+
+    it('should not fire a queued reconnect after the player is closed', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('close-button'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50); // handleClose's setTimeout(hideVideo, 50)
+      });
+
+      const createPlayerCallsAfterClose = mpegts.createPlayer.mock.calls.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(
+        createPlayerCallsAfterClose
+      );
+    });
+  });
+
+  describe('Live stream stale-player-instance guards', () => {
+    beforeEach(() => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl: 'http://example.com/stream.ts',
+          contentType: 'live',
+          metadata: null,
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // Shared mockPlayer makes playerRef.current === player always true across
+    // recreate; these tests use a fresh instance per createPlayer() call.
+    const mockDistinctPlayerInstances = () => {
+      const instances = [];
+      mpegts.createPlayer.mockImplementation(() => {
+        const instance = {
+          attachMediaElement: vi.fn(),
+          load: vi.fn(),
+          play: vi.fn(() => Promise.resolve()),
+          pause: vi.fn(),
+          destroy: vi.fn(),
+          on: vi.fn(),
+        };
+        instances.push(instance);
+        return instance;
+      });
+      return instances;
+    };
+
+    const getCallback = (instance, eventName) =>
+      instance.on.mock.calls.find((call) => call[0] === eventName)?.[1];
+
+    it('should ignore a late NetworkError from a player already replaced by a reconnect', async () => {
+      vi.useFakeTimers();
+      const instances = mockDistinctPlayerInstances();
+      render(<FloatingVideo />);
+      expect(instances).toHaveLength(1);
+
+      act(() => {
+        getCallback(instances[0], mpegts.Events.ERROR)(
+          'NetworkError',
+          'connection lost'
+        );
+      });
+      expect(instances[0].destroy).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(instances).toHaveLength(2);
+
+      act(() => {
+        getCallback(instances[0], mpegts.Events.ERROR)(
+          'NetworkError',
+          'connection lost'
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(instances).toHaveLength(2);
+      expect(instances[1].destroy).not.toHaveBeenCalled();
+    });
+
+    it('should ignore a late autoplay-prevented rejection from a replaced player', async () => {
+      vi.useFakeTimers();
+      const instances = mockDistinctPlayerInstances();
+      let rejectFirstPlay;
+      render(<FloatingVideo />);
+      instances[0].play.mockReturnValue(
+        new Promise((_resolve, reject) => {
+          rejectFirstPlay = reject;
+        })
+      );
+
+      act(() => {
+        getCallback(instances[0], mpegts.Events.MEDIA_INFO)();
+      });
+
+      act(() => {
+        getCallback(instances[0], mpegts.Events.ERROR)(
+          'NetworkError',
+          'connection lost'
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(instances).toHaveLength(2);
+
+      await act(async () => {
+        rejectFirstPlay(new DOMException('', 'NotAllowedError'));
+        await Promise.resolve().catch(() => {});
+      });
+
+      expect(
+        screen.queryByText(/Auto-play was prevented/i)
+      ).not.toBeInTheDocument();
     });
   });
 

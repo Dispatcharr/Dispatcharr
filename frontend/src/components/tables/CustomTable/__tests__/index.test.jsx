@@ -167,6 +167,318 @@ describe('useTable', () => {
     });
   });
 
+  describe('paired column sizing', () => {
+    const pairedColumnSizing = [
+      { id: 'name', size: 200, minSize: 100 },
+      { id: 'epg', size: 200, minSize: 120 },
+      { id: 'group', size: 200, minSize: 120 },
+    ];
+
+    const getSizingUpdater = (nextSizing) => {
+      setupMocks();
+      const setColumnSizing = vi.fn();
+      renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: {},
+          setColumnSizing,
+          pairedColumnSizing,
+          tableId: 'test-table',
+        })
+      );
+
+      const tableOptions = vi.mocked(useReactTable).mock.calls.at(-1)[0];
+      act(() => {
+        tableOptions.onColumnSizingChange(nextSizing);
+      });
+      return setColumnSizing.mock.calls[0][0];
+    };
+
+    it('transfers a resize delta only to the adjacent paired column', () => {
+      const updateSizing = getSizingUpdater((current) => ({
+        ...current,
+        name: 250,
+      }));
+
+      expect(updateSizing({})).toMatchObject({ name: 250, epg: 150 });
+    });
+
+    it('clamps a drag that would cross an adjacent column minimum', () => {
+      const updateSizing = getSizingUpdater((current) => ({
+        ...current,
+        name: 400,
+      }));
+
+      expect(updateSizing({})).toEqual({
+        name: 280,
+        epg: 120,
+        group: 200,
+      });
+    });
+
+    it('measures paired header widths once per drag', () => {
+      setupMocks();
+      const setColumnSizing = vi.fn();
+      const querySpy = vi.spyOn(document, 'querySelector').mockReturnValue({
+        getBoundingClientRect: () => ({ width: 200 }),
+      });
+
+      renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: {},
+          setColumnSizing,
+          pairedColumnSizing,
+          tableId: 'test-table',
+        })
+      );
+
+      const tableOptions = vi.mocked(useReactTable).mock.calls.at(-1)[0];
+      act(() => {
+        tableOptions.onColumnSizingChange((current) => ({
+          ...current,
+          name: 220,
+        }));
+      });
+      setColumnSizing.mock.calls[0][0]({});
+
+      act(() => {
+        tableOptions.onColumnSizingChange((current) => ({
+          ...current,
+          name: 240,
+        }));
+      });
+      setColumnSizing.mock.calls[1][0]({
+        name: 220,
+        epg: 180,
+        group: 200,
+      });
+
+      // Three paired columns measured on the first tick only.
+      expect(querySpy).toHaveBeenCalledTimes(3);
+      querySpy.mockRestore();
+    });
+  });
+
+  describe('column resize preview', () => {
+    const mountPreviewTable = ({ withTableId = true } = {}) => {
+      const tableElement = document.createElement('div');
+      tableElement.className = 'divTable';
+      if (withTableId) {
+        tableElement.setAttribute('data-table-id', 'preview-table');
+      }
+      tableElement.getBoundingClientRect = () => ({ top: 0, bottom: 100 });
+
+      const header = document.createElement('div');
+      header.className = 'thead';
+      const headerCell = document.createElement('div');
+      headerCell.setAttribute('data-column-id', 'name');
+      headerCell.getBoundingClientRect = () => ({ width: 200 });
+      const neighborHeaderCell = document.createElement('div');
+      neighborHeaderCell.setAttribute('data-column-id', 'epg');
+      neighborHeaderCell.getBoundingClientRect = () => ({ width: 200 });
+      header.append(headerCell, neighborHeaderCell);
+
+      const body = document.createElement('div');
+      body.className = 'tbody';
+      const visibleRow = document.createElement('div');
+      visibleRow.className = 'native-table-row';
+      visibleRow.getBoundingClientRect = () => ({ top: 20, bottom: 60 });
+      const hiddenRow = document.createElement('div');
+      hiddenRow.className = 'native-table-row';
+      hiddenRow.getBoundingClientRect = () => ({ top: 120, bottom: 160 });
+      const visibleCell = document.createElement('div');
+      visibleCell.setAttribute('data-column-id', 'name');
+      const hiddenCell = document.createElement('div');
+      hiddenCell.setAttribute('data-column-id', 'name');
+      const visibleNeighborCell = document.createElement('div');
+      visibleNeighborCell.setAttribute('data-column-id', 'epg');
+      visibleRow.append(visibleCell, visibleNeighborCell);
+      hiddenRow.append(hiddenCell);
+      body.append(visibleRow, hiddenRow);
+      tableElement.append(header, body);
+      document.body.appendChild(tableElement);
+
+      return {
+        tableElement,
+        headerCell,
+        neighborHeaderCell,
+        visibleCell,
+        visibleNeighborCell,
+        hiddenCell,
+      };
+    };
+
+    const makePreviewEvent = (tableElement, clientX) => ({
+      currentTarget: {
+        closest: (selector) => {
+          if (selector === '[data-table-id]') {
+            return tableElement.hasAttribute('data-table-id')
+              ? tableElement
+              : null;
+          }
+          if (selector === '.divTable') {
+            return tableElement;
+          }
+          return null;
+        },
+      },
+      clientX,
+      touches: undefined,
+      preventDefault: vi.fn(),
+    });
+
+    const nameHeader = {
+      column: {
+        id: 'name',
+        columnDef: { minSize: 40, maxSize: 400 },
+      },
+      getSize: () => 120,
+    };
+
+    afterEach(() => {
+      document.body.replaceChildren();
+    });
+
+    it('previews direct widths only on the header and visible row cells', () => {
+      setupMocks();
+      const { tableElement, headerCell, visibleCell, hiddenCell } =
+        mountPreviewTable();
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 120 },
+          setColumnSizing: vi.fn(),
+          tableId: 'preview-table',
+        })
+      );
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          nameHeader,
+          makePreviewEvent(tableElement, 100)
+        );
+        fireEvent.mouseMove(window, { clientX: 140 });
+      });
+
+      expect(headerCell.style.width).toBe('160px');
+      expect(visibleCell.style.width).toBe('160px');
+      expect(hiddenCell.style.width).toBe('');
+      expect(tableElement.style.getPropertyValue('--header-name-size')).toBe(
+        ''
+      );
+    });
+
+    it('restores preview styles and scroll position when resizing ends', () => {
+      setupMocks();
+      const { tableElement, headerCell, visibleCell } = mountPreviewTable();
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 120 },
+          setColumnSizing: vi.fn(),
+          tableId: 'preview-table',
+        })
+      );
+      tableElement.scrollTop = 75;
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          nameHeader,
+          makePreviewEvent(tableElement, 100)
+        );
+        fireEvent.mouseMove(window, { clientX: 140 });
+        tableElement.scrollTop = 0;
+        fireEvent.scroll(tableElement);
+      });
+
+      expect(tableElement.scrollTop).toBe(75);
+      act(() => {
+        fireEvent.mouseUp(window);
+      });
+      expect(headerCell.style.width).toBe('');
+      expect(visibleCell.style.width).toBe('');
+    });
+
+    it('previews paired columns by updating their direct flex styles', () => {
+      setupMocks();
+      const {
+        tableElement,
+        headerCell,
+        neighborHeaderCell,
+        visibleCell,
+        visibleNeighborCell,
+      } = mountPreviewTable();
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 200, epg: 200 },
+          setColumnSizing: vi.fn(),
+          pairedColumnSizing: [
+            { id: 'name', size: 200, minSize: 100 },
+            { id: 'epg', size: 200, minSize: 100 },
+          ],
+          tableId: 'preview-table',
+        })
+      );
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          {
+            column: {
+              id: 'name',
+              columnDef: { flexRatio: true, minSize: 100 },
+            },
+            getSize: () => 200,
+          },
+          makePreviewEvent(tableElement, 100)
+        );
+        fireEvent.mouseMove(window, { clientX: 150 });
+      });
+
+      expect(headerCell.style.flex).toBe('250 1 0%');
+      expect(visibleCell.style.flex).toBe('250 1 0%');
+      expect(neighborHeaderCell.style.flex).toBe('150 1 0%');
+      expect(visibleNeighborCell.style.flex).toBe('150 1 0%');
+    });
+
+    it('finds a table through its divTable class when no table id is set', () => {
+      setupMocks();
+      const { tableElement, headerCell } = mountPreviewTable({
+        withTableId: false,
+      });
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 120 },
+          setColumnSizing: vi.fn(),
+        })
+      );
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          nameHeader,
+          makePreviewEvent(tableElement, 100)
+        );
+        fireEvent.mouseMove(window, { clientX: 140 });
+      });
+
+      expect(headerCell.style.width).toBe('160px');
+    });
+  });
+
   // ── Keyboard event handling ────────────────────────────────────────────────
 
   describe('keyboard event handling', () => {

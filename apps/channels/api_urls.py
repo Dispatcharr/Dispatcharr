@@ -61,6 +61,13 @@ urlpatterns = [
         name='recording-hls',
     ),
     path('dvr/comskip-config/', ComskipConfigAPIView.as_view(), name='comskip_config'),
+    # Some clients strip trailing slashes from artwork URLs. Serve the same
+    # view directly (no redirect) so logo fetches still return an image.
+    path(
+        'logos/<int:pk>/cache',
+        LogoViewSet.as_view({'get': 'cache'}),
+        name='logo-cache-noslash',
+    ),
 ]
 
 urlpatterns += router.urls

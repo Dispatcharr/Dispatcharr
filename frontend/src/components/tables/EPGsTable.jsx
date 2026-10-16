@@ -32,7 +32,7 @@ import {
   SquarePlus,
 } from 'lucide-react';
 import { format, useDateTimeFormat } from '../../utils/dateTimeUtils.js';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
@@ -49,7 +49,7 @@ import {
 import {
   makeHeaderCellRenderer,
   makeSortingChangeHandler,
-} from './M3uTableUtils.jsx';
+} from './tableSortingUtils.jsx';
 
 // Helper function to get status text color
 const getStatusColor = (status) => {
@@ -220,10 +220,11 @@ const EPGsTable = () => {
 
   const theme = useMantineTheme();
   const { fullDateTimeFormat } = useDateTimeFormat();
-  const [tableSize] = useLocalStorage('table-size', 'default');
-  const [typeFilter, setTypeFilter] = useLocalStorage(
+  const [tableSize] = useBrowserStorage('table-size', 'default');
+  const [typeFilter, setTypeFilter] = useBrowserStorage(
     'epg-table-type-filter',
-    ALL_SOURCE_TYPES
+    ALL_SOURCE_TYPES,
+    { storage: 'session' }
   );
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);

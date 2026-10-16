@@ -20,21 +20,27 @@ const CustomTable = ({ table }) => {
     return (
       headerGroups[0]?.headers.reduce((total, header) => {
         const colDef = header.column.columnDef;
-        const size = colDef.grow ? colDef.minSize || 0 : header.getSize();
+        const size = colDef.grow
+          ? colDef.resizeMinSize ?? colDef.minSize ?? 0
+          : header.getSize();
         return total + size;
       }, 0) || 0
     );
   }, [table, columnSizing]);
 
-  // CSS custom properties for each fixed-width column's current size.
+  // CSS custom properties for each fixed-width column's current size and
+  // flex-ratio columns' current allocation.
   // These are injected on the table wrapper and cascade to all descendant cells,
   // so body cells (which are memoized and don't re-render on resize) still pick
   // up the new width via CSS cascade without needing a React re-render.
   const columnSizeVars = useMemo(() => {
     void columnSizing;
     return table.getFlatHeaders().reduce((vars, header) => {
-      if (!header.column.columnDef.grow) {
+      if (!header.column.columnDef.grow || header.column.columnDef.flexRatio) {
         vars[`--header-${header.id}-size`] = `${header.getSize()}px`;
+        if (header.column.columnDef.flexRatio) {
+          vars[`--header-${header.id}-ratio`] = header.getSize();
+        }
       }
       return vars;
     }, {});
@@ -43,12 +49,16 @@ const CustomTable = ({ table }) => {
   return (
     <Box
       className={`divTable table-striped table-size-${tableSize}`}
+      data-table-id={table.tableId}
       style={{
         width: '100%',
         maxWidth: '100%',
         minWidth: `${minTableWidth}px`,
+        height: table.fillHeight ? '100%' : undefined,
+        minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
+        overflowY: table.fillHeight ? 'auto' : undefined,
         ...columnSizeVars,
       }}
     >
@@ -61,9 +71,10 @@ const CustomTable = ({ table }) => {
           table.onSelectAllChange ? table.onSelectAllChange : null
         }
         selectedTableIds={table.selectedTableIds}
-        tableCellProps={table.tableCellProps}
         headerPinned={table.headerPinned}
         enableDragDrop={table.enableDragDrop}
+        onResetColumnSizing={table.onResetColumnSizing}
+        onColumnResizePreview={table.onColumnResizePreview}
       />
       <CustomTableBody
         getRowModel={table.getRowModel}
@@ -76,6 +87,7 @@ const CustomTable = ({ table }) => {
         enableDragDrop={table.enableDragDrop}
         selectedTableIdsSet={table.selectedTableIdsSet}
         handleRowClickRef={table.handleRowClickRef}
+        tableSize={table.tableSize}
       />
     </Box>
   );

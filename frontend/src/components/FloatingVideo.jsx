@@ -146,6 +146,8 @@ export default function FloatingVideo() {
   // Ref kept in sync with videoSize state for use inside event handlers
   // where closures over state would be stale.
   const videoSizeRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimeoutRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -180,6 +182,9 @@ export default function FloatingVideo() {
   const VISIBLE_MARGIN = 48; // keep part of the window visible when dragging
   const HEADER_HEIGHT = 38; // height of the close button header area
   const ERROR_HEIGHT = 45; // approximate height of error message area when displayed
+  const MAX_LIVE_RECONNECT_ATTEMPTS = 5;
+  const LIVE_RECONNECT_BASE_DELAY_MS = 1000;
+  const LIVE_RECONNECT_MAX_DELAY_MS = 10000;
 
   // Safely destroy the mpegts player to prevent errors
   const safeDestroyPlayer = () => {
@@ -221,6 +226,11 @@ export default function FloatingVideo() {
     if (overlayTimeoutRef.current) {
       clearTimeout(overlayTimeoutRef.current);
       overlayTimeoutRef.current = null;
+    }
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
   };
 
@@ -503,40 +513,78 @@ export default function FloatingVideo() {
         videoRef.current.volume = savedVolume;
       if (typeof savedMuted === 'boolean') videoRef.current.muted = savedMuted;
 
+      // Active before load() so sync events from this instance pass the guard.
+      playerRef.current = player;
+
       player.on(mpegts.Events.LOADING_COMPLETE, () => {
+        // Ignore events from a player that reconnect already replaced.
+        if (playerRef.current !== player) return;
         setIsLoading(false);
       });
 
       player.on(mpegts.Events.METADATA_ARRIVED, () => {
+        if (playerRef.current !== player) return;
         setIsLoading(false);
       });
 
       player.on(mpegts.Events.ERROR, (errorType, errorDetail) => {
+        if (playerRef.current !== player) return;
         setIsLoading(false);
 
-        if (errorType !== 'NetworkError' || !errorDetail?.includes('aborted')) {
-          console.error('Player error:', errorType, errorDetail);
+        if (errorType === 'NetworkError' && errorDetail?.includes('aborted')) {
+          return;
+        }
 
+        console.error('Player error:', errorType, errorDetail);
+
+        // mpegts.js has no partial recovery; NetworkError is the only transient
+        // class worth a full destroy + rebuild.
+        if (
+          errorType === 'NetworkError' &&
+          reconnectAttemptsRef.current < MAX_LIVE_RECONNECT_ATTEMPTS
+        ) {
+          if (reconnectTimeoutRef.current) return;
+
+          reconnectAttemptsRef.current += 1;
+          const attempt = reconnectAttemptsRef.current;
+          const delay = Math.min(
+            LIVE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
+            LIVE_RECONNECT_MAX_DELAY_MS
+          );
+
+          // Destroy first (frees the failed session); set message after because
+          // safeDestroyPlayer clears loadError.
+          safeDestroyPlayer();
+          setLoadError(
+            `Connection lost, reconnecting... (attempt ${attempt}/${MAX_LIVE_RECONNECT_ATTEMPTS})`
+          );
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null;
+            initializeLivePlayer();
+          }, delay);
+        } else {
           setLoadError(getLivePlayerErrorMessage(errorType, errorDetail));
         }
       });
 
-      player.load();
-
       player.on(mpegts.Events.MEDIA_INFO, () => {
+        if (playerRef.current !== player) return;
         setIsLoading(false);
+        reconnectAttemptsRef.current = 0;
         try {
           player.play().catch((e) => {
+            if (playerRef.current !== player) return;
             console.log('Auto-play prevented:', e);
             setLoadError('Auto-play was prevented. Click play to start.');
           });
         } catch (e) {
+          if (playerRef.current !== player) return;
           console.log('Error during play:', e);
           setLoadError(`Playback error: ${e.message}`);
         }
       });
 
-      playerRef.current = player;
+      player.load();
     } catch (error) {
       setIsLoading(false);
       console.error('Error initializing player:', error);
@@ -562,6 +610,7 @@ export default function FloatingVideo() {
 
     // Clean up any existing player
     safeDestroyPlayer();
+    reconnectAttemptsRef.current = 0;
 
     // Initialize the appropriate player based on content type
     if (contentType === 'vod') {

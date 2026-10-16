@@ -3,8 +3,31 @@ import json
 import ipaddress
 from pathlib import Path
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
+from dispatcharr.utils import validate_proxy_auth_header
+from .models import (
+    CoreSettings,
+    UserAgent,
+    StreamProfile,
+    OutputProfile,
+    DVR_SETTINGS_KEY,
+    EPG_DAYS_LIMIT,
+    EPG_HISTORY_MAX_DAYS_DEFAULT,
+    EPG_HISTORY_MIN_DAYS_DEFAULT,
+    EPG_SETTINGS_KEY,
+    NETWORK_ACCESS_KEY,
+    SYSTEM_SETTINGS_KEY,
+    REVERSE_PROXY_AUTH_KEY,
+)
+from .utils import clamp_int
+
+from dispatcharr.log_collector import (
+    DEFAULT_LOG_KEEP,
+    DEFAULT_LOG_MB,
+    MAX_LOG_KEEP,
+    MAX_LOG_MB,
+)
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -21,6 +44,14 @@ class UserAgentSerializer(serializers.ModelSerializer):
         ]
 
 
+def _update_profile(serializer, instance, validated_data):
+    """Save a profile and turn a locked-profile rejection into a 400."""
+    try:
+        return serializers.ModelSerializer.update(serializer, instance, validated_data)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(exc.messages)
+
+
 class StreamProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = StreamProfile
@@ -34,17 +65,75 @@ class StreamProfileSerializer(serializers.ModelSerializer):
             "locked",
         ]
 
+    def update(self, instance, validated_data):
+        return _update_profile(self, instance, validated_data)
+
 
 class OutputProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = OutputProfile
         fields = ["id", "name", "command", "parameters", "is_active", "locked"]
 
+    def update(self, instance, validated_data):
+        return _update_profile(self, instance, validated_data)
+
+
+def _clamp_epg_history_fields(value):
+    """Clamp guide-history day fields in place.
+
+    The reader also clamps, so a bad stored value cannot change behavior. Doing
+    it on write keeps the saved row equal to what the settings page will show.
+    """
+    if not isinstance(value, dict):
+        return
+    if "epg_history_max_days" in value:
+        value["epg_history_max_days"] = clamp_int(
+            value["epg_history_max_days"],
+            EPG_HISTORY_MAX_DAYS_DEFAULT,
+            0,
+            EPG_DAYS_LIMIT,
+        )
+    if "epg_history_min_days" in value:
+        max_days = clamp_int(
+            value.get("epg_history_max_days"),
+            EPG_HISTORY_MAX_DAYS_DEFAULT,
+            0,
+            EPG_DAYS_LIMIT,
+        )
+        value["epg_history_min_days"] = min(
+            clamp_int(
+                value["epg_history_min_days"],
+                EPG_HISTORY_MIN_DAYS_DEFAULT,
+                0,
+                EPG_DAYS_LIMIT,
+            ),
+            max_days,
+        )
+    if "epg_default_prev_days" in value:
+        max_days = clamp_int(
+            value.get("epg_history_max_days"),
+            EPG_HISTORY_MAX_DAYS_DEFAULT,
+            0,
+            EPG_DAYS_LIMIT,
+        )
+        value["epg_default_prev_days"] = clamp_int(
+            value["epg_default_prev_days"], 0, 0, max_days
+        )
+    if "epg_default_days" in value:
+        value["epg_default_days"] = clamp_int(
+            value["epg_default_days"], 0, 0, EPG_DAYS_LIMIT
+        )
+
 
 class CoreSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = CoreSettings
         fields = "__all__"
+
+    def create(self, validated_data):
+        if validated_data.get("key") == EPG_SETTINGS_KEY:
+            _clamp_epg_history_fields(validated_data.get("value"))
+        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         if instance.key == NETWORK_ACCESS_KEY:
@@ -70,6 +159,44 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                         "value": invalid,
                     }
                 )
+
+        # The UI constrains these; the raw API is the gap, and a bad payload wedges the log collector.
+        if instance.key == SYSTEM_SETTINGS_KEY:
+            value = validated_data.get("value")
+            if isinstance(value, dict):
+                if "log_max_mb" in value:
+                    value["log_max_mb"] = clamp_int(
+                        value["log_max_mb"], DEFAULT_LOG_MB, 1, MAX_LOG_MB
+                    )
+                if "log_keep" in value:
+                    value["log_keep"] = clamp_int(
+                        value["log_keep"], DEFAULT_LOG_KEEP, 2, MAX_LOG_KEEP
+                    )
+                if "log_persist" in value:
+                    value["log_persist"] = value["log_persist"] is not False
+
+        if instance.key == EPG_SETTINGS_KEY:
+            _clamp_epg_history_fields(validated_data.get("value"))
+
+        if instance.key == REVERSE_PROXY_AUTH_KEY:
+            value = validated_data.get("value") or {}
+            header = (value.get("header") or "").strip()
+            if value.get("enabled") and not header:
+                raise serializers.ValidationError(
+                    {"message": "A header name is required to enable reverse proxy auth."}
+                )
+            if header and not validate_proxy_auth_header(header):
+                raise serializers.ValidationError(
+                    {
+                        "message": (
+                            "Invalid header name. Use letters, digits and dashes "
+                            "only (for example X-Forwarded-User)."
+                        ),
+                        "value": header,
+                    }
+                )
+            value["header"] = header
+            value["enabled"] = bool(value.get("enabled"))
 
         # Sanitize series_rules when DVR settings are saved through the
         # generic settings API (e.g. Settings page round-trip) to prevent
@@ -116,6 +243,7 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
+    validate_redirect_urls = serializers.BooleanField(required=False, default=True)
 
     def validate_buffering_timeout(self, value):
         if value < 0 or value > 300:

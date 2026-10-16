@@ -8,11 +8,13 @@ import useLogosStore from '../../store/logos';
 import useEPGsStore from '../../store/epgs';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useAuthStore from '../../store/auth';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
 import userEvent from '@testing-library/user-event';
+import { USER_LEVELS } from '../../constants';
 
 // Mock dependencies
 vi.mock('../../store/channels', () => ({
@@ -30,7 +32,12 @@ vi.mock('../../store/settings', () => ({
 vi.mock('../../store/useVideoStore', () => ({
   default: vi.fn(),
 }));
-vi.mock('../../hooks/useLocalStorage', () => ({
+vi.mock('../../store/auth', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(),
 }));
 vi.mock('../../api', () => ({
@@ -305,6 +312,7 @@ describe('Guide', () => {
   let mockChannelsState;
   let mockShowVideo;
   let mockFetchRecordings;
+  let mockEnableLogoRendering;
   const now = dayjs('2024-01-15T12:00:00Z');
 
   beforeEach(() => {
@@ -347,6 +355,7 @@ describe('Guide', () => {
 
     mockShowVideo = vi.fn();
     mockFetchRecordings = vi.fn().mockResolvedValue([]);
+    mockEnableLogoRendering = vi.fn();
 
     useChannelsStore.mockImplementation((selector) => {
       const state = {
@@ -356,9 +365,15 @@ describe('Guide', () => {
       return selector ? selector(state) : state;
     });
 
-    useLogosStore.mockReturnValue({
-      'logo-1': { url: 'http://logo1.png' },
-      'logo-2': { url: 'http://logo2.png' },
+    useLogosStore.mockImplementation((selector) => {
+      const state = {
+        logos: {
+          'logo-1': { url: 'http://logo1.png' },
+          'logo-2': { url: 'http://logo2.png' },
+        },
+        enableLogoRendering: mockEnableLogoRendering,
+      };
+      return selector ? selector(state) : state;
     });
 
     useEPGsStore.mockImplementation((selector) =>
@@ -369,7 +384,17 @@ describe('Guide', () => {
 
     useSettingsStore.mockReturnValue('production');
     useVideoStore.mockReturnValue(mockShowVideo);
-    useLocalStorage.mockReturnValue(['12h', vi.fn()]);
+    useAuthStore.mockImplementation((selector) => {
+      const state = {
+        user: {
+          id: 1,
+          user_level: USER_LEVELS.ADMIN,
+          custom_properties: {},
+        },
+      };
+      return selector ? selector(state) : state;
+    });
+    useBrowserStorage.mockReturnValue(['12h', vi.fn()]);
 
     dateTimeUtils.getNow.mockReturnValue(now);
     dateTimeUtils.format.mockImplementation((date, format) => {
@@ -387,6 +412,7 @@ describe('Guide', () => {
     dateTimeUtils.useDateTimeFormat.mockReturnValue({
       timeFormat: '12h',
       dateFormat: 'MM/DD/YYYY',
+      dateYearFormat: 'MMM D, YYYY',
     });
 
     guideUtils.fetchPrograms.mockResolvedValue([
@@ -449,12 +475,32 @@ describe('Guide', () => {
       render(<Guide />);
 
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(mockEnableLogoRendering).toHaveBeenCalledOnce();
     });
 
     it('displays current time in header', async () => {
       render(<Guide />);
 
       expect(screen.getByText(/Monday, 01\/15\/2024/)).toBeInTheDocument();
+    });
+
+    it('renders a day-first header date without a comma before the year', () => {
+      dateTimeUtils.useDateTimeFormat.mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateFormat: 'D MMM',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      dateTimeUtils.format.mockImplementation((date, fmt) =>
+        dayjs(date).format(fmt)
+      );
+      render(<Guide />);
+      const header = screen.getByText(/•/);
+      expect(header).toHaveTextContent(/\d{1,2} [A-Za-z]{3} \d{4}/);
+      expect(header.textContent).not.toMatch(/, \d{4}/);
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(
+        expect.anything(),
+        'dddd, D MMM YYYY • HH:mm'
+      );
     });
 
     it('renders channel rows when channels are available', async () => {
@@ -796,6 +842,45 @@ describe('Guide', () => {
 
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2024-01-15T12:00:00Z'));
+    });
+  });
+
+  describe('Time window loading', () => {
+    it('requests the initial now−1h → now+24h grid window', async () => {
+      vi.useRealTimers();
+      guideUtils.fetchPrograms.mockClear();
+
+      render(<Guide />);
+
+      await waitFor(() => {
+        expect(guideUtils.fetchPrograms).toHaveBeenCalled();
+      });
+
+      const params = guideUtils.fetchPrograms.mock.calls[0][0];
+      expect(params).toBeInstanceOf(URLSearchParams);
+      const start = Date.parse(params.get('start'));
+      const end = Date.parse(params.get('end'));
+      const nowMs = now.valueOf();
+      expect(start).toBe(nowMs - 60 * 60 * 1000);
+      expect(end).toBe(nowMs + 24 * 60 * 60 * 1000);
+    });
+
+    it('does not refetch channels on the initial program window load alone', async () => {
+      vi.useRealTimers();
+      API.getChannelsSummary.mockClear();
+      guideUtils.fetchPrograms.mockClear();
+
+      render(<Guide />);
+
+      await waitFor(() => {
+        expect(API.getChannelsSummary).toHaveBeenCalled();
+        expect(guideUtils.fetchPrograms).toHaveBeenCalled();
+      });
+
+      const channelCalls = API.getChannelsSummary.mock.calls.length;
+      // Allow React StrictMode double-invoke; time-extend must not add channel fetches.
+      expect(channelCalls).toBeLessThanOrEqual(2);
+      expect(API.getChannelsSummary).toHaveBeenCalledTimes(channelCalls);
     });
   });
 });

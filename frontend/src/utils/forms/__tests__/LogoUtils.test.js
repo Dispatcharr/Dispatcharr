@@ -48,7 +48,7 @@ describe('LogoUtils', () => {
 
       await uploadLogo(file, values);
 
-      expect(API.uploadLogo).toHaveBeenCalledWith(file, 'My Logo');
+      expect(API.uploadLogo).toHaveBeenCalledWith(file, 'My Logo', false);
     });
 
     it('returns the result of API.uploadLogo', async () => {

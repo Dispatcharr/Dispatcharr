@@ -113,7 +113,7 @@ class ClientManager:
                             last_active = self.redis_client.hget(client_key, "last_active")
                             if last_active:
                                 last_active_time = float(last_active)
-                                ghost_timeout = self.heartbeat_interval * getattr(Config, 'GHOST_CLIENT_MULTIPLIER', 5.0)
+                                ghost_timeout = self._ghost_timeout_for_client(client_key)
 
                                 if current_time - last_active_time > ghost_timeout:
                                     logger.debug(f"Client {client_id} inactive for {current_time - last_active_time:.1f}s, removing as ghost")
@@ -170,6 +170,22 @@ class ClientManager:
         thread.name = f"client-heartbeat-{self.channel_id}"
         thread.start()
         logger.debug(f"Started client heartbeat thread for channel {self.channel_id} (interval: {self.heartbeat_interval}s)")
+
+    def _ghost_timeout_for_client(self, client_key):
+        """Seconds of last_active silence before this client is a ghost.
+
+        MPEG-TS / fMP4 keep a long window so failover grace is not mistaken
+        for disconnect. HLS is pull-based: after a few missed segment
+        intervals with no playlist/segment poll, the player is gone.
+        """
+        output_format = self.redis_client.hget(client_key, "output_format")
+        if isinstance(output_format, bytes):
+            output_format = output_format.decode("utf-8", errors="replace")
+        if output_format == "hls":
+            segment = float(ConfigHelper.get("HLS_SEGMENT_DURATION", 4))
+            missed = float(ConfigHelper.get("HLS_CLIENT_GHOST_SEGMENTS", 3))
+            return segment * missed
+        return self.heartbeat_interval * getattr(Config, "GHOST_CLIENT_MULTIPLIER", 5.0)
 
     def stop(self):
         """Stop the heartbeat thread and cleanup"""
@@ -320,14 +336,25 @@ class ClientManager:
             self.last_active_time = time.time()
 
             if self.redis_client:
-                client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
-                client_username = self.redis_client.hget(client_key, "username") or "unknown"
+                client_key = RedisKeys.client_metadata(self.channel_id, client_id)
+                username, hls_token = self.redis_client.hmget(
+                    client_key, "username", "hls_token"
+                )
+                client_username = username or "unknown"
                 if isinstance(client_username, bytes):
                     client_username = client_username.decode("utf-8")
+                if isinstance(hls_token, bytes):
+                    hls_token = hls_token.decode("utf-8")
 
-                self.redis_client.srem(self.client_set_key, client_id)
-                self.redis_client.delete(client_key)
-                remaining = self.redis_client.scard(self.client_set_key) or 0
+                pipe = self.redis_client.pipeline(transaction=False)
+                pipe.srem(self.client_set_key, client_id)
+                pipe.delete(client_key)
+                if hls_token:
+                    pipe.delete(RedisKeys.hls_session(hls_token))
+                pipe.scard(self.client_set_key)
+                results = pipe.execute() or []
+                remaining = results[-1] if results else 0
+                remaining = remaining or 0
 
             local_count = len(self.clients)
 
@@ -477,9 +504,22 @@ class ClientManager:
             return 0
 
         pipe = redis_client.pipeline(transaction=False)
+        id_list = []
         for cid in client_ids:
             cid_str = cid.decode() if isinstance(cid, bytes) else cid
+            id_list.append(cid_str)
+            pipe.hget(RedisKeys.client_metadata(channel_id, cid_str), "hls_token")
+        tokens = pipe.execute()
+
+        pipe = redis_client.pipeline(transaction=False)
+        for cid_str in id_list:
             pipe.delete(RedisKeys.client_metadata(channel_id, cid_str))
+        for token in tokens:
+            if not token:
+                continue
+            if isinstance(token, bytes):
+                token = token.decode("utf-8")
+            pipe.delete(RedisKeys.hls_session(token))
         pipe.delete(client_set_key)
         pipe.execute()
-        return len(client_ids)
+        return len(id_list)

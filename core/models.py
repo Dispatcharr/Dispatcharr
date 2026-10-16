@@ -1,7 +1,9 @@
 # core/models.py
 
 import logging
+import os
 import time
+from collections import namedtuple
 from pathlib import Path
 from shlex import split as shlex_split
 
@@ -15,6 +17,9 @@ from redis.exceptions import AuthenticationError as RedisAuthenticationError
 from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
+
+from core.utils import clamp_int
+from dispatcharr.log_collector import DEFAULT_LOG_KEEP, DEFAULT_LOG_MB
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,32 @@ class UserAgent(models.Model):
 
 PROXY_PROFILE_NAME = "Proxy"
 REDIRECT_PROFILE_NAME = "Redirect"
+FFMPEG_PROFILE_NAME = "FFmpeg"
+
+
+def _enforce_locked_profile(instance, allowed_fields):
+    """Reject edits to a locked profile, except the named fields.
+
+    QuerySet.update() does not call save(), so migrations can still refresh
+    seeded commands. API writes and instance.save() go through this check.
+    """
+    if not instance.pk:
+        return
+    orig = type(instance).objects.get(pk=instance.pk)
+    if not orig.locked:
+        return
+    for field in instance._meta.fields:
+        field_name = field.name
+        orig_value = getattr(orig, field_name)
+        new_value = getattr(instance, field_name)
+        if isinstance(orig_value, models.Model):
+            orig_value = orig_value.pk
+        if isinstance(new_value, models.Model):
+            new_value = new_value.pk
+        if field_name not in allowed_fields and orig_value != new_value:
+            raise ValidationError(
+                f"Cannot modify {field_name} on a protected profile."
+            )
 
 
 class StreamProfile(models.Model):
@@ -77,36 +108,21 @@ class StreamProfile(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        if self.pk:  # Only check existing records
-            orig = StreamProfile.objects.get(pk=self.pk)
-            if orig.locked:
-                allowed_fields = {"user_agent_id"}  # Only allow this field to change
-                for field in self._meta.fields:
-                    field_name = field.name
-
-                    # Convert user_agent to user_agent_id for comparison
-                    orig_value = getattr(orig, field_name)
-                    new_value = getattr(self, field_name)
-
-                    # Ensure that ForeignKey fields compare their ID values
-                    if isinstance(orig_value, models.Model):
-                        orig_value = orig_value.pk
-                    if isinstance(new_value, models.Model):
-                        new_value = new_value.pk
-
-                    if field_name not in allowed_fields and orig_value != new_value:
-                        raise ValidationError(
-                            f"Cannot modify {field_name} on a protected profile."
-                        )
-
+        # user_agent is the profile's request header, not the stream command.
+        _enforce_locked_profile(self, {"user_agent"})
         super().save(*args, **kwargs)
+
+    @classmethod
+    def get_locked(cls, name):
+        """Return the locked profile whose display name matches case-insensitively."""
+        return cls.objects.get(name__iexact=name, locked=True)
 
     @classmethod
     def update(cls, pk, **kwargs):
         instance = cls.objects.get(pk=pk)
 
         if instance.locked:
-            allowed_fields = {"user_agent_id"}  # Only allow updating this field
+            allowed_fields = {"user_agent", "user_agent_id"}
 
             for field_name, new_value in kwargs.items():
                 if field_name not in allowed_fields:
@@ -192,10 +208,69 @@ class OutputProfile(models.Model):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        _enforce_locked_profile(self, set())
+        super().save(*args, **kwargs)
+
     def build_command(self):
         """Return the full command as a list suitable for subprocess.Popen."""
         from shlex import split as shlex_split
         return [self.command] + shlex_split(self.parameters)
+
+
+USER_OUTPUT_PROFILE_PROP_KEY = "output_profile"
+
+
+def scrub_output_profile_id(profile_id):
+    """Remove a deleted OutputProfile id from user overrides and settings.
+
+    Clears ``User.custom_properties.output_profile`` when it matches the deleted
+    id (so the user falls back to no per-user transcode). Clears
+    ``hdhr_output_profile_id`` in stream settings when it matches (HDHR falls
+    back to pass-through). Clears ``output_profile_id`` in DVR settings when
+    it matches (recordings fall back to recording the source as-is). Only rows
+    that reference the id are touched.
+    """
+    from django.db.models import Q
+
+    from apps.accounts.models import User
+
+    try:
+        profile_id_int = int(profile_id)
+    except (TypeError, ValueError):
+        return
+
+    # Match int or string forms stored in JSON.
+    users = User.objects.exclude(custom_properties=None).filter(
+        Q(**{f"custom_properties__{USER_OUTPUT_PROFILE_PROP_KEY}": profile_id_int})
+        | Q(**{f"custom_properties__{USER_OUTPUT_PROFILE_PROP_KEY}": str(profile_id_int)})
+    )
+    for user in users.iterator():
+        custom = user.custom_properties
+        if not isinstance(custom, dict):
+            continue
+        if USER_OUTPUT_PROFILE_PROP_KEY not in custom:
+            continue
+        updated = dict(custom)
+        updated.pop(USER_OUTPUT_PROFILE_PROP_KEY, None)
+        user.custom_properties = updated
+        user.save(update_fields=["custom_properties"])
+
+    current_hdhr = CoreSettings.get_hdhr_output_profile_id()
+    if current_hdhr is not None and current_hdhr == profile_id_int:
+        CoreSettings._update_group(
+            STREAM_SETTINGS_KEY,
+            "Stream Settings",
+            {"hdhr_output_profile_id": None},
+        )
+
+    current_dvr = CoreSettings.get_dvr_output_profile_id()
+    if current_dvr is not None and current_dvr == profile_id_int:
+        CoreSettings._update_group(
+            DVR_SETTINGS_KEY,
+            "DVR Settings",
+            {"output_profile_id": None},
+        )
 
 
 # Setting group keys
@@ -206,7 +281,16 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
+# Guide-history defaults. Every day limit is clamped to 0..EPG_DAYS_LIMIT.
+EPG_HISTORY_MIN_DAYS_DEFAULT = 1
+EPG_HISTORY_MAX_DAYS_DEFAULT = 30
+EPG_DAYS_LIMIT = 365
+EpgHistoryPolicy = namedtuple(
+    "EpgHistoryPolicy",
+    ["min_days", "max_days", "default_prev_days", "default_days"],
+)
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+REVERSE_PROXY_AUTH_KEY = "reverse_proxy_auth"
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
@@ -243,6 +327,20 @@ _CACHE_BACKEND_ERROR = object()
 
 _GROUP_CACHE_ERROR_LOG_INTERVAL_SECONDS = 60
 _last_group_cache_error_log_at = 0.0
+
+# Opt out of the settings Redis cache and read Postgres instead. The AIO
+# entrypoint sets this for migrate (Redis is not up yet); other callers can
+# set it whenever they need the same bypass.
+_SKIP_REDIS_CACHE_ENV = "DISPATCHARR_SKIP_REDIS_CACHE"
+
+
+def _skip_redis_cache():
+    """True when Redis settings-cache access is explicitly disabled."""
+    return os.environ.get(_SKIP_REDIS_CACHE_ENV, "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _log_group_cache_backend_error(operation, key, exc):
@@ -294,8 +392,11 @@ class CoreSettings(models.Model):
         distinguish that from a normal miss. AIO starts Redis via uWSGI after
         ``migrate``, so settings reads during data migrations must not
         hard-require Redis. Local connection refused fails immediately (no
-        connect-timeout wait).
+        connect-timeout wait). When ``DISPATCHARR_SKIP_REDIS_CACHE`` is
+        set, skip Redis without probing or warning.
         """
+        if _skip_redis_cache():
+            return _CACHE_BACKEND_ERROR
         try:
             return cache.get(key, default)
         except _GROUP_CACHE_RERAISE_ERRORS:
@@ -306,7 +407,9 @@ class CoreSettings(models.Model):
 
     @classmethod
     def _cache_set(cls, key, value, timeout=None):
-        """Write to Django cache; no-op if Redis is unreachable."""
+        """Write to Django cache; no-op if Redis is unreachable or skipped."""
+        if _skip_redis_cache():
+            return False
         try:
             cache.set(key, value, timeout=timeout)
             return True
@@ -318,7 +421,9 @@ class CoreSettings(models.Model):
 
     @classmethod
     def _cache_delete(cls, key):
-        """Delete from Django cache; no-op if Redis is unreachable."""
+        """Delete from Django cache; no-op if Redis is unreachable or skipped."""
+        if _skip_redis_cache():
+            return False
         try:
             cache.delete(key)
             return True
@@ -589,7 +694,38 @@ class CoreSettings(models.Model):
             "epg_match_ignore_prefixes": [],
             "epg_match_ignore_suffixes": [],
             "epg_match_ignore_custom": [],
+            "epg_history_min_days": EPG_HISTORY_MIN_DAYS_DEFAULT,
+            "epg_history_max_days": EPG_HISTORY_MAX_DAYS_DEFAULT,
+            "epg_default_prev_days": 0,
+            "epg_default_days": 0,
         })
+
+    @classmethod
+    def get_epg_history_policy(cls):
+        """Past-history floor/ceiling and the default output windows.
+
+        Missing or unreadable values use the defaults. A stored minimum above
+        the maximum is pulled down to the maximum, and default days back
+        cannot exceed it.
+        """
+        settings = cls.get_epg_settings()
+        max_days = clamp_int(
+            settings.get("epg_history_max_days"),
+            EPG_HISTORY_MAX_DAYS_DEFAULT, 0, EPG_DAYS_LIMIT,
+        )
+        min_days = min(
+            clamp_int(
+                settings.get("epg_history_min_days"),
+                EPG_HISTORY_MIN_DAYS_DEFAULT, 0, EPG_DAYS_LIMIT,
+            ),
+            max_days,
+        )
+        return EpgHistoryPolicy(
+            min_days,
+            max_days,
+            clamp_int(settings.get("epg_default_prev_days"), 0, 0, max_days),
+            clamp_int(settings.get("epg_default_days"), 0, 0, EPG_DAYS_LIMIT),
+        )
 
     @classmethod
     def _safe_string_list(cls, value):
@@ -628,6 +764,7 @@ class CoreSettings(models.Model):
             "pre_offset_minutes": 0,
             "post_offset_minutes": 0,
             "series_rules": [],
+            "output_profile_id": None,
         })
 
     @classmethod
@@ -721,12 +858,22 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "validate_redirect_urls": True,
         })
 
     @classmethod
     def get_network_access_settings(cls):
         """CIDR allowlists per endpoint type (UI, STREAMS, XC_API, M3U_EPG, ...)."""
         return cls._get_group(NETWORK_ACCESS_KEY, {})
+
+    # Reverse Proxy Auth
+    @classmethod
+    def get_reverse_proxy_auth_settings(cls):
+        """Header-based sign-in handed off by a trusted reverse proxy."""
+        return cls._get_group(REVERSE_PROXY_AUTH_KEY, {
+            "enabled": False,
+            "header": "",
+        })
 
     # System Settings
     @classmethod
@@ -739,6 +886,9 @@ class CoreSettings(models.Model):
             "auto_import_mapped_files": True,
             "enable_ip_lookup": True,
             "catchup_enabled": True,
+            "log_max_mb": DEFAULT_LOG_MB,
+            "log_keep": DEFAULT_LOG_KEEP,
+            "log_persist": True,
         })
 
     @classmethod
@@ -760,6 +910,15 @@ class CoreSettings(models.Model):
     @classmethod
     def get_hdhr_output_profile_id(cls):
         raw = cls.get_stream_settings().get("hdhr_output_profile_id")
+        try:
+            return int(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    @classmethod
+    def get_dvr_output_profile_id(cls):
+        """Output profile applied to DVR captures, or None to record as-is."""
+        raw = cls.get_dvr_settings().get("output_profile_id")
         try:
             return int(raw) if raw is not None else None
         except (ValueError, TypeError):
@@ -794,8 +953,10 @@ class SystemEvent(models.Model):
         ('stream_switch', 'Stream Switched'),
         ('m3u_refresh', 'M3U Refreshed'),
         ('m3u_download', 'M3U Downloaded'),
+        ('m3u_error', 'M3U Error'),
         ('epg_refresh', 'EPG Refreshed'),
         ('epg_download', 'EPG Downloaded'),
+        ('epg_error', 'EPG Error'),
         ('login_success', 'Login Successful'),
         ('login_failed', 'Login Failed'),
         ('logout', 'User Logged Out'),

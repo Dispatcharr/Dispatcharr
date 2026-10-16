@@ -1,5 +1,5 @@
-import sys
 from django.apps import AppConfig
+
 
 class ProxyConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
@@ -7,9 +7,8 @@ class ProxyConfig(AppConfig):
     verbose_name = "Stream Proxies"
 
     def ready(self):
-        """Initialize proxy servers when Django starts"""
-        if 'manage.py' not in sys.argv:
-            from .live_proxy.server import ProxyServer as LiveProxyServer
+        """Eager-start live proxy only in stream-serving processes (uWSGI)."""
+        from apps.proxy.live_proxy.runtime import start_live_proxy_if_stream_worker
 
-            # HLS proxy retained in-tree but unused; live uses a singleton.
-            self.live_proxy = LiveProxyServer.get_instance()
+        # HLS proxy retained in-tree but unused; live uses a singleton.
+        self.live_proxy = start_live_proxy_if_stream_worker()

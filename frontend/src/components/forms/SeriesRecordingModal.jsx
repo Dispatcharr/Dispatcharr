@@ -19,7 +19,13 @@ const TITLE_MODE_LABEL = {
 const renderRuleSummary = (r) => {
   const titleMode = (r.title_mode || 'exact').toLowerCase();
   const parts = [];
-  parts.push(r.mode === 'new' ? 'New episodes' : 'Every episode');
+  if (r.mode === 'new') {
+    parts.push(
+      r.untagged_is_new ? 'New episodes (untagged as new)' : 'New episodes'
+    );
+  } else {
+    parts.push('Every episode');
+  }
   if (r.title) {
     parts.push(`${TITLE_MODE_LABEL[titleMode] || titleMode}: "${r.title}"`);
   }
@@ -52,7 +58,11 @@ export default function SeriesRecordingModal({
   };
 
   const handleRemoveSeries = async (r) => {
-    await deleteSeriesAndRule({ tvg_id: r.tvg_id, title: r.title });
+    await deleteSeriesAndRule({
+      tvg_id: r.tvg_id,
+      title: r.title,
+      epg_source_id: r.epg_source_id,
+    });
     try {
       await useChannelsStore.getState().fetchRecordings();
     } catch (error) {
@@ -104,7 +114,7 @@ export default function SeriesRecordingModal({
           {rules &&
             rules.map((r) => (
               <Flex
-                key={`${r.tvg_id}-${r.mode}-${r.title || ''}`}
+                key={`${r.tvg_id}-${r.epg_source_id || ''}-${r.mode}-${r.title || ''}`}
                 justify="space-between"
                 align="center"
                 gap="sm"

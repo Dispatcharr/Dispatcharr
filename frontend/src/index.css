@@ -39,6 +39,10 @@ code {
   background: #777;
 }
 
+.log-body::-webkit-scrollbar-thumb {
+  min-height: 32px;
+}
+
 @supports (-moz-appearance: none) {
   input[readonly][aria-haspopup] {
     pointer-events: auto !important;

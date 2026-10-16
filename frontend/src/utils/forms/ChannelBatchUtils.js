@@ -191,6 +191,12 @@ export const buildSubmitValues = (
     values.is_adult = values.is_adult === 'true';
   }
 
+  if (values.is_radio === '-1' || values.is_radio === undefined) {
+    delete values.is_radio;
+  } else {
+    values.is_radio = values.is_radio === 'true';
+  }
+
   if (
     values.hidden_from_output === '-1' ||
     values.hidden_from_output === undefined

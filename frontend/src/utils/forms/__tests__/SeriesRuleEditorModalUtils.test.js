@@ -28,6 +28,9 @@ import {
   DESCRIPTION_MODES,
   EPISODE_MODES,
   formatRange,
+  encodeTvgOptionValue,
+  parseTvgOptionValue,
+  tvgSelectValueFromRule,
   getTvgOptions,
   getChannelOptions,
   previewSeriesRule,
@@ -161,11 +164,11 @@ describe('SeriesRuleEditorModalUtils', () => {
     });
 
     it('maps tvgs to { value, label } options', () => {
-      const tvgs = [{ tvg_id: 'tvg-1', name: 'Channel One' }];
+      const tvgs = [{ tvg_id: 'tvg-1', name: 'Channel One', epg_source: 10 }];
       const result = getTvgOptions(tvgs);
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
-        value: 'tvg-1',
+        value: 'tvg-1::10',
         label: 'Channel One (tvg-1)',
       });
     });
@@ -179,17 +182,40 @@ describe('SeriesRuleEditorModalUtils', () => {
       });
     });
 
-    it('deduplicates by tvg_id', () => {
+    it('keeps duplicate tvg_ids from different sources as separate options', () => {
       const tvgs = [
-        { tvg_id: 'tvg-1', name: 'A' },
-        { tvg_id: 'tvg-1', name: 'B' },
-        { tvg_id: 'tvg-2', name: 'C' },
+        { tvg_id: 'tvg-1', name: 'A', epg_source: 1 },
+        { tvg_id: 'tvg-1', name: 'B', epg_source: 2 },
+        { tvg_id: 'tvg-2', name: 'C', epg_source: 1 },
       ];
-      const result = getTvgOptions(tvgs);
-      expect(result).toHaveLength(2);
+      const epgs = { 1: { name: 'Source One' }, 2: { name: 'Source Two' } };
+      const result = getTvgOptions(tvgs, epgs);
+      expect(result).toHaveLength(3);
       const values = result.map((o) => o.value);
-      expect(values).toContain('tvg-1');
-      expect(values).toContain('tvg-2');
+      expect(values).toContain('tvg-1::1');
+      expect(values).toContain('tvg-1::2');
+      expect(values).toContain('tvg-2::1');
+      expect(result.find((o) => o.value === 'tvg-1::1').label).toContain(
+        'Source One'
+      );
+    });
+
+    it('hides unmapped EPG copies when mapped ids are provided', () => {
+      const tvgs = [
+        { id: 122, tvg_id: 'tvg-1', name: 'Unmapped', epg_source: 1 },
+        { id: 895, tvg_id: 'tvg-1', name: 'Mapped', epg_source: 11 },
+      ];
+      const result = getTvgOptions(tvgs, {}, new Set(['895']));
+      expect(result).toHaveLength(1);
+      expect(result[0].value).toBe('tvg-1::11');
+    });
+
+    it('shows no stations for an empty mapped set, not the unfiltered list', () => {
+      const tvgs = [
+        { id: 1, tvg_id: 'tvg-1', name: 'A', epg_source: 1 },
+        { id: 2, tvg_id: 'tvg-2', name: 'B', epg_source: 1 },
+      ];
+      expect(getTvgOptions(tvgs, {}, new Set())).toEqual([]);
     });
 
     it('skips entries with no tvg_id', () => {
@@ -220,8 +246,63 @@ describe('SeriesRuleEditorModalUtils', () => {
         { tvg_id: 'a-id', name: 'Same' },
       ];
       const result = getTvgOptions(tvgs);
-      // "Same (a-id)" < "Same (z-id)"
       expect(result[0].value).toBe('a-id');
+    });
+  });
+
+  describe('parseTvgOptionValue / encodeTvgOptionValue', () => {
+    it('encodes tvg_id and epg_source', () => {
+      expect(encodeTvgOptionValue({ tvg_id: 'ch.1', epg_source: 11 })).toBe(
+        'ch.1::11'
+      );
+    });
+
+    it('parses a sourced option back', () => {
+      expect(parseTvgOptionValue('ch.1::11')).toEqual({
+        tvg_id: 'ch.1',
+        epg_source_id: 11,
+      });
+    });
+
+    it('treats a bare tvg_id as a legacy unsourced rule', () => {
+      expect(parseTvgOptionValue('ch.1')).toEqual({
+        tvg_id: 'ch.1',
+        epg_source_id: null,
+      });
+    });
+
+    it('builds a select value from a sourced rule', () => {
+      expect(
+        tvgSelectValueFromRule({ tvg_id: 'ch.1', epg_source_id: 11 })
+      ).toBe('ch.1::11');
+    });
+
+    it('binds an unsourced rule to the only mapped source copy', () => {
+      const tvgs = [
+        { id: 122, tvg_id: 'ch.1', epg_source: 1 },
+        { id: 895, tvg_id: 'ch.1', epg_source: 11 },
+      ];
+      expect(
+        tvgSelectValueFromRule({ tvg_id: 'ch.1' }, tvgs, new Set(['895']))
+      ).toBe('ch.1::11');
+    });
+
+    it('does not guess when two mapped copies share the tvg_id', () => {
+      const tvgs = [
+        { id: 1, tvg_id: 'ch.1', epg_source: 11 },
+        { id: 2, tvg_id: 'ch.1', epg_source: 12 },
+      ];
+      expect(
+        tvgSelectValueFromRule({ tvg_id: 'ch.1' }, tvgs, new Set(['1', '2']))
+      ).toBe('');
+    });
+
+    it('waits for mapped channel ids before binding an unsourced rule', () => {
+      const tvgs = [{ id: 895, tvg_id: 'ch.1', epg_source: 11 }];
+      expect(tvgSelectValueFromRule({ tvg_id: 'ch.1' }, tvgs)).toBe('');
+      expect(tvgSelectValueFromRule({ tvg_id: 'ch.1' }, tvgs, new Set())).toBe(
+        ''
+      );
     });
   });
 
@@ -259,6 +340,24 @@ describe('SeriesRuleEditorModalUtils', () => {
       const channels = makeChannels();
       const result = getChannelOptions(channels, makeTvgsById(), '');
       expect(result).toHaveLength(3);
+    });
+
+    it('only treats channels as matching when epgSourceId matches', () => {
+      vi.mocked(sortedChannelOptions).mockReturnValueOnce([
+        { value: '1', label: 'Comedy A' },
+        { value: '2', label: 'Comedy B' },
+      ]);
+      const channels = [
+        { id: 1, name: 'Comedy A', channel_number: 5, epg_data_id: 'epg-1' },
+        { id: 2, name: 'Comedy B', channel_number: 900, epg_data_id: 'epg-2' },
+      ];
+      const tvgsById = {
+        'epg-1': { tvg_id: 'tvg-comedy', epg_source: 1 },
+        'epg-2': { tvg_id: 'tvg-comedy', epg_source: 2 },
+      };
+      const result = getChannelOptions(channels, tvgsById, 'tvg-comedy', 2);
+      expect(result[0].value).toBe('2');
+      expect(result[1].value).toBe('1');
     });
 
     it('places matching channels before non-matching when tvgId set', () => {

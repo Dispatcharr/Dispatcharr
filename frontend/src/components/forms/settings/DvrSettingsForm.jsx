@@ -1,11 +1,13 @@
 import useSettingsStore from '../../../store/settings.jsx';
-import React, { useEffect, useRef, useState } from 'react';
+import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
+import React, { useEffect, useState } from 'react';
 import {
-  getChangedSettings,
-  parseSettings,
-  saveChangedSettings,
+  getChangedGroupSettings,
+  parseGroupSettings,
+  saveGroupSettings,
 } from '../../../utils/pages/SettingsUtils.js';
 import { showNotification } from '../../../utils/notificationUtils.js';
+import useSettingsSaveGuard from '../../../hooks/useSettingsSaveGuard.jsx';
 import {
   Alert,
   Button,
@@ -27,15 +29,18 @@ import { useForm } from '@mantine/form';
 import { FolderOpen } from 'lucide-react';
 import SafeDirectoryBrowser from '../../SafeDirectoryBrowser.jsx';
 
+const DVR_GROUP = 'dvr_settings';
+
 const DvrSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const [saved, setSaved] = useState(false);
   const [comskipConfig, setComskipConfig] = useState({
     path: '',
     exists: false,
   });
   const [pathBrowser, setPathBrowser] = useState(null);
-  const isSavingRef = useRef(false);
+  const { isSavingRef, runSave } = useSettingsSaveGuard();
 
   const form = useForm({
     mode: 'controlled',
@@ -48,7 +53,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
 
   useEffect(() => {
     if (settings && !isSavingRef.current) {
-      const formValues = parseSettings(settings);
+      const formValues = parseGroupSettings(settings, DVR_GROUP);
 
       form.setValues(formValues);
 
@@ -91,13 +96,11 @@ const DvrSettingsForm = React.memo(({ active }) => {
           autoClose: 3000,
           color: 'green',
         });
-        useSettingsStore.getState().updateSetting({
-          ...(settings['comskip_custom_path'] || {
-            key: 'comskip_custom_path',
-            name: 'DVR Comskip Custom Path',
-          }),
-          value: response.path,
-        });
+        // Backend already persisted the path. Only update local form state here.
+        // Writing the Zustand settings store would re-run the hydrate effect and
+        // wipe any unsaved edits on other DVR fields.
+        form.setFieldValue('comskip_custom_path', response.path);
+        setComskipConfig({ path: response.path, exists: true });
       }
       return response;
     } catch (error) {
@@ -108,27 +111,30 @@ const DvrSettingsForm = React.memo(({ active }) => {
 
   const onSubmit = async () => {
     setSaved(false);
-    isSavingRef.current = true;
 
-    const changedSettings = getChangedSettings(form.getValues(), settings);
+    const changedSettings = getChangedGroupSettings(
+      form.getValues(),
+      settings,
+      DVR_GROUP
+    );
 
     try {
-      await saveChangedSettings(settings, changedSettings);
-      isSavingRef.current = false;
-      const latestSettings = useSettingsStore.getState().settings;
-      if (latestSettings) {
-        const formValues = parseSettings(latestSettings);
-        form.setValues(formValues);
-        if (formValues['comskip_custom_path']) {
-          setComskipConfig((prev) => ({
-            path: formValues['comskip_custom_path'],
-            exists: prev.exists,
-          }));
+      await runSave(async () => {
+        await saveGroupSettings(settings, DVR_GROUP, changedSettings);
+        const latestSettings = useSettingsStore.getState().settings;
+        if (latestSettings) {
+          const formValues = parseGroupSettings(latestSettings, DVR_GROUP);
+          form.setValues(formValues);
+          if (formValues['comskip_custom_path']) {
+            setComskipConfig((prev) => ({
+              path: formValues['comskip_custom_path'],
+              exists: prev.exists,
+            }));
+          }
         }
-      }
-      setSaved(true);
+        setSaved(true);
+      });
     } catch (error) {
-      isSavingRef.current = false;
       console.error('Error saving settings:', error);
     }
   };
@@ -231,6 +237,29 @@ const DvrSettingsForm = React.memo(({ active }) => {
               ? `Using ${comskipConfig.path}`
               : 'No custom comskip.ini uploaded.'}
           </Text>
+          <Select
+            id="output_profile_id"
+            name="output_profile_id"
+            label="DVR Output Profile"
+            description="Output profile applied when capturing a recording. Leave unset to record the source as-is."
+            clearable
+            searchable
+            placeholder="No transcoding (pass-through)"
+            value={
+              form.values['output_profile_id'] != null
+                ? `${form.values['output_profile_id']}`
+                : null
+            }
+            onChange={(value) =>
+              form.setFieldValue(
+                'output_profile_id',
+                value ? parseInt(value, 10) : null
+              )
+            }
+            data={outputProfiles
+              .filter((p) => p.is_active)
+              .map((p) => ({ value: `${p.id}`, label: p.name }))}
+          />
           <NumberInput
             label="Start early (minutes)"
             description="Begin recording this many minutes before the scheduled start."
@@ -251,7 +280,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
           />
           <TextInput
             label="TV Path Template"
-            description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}. Use format specifiers like {season:02d}. Relative paths are under your library dir."
+            description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone. Use format specifiers like {season:02d} or {start_month:02d}. Relative paths are under your library dir."
             placeholder="TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"
             {...form.getInputProps('tv_template')}
             id="tv_template"
@@ -259,7 +288,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
           />
           <TextInput
             label="TV Fallback Template"
-            description="Template used when an episode has no season/episode. Supports {show}, {start}, {end}, {channel}, {year}."
+            description="Template used when an episode has no season/episode. Supports {show}, {sub_title}, {start}, {end}, {channel}, {year}, {original_air_date}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone."
             placeholder="TV_Shows/{show}/{start}.mkv"
             {...form.getInputProps('tv_fallback_template')}
             id="tv_fallback_template"
@@ -267,7 +296,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
           />
           <TextInput
             label="Movie Path Template"
-            description="Supports {title}, {year}, {channel}, {start}, {end}. Relative paths are under your library dir."
+            description="Supports {title}, {year}, {channel}, {start}, {end}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone. Relative paths are under your library dir."
             placeholder="Movies/{title} ({year}).mkv"
             {...form.getInputProps('movie_template')}
             id="movie_template"
@@ -275,7 +304,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
           />
           <TextInput
             label="Movie Fallback Template"
-            description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}."
+            description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone."
             placeholder="Movies/{start}.mkv"
             {...form.getInputProps('movie_fallback_template')}
             id="movie_fallback_template"

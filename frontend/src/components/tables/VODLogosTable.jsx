@@ -21,13 +21,13 @@ import {
 } from '@mantine/core';
 import { ExternalLink, Trash, SquareMinus } from 'lucide-react';
 import useVODLogosStore from '../../store/vodLogos';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import { showNotification } from '../../utils/notificationUtils.js';
 
 const VODLogoRowActions = ({ theme, row, deleteLogo }) => {
-  const [tableSize] = useLocalStorage('table-size', 'default');
+  const [tableSize] = useBrowserStorage('table-size', 'default');
 
   const onDelete = useCallback(() => {
     deleteLogo(row.original.id);

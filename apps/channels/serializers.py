@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime
 
 from rest_framework import serializers
@@ -23,7 +24,22 @@ from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
 from core.utils import validate_flexible_url, build_absolute_uri_with_port, truncate_with_warning
+from apps.channels.access import user_can_access_channel
 from apps.channels.utils import coerce_channel_profile_ids
+
+
+def _require_accessible_channel(context, channel):
+    """Reject a channel the requesting user may not access.
+
+    The error matches an unknown id so a restricted user cannot tell a
+    channel they may not use from one that does not exist. Serializers used
+    without a request (internal callers) are not restricted.
+    """
+    user = getattr(context.get("request"), "user", None)
+    if user is not None and not user_can_access_channel(user, channel):
+        raise serializers.ValidationError(
+            f'Invalid pk "{channel.pk}" - object does not exist.'
+        )
 
 
 class LogoSerializer(serializers.ModelSerializer):
@@ -69,9 +85,16 @@ class LogoSerializer(serializers.ModelSerializer):
         # Cache-busting: append a short hash of the logo's source URL so the browser
         # fetches fresh when the logo changes (e.g., M3U logo replaced by SD logo).
         # The backend ignores the 'v' parameter — it's purely for browser cache invalidation.
-        # See SD integration PR notes for context on why this was added.
+        # For local files, fold in mtime too, since a same-filename re-upload keeps
+        # obj.url identical but must still bust the browser's 4-hour image cache.
         import hashlib
-        url_hash = hashlib.md5((obj.url or '').encode()).hexdigest()[:8]
+        cache_key = obj.url or ''
+        if cache_key.startswith('/data/logos'):
+            try:
+                cache_key = f"{cache_key}:{os.path.getmtime(cache_key)}"
+            except OSError:
+                pass
+        url_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
         base_path = reverse("api:channels:logo-cache", args=[obj.id])
         cache_url = f"{base_path}?v={url_hash}"
         request = self.context.get("request")
@@ -153,6 +176,7 @@ class StreamSerializer(serializers.ModelSerializer):
             "stream_chno",
             "is_catchup",
             "catchup_days",
+            "is_radio",
         ]
 
     def get_fields(self):
@@ -280,10 +304,18 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
 
 class ChannelProfileSerializer(serializers.ModelSerializer):
     channels = serializers.SerializerMethodField()
+    start_empty = serializers.BooleanField(write_only=True, required=False, default=False)
 
     class Meta:
         model = ChannelProfile
-        fields = ["id", "name", "channels"]
+        fields = ["id", "name", "channels", "start_empty"]
+
+    def create(self, validated_data):
+        start_empty = validated_data.pop("start_empty", False)
+        instance = ChannelProfile(**validated_data)
+        instance._start_empty = start_empty
+        instance.save()
+        return instance
 
     def get_channels(self, obj):
         # Use prefetched attr when available, fall back to a direct query.
@@ -368,11 +400,13 @@ class ChannelOverrideSerializer(serializers.ModelSerializer):
             "tvc_guide_stationid",
             "epg_data_id",
             "stream_profile_id",
+            "is_radio",
         ]
         extra_kwargs = {
             "name": {"allow_null": True, "required": False},
             "tvg_id": {"allow_null": True, "required": False},
             "tvc_guide_stationid": {"allow_null": True, "required": False},
+            "is_radio": {"allow_null": True, "required": False},
         }
 
 
@@ -442,6 +476,7 @@ class ChannelSerializer(serializers.ModelSerializer):
     effective_tvc_guide_stationid = serializers.SerializerMethodField()
     effective_epg_data_id = serializers.SerializerMethodField()
     effective_stream_profile_id = serializers.SerializerMethodField()
+    effective_is_radio = serializers.SerializerMethodField()
 
     class Meta:
         model = Channel
@@ -461,6 +496,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "is_adult",
             "is_catchup",
             "catchup_days",
+            "is_radio",
             "hidden_from_output",
             "auto_created",
             "auto_created_by",
@@ -475,6 +511,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "effective_tvc_guide_stationid",
             "effective_epg_data_id",
             "effective_stream_profile_id",
+            "effective_is_radio",
         ]
 
     def _effective_value(self, obj, field_name):
@@ -515,6 +552,9 @@ class ChannelSerializer(serializers.ModelSerializer):
     def get_effective_stream_profile_id(self, obj):
         return self._effective_value(obj, "stream_profile_id")
 
+    def get_effective_is_radio(self, obj):
+        return self._effective_value(obj, "is_radio")
+
     def get_source_stream(self, obj):
         """
         Return the originating provider stream for an auto-created channel.
@@ -544,21 +584,31 @@ class ChannelSerializer(serializers.ModelSerializer):
         }
 
     def to_representation(self, instance):
+        # `streams` stays a writable M2M field for create/update. Output must
+        # not evaluate that relation: the declared field would query it once
+        # per channel. Swap in a method field once; doing it per row rebinds
+        # and throws away the cached readable-field list.
         include_streams = self.context.get("include_streams", False)
+        attr = (
+            "_streams_output_field_full"
+            if include_streams
+            else "_streams_output_field_ids"
+        )
+        field = getattr(self, attr, None)
+        if field is None:
+            if include_streams:
+                field = serializers.SerializerMethodField()
+            else:
+                field = serializers.SerializerMethodField(
+                    method_name="get_stream_ids"
+                )
+            setattr(self, attr, field)
+            self.fields["streams"] = field
+            self.__dict__.pop("_readable_fields", None)
+        return super().to_representation(instance)
 
-        if include_streams:
-            self.fields["streams"] = serializers.SerializerMethodField()
-            return super().to_representation(instance)
-        else:
-            # Read from the prefetched channelstream_set (ordered by the
-            # viewset's Prefetch); chaining .order_by() rebuilds the
-            # queryset and fires one SELECT per row in list responses.
-            representation = super().to_representation(instance)
-            if "streams" in representation:
-                representation["streams"] = [
-                    cs.stream_id for cs in instance.channelstream_set.all()
-                ]
-            return representation
+    def get_stream_ids(self, obj):
+        return [cs.stream_id for cs in obj.channelstream_set.all()]
 
     def get_logo(self, obj):
         return LogoSerializer(obj.logo).data
@@ -756,15 +806,54 @@ class ChannelSerializer(serializers.ModelSerializer):
 
 
 class RecordingSerializer(serializers.ModelSerializer):
+    # Storage paths and playback URLs are written only by the DVR pipeline.
+    # Clients must not be able to point playback/delete at arbitrary paths.
+    SERVER_OWNED_CUSTOM_PROPERTY_KEYS = frozenset(
+        {
+            "file_path",
+            "_hls_dir",
+            "file_name",
+            "file_url",
+            "output_file_url",
+        }
+    )
+
     class Meta:
         model = Recording
         fields = "__all__"
         read_only_fields = ["task_id"]
 
+    def validate_channel(self, channel):
+        _require_accessible_channel(self.context, channel)
+        return channel
+
+    def validate_custom_properties(self, value):
+        if value is None:
+            return value
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("custom_properties must be an object.")
+
+        cleaned = {
+            key: item
+            for key, item in value.items()
+            if key not in self.SERVER_OWNED_CUSTOM_PROPERTY_KEYS
+        }
+        if self.instance is not None:
+            existing = self.instance.custom_properties or {}
+            for key in self.SERVER_OWNED_CUSTOM_PROPERTY_KEYS:
+                if key in existing:
+                    cleaned[key] = existing[key]
+        return cleaned
+
     def validate(self, data):
         from core.models import CoreSettings
         start_time = data.get("start_time")
         end_time = data.get("end_time")
+        if self.instance is not None:
+            if "start_time" not in data:
+                start_time = self.instance.start_time
+            if "end_time" not in data:
+                end_time = self.instance.end_time
 
         if start_time and timezone.is_naive(start_time):
             start_time = timezone.make_aware(start_time, timezone.get_current_timezone())
@@ -823,6 +912,10 @@ class RecurringRecordingRuleSerializer(serializers.ModelSerializer):
         model = RecurringRecordingRule
         fields = "__all__"
         read_only_fields = ["created_at", "updated_at"]
+
+    def validate_channel(self, channel):
+        _require_accessible_channel(self.context, channel)
+        return channel
 
     def validate_days_of_week(self, value):
         if not value:

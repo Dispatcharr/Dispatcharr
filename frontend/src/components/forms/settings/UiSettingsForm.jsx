@@ -1,5 +1,6 @@
 import useSettingsStore from '../../../store/settings.jsx';
-import useLocalStorage from '../../../hooks/useLocalStorage.jsx';
+import useAuthStore from '../../../store/auth';
+import useBrowserStorage from '../../../hooks/useBrowserStorage.jsx';
 import useTablePreferences from '../../../hooks/useTablePreferences.jsx';
 import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
 import {
@@ -20,18 +21,21 @@ import React, {
 import { showNotification } from '../../../utils/notificationUtils.js';
 import { Select, Switch, Stack } from '@mantine/core';
 import { saveTimeZoneSetting } from '../../../utils/forms/settings/UiSettingsFormUtils.js';
+import { USER_LEVELS } from '../../../constants';
 
 const UiSettingsForm = React.memo(() => {
   const settings = useSettingsStore((s) => s.settings);
+  const user = useAuthStore((s) => s.user);
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
+  const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
 
   const [webPlayerProfileId, setWebPlayerProfileId] = useState(
     () => getPlayerPrefs().webPlayerOutputProfileId ?? null
   );
 
-  const [timeFormat, setTimeFormat] = useLocalStorage('time-format', '12h');
-  const [dateFormat, setDateFormat] = useLocalStorage('date-format', 'mdy');
-  const [timeZone, setTimeZone] = useLocalStorage(
+  const [timeFormat, setTimeFormat] = useBrowserStorage('time-format', '12h');
+  const [dateFormat, setDateFormat] = useBrowserStorage('date-format', 'mdy');
+  const [timeZone, setTimeZone] = useBrowserStorage(
     'time-zone',
     getDefaultTimeZone()
   );
@@ -47,8 +51,13 @@ const UiSettingsForm = React.memo(() => {
 
   const timeZoneSyncedRef = useRef(false);
 
+  // system_settings.time_zone is a global CoreSettings field (admin-only write).
+  // Non-admins keep the preference in browser storage only.
   const persistTimeZoneSetting = useCallback(
     async (tzValue) => {
+      if (!isAdmin) {
+        return;
+      }
       try {
         await saveTimeZoneSetting(tzValue, settings);
       } catch (error) {
@@ -60,7 +69,7 @@ const UiSettingsForm = React.memo(() => {
         });
       }
     },
-    [settings]
+    [settings, isAdmin]
   );
 
   useEffect(() => {

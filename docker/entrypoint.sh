@@ -10,6 +10,7 @@ cleanup() {
     if $_cleanup_done; then return; fi
     _cleanup_done=true
     set +e  # Disable exit-on-error so cleanup always runs fully
+    stop_log_collector
     echo "🔥 Cleanup triggered! Stopping services..."
 
     # Explicitly stop uwsgi workers - children of 'su' wrapper, not tracked in pids[]
@@ -53,8 +54,12 @@ cleanup() {
         su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} stop -m immediate" 2>/dev/null || true
     fi
 
-    wait
+    if [ ${#pids[@]} -gt 0 ]; then
+        wait "${pids[@]}" 2>/dev/null || true
+    fi
+    wait_log_collector "${LOG_FILE_DIR:-/data/logs}"
     echo "✅ All processes stopped cleanly."
+    exit 0
 }
 
 # Catch termination signals (CTRL+C, Docker Stop, etc.)
@@ -67,6 +72,48 @@ declare -A pid_names
 # Function to echo with timestamp
 echo_with_timestamp() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+WORKER_COUNT_MIN=1
+WORKER_COUNT_MAX=20
+
+validate_worker_count() {
+    local name="$1"
+    local value="$2"
+
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: ${name} must be a positive integer between ${WORKER_COUNT_MIN} and ${WORKER_COUNT_MAX} (got: '${value}')"
+        exit 1
+    fi
+    if [ "$value" -lt "$WORKER_COUNT_MIN" ] || [ "$value" -gt "$WORKER_COUNT_MAX" ]; then
+        echo "ERROR: ${name} must be between ${WORKER_COUNT_MIN} and ${WORKER_COUNT_MAX} (got: ${value})"
+        exit 1
+    fi
+}
+
+configure_uwsgi_workers() {
+    local default="$1"
+    UWSGI_WORKERS="${UWSGI_WORKERS:-$default}"
+    validate_worker_count "UWSGI_WORKERS" "$UWSGI_WORKERS"
+    export UWSGI_WORKERS
+}
+
+configure_celery_autoscale_workers() {
+    CELERY_MAX_WORKERS="${CELERY_MAX_WORKERS:-6}"
+    CELERY_MIN_WORKERS="${CELERY_MIN_WORKERS:-1}"
+    validate_worker_count "CELERY_MAX_WORKERS" "$CELERY_MAX_WORKERS"
+    validate_worker_count "CELERY_MIN_WORKERS" "$CELERY_MIN_WORKERS"
+    if [ "$CELERY_MIN_WORKERS" -gt "$CELERY_MAX_WORKERS" ]; then
+        echo "ERROR: CELERY_MIN_WORKERS (${CELERY_MIN_WORKERS}) cannot exceed CELERY_MAX_WORKERS (${CELERY_MAX_WORKERS})"
+        exit 1
+    fi
+    export CELERY_MAX_WORKERS CELERY_MIN_WORKERS
+}
+
+# Report a shell event with a severity. The offset is explicit so the stamp is
+# unambiguous wherever the container's clock sits: log_line WARNING "message".
+log_line() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S,000 %z') $1 entrypoint $2"
 }
 
 # Set PostgreSQL environment variables
@@ -97,6 +144,10 @@ export REDIS_PORT=${REDIS_PORT:-6379}
 export REDIS_DB=${REDIS_DB:-0}
 export REDIS_PASSWORD=${REDIS_PASSWORD:-}
 export REDIS_USER=${REDIS_USER:-}
+# Idle-client timeout for redis-server (AIO attach-daemon) and CONFIG SET.
+export REDIS_IDLE_TIMEOUT=${REDIS_IDLE_TIMEOUT:-300}
+# Per-process redis-py / django-redis pool cap (see dispatcharr.settings).
+export REDIS_MAX_CONNECTIONS=${REDIS_MAX_CONNECTIONS:-50}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
@@ -126,6 +177,14 @@ CELERY_NICE_ABSOLUTE=${CELERY_NICE_LEVEL:-5}
 # Calculate relative nice value for Celery (since nice is relative to parent process)
 # Celery is spawned by uWSGI, so we need to add the offset to reach the desired absolute value
 export CELERY_NICE_LEVEL=$((CELERY_NICE_ABSOLUTE - UWSGI_NICE_LEVEL))
+
+# Worker count configuration (override to tune memory vs throughput; range: 1-20)
+if [ "$DISPATCHARR_DEBUG" = "true" ]; then
+    configure_uwsgi_workers 1
+else
+    configure_uwsgi_workers 4
+fi
+configure_celery_autoscale_workers
 
 # Set LIBVA_DRIVER_NAME if user has specified it
 if [ -v LIBVA_DRIVER_NAME ]; then
@@ -181,19 +240,22 @@ export POSTGRES_DIR=/data/db
 # pick up the new values (not stale ones from a previous run).
 # Define all variables to process
 variables=(
-    PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
+    PATH VIRTUAL_ENV
     POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
-    DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
-    REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
-    DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE
+    DISPATCHARR_ENV DISPATCHARR_LOG_LEVEL
+    REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
+    DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LD_LIBRARY_PATH
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL CELERY_MAX_WORKERS CELERY_MIN_WORKERS UWSGI_WORKERS
+    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
 for _opt_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
                 REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY \
                 DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES \
-                MEDIA_LIBRARY_IMPORT_ROOTS MEDIA_LIBRARY_EXPORT_ROOTS MEDIA_LIBRARY_ARTWORK_ROOT; do
+                DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE \
+                DISPATCHARR_DEBUG DISPATCHARR_ENABLE_IP_LOOKUP LIBVA_DRIVER_NAME DISPATCHARR_LOG_DIR \
+                TMDB_API_KEY OMDB_API_KEY MEDIA_LIBRARY_IMPORT_ROOTS MEDIA_LIBRARY_EXPORT_ROOTS MEDIA_LIBRARY_ARTWORK_ROOT; do
     if [ -n "${!_opt_var+x}" ]; then
         variables+=("$_opt_var")
     fi
@@ -233,6 +295,29 @@ fi
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
 
+# Everything below (uwsgi, celery, daphne, nginx, postgres, redis, this
+# script) flows THROUGH the log collector: it forwards each normalized line to
+# the real stdout for docker logs and files the same bytes, so both sinks carry
+# the same record. The supervisor runs inside the substitution, so the pipe read
+# end survives collector restarts. In modular mode the celery container
+# collects its own output under its own name; postgres and redis run in their
+# own containers and are out of reach there.
+LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
+. /app/docker/init/05-log-collector.sh
+# Must precede the collector, which holds an O_APPEND fd on the live file.
+archive_previous_log "$LOG_FILE_DIR"
+# Non-recursive: an operator-set DISPATCHARR_LOG_DIR could point at a data
+# tree (e.g. /data/db). Tolerant: root_squash mounts must not block boot.
+# Include config/ so the web collector (app user) can write collector.pid after
+# celery created that directory as root on a shared volume.
+mkdir -p "$LOG_FILE_DIR/config" 2>/dev/null || true
+chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/config \
+    "$LOG_FILE_DIR"/dispatcharr.log \
+    "$LOG_FILE_DIR"/dispatcharr.log.[0-9]* 2>/dev/null || true
+exec 3>&1
+exec > >({ supervise_log_collector \
+    "$POSTGRES_USER" "$VIRTUAL_ENV/bin/python" "$LOG_FILE_DIR"; } >&3 2>&3) 2>&1
+
 # Fix TLS client key permissions/ownership BEFORE any external PG connections.
 # Must run after 01-user-setup.sh (user exists for chown) and before
 # 02-postgres.sh / pg_isready (which make the first external PG connections).
@@ -262,7 +347,8 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     prepare_pg_socket_dir
     su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
-    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    # Name a role and database that exist, so the probe logs no FATAL.
+    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER} -d template1" >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL to be ready..."
         sleep 1
     done
@@ -278,7 +364,7 @@ else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
     # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
     echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -q >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
         sleep 1
     done
@@ -332,8 +418,17 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     fi
 fi
 
-# Run Django commands as non-root user to prevent permission issues
-su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
+# Run Django commands as non-root user to prevent permission issues.
+# AIO has no Redis while migrate runs (uWSGI starts it later), and a fresh
+# install's data migrations read settings through the cache. Skip the cache
+# there so boot does not log a connection-refused warning; the Postgres read
+# is the same either way. Modular has a live shared Redis, so it keeps the
+# normal cache path.
+migrate_env=""
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    migrate_env="DISPATCHARR_SKIP_REDIS_CACHE=1 "
+fi
+su - "$POSTGRES_USER" -c "cd /app && ${migrate_env}python manage.py migrate --noinput"
 su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
 
 # Select proper uwsgi config based on environment
@@ -359,12 +454,11 @@ if [ "$DISPATCHARR_DEBUG" != "true" ]; then
     uwsgi_args+=" --disable-logging"
 fi
 
-# Launch uwsgi with configurable nice level (default: 0 for normal priority)
-# Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
-# Start with nice as root, then use setpriv to drop privileges to dispatch user
-# This preserves both the nice value and environment variables
-nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
-echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
+# Launch uwsgi (UWSGI_NICE_LEVEL, default 0). su -/pam_limits resets soft nofile
+# to 1024; raise it inside the session. Guarded so a bad value cannot abort set -e.
+DISPATCHARR_NOFILE="${DISPATCHARR_NOFILE:-65536}"
+nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "ulimit -n $DISPATCHARR_NOFILE 2>/dev/null || true; cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL, nofile $DISPATCHARR_NOFILE)"
 pids+=("$uwsgi_pid"); pid_names[$uwsgi_pid]="uwsgi"
 
 # Wait for services to fully initialize before checking hardware
@@ -386,17 +480,17 @@ if [ ${#pids[@]} -gt 0 ]; then
     # Only report unexpected exits — skip if cleanup was already triggered by
     # the trap (i.e. docker stop sent SIGTERM and we shut down intentionally)
     if ! $_cleanup_done; then
-        echo "🚨 One of the processes exited unexpectedly! Checking which one..."
+        log_line ERROR "🚨 One of the processes exited unexpectedly! Checking which one..."
 
         for pid in "${pids[@]}"; do
             if ! kill -0 "$pid" 2>/dev/null; then
                 process_name=${pid_names[$pid]:-unknown}
-                echo "❌ Process $process_name (PID: $pid) has exited!"
+                log_line ERROR "❌ Process $process_name (PID: $pid) has exited!"
             fi
         done
     fi
 else
-    echo "❌ No processes started. Exiting."
+    log_line ERROR "❌ No processes started. Exiting."
     exit 1
 fi
 

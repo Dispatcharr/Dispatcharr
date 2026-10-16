@@ -16,6 +16,18 @@ class ProcessLabelTests(SimpleTestCase):
         role = get_process_role(["/dispatcharrpy/bin/uwsgi", "--ini", "/app/docker/uwsgi.ini"])
         self.assertEqual(role, "uwsgi")
 
+    def test_daphne_labeled_from_argv(self):
+        role = get_process_role(
+            ["/dispatcharrpy/bin/daphne", "-b", "0.0.0.0", "-p", "8001"]
+        )
+        self.assertEqual(role, "daphne")
+
+    def test_gunicorn_labeled_from_argv(self):
+        role = get_process_role(
+            ["/dispatcharrpy/bin/gunicorn", "dispatcharr.wsgi:application"]
+        )
+        self.assertEqual(role, "gunicorn")
+
     def test_uwsgi_labeled_when_worker_module_present(self):
         fake_uwsgi = type("uwsgi", (), {"worker_id": staticmethod(lambda: 2)})()
         with patch.dict("sys.modules", {"uwsgi": fake_uwsgi}):

@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import OutputProfileForm from '../forms/OutputProfile';
+import ConfirmationDialog from '../ConfirmationDialog';
 import useOutputProfilesStore from '../../store/outputProfiles';
+import useWarningsStore from '../../store/warnings';
 import {
   ActionIcon,
   Box,
@@ -16,13 +18,14 @@ import {
 } from '@mantine/core';
 import { Eye, EyeOff, SquareMinus, SquarePen, SquarePlus } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import {
   deleteOutputProfile,
   updateOutputProfile,
 } from '../../utils/tables/OutputProfilesTableUtils.js';
+import { sortLockedFirstByName } from '../../utils/tables/profileTableUtils.js';
 
-const RowActions = ({ row, editOutputProfile, deleteOutputProfile }) => {
+const RowActions = ({ row, editOutputProfile, handleDeleteOutputProfile }) => {
   return (
     <>
       <ActionIcon
@@ -39,7 +42,7 @@ const RowActions = ({ row, editOutputProfile, deleteOutputProfile }) => {
         size="sm"
         color="red.9"
         disabled={row.original.locked}
-        onClick={() => deleteOutputProfile(row.original.id)}
+        onClick={() => handleDeleteOutputProfile(row.original.id)}
       >
         <SquareMinus size="18" />
       </ActionIcon>
@@ -52,9 +55,15 @@ const OutputProfiles = () => {
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [hideInactive, setHideInactive] = useState(false);
   const [data, setData] = useState([]);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [profileToDelete, setProfileToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const outputProfiles = useOutputProfilesStore((state) => state.profiles);
-  const [tableSize] = useLocalStorage('table-size', 'default');
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const [tableSize] = useBrowserStorage('table-size', 'default');
   const theme = useMantineTheme();
 
   const columns = useMemo(
@@ -138,6 +147,35 @@ const OutputProfiles = () => {
     setProfileModalOpen(true);
   };
 
+  const executeDeleteOutputProfile = useCallback(async (id) => {
+    setDeleting(true);
+    try {
+      await deleteOutputProfile(id);
+    } catch {
+      // API layer surfaces the error to the user.
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+      setDeleteTarget(null);
+      setProfileToDelete(null);
+    }
+  }, []);
+
+  const handleDeleteOutputProfile = useCallback(
+    async (id) => {
+      const target = outputProfiles.find((p) => p.id === id) || null;
+      setProfileToDelete(target);
+      setDeleteTarget(id);
+
+      if (isWarningSuppressed('delete-output-profile')) {
+        return executeDeleteOutputProfile(id);
+      }
+
+      setConfirmDeleteOpen(true);
+    },
+    [outputProfiles, isWarningSuppressed, executeDeleteOutputProfile]
+  );
+
   const closeOutputProfileForm = () => {
     setProfile(null);
     setProfileModalOpen(false);
@@ -154,7 +192,11 @@ const OutputProfiles = () => {
   };
 
   useEffect(() => {
-    setData(outputProfiles.filter((p) => !(hideInactive && !p.is_active)));
+    setData(
+      sortLockedFirstByName(
+        outputProfiles.filter((p) => !(hideInactive && !p.is_active))
+      )
+    );
   }, [outputProfiles, hideInactive]);
 
   const renderHeaderCell = (header) => (
@@ -169,7 +211,7 @@ const OutputProfiles = () => {
         <RowActions
           row={row}
           editOutputProfile={editOutputProfile}
-          deleteOutputProfile={deleteOutputProfile}
+          handleDeleteOutputProfile={handleDeleteOutputProfile}
         />
       );
     }
@@ -250,6 +292,37 @@ const OutputProfiles = () => {
         profile={profile}
         isOpen={profileModalOpen}
         onClose={closeOutputProfileForm}
+      />
+
+      <ConfirmationDialog
+        opened={confirmDeleteOpen}
+        onClose={() => {
+          setConfirmDeleteOpen(false);
+          setDeleteTarget(null);
+          setProfileToDelete(null);
+        }}
+        onConfirm={() => executeDeleteOutputProfile(deleteTarget)}
+        loading={deleting}
+        title="Confirm Output Profile Deletion"
+        message={
+          profileToDelete ? (
+            <div style={{ whiteSpace: 'pre-line' }}>
+              {`Are you sure you want to delete the following output profile?
+
+Name: ${profileToDelete.name}
+Command: ${profileToDelete.command}
+
+User and HDHR defaults that reference this profile will be cleared. This action cannot be undone.`}
+            </div>
+          ) : (
+            'Are you sure you want to delete this output profile? This action cannot be undone.'
+          )
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        actionKey="delete-output-profile"
+        onSuppressChange={suppressWarning}
+        size="md"
       />
     </Stack>
   );

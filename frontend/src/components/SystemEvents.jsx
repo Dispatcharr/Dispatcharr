@@ -30,7 +30,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import API from '../api';
-import useLocalStorage from '../hooks/useLocalStorage';
+import { REFRESH_INTERVAL_OPTIONS } from '../constants';
+import useBrowserStorage from '../hooks/useBrowserStorage';
 import { format } from '../utils/dateTimeUtils.js';
 
 const getEventIcon = (eventType) => {
@@ -63,10 +64,14 @@ const getEventIcon = (eventType) => {
       return <RefreshCw size={16} />;
     case 'm3u_download':
       return <Download size={16} />;
+    case 'm3u_error':
+      return <XCircle size={16} />;
     case 'epg_refresh':
       return <RefreshCw size={16} />;
     case 'epg_download':
       return <Download size={16} />;
+    case 'epg_error':
+      return <XCircle size={16} />;
     case 'login_success':
       return <LogIn size={16} />;
     case 'login_failed':
@@ -114,6 +119,8 @@ const getEventColor = (eventType) => {
     case 'login_failed':
     case 'm3u_blocked':
     case 'epg_blocked':
+    case 'm3u_error':
+    case 'epg_error':
       return 'red';
     default:
       return 'gray';
@@ -125,7 +132,7 @@ const getSystemEvents = (eventsLimit, offset) => {
 };
 
 const Event = ({ event }) => {
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+  const [dateFormatSetting] = useBrowserStorage('date-format', 'mdy');
   const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
 
   return (
@@ -179,11 +186,11 @@ const SystemEvents = () => {
   const isNarrow = cardWidth < 650;
   const [isLoading, setIsLoading] = useState(false);
 
-  const [eventsRefreshInterval, setEventsRefreshInterval] = useLocalStorage(
+  const [eventsRefreshInterval, setEventsRefreshInterval] = useBrowserStorage(
     'events-refresh-interval',
     0
   );
-  const [eventsLimit, setEventsLimit] = useLocalStorage('events-limit', 100);
+  const [eventsLimit, setEventsLimit] = useBrowserStorage('events-limit', 100);
   const [currentPage, setCurrentPage] = useState(1);
 
   // Calculate offset based on current page and limit
@@ -261,13 +268,7 @@ const SystemEvents = () => {
                 label="Auto Refresh"
                 value={eventsRefreshInterval.toString()}
                 onChange={(value) => setEventsRefreshInterval(parseInt(value))}
-                data={[
-                  { value: '0', label: 'Manual' },
-                  { value: '5', label: '5s' },
-                  { value: '10', label: '10s' },
-                  { value: '30', label: '30s' },
-                  { value: '60', label: '1m' },
-                ]}
+                data={REFRESH_INTERVAL_OPTIONS}
                 style={{ width: 120 }}
               />
               <Button

@@ -2,6 +2,7 @@ import useSettingsStore from '../../../store/settings.jsx';
 import React, { useEffect, useState } from 'react';
 import { useForm } from '@mantine/form';
 import { updateSetting } from '../../../utils/pages/SettingsUtils.js';
+import useSettingsSaveGuard from '../../../hooks/useSettingsSaveGuard.jsx';
 import { Alert, Button, Flex, Stack, Checkbox } from '@mantine/core';
 import { USER_LIMITS_OPTIONS } from '../../../constants.js';
 
@@ -17,6 +18,7 @@ const UserLimitsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
 
   const [saved, setSaved] = useState(false);
+  const { isSavingRef, runSave } = useSettingsSaveGuard();
 
   const userLimitSettingsForm = useForm({
     mode: 'controlled',
@@ -28,7 +30,7 @@ const UserLimitsForm = React.memo(({ active }) => {
   }, [active]);
 
   useEffect(() => {
-    if (settings) {
+    if (settings && !isSavingRef.current) {
       if (settings['user_limit_settings']?.value) {
         userLimitSettingsForm.setValues({
           ...USER_LIMIT_DEFAULTS,
@@ -46,13 +48,21 @@ const UserLimitsForm = React.memo(({ active }) => {
     setSaved(false);
 
     try {
-      const result = await updateSetting({
-        ...settings['user_limit_settings'],
-        value: userLimitSettingsForm.getValues(),
+      await runSave(async () => {
+        const result = await updateSetting({
+          ...settings['user_limit_settings'],
+          value: userLimitSettingsForm.getValues(),
+        });
+        if (result) {
+          if (result.value) {
+            userLimitSettingsForm.setValues({
+              ...USER_LIMIT_DEFAULTS,
+              ...result.value,
+            });
+          }
+          setSaved(true);
+        }
       });
-      if (result) {
-        setSaved(true);
-      }
     } catch (error) {
       console.error('Error saving user limit settings:', error);
     }

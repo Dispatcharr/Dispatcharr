@@ -1,23 +1,23 @@
 import logging
 import os
-import re
-import time
+from collections import defaultdict
 from rest_framework import viewsets, status, serializers
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.epg.sd_api import (
     SchedulesDirectPosterMixin,
     SchedulesDirectSourceMixin,
 )
+from core.image_proxy import RawImageContentNegotiationMixin
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from datetime import timedelta
+
 from .models import EPGSource, ProgramData, EPGData
 from .serializers import (
     ProgramDataSerializer,
@@ -28,12 +28,18 @@ from .serializers import (
 )
 from .tasks import refresh_epg_data, find_current_program_for_tvg_id
 from .query_utils import parse_text_query
+from apps.channels.access import channels_queryset_for_user
+from apps.channels.managers import (
+    effective_field_lookup_q,
+    effective_related_name_lookup_q,
+    with_effective_values,
+)
+from apps.channels.models import Channel
 from apps.accounts.permissions import (
-    Authenticated,
     IsAdmin,
     IsStandardUser,
-    permission_classes_by_action,
-    permission_classes_by_method,
+    permissions_for_action,
+    permissions_for_method,
 )
 from core.utils import safe_upload_path
 
@@ -54,16 +60,11 @@ class EPGSourceViewSet(SchedulesDirectSourceMixin, viewsets.ModelViewSet):
     serializer_class = EPGSourceSerializer
 
     def get_permissions(self):
-        if self.action == "upload":
+        if self.action in ('sd_lineups', 'sd_lineups_search'):
+            if self.request.method == 'GET':
+                return [IsStandardUser()]
             return [IsAdmin()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action in ('sd_lineups', 'sd_lineups_search'):
-                if self.request.method == 'GET':
-                    return [IsStandardUser()]
-                return [IsAdmin()]
-            return [IsAdmin()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         from django.db.models import Exists, OuterRef
@@ -80,7 +81,7 @@ class EPGSourceViewSet(SchedulesDirectSourceMixin, viewsets.ModelViewSet):
         logger.debug("Listing all EPG sources.")
         return super().list(request, *args, **kwargs)
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], permission_classes=[IsAdmin])
     def upload(self, request):
         if "file" not in request.FILES:
             return Response(
@@ -134,7 +135,9 @@ class ProgramSearchPagination(PageNumberPagination):
     max_page_size = 500
 
 
-class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
+class ProgramViewSet(
+    RawImageContentNegotiationMixin, SchedulesDirectPosterMixin, viewsets.ModelViewSet
+):
     """Handles CRUD operations for EPG programs"""
 
     queryset = ProgramData.objects.select_related("epg").all()
@@ -144,12 +147,7 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
     # Image download limits are persisted on the EPG source (shared across workers).
 
     def get_permissions(self):
-        if self.action == 'poster':
-            return [AllowAny()]
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
@@ -243,13 +241,10 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
     def search(self, request):
         params = request.query_params
 
-        # Build base queryset with prefetching
+        # Channel rows are loaded once for the page below. Prefetching
+        # epg.channels here would miss override-only links and duplicate that work.
         queryset = ProgramData.objects.select_related(
             'epg', 'epg__epg_source'
-        ).prefetch_related(
-            'epg__channels', 'epg__channels__channel_group',
-            'epg__channels__streams', 'epg__channels__streams__channel_group',
-            'epg__channels__streams__m3u_account',
         )
 
         filters = Q()
@@ -318,15 +313,35 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
                 )
             filters &= Q(start_time__lte=dt, end_time__gt=dt)
 
-        # Channel/stream filters
+        def effective_epg_ids(qs):
+            # One Coalesce for the filter. with_effective_values() annotates
+            # every overridable column and is only worth it when serializing.
+            return (
+                qs.annotate(
+                    _eff_epg_id=Coalesce("override__epg_data_id", "epg_data_id")
+                )
+                .exclude(_eff_epg_id__isnull=True)
+                .values("_eff_epg_id")
+                .distinct()
+            )
+
+        # Channel/stream filters resolve against effective channel mappings
+        # (Channel.epg_data or ChannelOverride.epg_data) so override-only
+        # links still match.
         channel = params.get('channel')
         if channel:
-            filters &= Q(epg__channels__name__icontains=channel)
+            filters &= Q(epg_id__in=effective_epg_ids(
+                Channel.objects.filter(
+                    effective_field_lookup_q("name", "icontains", channel)
+                )
+            ))
 
         channel_id = params.get('channel_id')
         if channel_id:
             try:
-                filters &= Q(epg__channels__id=int(channel_id))
+                filters &= Q(epg_id__in=effective_epg_ids(
+                    Channel.objects.filter(id=int(channel_id))
+                ))
             except (ValueError, TypeError):
                 pass
 
@@ -336,14 +351,18 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
 
         stream = params.get('stream')
         if stream:
-            filters &= Q(epg__channels__streams__name__icontains=stream)
+            filters &= Q(epg_id__in=effective_epg_ids(
+                Channel.objects.filter(streams__name__icontains=stream)
+            ))
 
         group = params.get('group')
         if group:
-            filters &= (
-                Q(epg__channels__channel_group__name__icontains=group)
-                | Q(epg__channels__streams__channel_group__name__icontains=group)
-            )
+            filters &= Q(epg_id__in=effective_epg_ids(
+                Channel.objects.filter(
+                    effective_related_name_lookup_q("channel_group", group)
+                    | Q(streams__channel_group__name__icontains=group)
+                )
+            ))
 
         epg_source = params.get('epg_source')
         if epg_source:
@@ -352,16 +371,16 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
             except (ValueError, TypeError):
                 pass
 
-        queryset = queryset.filter(filters).distinct().order_by('start_time')
+        # Channel filters are epg_id subqueries, so each program row stays unique.
+        queryset = queryset.filter(filters).order_by('start_time')
 
-        # Restrict results to programs on channels the user can access
+        # Restrict results to programs on channels the user can access,
+        # including override-only EPG mappings.
         user = request.user
         if user.user_level < 10:
-            access_filter = Q(epg__channels__user_level__lte=user.user_level)
-            custom_props = user.custom_properties or {}
-            if custom_props.get('hide_adult_content', False):
-                access_filter &= Q(epg__channels__is_adult=False)
-            queryset = queryset.filter(access_filter).distinct()
+            access_qs = channels_queryset_for_user(Channel.objects.all(), user)
+            accessible_epg_ids = effective_epg_ids(access_qs)
+            queryset = queryset.filter(epg_id__in=accessible_epg_ids)
 
         # Resolve field selection before serialization so expensive methods can short-circuit
         requested_fields = params.get('fields')
@@ -370,7 +389,46 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
         # Paginate
         paginator = ProgramSearchPagination()
         page = paginator.paginate_queryset(queryset, request)
-        serializer = ProgramSearchResultSerializer(page, many=True, context={'fields': allowed, 'user': request.user})
+
+        # Bulk-load effective channel mappings for the page (one query,
+        # covers override-only links, avoids N+1 in the serializer).
+        channels_by_epg_id = {}
+        needs_channels = allowed is None or "channels" in allowed or "streams" in allowed
+        if needs_channels and page:
+            epg_ids = {prog.epg_id for prog in page if prog.epg_id}
+            channels_by_epg_id = defaultdict(list)
+            if epg_ids:
+                # Indexable FK predicates for the effective EPG id: an
+                # override pin, or the channel FK when no pin is set.
+                mapped = with_effective_values(
+                    Channel.objects.filter(
+                        Q(override__epg_data_id__in=epg_ids)
+                        | (
+                            Q(override__epg_data_id__isnull=True)
+                            & Q(epg_data_id__in=epg_ids)
+                        )
+                    )
+                ).select_related("channel_group", "override__channel_group")
+                if user.user_level < 10:
+                    mapped = channels_queryset_for_user(mapped, user)
+                if allowed is None or "streams" in allowed:
+                    mapped = mapped.prefetch_related(
+                        "streams",
+                        "streams__channel_group",
+                        "streams__m3u_account",
+                    )
+                for ch in mapped:
+                    channels_by_epg_id[ch.effective_epg_data_id].append(ch)
+
+        serializer = ProgramSearchResultSerializer(
+            page,
+            many=True,
+            context={
+                "fields": allowed,
+                "user": request.user,
+                "channels_by_epg_id": channels_by_epg_id,
+            },
+        )
         data = serializer.data
 
         if allowed:
@@ -380,306 +438,13 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
 
 
 # ─────────────────────────────
-# 3) EPG Grid View
-# ─────────────────────────────
-class EPGGridAPIView(APIView):
-    """Returns all programs airing in the next 24 hours including currently running ones and recent ones"""
-
-    def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
-
-    @extend_schema(
-        description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
-        responses={200: ProgramDataSerializer(many=True)},
-    )
-    def get(self, request, format=None):
-        # Use current time instead of midnight
-        now = timezone.now()
-        one_hour_ago = now - timedelta(hours=1)
-        twenty_four_hours_later = now + timedelta(hours=24)
-        logger.debug(
-            f"EPGGridAPIView: Querying programs between {one_hour_ago} and {twenty_four_hours_later}."
-        )
-
-        programs = ProgramData.objects.filter(
-            end_time__gt=one_hour_ago,
-            start_time__lt=twenty_four_hours_later,
-        )
-
-        # Generate dummy programs for channels that have no EPG data OR dummy EPG sources
-        from apps.channels.models import Channel
-        from apps.epg.models import EPGSource
-        from django.db.models import Q
-
-        # Get channels with no EPG data at all (standard dummy)
-        channels_without_epg = Channel.objects.filter(Q(epg_data__isnull=True))
-
-        # Get channels with custom dummy EPG sources (generate on-demand with patterns)
-        channels_with_custom_dummy = Channel.objects.filter(
-            epg_data__epg_source__source_type='dummy'
-        ).select_related('epg_data__epg_source').distinct()
-
-        # Log what we found
-        without_count = channels_without_epg.count()
-        custom_count = channels_with_custom_dummy.count()
-
-        if without_count > 0:
-            channel_names = [f"{ch.name} (ID: {ch.id})" for ch in channels_without_epg]
-            logger.debug(
-                f"EPGGridAPIView: Channels needing standard dummy EPG: {', '.join(channel_names)}"
-            )
-
-        if custom_count > 0:
-            channel_names = [f"{ch.name} (ID: {ch.id})" for ch in channels_with_custom_dummy]
-            logger.debug(
-                f"EPGGridAPIView: Channels needing custom dummy EPG: {', '.join(channel_names)}"
-            )
-
-        logger.debug(
-            f"EPGGridAPIView: Found {without_count} channels needing standard dummy, {custom_count} needing custom dummy EPG."
-        )
-
-        # Serialize the regular programs using .values() to bypass DRF overhead
-        programs_qs = programs.values(
-            'id', 'start_time', 'end_time', 'title', 'sub_title',
-            'description', 'tvg_id', 'custom_properties',
-        )
-        serialized_programs = []
-        for p in programs_qs:
-            cp = p['custom_properties'] or {}
-            premiere_text = cp.get('premiere_text', '')
-            serialized_programs.append({
-                'id': p['id'],
-                'start_time': p['start_time'],
-                'end_time': p['end_time'],
-                'title': p['title'],
-                'sub_title': p['sub_title'],
-                'description': p['description'],
-                'tvg_id': p['tvg_id'],
-                'season': cp.get('season'),
-                'episode': cp.get('episode'),
-                'is_new': bool(cp.get('new')),
-                'is_live': bool(cp.get('live')),
-                'is_premiere': bool(cp.get('premiere')),
-                'is_finale': bool(premiere_text and 'finale' in premiere_text.lower()),
-            })
-        logger.debug(
-            f"EPGGridAPIView: Found {len(serialized_programs)} program(s), including recently ended, currently running, and upcoming shows."
-        )
-
-        # Humorous program descriptions based on time of day - same as in output/views.py
-        time_descriptions = {
-            (0, 4): [
-                "Late Night with {channel} - Where insomniacs unite!",
-                "The 'Why Am I Still Awake?' Show on {channel}",
-                "Counting Sheep - A {channel} production for the sleepless",
-            ],
-            (4, 8): [
-                "Dawn Patrol - Rise and shine with {channel}!",
-                "Early Bird Special - Coffee not included",
-                "Morning Zombies - Before coffee viewing on {channel}",
-            ],
-            (8, 12): [
-                "Mid-Morning Meetings - Pretend you're paying attention while watching {channel}",
-                "The 'I Should Be Working' Hour on {channel}",
-                "Productivity Killer - {channel}'s daytime programming",
-            ],
-            (12, 16): [
-                "Lunchtime Laziness with {channel}",
-                "The Afternoon Slump - Brought to you by {channel}",
-                "Post-Lunch Food Coma Theater on {channel}",
-            ],
-            (16, 20): [
-                "Rush Hour - {channel}'s alternative to traffic",
-                "The 'What's For Dinner?' Debate on {channel}",
-                "Evening Escapism - {channel}'s remedy for reality",
-            ],
-            (20, 24): [
-                "Prime Time Placeholder - {channel}'s finest not-programming",
-                "The 'Netflix Was Too Complicated' Show on {channel}",
-                "Family Argument Avoider - Courtesy of {channel}",
-            ],
-        }
-
-        # Generate and append dummy programs
-        dummy_programs = []
-
-        # Import the function from output.views
-        from apps.output.views import generate_dummy_programs as gen_dummy_progs
-
-        # Handle channels with CUSTOM dummy EPG sources (with patterns)
-        for channel in channels_with_custom_dummy:
-            # For dummy EPGs, ALWAYS use channel UUID to ensure unique programs per channel
-            # This prevents multiple channels assigned to the same dummy EPG from showing identical data
-            # Each channel gets its own unique program data even if they share the same EPG source
-            dummy_tvg_id = str(channel.uuid)
-
-            try:
-                # Get the custom dummy EPG source
-                epg_source = channel.epg_data.epg_source if channel.epg_data else None
-
-                logger.debug(f"Generating custom dummy programs for channel: {channel.name} (ID: {channel.id})")
-
-                # Determine which name to parse based on custom properties
-                name_to_parse = channel.name
-                if epg_source and epg_source.custom_properties:
-                    custom_props = epg_source.custom_properties
-                    name_source = custom_props.get('name_source')
-
-                    if name_source == 'stream':
-                        # Get the stream index (1-based from user, convert to 0-based)
-                        stream_index = custom_props.get('stream_index', 1) - 1
-
-                        # Get streams ordered by channelstream order
-                        channel_streams = channel.streams.all().order_by('channelstream__order')
-
-                        if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
-                            stream = list(channel_streams)[stream_index]
-                            name_to_parse = stream.name
-                            logger.debug(f"Using stream name for parsing: {name_to_parse} (stream index: {stream_index})")
-                        else:
-                            logger.warning(f"Stream index {stream_index} not found for channel {channel.name}, falling back to channel name")
-                    elif name_source == 'channel':
-                        logger.debug(f"Using channel name for parsing: {name_to_parse}")
-
-                # Generate programs using custom patterns from the dummy EPG source
-                # Use the same tvg_id that will be set in the program data
-                generated = gen_dummy_progs(
-                    channel_id=dummy_tvg_id,
-                    channel_name=name_to_parse,
-                    num_days=1,
-                    program_length_hours=4,
-                    epg_source=epg_source,
-                    export_lookback=one_hour_ago,
-                    export_cutoff=twenty_four_hours_later,
-                )
-
-                # Custom dummy should always return data (either from patterns or fallback)
-                if generated:
-                    logger.debug(f"Generated {len(generated)} custom dummy programs for {channel.name}")
-                    # Convert generated programs to API format
-                    for program in generated:
-                        prog_custom = program.get('custom_properties') or {}
-                        dummy_program = {
-                            "id": f"dummy-custom-{channel.id}-{program['start_time'].hour}",
-                            "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
-                            "start_time": program['start_time'].isoformat(),
-                            "end_time": program['end_time'].isoformat(),
-                            "title": program['title'],
-                            "description": program['description'],
-                            "tvg_id": dummy_tvg_id,
-                            "sub_title": program.get('sub_title'),
-                            "custom_properties": prog_custom if prog_custom else None,
-                            "season": None,
-                            "episode": None,
-                            "is_new": prog_custom.get('new', False),
-                            "is_live": bool(prog_custom.get('live')),
-                            "is_premiere": False,
-                            "is_finale": False,
-                        }
-                        dummy_programs.append(dummy_program)
-                else:
-                    logger.warning(f"No programs generated for custom dummy EPG channel: {channel.name}")
-
-            except Exception as e:
-                logger.error(
-                    f"Error creating custom dummy programs for channel {channel.name} (ID: {channel.id}): {str(e)}"
-                )
-
-        # Handle channels with NO EPG data (standard dummy with humorous descriptions)
-        for channel in channels_without_epg:
-            # For channels with no EPG, use UUID to ensure uniqueness (matches frontend logic)
-            # The frontend uses: tvgRecord?.tvg_id ?? channel.uuid
-            # Since there's no EPG data, it will fall back to UUID
-            dummy_tvg_id = str(channel.uuid)
-
-            try:
-                logger.debug(f"Generating standard dummy programs for channel: {channel.name} (ID: {channel.id})")
-
-                # Create programs every 4 hours for the next 24 hours with humorous descriptions
-                for hour_offset in range(0, 24, 4):
-                    # Use timedelta for time arithmetic instead of replace() to avoid hour overflow
-                    start_time = now + timedelta(hours=hour_offset)
-                    # Set minutes/seconds to zero for clean time blocks
-                    start_time = start_time.replace(minute=0, second=0, microsecond=0)
-                    end_time = start_time + timedelta(hours=4)
-
-                    # Get the hour for selecting a description
-                    hour = start_time.hour
-                    day = 0  # Use 0 as we're only doing 1 day
-
-                    # Find the appropriate time slot for description
-                    for time_range, descriptions in time_descriptions.items():
-                        start_range, end_range = time_range
-                        if start_range <= hour < end_range:
-                            # Pick a description using the sum of the hour and day as seed
-                            # This makes it somewhat random but consistent for the same timeslot
-                            description = descriptions[
-                                (hour + day) % len(descriptions)
-                            ].format(channel=channel.name)
-                            break
-                    else:
-                        # Fallback description if somehow no range matches
-                        description = f"Placeholder program for {channel.name} - EPG data went on vacation"
-
-                    # Create a dummy program in the same format as regular programs
-                    dummy_program = {
-                        "id": f"dummy-standard-{channel.id}-{hour_offset}",
-                        "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
-                        "start_time": start_time.isoformat(),
-                        "end_time": end_time.isoformat(),
-                        "title": f"{channel.name}",
-                        "description": description,
-                        "tvg_id": dummy_tvg_id,
-                        "sub_title": None,
-                        "custom_properties": None,
-                        "season": None,
-                        "episode": None,
-                        "is_new": False,
-                        "is_live": False,
-                        "is_premiere": False,
-                        "is_finale": False,
-                    }
-                    dummy_programs.append(dummy_program)
-
-            except Exception as e:
-                logger.error(
-                    f"Error creating standard dummy programs for channel {channel.name} (ID: {channel.id}): {str(e)}"
-                )
-
-        # Combine regular and dummy programs in place to avoid copying the large list
-        serialized_programs.extend(dummy_programs)
-        logger.debug(
-            f"EPGGridAPIView: Returning {len(serialized_programs)} total programs (including {len(dummy_programs)} dummy programs)."
-        )
-
-        # The grid materializes tens of thousands of program dicts plus the
-        # rendered JSON; trim once the response is sent so worker RSS does not
-        # ratchet up per request.
-        from core.utils import spawn_memory_trim
-        response = Response({"data": serialized_programs}, status=status.HTTP_200_OK)
-        response._resource_closers.append(spawn_memory_trim)
-        return response
-
-
-# ─────────────────────────────
-# 4) EPG Import View
+# 3) EPG Import View
 # ─────────────────────────────
 class EPGImportAPIView(APIView):
     """Triggers an EPG data refresh"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers an EPG data refresh for the given source.",
@@ -723,7 +488,7 @@ class EPGImportAPIView(APIView):
 
 
 # ─────────────────────────────
-# 5) EPG Data View
+# 4) EPG Data View
 # ─────────────────────────────
 class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -734,14 +499,11 @@ class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = EPGDataSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 # ─────────────────────────────
-# 6) Current Programs API
+# 5) Current Programs API
 # ─────────────────────────────
 class CurrentProgramsAPIView(APIView):
     """
@@ -750,12 +512,7 @@ class CurrentProgramsAPIView(APIView):
     """
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Get currently playing programs for specified channels or all channels",

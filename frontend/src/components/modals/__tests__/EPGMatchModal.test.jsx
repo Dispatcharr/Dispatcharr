@@ -12,8 +12,27 @@ vi.mock('../../../api', () => ({
 }));
 
 vi.mock('../../../utils/pages/SettingsUtils', () => ({
-  getChangedSettings: vi.fn(),
-  saveChangedSettings: vi.fn(),
+  getChangedGroupSettings: vi.fn(),
+  saveGroupSettings: vi.fn(),
+  parseGroupSettings: vi.fn((settings) => ({
+    epg_match_mode:
+      settings?.epg_settings?.value?.epg_match_mode || 'default',
+    epg_match_ignore_prefixes: Array.isArray(
+      settings?.epg_settings?.value?.epg_match_ignore_prefixes
+    )
+      ? settings.epg_settings.value.epg_match_ignore_prefixes
+      : [],
+    epg_match_ignore_suffixes: Array.isArray(
+      settings?.epg_settings?.value?.epg_match_ignore_suffixes
+    )
+      ? settings.epg_settings.value.epg_match_ignore_suffixes
+      : [],
+    epg_match_ignore_custom: Array.isArray(
+      settings?.epg_settings?.value?.epg_match_ignore_custom
+    )
+      ? settings.epg_settings.value.epg_match_ignore_custom
+      : [],
+  })),
 }));
 
 vi.mock('@mantine/notifications', () => ({
@@ -219,10 +238,10 @@ describe('EPGMatchModal', () => {
 
   describe('Form Submission', () => {
     it('should save mode and trigger auto-match', async () => {
-      SettingsUtils.getChangedSettings.mockReturnValue({
+      SettingsUtils.getChangedGroupSettings.mockReturnValue({
         epg_match_mode: 'default',
       });
-      SettingsUtils.saveChangedSettings.mockResolvedValue();
+      SettingsUtils.saveGroupSettings.mockResolvedValue();
       API.matchEpg.mockResolvedValue();
 
       render(<EPGMatchModal {...defaultProps} />);
@@ -231,7 +250,7 @@ describe('EPGMatchModal', () => {
       fireEvent.click(submitButton);
 
       await waitFor(() => {
-        expect(SettingsUtils.saveChangedSettings).toHaveBeenCalled();
+        expect(SettingsUtils.saveGroupSettings).toHaveBeenCalled();
         expect(API.matchEpg).toHaveBeenCalled();
         expect(defaultProps.onClose).toHaveBeenCalled();
       });
@@ -239,7 +258,7 @@ describe('EPGMatchModal', () => {
 
     it('should pass selectedChannelIds to matchEpg when provided', async () => {
       const selectedIds = [1, 2, 3];
-      SettingsUtils.getChangedSettings.mockReturnValue({});
+      SettingsUtils.getChangedGroupSettings.mockReturnValue({});
       API.matchEpg.mockResolvedValue();
 
       render(
@@ -256,10 +275,10 @@ describe('EPGMatchModal', () => {
 
     it('should handle save errors gracefully', async () => {
       const error = new Error('Save failed');
-      SettingsUtils.getChangedSettings.mockReturnValue({
+      SettingsUtils.getChangedGroupSettings.mockReturnValue({
         epg_match_mode: 'default',
       });
-      SettingsUtils.saveChangedSettings.mockRejectedValue(error);
+      SettingsUtils.saveGroupSettings.mockRejectedValue(error);
 
       render(<EPGMatchModal {...defaultProps} />);
 
@@ -273,9 +292,40 @@ describe('EPGMatchModal', () => {
   });
 
   describe('Settings Persistence', () => {
+    it('should only pass the match fields to the settings save', async () => {
+      // epg_settings also stores the guide-history fields; this dialog must not write them.
+      const original = SettingsUtils.parseGroupSettings.getMockImplementation();
+      SettingsUtils.parseGroupSettings.mockImplementation((settings) => ({
+        ...original(settings),
+        epg_history_min_days: 1,
+        epg_history_max_days: 30,
+      }));
+      SettingsUtils.getChangedGroupSettings.mockImplementation((values) => values);
+      SettingsUtils.saveGroupSettings.mockResolvedValue();
+      API.matchEpg.mockResolvedValue();
+
+      try {
+        render(<EPGMatchModal {...defaultProps} />);
+        fireEvent.click(screen.getByText('Start Auto-Match'));
+
+        await waitFor(() => {
+          expect(SettingsUtils.getChangedGroupSettings).toHaveBeenCalled();
+        });
+        const [values] = SettingsUtils.getChangedGroupSettings.mock.calls.at(-1);
+        expect(Object.keys(values).sort()).toEqual([
+          'epg_match_ignore_custom',
+          'epg_match_ignore_prefixes',
+          'epg_match_ignore_suffixes',
+          'epg_match_mode',
+        ]);
+      } finally {
+        SettingsUtils.parseGroupSettings.mockImplementation(original);
+      }
+    });
+
     it('should include epg_match_mode in settings to save', async () => {
-      SettingsUtils.getChangedSettings.mockImplementation((values) => values);
-      SettingsUtils.saveChangedSettings.mockResolvedValue();
+      SettingsUtils.getChangedGroupSettings.mockImplementation((values) => values);
+      SettingsUtils.saveGroupSettings.mockResolvedValue();
       API.matchEpg.mockResolvedValue();
 
       render(<EPGMatchModal {...defaultProps} />);
@@ -284,11 +334,12 @@ describe('EPGMatchModal', () => {
       fireEvent.click(submitButton);
 
       await waitFor(() => {
-        expect(SettingsUtils.getChangedSettings).toHaveBeenCalledWith(
+        expect(SettingsUtils.getChangedGroupSettings).toHaveBeenCalledWith(
           expect.objectContaining({
             epg_match_mode: 'default',
           }),
-          expect.anything()
+          expect.anything(),
+          'epg_settings'
         );
       });
     });

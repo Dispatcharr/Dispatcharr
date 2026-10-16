@@ -29,7 +29,7 @@ from apps.epg.sd_utils import (
     sd_obtain_token,
     sd_parse_response_payload,
 )
-from apps.epg.utils import send_epg_update
+from apps.epg.utils import fill_original_air_date_if_missing, send_epg_update
 from core.utils import (
     acquire_task_lock,
     is_task_lock_held,
@@ -47,6 +47,34 @@ SD_PROGRAM_BATCH_SIZE = 5000
 SD_BULK_GUIDE_FETCH_THRESHOLD = 3
 SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS = 90
 SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES = 2
+
+
+def _sd_system_status(status_data):
+    """
+    Normalize Schedules Direct /status systemStatus to a display string.
+
+    Documented entries are objects with a status field. Observed responses can
+    also use bare strings (including empty). Blank or missing values fall back
+    to Online. Any Offline entry wins (case-insensitive).
+    """
+    values = status_data.get('systemStatus') if isinstance(status_data, dict) else None
+    if not isinstance(values, list):
+        values = [values]
+    statuses = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get('status')
+        if isinstance(value, str) and value.strip():
+            statuses.append(value.strip())
+    # An explicit outage must win over blank or Online entries.
+    if any(value.casefold() == 'offline' for value in statuses):
+        return 'Offline'
+    return statuses[0] if statuses else 'Online'
+
+
+def _set_epg_source_status(*args, **kwargs):
+    from apps.epg.tasks import _set_epg_source_status as _impl
+    return _impl(*args, **kwargs)
 
 
 class SDResponsePayloadError(requests.exceptions.RequestException):
@@ -106,6 +134,43 @@ def _sd_backfill_schedule_dates_without_data(
             changed_by_station.setdefault(sid, []).append(ds)
             backfilled_count += 1
     return backfilled_count
+
+
+def _sd_prune_ended_programmes(mapped_epg_ids):
+    """Delete programmes that ended before each EPG's guide-history cutoff.
+
+    Returns the number of rows deleted. EPGs that share a cutoff are deleted in
+    one query, so the cost follows the number of distinct cutoffs, not channels.
+    """
+    from apps.epg.utils import epg_retention_cutoffs
+
+    by_cutoff = {}
+    for epg_id, cutoff in epg_retention_cutoffs(mapped_epg_ids).items():
+        by_cutoff.setdefault(cutoff, []).append(epg_id)
+
+    deleted = 0
+    for cutoff, epg_ids in by_cutoff.items():
+        deleted += ProgramData.objects.filter(
+            epg_id__in=epg_ids, end_time__lt=cutoff
+        ).delete()[0]
+    return deleted
+
+
+def _sd_stations_without_current_data(mapped_epg_ids, mapped_tvg_ids, window_start):
+    """Mapped station ids with no stored programme that ends at or after *window_start*.
+
+    Ended programmes are kept for the guide-history window, so a station that
+    only has old rows must still count as empty. Otherwise a stale schedule MD5
+    cache could stop its current days from being fetched.
+    """
+    with_current_data = set(
+        ProgramData.objects.filter(
+            epg_id__in=mapped_epg_ids, end_time__gte=window_start
+        )
+        .values_list('tvg_id', flat=True)
+        .distinct()
+    )
+    return set(mapped_tvg_ids) - with_current_data
 
 
 def _sd_programs_needing_metadata(
@@ -571,10 +636,15 @@ def fetch_schedules_direct(
     if not username or not password:
         msg = "Schedules Direct source requires both a username and password."
         logger.error(msg)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=msg,
+        )
         return
 
     # -------------------------------------------------------------------------
@@ -616,7 +686,7 @@ def fetch_schedules_direct(
     # SD API spec requires the User-Agent to identify the application and version.
     # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
-    def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
+    def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata):
         """Poster fetch, logo auto-apply, and pruning. Runs even when schedules are unchanged.
 
         Returns the number of ProgramData rows updated with poster artwork.
@@ -748,11 +818,13 @@ def fetch_schedules_direct(
         except Exception as prune_err:
             logger.warning(f"Failed to clean up orphaned SD ProgramData: {prune_err}")
 
-        today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
         try:
-            expired_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids, end_time__lt=today_utc).delete()[0]
+            expired_count = _sd_prune_ended_programmes(mapped_epg_ids)
             if expired_count:
-                logger.info(f"Pruned {expired_count} expired SD ProgramData records (end_time before {today}).")
+                logger.info(
+                    f"Pruned {expired_count} expired SD ProgramData records "
+                    f"outside the guide-history window."
+                )
         except Exception as prune_err:
             logger.warning(f"Failed to prune expired SD ProgramData: {prune_err}")
 
@@ -768,6 +840,12 @@ def fetch_schedules_direct(
                 logger.info(f"Pruned {pruned_prog_md5_count} stale SDProgramMD5 records no longer referenced by live ProgramData.")
         except Exception as prune_err:
             logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
+
+        # Programme rows, posters, and/or pruning may have changed the guide.
+        # Drop XMLTV chunk cache so /output/epg does not keep serving the
+        # pre-refresh file for up to the cache TTL.
+        from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+        invalidate_epg_chunk_cache()
 
         return posters_updated
 
@@ -786,11 +864,14 @@ def fetch_schedules_direct(
     auth = sd_obtain_token(source, username, password, timeout=30)
     if auth.debug_rejected:
         logger.error(auth.message)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = auth.message
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(
-            source.id, "refresh", 100, status="error", error=auth.message
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            auth.message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=auth.message,
         )
         return
 
@@ -805,11 +886,14 @@ def fetch_schedules_direct(
             )
             return
         logger.error(auth.message)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = auth.message
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(
-            source.id, "refresh", 100, status="error", error=auth.message
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            auth.message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=auth.message,
         )
         return
 
@@ -863,7 +947,7 @@ def fetch_schedules_direct(
         status_response = _sd_req('GET', f"{SD_BASE_URL}/status", timeout=30)
         status_response.raise_for_status()
         status_data = status_response.json()
-        system_status = status_data.get('systemStatus', [{}])[0].get('status', 'Online')
+        system_status = _sd_system_status(status_data)
         if system_status == 'Offline':
             # Per SD API spec: if system is offline, disconnect and do not
             # retry for 1 hour. Next attempt is the next scheduled/manual refresh.
@@ -939,10 +1023,15 @@ def fetch_schedules_direct(
         except requests.exceptions.RequestException as e:
             msg = f"Failed to fetch Schedules Direct lineups: {e}"
             logger.error(msg, exc_info=True)
-            source.status = EPGSource.STATUS_ERROR
-            source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            _set_epg_source_status(
+                source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=source.name,
+                notify_error=True,
+                ws_action="refresh",
+                ws_error=msg,
+            )
             return
 
         # Build station metadata map: stationID -> {name, callsign, logo_url}
@@ -985,10 +1074,15 @@ def fetch_schedules_direct(
         if not station_map:
             msg = "No stations found across all Schedules Direct lineups."
             logger.warning(msg)
-            source.status = EPGSource.STATUS_ERROR
-            source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            _set_epg_source_status(
+                source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=source.name,
+                notify_error=True,
+                ws_action="refresh",
+                ws_error=msg,
+            )
             return
 
         logger.info(f"Built station map with {len(station_map)} stations.")
@@ -1121,7 +1215,7 @@ def fetch_schedules_direct(
 
     if not mapped_station_ids:
         logger.info("No channels mapped to this SD source; skipping schedule MD5 check and downloads.")
-        _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        _sd_post_refresh_tasks(mapped_epg_ids, {})
         if single_epg_fetch:
             msg = "No mapped channel found for this EPG entry; guide fetch skipped."
             source.last_message = msg
@@ -1200,10 +1294,15 @@ def fetch_schedules_direct(
         # The MD5 check failed for every batch, don't report a false "up to date".
         msg = "Failed to fetch schedule MD5s from Schedules Direct, guide was not refreshed this cycle."
         logger.warning(msg)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
 
     window_start = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
@@ -1217,9 +1316,8 @@ def fetch_schedules_direct(
         ).values_list('epg_id', 'start_time'):
             dates_with_data.add((epg_id, start_time.date()))
 
-    stations_without_any_data = mapped_tvg_ids - set(
-        ProgramData.objects.filter(epg_id__in=mapped_epg_ids)
-        .values_list('tvg_id', flat=True).distinct()
+    stations_without_any_data = _sd_stations_without_current_data(
+        mapped_epg_ids, mapped_tvg_ids, window_start
     )
     backfilled_count = _sd_backfill_schedule_dates_without_data(
         changed_by_station,
@@ -1252,7 +1350,7 @@ def fetch_schedules_direct(
 
     if not changed_by_station:
         logger.info("No schedule changes detected, skipping schedule and program downloads.")
-        posters_updated = _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        posters_updated = _sd_post_refresh_tasks(mapped_epg_ids, {})
         if posters_updated:
             msg = (
                 f"No schedule changes detected. Updated poster artwork for "
@@ -1367,10 +1465,15 @@ def fetch_schedules_direct(
     if not program_ids_needed:
         msg = "No schedule data returned from Schedules Direct."
         logger.warning(msg)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
 
     # -------------------------------------------------------------------------
@@ -1688,11 +1791,14 @@ def fetch_schedules_direct(
                 if airing.get('premiere'):
                     custom_props['premiere'] = True
 
-                # Original air date — full date, not just year
+                # Original air date — full date, not just year.
+                # Keep date for year / production_date compat, and also store the
+                # canonical original-air slot used by the programme API and export.
                 original_air_date = meta.get('originalAirDate', '')
                 movie_year = meta.get('movie', {}).get('year', '')
                 if original_air_date:
                     custom_props['date'] = original_air_date
+                    fill_original_air_date_if_missing(custom_props, original_air_date)
                 elif movie_year:
                     custom_props['date'] = str(movie_year)
 
@@ -1808,10 +1914,15 @@ def fetch_schedules_direct(
     except Exception as db_error:
         msg = f"Database error persisting Schedules Direct programs: {db_error}"
         logger.error(msg, exc_info=True)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
     finally:
         all_programs_to_create = None
@@ -1820,7 +1931,7 @@ def fetch_schedules_direct(
     # -------------------------------------------------------------------------
     # Step 8–9: Posters, logo auto-apply, and pruning
     # -------------------------------------------------------------------------
-    _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today)
+    _sd_post_refresh_tasks(mapped_epg_ids, program_metadata)
 
     # -------------------------------------------------------------------------
     # Done

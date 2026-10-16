@@ -1,10 +1,18 @@
 import { create } from 'zustand';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
+
+const DEFAULT_STREAMS_SORTING = [{ id: 'name', desc: false }];
+const STREAMS_SORTING_KEY = 'streams-table-sorting';
 
 const useStreamsTableStore = create((set) => ({
   streams: [],
   pageCount: 0,
   totalCount: 0,
-  sorting: [{ id: 'name', desc: false }],
+  sorting: readStoredJSON(
+    STREAMS_SORTING_KEY,
+    DEFAULT_STREAMS_SORTING,
+    'session'
+  ),
   pagination: {
     pageIndex: 0,
     pageSize: JSON.parse(localStorage.getItem('streams-page-size')) || 50,
@@ -40,6 +48,7 @@ const useStreamsTableStore = create((set) => ({
   },
 
   setSorting: (sorting) => {
+    writeStoredJSON(STREAMS_SORTING_KEY, sorting, 'session');
     set(() => ({
       sorting,
     }));

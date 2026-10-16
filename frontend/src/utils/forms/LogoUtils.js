@@ -32,8 +32,8 @@ const schema = Yup.object({
     ),
 });
 
-export const uploadLogo = async (selectedFile, values) => {
-  return await API.uploadLogo(selectedFile, values.name);
+export const uploadLogo = async (selectedFile, values, overwrite = false) => {
+  return await API.uploadLogo(selectedFile, values.name, overwrite);
 };
 
 export const createLogo = async (values) => {

@@ -1,12 +1,21 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
+vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(() => ['default', vi.fn()]),
 }));
 
@@ -24,6 +33,29 @@ vi.mock('../../forms/OutputProfile', () => ({
         <span data-testid="form-profile-name">{profile?.name ?? 'new'}</span>
         <button data-testid="form-close" onClick={onClose}>
           Close
+        </button>
+      </div>
+    ) : null,
+}));
+
+vi.mock('../../ConfirmationDialog', () => ({
+  default: ({
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    loading,
+    confirmLabel,
+    cancelLabel,
+  }) =>
+    opened ? (
+      <div data-testid="confirm-dialog">
+        <span data-testid="confirm-title">{title}</span>
+        <button data-testid="confirm-ok" onClick={onConfirm} disabled={loading}>
+          {confirmLabel}
+        </button>
+        <button data-testid="confirm-cancel" onClick={onClose}>
+          {cancelLabel}
         </button>
       </div>
     ) : null,
@@ -48,7 +80,11 @@ vi.mock('@mantine/core', () => ({
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
   Button: ({ children, onClick, leftSection, disabled, loading }) => (
-    <button data-testid="button" onClick={onClick} disabled={disabled || loading}>
+    <button
+      data-testid="button"
+      onClick={onClick}
+      disabled={disabled || loading}
+    >
       {leftSection}
       {children}
     </button>
@@ -71,9 +107,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
+  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
   useMantineTheme: vi.fn(() => ({
     palette: { background: { paper: '#1a1a1a' } },
   })),
@@ -90,7 +124,8 @@ vi.mock('lucide-react', () => ({
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import useOutputProfilesStore from '../../../store/outputProfiles';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useWarningsStore from '../../../store/warnings';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import * as OutputProfilesTableUtils from '../../../utils/tables/OutputProfilesTableUtils.js';
 import { useTable } from '../CustomTable';
 import OutputProfiles from '../OutputProfilesTable';
@@ -111,12 +146,20 @@ let capturedTableOptions = null;
 const setupMocks = ({
   profiles = [makeProfile()],
   tableSize = 'default',
+  isWarningSuppressed = vi.fn(() => false),
 } = {}) => {
   vi.mocked(useOutputProfilesStore).mockImplementation((sel) =>
     sel({ profiles })
   );
 
-  vi.mocked(useLocalStorage).mockReturnValue([tableSize, vi.fn()]);
+  vi.mocked(useWarningsStore).mockImplementation((sel) =>
+    sel({
+      isWarningSuppressed,
+      suppressWarning: vi.fn(),
+    })
+  );
+
+  vi.mocked(useBrowserStorage).mockReturnValue([tableSize, vi.fn()]);
 
   vi.mocked(useTable).mockImplementation((opts) => {
     capturedTableOptions = opts;
@@ -134,7 +177,10 @@ const getCol = (keyOrId) =>
 
 const makeRowCtx = (profile) => ({
   row: { id: String(profile.id), original: profile },
-  cell: { column: { id: 'actions', columnDef: {} }, getValue: vi.fn(() => undefined) },
+  cell: {
+    column: { id: 'actions', columnDef: {} },
+    getValue: vi.fn(() => undefined),
+  },
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -145,8 +191,12 @@ describe('OutputProfiles', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedTableOptions = null;
-    vi.mocked(OutputProfilesTableUtils.deleteOutputProfile).mockResolvedValue(undefined);
-    vi.mocked(OutputProfilesTableUtils.updateOutputProfile).mockResolvedValue(undefined);
+    vi.mocked(OutputProfilesTableUtils.deleteOutputProfile).mockResolvedValue(
+      undefined
+    );
+    vi.mocked(OutputProfilesTableUtils.updateOutputProfile).mockResolvedValue(
+      undefined
+    );
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -173,7 +223,9 @@ describe('OutputProfiles', () => {
     it('does not render the form on initial load', () => {
       setupMocks();
       render(<OutputProfiles />);
-      expect(screen.queryByTestId('output-profile-form')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('output-profile-form')
+      ).not.toBeInTheDocument();
     });
 
     it('passes all unlocked+active profiles to useTable when hideInactive is false', () => {
@@ -204,7 +256,9 @@ describe('OutputProfiles', () => {
       render(<OutputProfiles />);
       fireEvent.click(screen.getByText('Add Output Profile'));
       fireEvent.click(screen.getByTestId('form-close'));
-      expect(screen.queryByTestId('output-profile-form')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('output-profile-form')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -223,7 +277,9 @@ describe('OutputProfiles', () => {
       fireEvent.click(getByTestId('icon-square-pen').closest('button'));
 
       expect(screen.getByTestId('output-profile-form')).toBeInTheDocument();
-      expect(screen.getByTestId('form-profile-name')).toHaveTextContent('My Profile');
+      expect(screen.getByTestId('form-profile-name')).toHaveTextContent(
+        'My Profile'
+      );
     });
 
     it('closes the form after editing when onClose is called', () => {
@@ -238,7 +294,9 @@ describe('OutputProfiles', () => {
       fireEvent.click(getByTestId('icon-square-pen').closest('button'));
       fireEvent.click(screen.getByTestId('form-close'));
 
-      expect(screen.queryByTestId('output-profile-form')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('output-profile-form')
+      ).not.toBeInTheDocument();
     });
 
     it('edit button is disabled when profile is locked', () => {
@@ -262,16 +320,107 @@ describe('OutputProfiles', () => {
       const { getByTestId } = render(
         capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
       );
-      expect(getByTestId('icon-square-pen').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-pen').closest('button')
+      ).not.toBeDisabled();
     });
   });
 
   // ── Delete Output Profile (RowActions) ────────────────────────────────────
 
   describe('delete profile via RowActions', () => {
-    it('calls deleteOutputProfile with the profile id when delete icon is clicked', async () => {
+    it('opens ConfirmationDialog when delete is clicked and warning is not suppressed', () => {
+      const profile = makeProfile({ id: 7, name: 'To Delete' });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<OutputProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+
+      expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
+      expect(screen.getByTestId('confirm-title')).toHaveTextContent(
+        'Confirm Output Profile Deletion'
+      );
+      expect(
+        OutputProfilesTableUtils.deleteOutputProfile
+      ).not.toHaveBeenCalled();
+    });
+
+    it('calls deleteOutputProfile when confirmed via dialog', async () => {
       const profile = makeProfile({ id: 7 });
-      setupMocks({ profiles: [profile] });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<OutputProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(screen.getByTestId('confirm-ok'));
+
+      await waitFor(() =>
+        expect(
+          OutputProfilesTableUtils.deleteOutputProfile
+        ).toHaveBeenCalledWith(7)
+      );
+    });
+
+    it('closes the dialog after confirming delete', async () => {
+      const profile = makeProfile({ id: 7 });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<OutputProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(screen.getByTestId('confirm-ok'));
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+      );
+    });
+
+    it('closes the dialog when Cancel is clicked', () => {
+      const profile = makeProfile({ id: 7 });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<OutputProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(screen.getByTestId('confirm-cancel'));
+
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      expect(
+        OutputProfilesTableUtils.deleteOutputProfile
+      ).not.toHaveBeenCalled();
+    });
+
+    it('skips dialog and deletes immediately when warning is suppressed', async () => {
+      const profile = makeProfile({ id: 7 });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => true),
+      });
       render(<OutputProfiles />);
 
       const { row, cell } = makeRowCtx(profile);
@@ -281,8 +430,11 @@ describe('OutputProfiles', () => {
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
 
       await waitFor(() =>
-        expect(OutputProfilesTableUtils.deleteOutputProfile).toHaveBeenCalledWith(7)
+        expect(
+          OutputProfilesTableUtils.deleteOutputProfile
+        ).toHaveBeenCalledWith(7)
       );
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
 
     it('delete button is disabled when profile is locked', () => {
@@ -306,7 +458,9 @@ describe('OutputProfiles', () => {
       const { getByTestId } = render(
         capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
       );
-      expect(getByTestId('icon-square-minus').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-minus').closest('button')
+      ).not.toBeDisabled();
     });
 
     it('does not throw when deleteOutputProfile rejects', async () => {
@@ -314,7 +468,10 @@ describe('OutputProfiles', () => {
         new Error('server error')
       );
       const profile = makeProfile({ id: 1 });
-      setupMocks({ profiles: [profile] });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => true),
+      });
       render(<OutputProfiles />);
 
       const { row, cell } = makeRowCtx(profile);
@@ -322,7 +479,9 @@ describe('OutputProfiles', () => {
         capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
       );
       await expect(
-        act(async () => fireEvent.click(getByTestId('icon-square-minus').closest('button')))
+        act(async () =>
+          fireEvent.click(getByTestId('icon-square-minus').closest('button'))
+        )
       ).resolves.not.toThrow();
     });
   });
@@ -347,7 +506,9 @@ describe('OutputProfiles', () => {
       fireEvent.click(getByTestId('active-switch'));
 
       await waitFor(() =>
-        expect(OutputProfilesTableUtils.updateOutputProfile).toHaveBeenCalledWith(
+        expect(
+          OutputProfilesTableUtils.updateOutputProfile
+        ).toHaveBeenCalledWith(
           expect.objectContaining({ id: profile.id, is_active: false })
         )
       );
@@ -362,7 +523,9 @@ describe('OutputProfiles', () => {
       fireEvent.click(getByTestId('active-switch'));
 
       await waitFor(() =>
-        expect(OutputProfilesTableUtils.updateOutputProfile).toHaveBeenCalledWith(
+        expect(
+          OutputProfilesTableUtils.updateOutputProfile
+        ).toHaveBeenCalledWith(
           expect.objectContaining({ id: profile.id, is_active: true })
         )
       );
@@ -504,15 +667,19 @@ describe('OutputProfiles', () => {
   // ── Store reactivity ───────────────────────────────────────────────────────
 
   describe('store reactivity', () => {
-    it('passes store profiles directly to the table data', () => {
+    it('orders locked profiles before unlocked ones, then by name', () => {
       const profiles = [
-        makeProfile({ id: 1, name: 'Alpha' }),
-        makeProfile({ id: 2, name: 'Beta' }),
+        makeProfile({ id: 1, name: 'Custom', locked: false }),
+        makeProfile({ id: 2, name: 'Web Player (AAC Audio)', locked: true }),
+        makeProfile({ id: 3, name: 'Media Server (AC3 Audio)', locked: true }),
       ];
       setupMocks({ profiles });
       render(<OutputProfiles />);
-      expect(capturedTableOptions.data).toHaveLength(2);
-      expect(capturedTableOptions.data.map((p) => p.name)).toEqual(['Alpha', 'Beta']);
+      expect(capturedTableOptions.data.map((p) => p.name)).toEqual([
+        'Media Server (AC3 Audio)',
+        'Web Player (AAC Audio)',
+        'Custom',
+      ]);
     });
 
     it('passes an empty array to the table when no profiles exist', () => {

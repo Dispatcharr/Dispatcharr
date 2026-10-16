@@ -7,7 +7,9 @@ vi.mock('../../../store/playlists', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(() => ['default', vi.fn()]),
 }));
 
@@ -42,7 +44,7 @@ vi.mock('../../../utils/tables/M3UsTableUtils.js', () => ({
   updatePlaylist: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../M3uTableUtils.jsx', () => ({
+vi.mock('../tableSortingUtils.jsx', () => ({
   makeHeaderCellRenderer: vi.fn(() => (header) => (
     <span data-testid={`header-${header.id}`}>
       {header.column.columnDef.header}
@@ -198,6 +200,7 @@ vi.mock('lucide-react', () => ({
   LayoutGrid: () => <svg />,
   ListOrdered: () => <svg />,
   Logs: () => <svg />,
+  ScrollText: () => <svg />,
   MonitorCog: () => <svg />,
   Package: () => <svg />,
   Play: () => <svg />,
@@ -211,7 +214,7 @@ vi.mock('lucide-react', () => ({
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import usePlaylistsStore from '../../../store/playlists';
 import useWarningsStore from '../../../store/warnings';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import * as M3UsTableUtils from '../../../utils/tables/M3UsTableUtils.js';
 import * as DateTimeUtils from '../../../utils/dateTimeUtils.js';
 import { useTable } from '../CustomTable';
@@ -265,7 +268,7 @@ const setupMocks = ({
   );
 
   const mockSetTypeFilter = vi.fn();
-  vi.mocked(useLocalStorage).mockImplementation((key, defaultValue) => {
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
     if (key === 'table-size') return [tableSize, vi.fn()];
     if (key === 'm3u-table-type-filter') return [typeFilter, mockSetTypeFilter];
     return [defaultValue, vi.fn()];

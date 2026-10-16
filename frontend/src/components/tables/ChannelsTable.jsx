@@ -78,7 +78,7 @@ import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';
 import CatchupIndicator from '../CatchupIndicator';
 import LazyLogo from '../LazyLogo';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import useEPGsStore from '../../store/epgs';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { CustomTable, useTable } from './CustomTable';
@@ -112,6 +112,27 @@ import {
   updateProfileChannel,
   updateProfileChannels,
 } from '../../utils/tables/ChannelsTableUtils.js';
+
+const flexibleColumns = [
+  {
+    id: 'channel_number',
+    size: 40,
+    minRatio: 30 / 640,
+    maxRatio: 100 / 640,
+  },
+  { id: 'name', size: 240, minRatio: 100 / 640 },
+  { id: 'epg', size: 180, minRatio: 120 / 640 },
+  {
+    id: 'channel_group',
+    size: 180,
+    minRatio: 120 / 640,
+    maxRatio: 300 / 640,
+  },
+];
+
+const defaultColumnSizing = Object.fromEntries(
+  flexibleColumns.map(({ id, size }) => [id, size])
+);
 
 const ChannelEnabledSwitch = React.memo(
   ({ rowId, selectedProfileId, selectedTableIds }) => {
@@ -157,9 +178,9 @@ const ChannelRowActions = React.memo(
     createRecording,
     getChannelURL,
   }) => {
-    // Extract the channel ID once to ensure consistency
     const channelId = row.original.id;
     const channelUuid = row.original.uuid;
+    const [menuOpened, setMenuOpened] = useState(false);
 
     const authUser = useAuthStore((s) => s.user);
 
@@ -193,6 +214,7 @@ const ChannelRowActions = React.memo(
       <Box style={{ width: '100%', justifyContent: 'left' }}>
         <Center>
           <ActionIcon
+            aria-label="Edit channel"
             size={iconSize}
             variant="transparent"
             color={theme.tailwind.yellow[3]}
@@ -203,6 +225,7 @@ const ChannelRowActions = React.memo(
           </ActionIcon>
 
           <ActionIcon
+            aria-label="Delete channel"
             size={iconSize}
             variant="transparent"
             color={theme.tailwind.red[6]}
@@ -213,6 +236,7 @@ const ChannelRowActions = React.memo(
           </ActionIcon>
 
           <ActionIcon
+            aria-label="Preview channel"
             size={iconSize}
             variant="transparent"
             color={theme.tailwind.green[5]}
@@ -221,41 +245,52 @@ const ChannelRowActions = React.memo(
             <CirclePlay size="18" />
           </ActionIcon>
 
-          <Menu>
-            <MenuTarget>
-              <ActionIcon variant="transparent" size={iconSize}>
-                <EllipsisVertical size="18" />
-              </ActionIcon>
-            </MenuTarget>
+          {menuOpened ? (
+            <Menu opened onChange={setMenuOpened}>
+              <MenuTarget>
+                <ActionIcon variant="transparent" size={iconSize}>
+                  <EllipsisVertical size="18" />
+                </ActionIcon>
+              </MenuTarget>
 
-            <MenuDropdown>
-              <MenuItem leftSection={<Copy size="14" />}>
-                <UnstyledButton
-                  size="xs"
-                  onClick={() => copyToClipboard(getChannelURL(row.original))}
+              <MenuDropdown>
+                <MenuItem leftSection={<Copy size="14" />}>
+                  <UnstyledButton
+                    size="xs"
+                    onClick={() => copyToClipboard(getChannelURL(row.original))}
+                  >
+                    <Text size="xs">Copy URL</Text>
+                  </UnstyledButton>
+                </MenuItem>
+                <MenuItem
+                  onClick={onRecord}
+                  disabled={authUser.user_level != USER_LEVELS.ADMIN}
+                  leftSection={
+                    <div
+                      style={{
+                        borderRadius: '50%',
+                        width: '10px',
+                        height: '10px',
+                        display: 'flex',
+                        backgroundColor: 'red',
+                      }}
+                    ></div>
+                  }
                 >
-                  <Text size="xs">Copy URL</Text>
-                </UnstyledButton>
-              </MenuItem>
-              <MenuItem
-                onClick={onRecord}
-                disabled={authUser.user_level != USER_LEVELS.ADMIN}
-                leftSection={
-                  <div
-                    style={{
-                      borderRadius: '50%',
-                      width: '10px',
-                      height: '10px',
-                      display: 'flex',
-                      backgroundColor: 'red',
-                    }}
-                  ></div>
-                }
-              >
-                <Text size="xs">Record</Text>
-              </MenuItem>
-            </MenuDropdown>
-          </Menu>
+                  <Text size="xs">Record</Text>
+                </MenuItem>
+              </MenuDropdown>
+            </Menu>
+          ) : (
+            <ActionIcon
+              aria-label="More channel actions"
+              variant="transparent"
+              size={iconSize}
+              onClick={() => setMenuOpened(true)}
+            >
+              <EllipsisVertical size="18" />
+            </ActionIcon>
+          )}
         </Center>
       </Box>
     );
@@ -281,13 +316,20 @@ const ChannelsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const hasSignaledReady = useRef(false);
+  const hasAttemptedChannelRepair = useRef(false);
 
   /**
    * STORES
    */
 
   // store/channelsTable
-  const data = useChannelsTableStore((s) => s.channels);
+  const rawChannels = useChannelsTableStore((s) => s.channels);
+  // Drop nullish entries so a bad row can't crash row rendering.
+  const data = useMemo(
+    () =>
+      rawChannels.some((c) => !c) ? rawChannels.filter(Boolean) : rawChannels,
+    [rawChannels]
+  );
   const pageCount = useChannelsTableStore((s) => s.pageCount);
 
   const rowClassMap = useMemo(() => {
@@ -296,7 +338,7 @@ const ChannelsTable = ({ onReady }) => {
       const hasStreams = channel.streams?.length > 0;
       if (!hasStreams) {
         map[channel.id] = 'no-streams-row';
-      } else if (channel.streams.some((s) => s.is_stale)) {
+      } else if (channel.streams?.some((s) => s.is_stale)) {
         map[channel.id] = 'has-stale-streams-row';
       }
     }
@@ -315,12 +357,11 @@ const ChannelsTable = ({ onReady }) => {
   const totalCount = useChannelsTableStore((s) => s.totalCount);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useChannelsTableStore((s) => s.setAllQueryIds);
-
   // store/channels
   const hasChannels = useChannelsStore((s) => s.channelIds.length > 0);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
-  const [, setTablePrefs] = useLocalStorage('channel-table-prefs', {
+  const [, setTablePrefs] = useBrowserStorage('channel-table-prefs', {
     pageSize: 50,
   });
 
@@ -341,21 +382,72 @@ const ChannelsTable = ({ onReady }) => {
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelBatchModalOpen, setChannelBatchModalOpen] = useState(false);
   const [recordingModalOpen, setRecordingModalOpen] = useState(false);
-  const [showDisabled, setShowDisabled] = useState(true);
-  const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
-    useState(false);
-  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
-  const [showOnlyOverriddenChannels, setShowOnlyOverriddenChannels] =
-    useState(false);
-  const [showOnlyCatchupChannels, setShowOnlyCatchupChannels] = useState(false);
-  const [visibilityFilter, setVisibilityFilter] = useState('active');
-
-  const [paginationString, setPaginationString] = useState('');
-  const [filters, setFilters] = useState({
+  const DEFAULT_CHANNELS_FILTERS = {
     name: '',
     channel_group: '',
     epg: '',
-  });
+    showDisabled: true,
+    showOnlyStreamlessChannels: false,
+    showOnlyStaleChannels: false,
+    showOnlyOverriddenChannels: false,
+    showOnlyCatchupChannels: false,
+    visibilityFilter: 'active',
+  };
+  const [tableFilters, setTableFilters] = useBrowserStorage(
+    'channels-table-filters',
+    DEFAULT_CHANNELS_FILTERS,
+    { storage: 'session' }
+  );
+  const {
+    showDisabled,
+    showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
+    showOnlyOverriddenChannels,
+    showOnlyCatchupChannels,
+    visibilityFilter,
+  } = tableFilters;
+  // Column filters used by debounce / header inputs (subset of tableFilters)
+  const filters = useMemo(
+    () => ({
+      name: tableFilters.name,
+      channel_group: tableFilters.channel_group,
+      epg: tableFilters.epg,
+    }),
+    [tableFilters.name, tableFilters.channel_group, tableFilters.epg]
+  );
+  const setFilters = (updater) => {
+    setTableFilters((prev) => {
+      const nextColumnFilters =
+        typeof updater === 'function'
+          ? updater({
+              name: prev.name,
+              channel_group: prev.channel_group,
+              epg: prev.epg,
+            })
+          : updater;
+      return { ...prev, ...nextColumnFilters };
+    });
+  };
+  const setShowDisabled = (value) =>
+    setTableFilters((prev) => ({ ...prev, showDisabled: value }));
+  const setShowOnlyStreamlessChannels = (value) =>
+    setTableFilters((prev) => ({
+      ...prev,
+      showOnlyStreamlessChannels: value,
+    }));
+  const setShowOnlyStaleChannels = (value) =>
+    setTableFilters((prev) => ({ ...prev, showOnlyStaleChannels: value }));
+  const setShowOnlyOverriddenChannels = (value) =>
+    setTableFilters((prev) => ({
+      ...prev,
+      showOnlyOverriddenChannels: value,
+    }));
+  const setShowOnlyCatchupChannels = (value) =>
+    setTableFilters((prev) => ({ ...prev, showOnlyCatchupChannels: value }));
+  const setVisibilityFilter = (value) =>
+    setTableFilters((prev) => ({ ...prev, visibilityFilter: value }));
+
+  const [paginationString, setPaginationString] = useState('');
   const [, setIsLoading] = useState(true);
 
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
@@ -373,6 +465,7 @@ const ChannelsTable = ({ onReady }) => {
   const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
   const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
   const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
+  const tableScrollRef = useRef(null);
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -383,12 +476,16 @@ const ChannelsTable = ({ onReady }) => {
     })
   );
 
-  // Column sizing state for resizable columns
-  // Store in localStorage but with empty object as default
-  const [columnSizing, setColumnSizing] = useLocalStorage(
+  // Column sizing state for resizable columns.
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
     'channels-table-column-sizing',
-    {}
+    defaultColumnSizing
   );
+
+  const resetColumnSizing = useCallback(() => {
+    setColumnSizing({ ...defaultColumnSizing });
+    setSorting([{ id: 'channel_number', desc: false }]);
+  }, [setColumnSizing, setSorting]);
 
   // M3U and EPG URL configuration state
   const [m3uParams, setM3uParams] = useState({
@@ -433,6 +530,34 @@ const ChannelsTable = ({ onReady }) => {
     Object.keys(data).length > 0 || hasFetchedData.current
       ? Object.keys(data).length
       : undefined;
+
+  useEffect(() => {
+    const scrollContainer = tableScrollRef.current;
+    if (!scrollContainer) return;
+
+    const updateOverflow = () => {
+      const overflow =
+        scrollContainer.scrollWidth - scrollContainer.clientWidth;
+      scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
+    };
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateOverflow);
+    observer?.observe(scrollContainer);
+    if (scrollContainer.firstElementChild) {
+      observer?.observe(scrollContainer.firstElementChild);
+    }
+    updateOverflow();
+
+    return () => {
+      observer?.disconnect();
+      scrollContainer.style.removeProperty('overflow-x');
+    };
+    // Re-bind when the scroll container mounts with table content. The observer
+    // itself handles size changes during column resize.
+  }, [channelsTableLength, hasChannels]);
 
   /**
    * Functions
@@ -687,6 +812,7 @@ const ChannelsTable = ({ onReady }) => {
   const onPageSizeChange = (e) => {
     setPagination({
       ...pagination,
+      pageIndex: 0,
       pageSize: e.target.value,
     });
   };
@@ -811,9 +937,26 @@ const ChannelsTable = ({ onReady }) => {
     fetchData();
   }, [fetchData]);
 
+  // Store still has a nullish entry beyond just this render; refetch to clear it.
   useEffect(() => {
+    if (!rawChannels.some((c) => !c)) {
+      hasAttemptedChannelRepair.current = false;
+      return;
+    }
+
+    if (!hasAttemptedChannelRepair.current) {
+      hasAttemptedChannelRepair.current = true;
+      console.warn(
+        '[ChannelsTable] Detected nullish entries in channels store; refetching.'
+      );
+      fetchData();
+    }
+  }, [rawChannels, fetchData]);
+
+  useEffect(() => {
+    const profileName = profiles[selectedProfileId]?.name;
     const profileString =
-      selectedProfileId != '0' ? `/${profiles[selectedProfileId].name}` : '';
+      selectedProfileId != '0' && profileName ? `/${profileName}` : '';
     setHDHRUrl(`${hdhrUrlBase}${profileString}`);
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
@@ -874,16 +1017,18 @@ const ChannelsTable = ({ onReady }) => {
         // override row via buildInlinePatch in EditableCell.
         accessorFn: (row) => row.effective_channel_number ?? row.channel_number,
         size: columnSizing.channel_number || 40,
-        minSize: 30,
-        maxSize: 100,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
         cell: (props) => <EditableNumberCell {...props} />,
       },
       {
         id: 'name',
         accessorFn: (row) => row.effective_name ?? row.name,
-        size: columnSizing.name || 200,
-        minSize: 100,
+        size: columnSizing.name || 240,
+        minSize: 0,
         grow: true,
+        flexRatio: true,
         cell: (props) => {
           const row = props.row?.original || {};
           const overriddenLabels = listOverriddenFields(row);
@@ -939,8 +1084,10 @@ const ChannelsTable = ({ onReady }) => {
             tvgsLoaded={tvgsLoaded}
           />
         ),
-        size: columnSizing.epg || 200,
-        minSize: 120,
+        size: columnSizing.epg || 180,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
       },
       {
         id: 'channel_group',
@@ -954,8 +1101,11 @@ const ChannelsTable = ({ onReady }) => {
         cell: (props) => (
           <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
-        size: columnSizing.channel_group || 200,
-        minSize: 120,
+        size: columnSizing.channel_group || 180,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: false,
       },
       {
         id: 'logo',
@@ -980,6 +1130,7 @@ const ChannelsTable = ({ onReady }) => {
         header: '',
         cell: ({ row, table }) => (
           <ChannelRowActions
+            key={row.original.id}
             theme={theme}
             row={row}
             table={table}
@@ -1139,6 +1290,10 @@ const ChannelsTable = ({ onReady }) => {
     sorting,
     columnSizing,
     setColumnSizing,
+    pairedColumnSizing: flexibleColumns,
+    tableId: 'channels-table',
+    onResetColumnSizing: resetColumnSizing,
+    fillHeight: true,
     manualPagination: true,
     manualSorting: true,
     manualFiltering: true,
@@ -1151,9 +1306,6 @@ const ChannelsTable = ({ onReady }) => {
       sorting,
     },
     columnResizeMode: 'onChange',
-    getExpandedRowHeight: (row) => {
-      return 20 + 28 * row.original.streams.length;
-    },
     expandedRowRenderer: ({ row }) => {
       return (
         <Box
@@ -1402,6 +1554,7 @@ const ChannelsTable = ({ onReady }) => {
                       data={[
                         { value: 'mpegts', label: 'MPEG-TS' },
                         { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                        { value: 'hls', label: 'HLS' },
                       ]}
                     />
                     <Select
@@ -1590,9 +1743,10 @@ const ChannelsTable = ({ onReady }) => {
               }}
             >
               <Box
+                ref={tableScrollRef}
                 style={{
                   flex: 1,
-                  overflowY: 'auto',
+                  overflowY: 'hidden',
                   overflowX: 'auto',
                   border: 'solid 1px rgb(68,68,68)',
                   borderRadius: 'var(--mantine-radius-default)',
@@ -1607,7 +1761,7 @@ const ChannelsTable = ({ onReady }) => {
                     items={rows.map((row) => row.id)}
                     strategy={verticalListSortingStrategy}
                   >
-                    <CustomTable table={table} />
+                  <CustomTable table={table} />
                   </SortableContext>
                 </DndContext>
               </Box>
@@ -1632,7 +1786,7 @@ const ChannelsTable = ({ onReady }) => {
                   <NativeSelect
                     size="xxs"
                     value={pagination.pageSize}
-                    data={['25', '50', '100', '250']}
+                    data={['25', '50', '100', '250', '500']}
                     onChange={onPageSizeChange}
                     style={{ paddingRight: 20 }}
                   />
@@ -1688,8 +1842,8 @@ const ChannelsTable = ({ onReady }) => {
             <div style={{ whiteSpace: 'pre-line' }}>
               {`Are you sure you want to delete the following channel?
 
-Name: ${channelToDelete.name}
-Channel Number: ${channelToDelete.channel_number}
+Name: ${channelToDelete.effective_name ?? channelToDelete.name}
+Channel Number: ${channelToDelete.effective_channel_number ?? channelToDelete.channel_number}
 
 This action cannot be undone.`}
             </div>

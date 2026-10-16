@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import API from '../../api';
 import StreamProfileForm from '../forms/StreamProfile';
+import ConfirmationDialog from '../ConfirmationDialog';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import useSettingsStore from '../../store/settings';
+import useWarningsStore from '../../store/warnings';
 import {
   Box,
   ActionIcon,
@@ -16,17 +18,12 @@ import {
   Switch,
   Stack,
 } from '@mantine/core';
-import {
-  SquareMinus,
-  SquarePen,
-  Eye,
-  EyeOff,
-  SquarePlus,
-} from 'lucide-react';
+import { SquareMinus, SquarePen, Eye, EyeOff, SquarePlus } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { showNotification } from '../../utils/notificationUtils.js';
 import { updateStreamProfile } from '../../utils/forms/StreamProfileUtils.js';
+import { sortLockedFirstByName } from '../../utils/tables/profileTableUtils.js';
 
 const RowActions = ({ row, editStreamProfile, handleDeleteStreamProfile }) => {
   return (
@@ -38,7 +35,7 @@ const RowActions = ({ row, editStreamProfile, handleDeleteStreamProfile }) => {
         disabled={row.original.locked}
         onClick={() => editStreamProfile(row.original)}
       >
-        <SquarePen size="18" /> {/* Small icon size */}
+        <SquarePen size="18" />
       </ActionIcon>
       <ActionIcon
         variant="transparent"
@@ -47,7 +44,7 @@ const RowActions = ({ row, editStreamProfile, handleDeleteStreamProfile }) => {
         disabled={row.original.locked}
         onClick={() => handleDeleteStreamProfile(row.original.id)}
       >
-        <SquareMinus fontSize="small" /> {/* Small icon size */}
+        <SquareMinus fontSize="small" />
       </ActionIcon>
     </>
   );
@@ -55,17 +52,23 @@ const RowActions = ({ row, editStreamProfile, handleDeleteStreamProfile }) => {
 
 const deleteStreamProfile = (id) => {
   return API.deleteStreamProfile(id);
-}
+};
 
 const StreamProfiles = () => {
   const [profile, setProfile] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [hideInactive, setHideInactive] = useState(false);
   const [data, setData] = useState([]);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [profileToDelete, setProfileToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const streamProfiles = useStreamProfilesStore((state) => state.profiles);
   const settings = useSettingsStore((s) => s.settings);
-  const [tableSize] = useLocalStorage('table-size', 'default');
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const [tableSize] = useBrowserStorage('table-size', 'default');
 
   const theme = useMantineTheme();
 
@@ -150,17 +153,47 @@ const StreamProfiles = () => {
     setProfileModalOpen(true);
   };
 
-  const handleDeleteStreamProfile = async (id) => {
-    if (id == settings.default_stream_profile) {
-      showNotification({
-        title: 'Cannot delete default stream-profile',
-        color: 'red.5',
-      });
-      return;
+  const executeDeleteStreamProfile = useCallback(async (id) => {
+    setDeleting(true);
+    try {
+      await deleteStreamProfile(id);
+    } catch {
+      // API layer surfaces the error to the user.
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+      setDeleteTarget(null);
+      setProfileToDelete(null);
     }
+  }, []);
 
-    await deleteStreamProfile(id);
-  };
+  const handleDeleteStreamProfile = useCallback(
+    async (id) => {
+      if (id == settings.default_stream_profile) {
+        showNotification({
+          title: 'Cannot delete default stream-profile',
+          color: 'red.5',
+        });
+        return;
+      }
+
+      const target = streamProfiles.find((p) => p.id === id) || null;
+      setProfileToDelete(target);
+      setDeleteTarget(id);
+
+      if (isWarningSuppressed('delete-stream-profile')) {
+        return executeDeleteStreamProfile(id);
+      }
+
+      setConfirmDeleteOpen(true);
+    },
+    [
+      settings.default_stream_profile,
+      streamProfiles,
+      isWarningSuppressed,
+      executeDeleteStreamProfile,
+    ]
+  );
 
   const closeStreamProfileForm = () => {
     setProfile(null);
@@ -172,9 +205,7 @@ const StreamProfiles = () => {
   };
 
   const toggleProfileIsActive = async (profile) => {
-    await updateStreamProfile(
-      profile.id,
-      {
+    await updateStreamProfile(profile.id, {
       ...profile,
       is_active: !profile.is_active,
     });
@@ -182,7 +213,11 @@ const StreamProfiles = () => {
 
   useEffect(() => {
     setData(
-      streamProfiles.filter((profile) => !(hideInactive && !profile.is_active))
+      sortLockedFirstByName(
+        streamProfiles.filter(
+          (profile) => !(hideInactive && !profile.is_active)
+        )
+      )
     );
   }, [streamProfiles, hideInactive]);
 
@@ -231,7 +266,6 @@ const StreamProfiles = () => {
           borderRadius: 2,
         }}
       >
-        {/* Top toolbar with Remove, Assign, Auto-match, and Add buttons */}
         <Box
           style={{
             display: 'flex',
@@ -300,6 +334,37 @@ const StreamProfiles = () => {
         profile={profile}
         isOpen={profileModalOpen}
         onClose={closeStreamProfileForm}
+      />
+
+      <ConfirmationDialog
+        opened={confirmDeleteOpen}
+        onClose={() => {
+          setConfirmDeleteOpen(false);
+          setDeleteTarget(null);
+          setProfileToDelete(null);
+        }}
+        onConfirm={() => executeDeleteStreamProfile(deleteTarget)}
+        loading={deleting}
+        title="Confirm Stream Profile Deletion"
+        message={
+          profileToDelete ? (
+            <div style={{ whiteSpace: 'pre-line' }}>
+              {`Are you sure you want to delete the following stream profile?
+
+Name: ${profileToDelete.name}
+Command: ${profileToDelete.command}
+
+This action cannot be undone.`}
+            </div>
+          ) : (
+            'Are you sure you want to delete this stream profile? This action cannot be undone.'
+          )
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        actionKey="delete-stream-profile"
+        onSuppressChange={suppressWarning}
+        size="md"
       />
     </Stack>
   );

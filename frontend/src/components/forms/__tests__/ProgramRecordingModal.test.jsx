@@ -12,9 +12,12 @@ vi.mock('../../../utils/guideUtils.js', () => ({
 }));
 
 vi.mock('../SeriesRuleEditorModal.jsx', () => ({
-  default: ({ opened, onClose }) =>
+  default: ({ opened, onClose, initialRule }) =>
     opened ? (
       <div data-testid="series-rule-editor-modal">
+        <span data-testid="editor-initial-rule">
+          {JSON.stringify(initialRule)}
+        </span>
         <button data-testid="series-rule-editor-close" onClick={onClose}>
           Close Editor
         </button>
@@ -170,6 +173,33 @@ describe('ProgramRecordingModal', () => {
         expect(deleteSeriesAndRule).toHaveBeenCalledWith({
           tvg_id: 'tvg-2',
           title: 'My Series',
+          epg_source_id: undefined,
+        });
+      });
+    });
+
+    it('passes the rule epg_source_id so only that source copy is removed', async () => {
+      const program = makeProgram({ tvg_id: 'tvg-2', title: 'My Series' });
+      render(
+        <ProgramRecordingModal
+          {...defaultProps({
+            program,
+            recording: makeRecording(),
+            existingRuleMode: 'series',
+            existingRule: {
+              tvg_id: 'tvg-2',
+              title: 'My Series',
+              epg_source_id: 11,
+            },
+          })}
+        />
+      );
+      fireEvent.click(screen.getByText(/Remove this series/i));
+      await waitFor(() => {
+        expect(deleteSeriesAndRule).toHaveBeenCalledWith({
+          tvg_id: 'tvg-2',
+          title: 'My Series',
+          epg_source_id: 11,
         });
       });
     });
@@ -203,7 +233,33 @@ describe('ProgramRecordingModal', () => {
       await waitFor(() => {
         expect(deleteSeriesRuleByTvgId).toHaveBeenCalledWith(
           'tvg-3',
-          'Rule Show'
+          'Rule Show',
+          undefined
+        );
+      });
+    });
+
+    it('deletes only the sourced rule when the rule stores a source', async () => {
+      const program = makeProgram({ tvg_id: 'tvg-3', title: 'Rule Show' });
+      render(
+        <ProgramRecordingModal
+          {...defaultProps({
+            program,
+            existingRuleMode: 'rule',
+            existingRule: {
+              tvg_id: 'tvg-3',
+              title: 'Rule Show',
+              epg_source_id: 12,
+            },
+          })}
+        />
+      );
+      fireEvent.click(screen.getByText(/Remove series rule/i));
+      await waitFor(() => {
+        expect(deleteSeriesRuleByTvgId).toHaveBeenCalledWith(
+          'tvg-3',
+          'Rule Show',
+          12
         );
       });
     });
@@ -299,6 +355,37 @@ describe('ProgramRecordingModal', () => {
       expect(
         screen.queryByTestId('series-rule-editor-modal')
       ).not.toBeInTheDocument();
+    });
+
+    it('passes the program tvg_id, title, and epgSourceId as a new-rule draft', () => {
+      render(<ProgramRecordingModal {...defaultProps({ epgSourceId: 11 })} />);
+      fireEvent.click(screen.getByText(/Customize rule/i));
+      expect(screen.getByTestId('editor-initial-rule')).toHaveTextContent(
+        JSON.stringify({
+          tvg_id: 'tvg-1',
+          title: 'Test Show',
+          title_mode: 'exact',
+          mode: 'all',
+          epg_source_id: 11,
+        })
+      );
+    });
+
+    it('fills epg_source_id onto an existing unsourced rule from the clicked channel', () => {
+      render(
+        <ProgramRecordingModal
+          {...defaultProps({
+            existingRule: { tvg_id: 'tvg-1', title: 'Test Show', mode: 'all' },
+            epgSourceId: 11,
+          })}
+        />
+      );
+      fireEvent.click(screen.getByText(/Customize rule/i));
+      const parsed = JSON.parse(
+        screen.getByTestId('editor-initial-rule').textContent
+      );
+      expect(parsed.epg_source_id).toBe(11);
+      expect(parsed.mode).toBe('all');
     });
   });
 });
