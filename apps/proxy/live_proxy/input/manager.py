@@ -357,6 +357,10 @@ class StreamManager:
         current_owner = self._decode_redis_value(current_owner)
 
         if current_owner and current_owner != self.worker_id:
+            logger.warning(
+                f"Channel {self.channel_id} is owned by worker {current_owner}, "
+                f"not this worker {self.worker_id} - stopping upstream"
+            )
             return False
 
         if not current_owner:
@@ -367,7 +371,13 @@ class StreamManager:
                 return False
             return True
 
-        if client_count == 0 and self._disconnect_shutdown_ready(disconnect_value):
+        # A pre-active channel with no viewers is stopped by the disconnect handler and
+        # the monitor's startup timeout, not by this audit.
+        if (
+            client_count == 0
+            and state not in ChannelState.PRE_ACTIVE
+            and self._disconnect_shutdown_ready(disconnect_value)
+        ):
             logger.info(
                 f"Channel {self.channel_id} disconnect shutdown ready - stopping upstream"
             )
@@ -433,7 +443,7 @@ class StreamManager:
             return True
 
         logger.warning(
-            f"Stream manager for channel {self.channel_id} lost ownership "
+            f"Stream manager for channel {self.channel_id} failed its ownership check "
             f"(worker {self.worker_id}) - stopping upstream"
         )
         self.stop()
