@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator
 from core.models import CoreSettings, UserAgent
 import re
 from django.dispatch import receiver
@@ -90,8 +91,21 @@ class M3UAccount(models.Model):
     password = models.CharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     refresh_interval = models.IntegerField(default=0)
+    xc_live_refresh_min_age_minutes = models.PositiveIntegerField(
+        default=30,
+        validators=[MaxValueValidator(10080)],
+        help_text="Minimum age of the last successful Live TV refresh before an XC client request may trigger another one.",
+    )
     refresh_task = models.ForeignKey(
         PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    vod_refresh_interval = models.IntegerField(default=0)
+    vod_refresh_task = models.ForeignKey(
+        PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    vod_refresh_after_live = models.BooleanField(
+        default=True,
+        help_text="Refresh VOD after Live TV unless a separate VOD schedule is configured.",
     )
     stale_stream_days = models.PositiveIntegerField(
         default=7,

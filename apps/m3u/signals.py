@@ -4,6 +4,7 @@ from django.dispatch import receiver
 from .models import M3UAccount, M3UAccountProfile
 from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
 from core.scheduling import create_or_update_periodic_task, delete_periodic_task
+from core.utils import ensure_custom_properties_dict
 import json
 import logging
 
@@ -28,12 +29,17 @@ def create_or_update_refresh_task(sender, instance, created, update_fields=None,
     # Skip rescheduling when only non-schedule fields were saved (e.g. status/last_message
     # updates from the refresh task itself). We only need to reschedule when schedule-relevant
     # fields change or when _cron_expression was explicitly set by the serializer.
-    SCHEDULE_FIELDS = {'refresh_interval', 'is_active', 'refresh_task'}
+    SCHEDULE_FIELDS = {
+        'refresh_interval', 'refresh_task', 'vod_refresh_interval',
+        'vod_refresh_task', 'vod_refresh_after_live', 'is_active',
+        'account_type', 'custom_properties',
+    }
     if (
         not created
         and update_fields is not None
         and not (set(update_fields) & SCHEDULE_FIELDS)
         and not hasattr(instance, '_cron_expression')
+        and not hasattr(instance, '_vod_cron_expression')
     ):
         return
 
@@ -55,7 +61,7 @@ def create_or_update_refresh_task(sender, instance, created, update_fields=None,
         except Exception:
             pass
 
-    task = create_or_update_periodic_task(
+    live_task = create_or_update_periodic_task(
         task_name=task_name,
         celery_task_path="apps.m3u.tasks.refresh_single_m3u_account",
         kwargs={"account_id": instance.id},
@@ -64,9 +70,43 @@ def create_or_update_refresh_task(sender, instance, created, update_fields=None,
         enabled=should_be_enabled,
     )
 
-    # Ensure instance has the task linked
-    if instance.refresh_task_id != task.id:
-        M3UAccount.objects.filter(id=instance.id).update(refresh_task=task)
+    if hasattr(instance, '_vod_cron_expression'):
+        vod_cron_expr = instance._vod_cron_expression
+    else:
+        vod_cron_expr = ""
+        existing_vod_task = instance.vod_refresh_task
+        if existing_vod_task and existing_vod_task.crontab:
+            ct = existing_vod_task.crontab
+            vod_cron_expr = (
+                f"{ct.minute} {ct.hour} {ct.day_of_month} "
+                f"{ct.month_of_year} {ct.day_of_week}"
+            )
+
+    custom = ensure_custom_properties_dict(instance.custom_properties)
+    separate_vod_schedule_enabled = (
+        instance.is_active
+        and instance.account_type == M3UAccount.Types.XC
+        and bool(custom.get('enable_vod', False))
+        and not instance.vod_refresh_after_live
+    )
+    vod_task = create_or_update_periodic_task(
+        task_name=f"m3u_account-vod-refresh-{instance.id}",
+        celery_task_path="apps.vod.tasks.refresh_vod_content",
+        kwargs={"account_id": instance.id},
+        interval_hours=int(instance.vod_refresh_interval),
+        cron_expression=vod_cron_expr,
+        enabled=separate_vod_schedule_enabled,
+    )
+
+    updates = {}
+    if instance.refresh_task_id != live_task.id:
+        updates['refresh_task'] = live_task
+    if instance.vod_refresh_task_id != vod_task.id:
+        updates['vod_refresh_task'] = vod_task
+    if updates:
+        M3UAccount.objects.filter(id=instance.id).update(**updates)
+    instance.refresh_task = live_task
+    instance.vod_refresh_task = vod_task
 
 @receiver(post_save, sender=M3UAccountProfile)
 def update_profile_expiration_notification(sender, instance, created, update_fields=None, **kwargs):
@@ -153,6 +193,10 @@ def delete_refresh_task(sender, instance, **kwargs):
             delete_m3u_refresh_task_by_id(instance.id)
     except Exception as e:
         logger.error(f"Error in delete_refresh_task signal handler: {str(e)}", exc_info=True)
+    try:
+        delete_periodic_task(f"m3u_account-vod-refresh-{instance.id}")
+    except Exception as e:
+        logger.error(f"Error deleting VOD refresh task for M3UAccount {instance.id}: {e}", exc_info=True)
 
 @receiver(pre_save, sender=M3UAccount)
 def update_status_on_active_change(sender, instance, **kwargs):

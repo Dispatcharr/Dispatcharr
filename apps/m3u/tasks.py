@@ -14,6 +14,7 @@ from django.db import models, transaction
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 import time
 import json
 from core.utils import (
@@ -925,7 +926,7 @@ def cleanup_stale_group_relationships(account, scan_start_time):
     return deleted_count
 
 
-def collect_xc_streams(account_id, enabled_groups):
+def collect_xc_streams(account_id, enabled_groups, *, include_provider_total=False):
     """Collect all XC streams in a single API call and filter by enabled groups."""
     account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
     all_streams = []
@@ -959,9 +960,10 @@ def collect_xc_streams(account_id, enabled_groups):
 
             if not all_xc_streams:
                 logger.warning("No live streams returned from XC provider")
-                return []
+                return ([], 0) if include_provider_total else []
 
             logger.info(f"Retrieved {len(all_xc_streams)} total live streams from provider")
+            provider_total = len(all_xc_streams)
 
             # Filter streams based on enabled categories
             for stream in all_xc_streams:
@@ -1015,12 +1017,12 @@ def collect_xc_streams(account_id, enabled_groups):
 
     except Exception as e:
         logger.error(f"Failed to fetch XC streams: {str(e)}")
-        return []
+        return ([], 0) if include_provider_total else []
 
     logger.info(
         f"Filtered {filtered_count} streams from {len(enabled_category_ids)} enabled categories"
     )
-    return all_streams
+    return (all_streams, provider_total) if include_provider_total else all_streams
 
 
 def _compile_m3u_stream_filters(filter_queryset):
@@ -3484,11 +3486,53 @@ def refresh_account_info(profile_id):
         release_task_lock("refresh_account_info", profile_id)
         return error_msg
 @shared_task(time_limit=3600, soft_time_limit=3500)
-def refresh_single_m3u_account(account_id):
+def refresh_single_m3u_account(
+    account_id,
+    include_vod=None,
+    minimum_age_seconds=None,
+    skip_if_refreshed_after=None,
+    client_request_token=None,
+    client_completion_key=None,
+):
     """Splits M3U processing into chunks and dispatches them as parallel tasks."""
     if not acquire_task_lock("refresh_single_m3u_account", account_id):
+        if client_request_token:
+            from .client_refresh import release_client_refresh_reservation
+            release_client_refresh_reservation(account_id, client_request_token)
+        if client_completion_key:
+            from .client_refresh import mark_client_refresh_complete
+            mark_client_refresh_complete(client_completion_key, "already_running")
         return f"Task already running for account_id={account_id}."
 
+    if client_request_token:
+        from .client_refresh import release_client_refresh_reservation
+        release_client_refresh_reservation(account_id, client_request_token)
+
+    # The provider may have completed a scheduled refresh while this request
+    # waited in the queue. Check again under the account refresh lock.
+    if minimum_age_seconds is not None or skip_if_refreshed_after is not None:
+        try:
+            minimum_age_seconds = max(0, int(minimum_age_seconds or 0))
+            queued_at = parse_datetime(str(skip_if_refreshed_after)) if skip_if_refreshed_after else None
+            last_success = (
+                M3UAccount.objects.filter(id=account_id, is_active=True)
+                .values_list("updated_at", flat=True)
+                .first()
+            )
+            if last_success and (
+                (queued_at and last_success >= queued_at)
+                or (minimum_age_seconds and (timezone.now() - last_success).total_seconds() < minimum_age_seconds)
+            ):
+                logger.info("Skipping XC Live refresh for recently refreshed account %s", account_id)
+                release_task_lock("refresh_single_m3u_account", account_id)
+                if client_completion_key:
+                    from .client_refresh import mark_client_refresh_complete
+                    mark_client_refresh_complete(client_completion_key, "skipped_fresh")
+                return "Skipped conditional Live refresh because the account is fresh"
+        except (TypeError, ValueError):
+            logger.warning("Invalid XC Live refresh freshness values for account %s", account_id)
+        except Exception:
+            logger.warning("Could not check XC Live refresh freshness for account %s", account_id, exc_info=True)
     # Keep the lock alive while this long-running task is working.
     # Without renewal, the 300s lock TTL can expire during large
     # downloads/parses, allowing duplicate tasks to start.
@@ -3498,7 +3542,7 @@ def refresh_single_m3u_account(account_id):
     _release_task_db_connection()
 
     try:
-        return _refresh_single_m3u_account_impl(account_id)
+        return _refresh_single_m3u_account_impl(account_id, include_vod=include_vod)
     except Exception as e:
         logger.error(
             f"refresh_single_m3u_account failed for account {account_id}: {e}",
@@ -3523,12 +3567,18 @@ def refresh_single_m3u_account(account_id):
         )
     finally:
         _ensure_m3u_refresh_terminal_status(account_id)
+        if client_request_token:
+            from .client_refresh import record_client_refresh_outcome
+            record_client_refresh_outcome(account_id)
         _release_task_db_connection()
         lock_renewer.stop()
         release_task_lock("refresh_single_m3u_account", account_id)
+        if client_completion_key:
+            from .client_refresh import mark_client_refresh_complete
+            mark_client_refresh_complete(client_completion_key, "finished")
 
 
-def _refresh_single_m3u_account_impl(account_id):
+def _refresh_single_m3u_account_impl(account_id, include_vod=None):
     """Implementation of M3U account refresh with guaranteed memory cleanup."""
     # Record start time
     refresh_start_timestamp = timezone.now()  # For the cleanup function
@@ -3748,6 +3798,7 @@ def _refresh_single_m3u_account_impl(account_id):
         streams_updated = 0
         streams_unchanged = 0
         failed_batch_count = 0
+        live_provider_total = len(extinf_data)
 
         if account.account_type == M3UAccount.Types.STADNARD:
             logger.debug(
@@ -3817,7 +3868,9 @@ def _refresh_single_m3u_account_impl(account_id):
 
             # Collect all XC streams in a single API call and filter by enabled categories
             logger.info("Fetching all XC streams from provider and filtering by enabled categories...")
-            all_xc_streams = collect_xc_streams(account_id, filtered_groups)
+            all_xc_streams, live_provider_total = collect_xc_streams(
+                account_id, filtered_groups, include_provider_total=True
+            )
 
             del channel_group_relationships, filtered_groups
 
@@ -3967,6 +4020,8 @@ def _refresh_single_m3u_account_impl(account_id):
             logger.error(
                 f"Error running auto channel sync for account {account_id}: {str(e)}"
             )
+            auto_sync_result = {"status": "error", "error": str(e)}
+            auto_sync_message = f" Auto-sync error: {e}."
 
         try:
             rollup_channel_catchup_fields(account_id)
@@ -3983,13 +4038,23 @@ def _refresh_single_m3u_account_impl(account_id):
         # Set status to success and update timestamp BEFORE sending the final update
         account.status = M3UAccount.Status.SUCCESS
         account.last_message = (
-            f"Processing completed in {elapsed_time:.1f} seconds. "
+            "Live TV refresh completed. "
             f"Streams: {streams_created} created, {streams_updated} updated, "
             f"{streams_stale} marked stale, {streams_deleted} removed. "
             f"Total processed: {streams_processed}.{auto_sync_message}"
         )
         account.updated_at = timezone.now()
         account.save(update_fields=["status", "last_message", "updated_at"])
+
+        from apps.m3u.refresh_metrics import record_refresh_metrics
+        record_refresh_metrics(
+            account_id,
+            "live",
+            {"provider_total": live_provider_total, "selected_total": streams_processed},
+            elapsed_time,
+            account.updated_at,
+            auto_sync=auto_sync_result,
+        )
 
         # Streams / auto-synced channels may have changed names, numbers,
         # logos, or membership. Clear M3U playlist cache and XMLTV channel
@@ -4039,7 +4104,8 @@ def _refresh_single_m3u_account_impl(account_id):
         gc.collect()
 
         # Trigger VOD refresh if enabled and account is XtreamCodes type
-        if vod_enabled and account.account_type == M3UAccount.Types.XC:
+        should_refresh_vod = should_refresh_vod_after_live(account, include_vod)
+        if vod_enabled and account.account_type == M3UAccount.Types.XC and should_refresh_vod:
             logger.info(f"VOD is enabled for account {account_id}, triggering VOD refresh")
             try:
                 from apps.vod.tasks import refresh_vod_content
@@ -4082,6 +4148,11 @@ def _refresh_single_m3u_account_impl(account_id):
             pass
 
     return f"Dispatched jobs complete."
+
+
+def should_refresh_vod_after_live(account, include_vod=None):
+    """Resolve an optional one-off override against the account's schedule mode."""
+    return bool(account.vod_refresh_after_live if include_vod is None else include_vod)
 
 
 def send_m3u_update(account_id, action, progress, **kwargs):

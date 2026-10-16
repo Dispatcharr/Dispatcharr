@@ -129,7 +129,8 @@ class RealBatchWriteFailureTests(TransactionTestCase):
         flaky.state = state
         return flaky
 
-    def _refresh(self, account, group, provider_streams, bulk_update=None, batch_size=2):
+    def _refresh(self, account, group, provider_streams, bulk_update=None, batch_size=2,
+                 auto_sync_result=None, auto_sync_error=None):
         is_standard = account.account_type == M3UAccount.Types.STADNARD
         with patch("apps.m3u.tasks.BATCH_SIZE", batch_size), patch(
             "apps.m3u.tasks.CoreSettings.get_m3u_hash_key", return_value="name"
@@ -137,11 +138,14 @@ class RealBatchWriteFailureTests(TransactionTestCase):
             "apps.m3u.tasks.refresh_m3u_groups",
             return_value=(provider_streams if is_standard else [], {"Sports": group.id}),
         ), patch(
-            "apps.m3u.tasks.collect_xc_streams", return_value=provider_streams
+            "apps.m3u.tasks.collect_xc_streams",
+            return_value=(provider_streams, len(provider_streams)),
         ), patch("apps.m3u.tasks.log_system_event") as mock_log, patch(
             "apps.m3u.tasks.cleanup_stale_group_relationships"
         ) as mock_groups, patch(
-            "apps.m3u.tasks.sync_auto_channels", return_value={"status": "ok"}
+            "apps.m3u.tasks.sync_auto_channels",
+            return_value=auto_sync_result or {"status": "ok"},
+            side_effect=auto_sync_error,
         ) as mock_sync, patch(
             "apps.m3u.tasks.rollup_channel_catchup_fields"
         ) as mock_rollup, patch(
@@ -157,6 +161,32 @@ class RealBatchWriteFailureTests(TransactionTestCase):
             else:
                 _refresh_single_m3u_account_impl(account.id)
         return mock_log, mock_groups, mock_sync
+
+    def test_auto_sync_failure_is_retained_after_successful_live_import(self):
+        account, group = self._setup(M3UAccount.Types.XC)
+        self._refresh(
+            account, group, [self._provider_stream("Ok1", 1)],
+            auto_sync_result={"status": "ok", "channels_failed": 2},
+        )
+        account.refresh_from_db()
+        self.assertEqual(account.status, M3UAccount.Status.SUCCESS)
+        self.assertEqual(
+            account.custom_properties["live_auto_sync_result"]["channels_failed"], 2,
+        )
+
+    def test_auto_sync_exception_is_retained_after_successful_live_import(self):
+        account, group = self._setup(M3UAccount.Types.XC)
+        self._refresh(
+            account, group, [self._provider_stream("Ok1", 1)],
+            auto_sync_error=RuntimeError("Channel update failed"),
+        )
+        account.refresh_from_db()
+        self.assertEqual(account.status, M3UAccount.Status.SUCCESS)
+        self.assertEqual(
+            account.custom_properties["live_auto_sync_result"],
+            {"status": "error", "channels_failed": 0, "error": "Channel update failed"},
+        )
+        self.assertIn("Auto-sync error: Channel update failed", account.last_message)
 
     def _run_failed_batch_scenario(self, account_type, exc, fail_times):
         account, group = self._setup(account_type)
