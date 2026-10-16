@@ -270,6 +270,11 @@ describe('buildUserXcUrls', () => {
       server: origin,
       m3u: `${origin}/get.php?username=testuser&password=secret123`,
       epg: `${origin}/xmltv.php?username=testuser&password=secret123`,
+      details: [
+        `Server: ${origin}`,
+        'Username: testuser',
+        'Password: secret123',
+      ].join('\n'),
     });
   });
 

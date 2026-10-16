@@ -78,5 +78,11 @@ export const buildUserXcUrls = (user, envMode) => {
     server,
     m3u: `${server}/get.php?${credentials}`,
     epg: `${server}/xmltv.php?${credentials}`,
+    // Multi-line blob for XC clients that take server + username + password.
+    details: [
+      `Server: ${server}`,
+      `Username: ${user.username}`,
+      `Password: ${xcPassword}`,
+    ].join('\n'),
   };
 };

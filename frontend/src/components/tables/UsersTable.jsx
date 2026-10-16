@@ -118,16 +118,29 @@ const UserLinksMenu = ({ user, iconSize }) => {
   }
 
   const items = [
-    { label: 'M3U', url: urls.m3u },
-    { label: 'EPG', url: urls.epg },
-    { label: 'XC Server', url: urls.server },
+    {
+      label: 'M3U',
+      value: urls.m3u,
+      successTitle: 'M3U URL Copied!',
+      successMessage: 'The M3U URL has been copied to your clipboard.',
+    },
+    {
+      label: 'EPG',
+      value: urls.epg,
+      successTitle: 'EPG URL Copied!',
+      successMessage: 'The EPG URL has been copied to your clipboard.',
+    },
+    {
+      label: 'XC Details',
+      value: urls.details,
+      successTitle: 'XC Details Copied!',
+      successMessage:
+        'Server, username, and XC password have been copied to your clipboard.',
+    },
   ];
 
-  const copyUrl = async (label, url) => {
-    await copyToClipboard(url, {
-      successTitle: `${label} URL Copied!`,
-      successMessage: `The ${label} URL has been copied to your clipboard.`,
-    });
+  const copyItem = async ({ value, successTitle, successMessage }) => {
+    await copyToClipboard(value, { successTitle, successMessage });
   };
 
   return menuOpened ? (
@@ -140,13 +153,13 @@ const UserLinksMenu = ({ user, iconSize }) => {
 
       <MenuDropdown>
         <MenuLabel>Xtream URLs</MenuLabel>
-        {items.map(({ label, url }) => (
+        {items.map((item) => (
           <MenuItem
-            key={label}
+            key={item.label}
             leftSection={<Copy size="14" />}
-            onClick={() => copyUrl(label, url)}
+            onClick={() => copyItem(item)}
           >
-            <Text size="xs">{label}</Text>
+            <Text size="xs">{item.label}</Text>
           </MenuItem>
         ))}
       </MenuDropdown>
