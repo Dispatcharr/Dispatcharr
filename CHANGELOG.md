@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `channel_profile_id` on the channel list and EPG grid is honored only for a profile the user is assigned to, and `show_disabled` no longer lists channels beyond the user's profiles.
   - A DVR manager (a Standard user with `dvr_access=manage`) can no longer list, play, stop, delete, or schedule recordings, or create recurring rules, on channels they cannot access. Create and update reject inaccessible channel ids, and bulk delete of upcoming recordings only removes recordings they can see. Previously managers could do all of this on any channel id, including admin-only and adult channels.
   - `GET /api/epg/programs/search/` now also respects assigned channel profiles, and each result only lists channels the user can access.
+- Updated frontend npm dependencies to resolve 3 audit vulnerabilities (1 moderate, 2 high):
+  - Updated `brace-expansion` 5.0.9 → 5.0.12, resolving **high** DoS via uncontrolled recursion on nested brace groups ([GHSA-qhr7-859c-m2p7](https://github.com/advisories/GHSA-qhr7-859c-m2p7)) and in `parseCommaParts` ([GHSA-6j4f-fj2g-mc7p](https://github.com/advisories/GHSA-6j4f-fj2g-mc7p)), plus **moderate** quadratic-time expansion of the `{a},b}` rewrite ([GHSA-q2hr-2g5m-vwhr](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr))
+  - Updated `js-yaml` 5.2.2 → 5.5.0, resolving **moderate** unbounded CPU for empty merge sources despite `maxTotalMergeKeys` ([GHSA-r3ph-w7gj-g6xm](https://github.com/advisories/GHSA-r3ph-w7gj-g6xm))
+  - Updated `source-map-js` 1.2.1 → 1.2.2, resolving **high** event-loop denial of service via indexed source-map section offsets ([GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q))
 
 ## [0.32.0] - 2026-10-07
 
