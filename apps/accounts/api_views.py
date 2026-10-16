@@ -1,15 +1,33 @@
 from django.contrib.auth import authenticate, login, logout
 import logging
 from django.contrib.auth.models import Group, Permission
+from django.db import transaction
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework import viewsets, status, serializers
+from rest_framework.parsers import JSONParser
+from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 import json
 import secrets
+from .app_data import (
+    APP_DATA_MAX_CONTENT_LENGTH,
+    CODE_BODY_TOO_LARGE,
+    CODE_FORBIDDEN,
+    CODE_INVALID_CONTENT_LENGTH,
+    CODE_KEY_NOT_FOUND,
+    CODE_USER_NOT_FOUND,
+    CODE_VALUE_TOO_DEEP,
+    AppDataError,
+    app_data_error_body,
+    check_put_fits,
+    summarize_app_data,
+    validate_app_data_key,
+    validate_app_data_value,
+)
 from .permissions import IsAdmin, Authenticated
 from .throttling import (
     LoginRateThrottle,
@@ -30,6 +48,8 @@ from .serializers import (
     GroupSerializer,
     PermissionSerializer,
     ProxyLoginResponseSerializer,
+    AppDataListResponseSerializer,
+    AppDataDetailErrorSerializer,
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -531,6 +551,312 @@ class APIKeyViewSet(viewsets.ViewSet):
         target_user.save(update_fields=["api_key"])
 
         return Response({"success": True})
+
+
+class UserAppDataMixin:
+    """Shared auth and storage helpers for per-app user JSON blobs.
+
+    Keys are namespaces chosen by the client app (not secrets). Any credential
+    for that user can read every key. Values are replace-only PUT of a JSON
+    object, size-capped so a glitchy client cannot bloat the database.
+    """
+
+    permission_classes = [Authenticated]
+    # JSON only. A form or multipart body would arrive as a QueryDict and be
+    # stored as lists of strings, which is never what an app meant to save.
+    parser_classes = [JSONParser]
+
+    def _resolve_target_user(self, request, user_id=None):
+        if user_id is None:
+            return request.user
+        if request.user.pk == user_id:
+            return request.user
+        if not IsAdmin().has_permission(request, self):
+            return Response(
+                app_data_error_body(
+                    "Not allowed to access app data for other users.",
+                    CODE_FORBIDDEN,
+                ),
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            return User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response(
+                app_data_error_body("User not found.", CODE_USER_NOT_FOUND),
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    def _read_app_data(self, user_pk):
+        app_data = (
+            User.objects.defer(None)
+            .filter(pk=user_pk)
+            .values_list("app_data", flat=True)
+            .first()
+        )
+        return app_data or {}
+
+    def _load_app_data_user(self, pk):
+        # Clear the default defer("app_data") so this path can read/write the blob.
+        return User.objects.defer(None).select_for_update().get(pk=pk)
+
+    def _app_data_error_response(self, exc):
+        return Response(exc.as_response_data(), status=exc.status_code)
+
+    def _user_not_found_response(self):
+        return Response(
+            app_data_error_body("User not found.", CODE_USER_NOT_FOUND),
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    def _reject_oversized_body(self, request):
+        raw = request.META.get("CONTENT_LENGTH")
+        if raw in (None, ""):
+            # Safe to let through: DRF treats a missing length as an empty body
+            # and never reads the stream, so nothing large can be parsed.
+            return None
+        try:
+            content_length = int(raw)
+        except (TypeError, ValueError):
+            return Response(
+                app_data_error_body(
+                    "Invalid Content-Length header.",
+                    CODE_INVALID_CONTENT_LENGTH,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if content_length < 0:
+            return Response(
+                app_data_error_body(
+                    "Invalid Content-Length header.",
+                    CODE_INVALID_CONTENT_LENGTH,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if content_length > APP_DATA_MAX_CONTENT_LENGTH:
+            return Response(
+                app_data_error_body(
+                    (
+                        f"Request body exceeds maximum of "
+                        f"{APP_DATA_MAX_CONTENT_LENGTH} bytes."
+                    ),
+                    CODE_BODY_TOO_LARGE,
+                ),
+                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+        return None
+
+
+_APP_DATA_KEY_PARAM = OpenApiParameter(
+    name="key",
+    type=OpenApiTypes.STR,
+    location=OpenApiParameter.PATH,
+    required=True,
+    description=(
+        "App namespace: 8 to 64 characters matching "
+        "[A-Za-z0-9][A-Za-z0-9._-]* (must start with a letter or digit). "
+        "A typical reverse-DNS style key is fine, for example "
+        "com.example.tvremote. Keys are namespaces, not secrets."
+    ),
+)
+
+
+class UserAppDataCollectionView(UserAppDataMixin, APIView):
+    """List keys/sizes or clear all app data for a user (no values, no PUT)."""
+
+    @extend_schema(
+        summary="List app data keys",
+        description=(
+            "Return the app namespaces stored for the user with per-key byte "
+            "sizes and the current limits. Values are never included.\n\n"
+            "Use `/api/accounts/users/me/app-data/` for the authenticated user "
+            "(including streamers), or `/api/accounts/users/{user_id}/app-data/` "
+            "as an admin for another user (owners may also use their own id).\n\n"
+            "Caps: 32 KiB per app, 128 KiB and 25 apps per user, nesting depth 8."
+        ),
+        responses={
+            200: AppDataListResponseSerializer,
+            403: AppDataDetailErrorSerializer,
+            404: AppDataDetailErrorSerializer,
+        },
+    )
+    def get(self, request, user_id=None):
+        target = self._resolve_target_user(request, user_id=user_id)
+        if isinstance(target, Response):
+            return target
+        return Response(summarize_app_data(self._read_app_data(target.pk)))
+
+    @extend_schema(
+        summary="Clear all app data",
+        description=(
+            "Delete every app namespace stored for the user. Idempotent when "
+            "nothing is stored. Owner or admin only."
+        ),
+        responses={
+            204: OpenApiTypes.NONE,
+            403: AppDataDetailErrorSerializer,
+            404: AppDataDetailErrorSerializer,
+        },
+    )
+    def delete(self, request, user_id=None):
+        target = self._resolve_target_user(request, user_id=user_id)
+        if isinstance(target, Response):
+            return target
+
+        try:
+            with transaction.atomic():
+                user = self._load_app_data_user(target.pk)
+                current = dict(user.app_data or {})
+                if not current:
+                    return Response(status=status.HTTP_204_NO_CONTENT)
+                user.app_data = {}
+                user.save(update_fields=["app_data"])
+        except User.DoesNotExist:
+            return self._user_not_found_response()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class UserAppDataKeyView(UserAppDataMixin, APIView):
+    """Get, replace, or clear one app's JSON object under a key."""
+
+    @extend_schema(
+        summary="Get one app's stored JSON object",
+        description=(
+            "Return the JSON object stored under the given app key. "
+            "Owner or admin only. Missing keys return 404 with "
+            "`code=key_not_found`."
+        ),
+        parameters=[_APP_DATA_KEY_PARAM],
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: AppDataDetailErrorSerializer,
+            403: AppDataDetailErrorSerializer,
+            404: AppDataDetailErrorSerializer,
+        },
+    )
+    def get(self, request, key, user_id=None):
+        target = self._resolve_target_user(request, user_id=user_id)
+        if isinstance(target, Response):
+            return target
+
+        try:
+            validate_app_data_key(key)
+        except AppDataError as exc:
+            return self._app_data_error_response(exc)
+        app_data = self._read_app_data(target.pk)
+        if key not in app_data:
+            return Response(
+                app_data_error_body(
+                    "App data not found for this key.",
+                    CODE_KEY_NOT_FOUND,
+                ),
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(app_data[key])
+
+    @extend_schema(
+        summary="Replace one app's stored JSON object",
+        description=(
+            "Replace the JSON object stored under the given app key. "
+            "Request body must be a JSON object (not an array or scalar). "
+            "Caps: 32 KiB per app, 128 KiB and 25 apps per user, nesting "
+            "depth 8. Owner or admin only.\n\n"
+            "Error `code` values include `value_too_large` (413), "
+            "`total_too_large` (413), `max_apps` (409), `key_invalid` (400), "
+            "and `value_not_object` (400)."
+        ),
+        parameters=[_APP_DATA_KEY_PARAM],
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: AppDataDetailErrorSerializer,
+            403: AppDataDetailErrorSerializer,
+            404: AppDataDetailErrorSerializer,
+            409: AppDataDetailErrorSerializer,
+            413: AppDataDetailErrorSerializer,
+        },
+    )
+    def put(self, request, key, user_id=None):
+        oversized = self._reject_oversized_body(request)
+        if oversized is not None:
+            return oversized
+
+        target = self._resolve_target_user(request, user_id=user_id)
+        if isinstance(target, Response):
+            return target
+
+        try:
+            validate_app_data_key(key)
+            try:
+                value = request.data
+            except RecursionError:
+                # The JSON parser itself gave up on absurdly nested input.
+                raise AppDataError(
+                    "App data value is nested too deeply",
+                    code=CODE_VALUE_TOO_DEEP,
+                )
+            new_size = validate_app_data_value(value)
+        except AppDataError as exc:
+            return self._app_data_error_response(exc)
+
+        try:
+            with transaction.atomic():
+                user = self._load_app_data_user(target.pk)
+                current = dict(user.app_data or {})
+                # Apps often re-PUT their settings unchanged on every launch;
+                # skip the write (and its WAL/TOAST churn) when nothing differs.
+                if current.get(key) != value:
+                    check_put_fits(current, key, new_size)
+                    current[key] = value
+                    user.app_data = current
+                    user.save(update_fields=["app_data"])
+        except AppDataError as exc:
+            return self._app_data_error_response(exc)
+        except User.DoesNotExist:
+            return self._user_not_found_response()
+
+        return Response(value)
+
+    @extend_schema(
+        summary="Clear one app's stored JSON object",
+        description=(
+            "Delete the JSON object stored under the given app key. "
+            "Idempotent: a missing key still returns 204 (not 404). "
+            "404 with `code=user_not_found` is only for an unknown "
+            "`user_id` on the admin path. Owner or admin only."
+        ),
+        parameters=[_APP_DATA_KEY_PARAM],
+        responses={
+            204: OpenApiTypes.NONE,
+            400: AppDataDetailErrorSerializer,
+            403: AppDataDetailErrorSerializer,
+            404: AppDataDetailErrorSerializer,
+        },
+    )
+    def delete(self, request, key, user_id=None):
+        target = self._resolve_target_user(request, user_id=user_id)
+        if isinstance(target, Response):
+            return target
+
+        try:
+            validate_app_data_key(key)
+        except AppDataError as exc:
+            return self._app_data_error_response(exc)
+
+        try:
+            with transaction.atomic():
+                user = self._load_app_data_user(target.pk)
+                current = dict(user.app_data or {})
+                if key not in current:
+                    return Response(status=status.HTTP_204_NO_CONTENT)
+                current.pop(key, None)
+                user.app_data = current
+                user.save(update_fields=["app_data"])
+        except User.DoesNotExist:
+            return self._user_not_found_response()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # 🔹 4) Permissions List API
