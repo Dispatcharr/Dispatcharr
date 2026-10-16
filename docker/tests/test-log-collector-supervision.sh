@@ -156,22 +156,30 @@ run_two_failures() {
 OUT="$(run_two_failures)"
 contains "restarts after a failure" "log collector exited abnormally; restarting" "$OUT"
 contains "recovers on the third attempt" "attempts=3" "$OUT"
-absent "does not degrade after two failures" "falling back to passthrough" "$OUT"
+absent "does not degrade after two failures" "falling back" "$OUT"
 
 # The timeout is an assertion: a supervisor that never degrades restarts
 # forever, so a timeout here is a failure, not a flake.
 OUT="$(timeout 5 bash "$SCRIPT_DIR/_supervisor_case.sh" "$INIT_SCRIPT" always-fails 2>&1)"
 DEGRADE_RC=$?
 check "degradation terminates rather than restarting forever" "0" "$DEGRADE_RC"
-contains "degrades after three rapid failures" "falling back to passthrough" "$OUT"
-contains "passthrough carries stdin to stdout" "a line the collector never saw" "$OUT"
+contains "degrades after three rapid failures" "falling back to masked passthrough" "$OUT"
+contains "the passthrough masks what it carries" "never saw: password=[password]" "$OUT"
+absent "a working masked passthrough is not replaced by cat" "unmasked" "$OUT"
+contains "the masked passthrough returns at end of stream" "supervisor returned" "$OUT"
+
+# docker logs outranks masking: with no Python at all, cat still carries the stream.
+OUT="$(timeout 5 bash "$SCRIPT_DIR/_supervisor_case.sh" "$INIT_SCRIPT" masking-fails 2>&1)"
+check "an unusable masked passthrough still terminates" "0" "$?"
+contains "falls back to cat when masking cannot start" "falling back to unmasked passthrough" "$OUT"
+contains "cat carries stdin to stdout" "a line nothing could mask" "$OUT"
 
 # Capped for the same reason: if the counter stops resetting this degrades,
 # and a degraded supervisor replaces itself with cat.
 OUT="$(timeout 5 bash "$SCRIPT_DIR/_supervisor_case.sh" "$INIT_SCRIPT" slow-failures 2>&1)"
 SLOW_RC=$?
 check "a long-lived collector is restarted, not degraded" "0" "$SLOW_RC"
-absent "long-lived failures never degrade" "falling back to passthrough" "$OUT"
+absent "long-lived failures never degrade" "falling back" "$OUT"
 contains "keeps restarting a long-lived collector" "attempts=6" "$OUT"
 
 ###############################################################################
