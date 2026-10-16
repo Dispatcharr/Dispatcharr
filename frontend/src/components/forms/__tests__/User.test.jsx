@@ -12,6 +12,7 @@ vi.mock('../../../store/channels', () => ({ default: vi.fn() }));
 vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
 vi.mock('../../../store/playlists', () => ({ default: vi.fn() }));
 vi.mock('../../../store/auth', () => ({ default: vi.fn() }));
+vi.mock('../../../store/settings', () => ({ default: vi.fn() }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../utils', () => ({ copyToClipboard: vi.fn() }));
@@ -25,6 +26,14 @@ vi.mock('../../../utils/forms/UserUtils.js', () => ({
   getFormInitialValues: vi.fn(() => ({})),
   getFormValidators: vi.fn(() => ({})),
   userToFormValues: vi.fn(() => ({})),
+}));
+
+vi.mock('../../../images/logo.png', () => ({
+  default: 'dispatcharr-logo.png',
+}));
+
+vi.mock('qrcode.react', () => ({
+  QRCodeSVG: ({ value }) => <div data-testid="api-key-qr" data-value={value} />,
 }));
 
 // ── Mantine form ───────────────────────────────────────────────────────────────
@@ -50,14 +59,20 @@ vi.mock('@mantine/form', () => ({
 vi.mock('lucide-react', () => ({
   Copy: () => <svg data-testid="icon-copy" />,
   Key: () => <svg data-testid="icon-key" />,
+  QrCode: () => <svg data-testid="icon-qr-code" />,
   RotateCcwKey: () => <svg data-testid="icon-rotate-ccw-key" />,
   X: () => <svg data-testid="icon-x" />,
 }));
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, disabled }) => (
-    <button data-testid="action-icon" onClick={onClick} disabled={disabled}>
+  ActionIcon: ({ children, onClick, disabled, 'aria-label': ariaLabel }) => (
+    <button
+      data-testid="action-icon"
+      aria-label={ariaLabel}
+      onClick={onClick}
+      disabled={disabled}
+    >
       {children}
     </button>
   ),
@@ -109,6 +124,17 @@ vi.mock('@mantine/core', () => ({
       <input type="password" disabled={disabled} />
     </div>
   ),
+  Popover: ({ children, opened }) => (
+    <div data-testid="popover" data-opened={String(!!opened)}>
+      {children}
+    </div>
+  ),
+  PopoverDropdown: ({ children }) => (
+    <div data-testid="popover-dropdown">{children}</div>
+  ),
+  PopoverTarget: ({ children }) => (
+    <div data-testid="popover-target">{children}</div>
+  ),
   Select: ({ label, disabled }) => (
     <div>
       <label>{label}</label>
@@ -158,6 +184,7 @@ import useChannelsStore from '../../../store/channels';
 import useOutputProfilesStore from '../../../store/outputProfiles';
 import usePlaylistsStore from '../../../store/playlists';
 import useAuthStore from '../../../store/auth';
+import useSettingsStore from '../../../store/settings';
 import * as UserUtils from '../../../utils/forms/UserUtils.js';
 import { copyToClipboard } from '../../../utils';
 import User from '../User';
@@ -196,6 +223,14 @@ const setupMocks = ({
   );
   vi.mocked(useAuthStore).mockImplementation((sel) =>
     sel({ user: authUser, setUser: mockSetUser })
+  );
+  vi.mocked(useSettingsStore).mockImplementation((sel) =>
+    sel({
+      environment: { env_mode: 'aio' },
+      settings: {
+        epg_settings: { value: { epg_history_max_days: 30 } },
+      },
+    })
   );
 
   // Reset form state
@@ -745,13 +780,88 @@ describe('User', () => {
         />
       );
 
-      const copyButton = screen.getByTestId('icon-copy').closest('button');
-      fireEvent.click(copyButton);
+      fireEvent.click(screen.getByLabelText('Copy API key'));
 
       expect(copyToClipboard).toHaveBeenCalledWith(
         'copy-me',
         expect.objectContaining({ successTitle: 'API Key Copied!' })
       );
+    });
+  });
+
+  // ── API key QR code ──────────────────────────────────────────────────────────
+
+  // Payload contents and rendering are covered in ApiKeyQrPopover.test.jsx;
+  // this only checks how the control is wired into the form.
+  describe('API key QR code', () => {
+    it('places the QR button left of copy and opens a code for the key', () => {
+      setupMocks({ authUser: makeAdminUser() });
+      render(
+        <User
+          isOpen={true}
+          onClose={vi.fn()}
+          user={makeRegularUser({
+            id: 2,
+            api_key: 'scan-me',
+            username: 'user1',
+          })}
+        />
+      );
+
+      const qrButton = screen.getByLabelText('Show API key QR code');
+      const copyButton = screen.getByLabelText('Copy API key');
+      expect(
+        qrButton.compareDocumentPosition(copyButton) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      expect(screen.queryByTestId('api-key-qr')).not.toBeInTheDocument();
+
+      fireEvent.click(qrButton);
+
+      const payload = JSON.parse(
+        screen.getByTestId('api-key-qr').getAttribute('data-value')
+      );
+      expect(payload).toMatchObject({
+        type: 'user_api_key',
+        api_key: 'scan-me',
+        username: 'user1',
+      });
+    });
+
+    it('offers no QR button when the user has no API key', () => {
+      setupMocks({ authUser: makeAdminUser() });
+      render(
+        <User
+          isOpen={true}
+          onClose={vi.fn()}
+          user={makeRegularUser({ id: 2, api_key: null })}
+        />
+      );
+
+      expect(
+        screen.queryByLabelText('Show API key QR code')
+      ).not.toBeInTheDocument();
+    });
+
+    it('removes the QR button when the key is revoked', async () => {
+      setupMocks({ authUser: makeAdminUser() });
+      render(
+        <User
+          isOpen={true}
+          onClose={vi.fn()}
+          user={makeRegularUser({ id: 2, api_key: 'scan-me' })}
+        />
+      );
+
+      fireEvent.click(screen.getByLabelText('Show API key QR code'));
+      fireEvent.click(screen.getByText('Revoke API Key'));
+
+      await waitFor(() => {
+        expect(
+          screen.queryByLabelText('Show API key QR code')
+        ).not.toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('api-key-qr')).not.toBeInTheDocument();
     });
   });
 

@@ -39,6 +39,7 @@ import {
   updateUser,
   userToFormValues,
 } from '../../utils/forms/UserUtils.js';
+import ApiKeyQrPopover from './ApiKeyQrPopover';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -544,21 +545,27 @@ const User = ({ user = null, isOpen, onClose }) => {
                       label="API Key"
                       disabled={true}
                       value={userAPIKey}
+                      rightSectionWidth={56}
+                      rightSectionPointerEvents="auto"
                       rightSection={
-                        <ActionIcon
-                          variant="transparent"
-                          size="sm"
-                          color="white"
-                          onClick={() =>
-                            copyToClipboard(userAPIKey, {
-                              successTitle: 'API Key Copied!',
-                              successMessage:
-                                'The API Key has been copied to your clipboard.',
-                            })
-                          }
-                        >
-                          <Copy />
-                        </ActionIcon>
+                        <Group gap={4} wrap="nowrap">
+                          <ApiKeyQrPopover apiKey={userAPIKey} user={user} />
+                          <ActionIcon
+                            variant="transparent"
+                            size="sm"
+                            color="white"
+                            aria-label="Copy API key"
+                            onClick={() =>
+                              copyToClipboard(userAPIKey, {
+                                successTitle: 'API Key Copied!',
+                                successMessage:
+                                  'The API Key has been copied to your clipboard.',
+                              })
+                            }
+                          >
+                            <Copy />
+                          </ActionIcon>
+                        </Group>
                       }
                     />
                   )}

@@ -30,6 +30,7 @@
     "hls.js": "^1.5.20",
     "lucide-react": "^0.511.0",
     "mpegts.js": "^1.8.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-draggable": "^4.4.6",
