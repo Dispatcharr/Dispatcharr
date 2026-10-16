@@ -3518,6 +3518,43 @@ export default class API {
     });
   }
 
+  static _userAppDataPath(userId, key = null) {
+    const base =
+      userId == null || userId === 'me'
+        ? `${host}/api/accounts/users/me/app-data/`
+        : `${host}/api/accounts/users/${userId}/app-data/`;
+    if (!key) {
+      return base;
+    }
+    return `${base}${encodeURIComponent(key)}/`;
+  }
+
+  static async getUserAppData(userId) {
+    try {
+      return await request(API._userAppDataPath(userId));
+    } catch (e) {
+      errorNotification('Failed to fetch app data', e);
+    }
+  }
+
+  static async getUserAppDataValue(userId, key) {
+    try {
+      return await request(API._userAppDataPath(userId, key));
+    } catch (e) {
+      errorNotification('Failed to fetch app data', e);
+    }
+  }
+
+  static async clearUserAppData(userId, key = null) {
+    try {
+      return await request(API._userAppDataPath(userId, key), {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to clear app data', e);
+    }
+  }
+
   static async getUsers() {
     try {
       const response = await request(`${host}/api/accounts/users/`);

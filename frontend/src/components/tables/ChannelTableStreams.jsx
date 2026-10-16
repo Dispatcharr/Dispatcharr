@@ -229,7 +229,7 @@ const StreamInfoCell = React.memo(
                 <ActionIcon
                   size="xs"
                   color="blue"
-                  variant="light"
+                  variant="transparent"
                   onClick={() =>
                     handleWatchStream(
                       stream.stream_hash || stream.id,
