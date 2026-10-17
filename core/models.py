@@ -938,6 +938,7 @@ class SystemEvent(models.Model):
         ('recording_start', 'Recording Started'),
         ('recording_end', 'Recording Ended'),
         ('stream_switch', 'Stream Switched'),
+        ('channels_updated', 'Channels Updated'),
         ('m3u_refresh', 'M3U Refreshed'),
         ('m3u_download', 'M3U Downloaded'),
         ('m3u_error', 'M3U Error'),
