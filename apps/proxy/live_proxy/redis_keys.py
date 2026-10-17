@@ -144,6 +144,11 @@ class RedisKeys:
         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
 
     @staticmethod
+    def output_discontinuities(channel_id, fmt):
+        """Sorted set of output chunk indices where the source switched (score == member)."""
+        return f"live:channel:{channel_id}:output:{fmt}:buffer:discontinuities"
+
+    @staticmethod
     def hls_session(token):
         """Opaque HLS capability URL: maps token to channel_id + client_id."""
         return f"live:hls:session:{token}"

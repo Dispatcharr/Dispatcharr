@@ -199,7 +199,8 @@ class FMP4StreamGenerator:
         # Build a local OutputStreamBuffer reader (shares Redis keyspace, no local state)
         from core.utils import RedisClient
         self.fmp4_buffer = OutputStreamBuffer(
-            self.channel_id, redis_client=RedisClient.get_buffer(), fmt=self.fmt
+            self.channel_id, redis_client=RedisClient.get_buffer(), fmt=self.fmt,
+            discontinuities_key=RedisKeys.output_discontinuities(self.channel_id, self.fmt),
         )
 
         # Determine start position
@@ -267,11 +268,20 @@ class FMP4StreamGenerator:
 
             if chunks:
                 self.consecutive_empty = 0
+                resume_at = None
                 for chunk in chunks:
                     yield chunk
                     self.bytes_sent += len(chunk)
                     self.chunks_sent += 1
-                self.local_index = new_index
+                    # A switch after the read: the rest of the batch is the old source.
+                    resume_at = self.fmp4_buffer.switch_marks.skip_after(new_index - 1)
+                    if resume_at is not None:
+                        logger.info(
+                            f"[{self.client_id}] Source switch on channel {self.channel_id}: "
+                            f"dropping the rest of the batch, resuming at index {resume_at}"
+                        )
+                        break
+                self.local_index = new_index if resume_at is None else resume_at
                 self.last_yield_time = time.time()
 
                 # Update last_active in Redis so ghost detection doesn't fire
