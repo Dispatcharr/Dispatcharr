@@ -2241,12 +2241,18 @@ class ProxyServer:
 
                     # Get owner
                     owner = metadata.get('owner', '') if 'owner' in metadata else ''
+                    if not owner:
+                        # Initial metadata ({stream_id, temp_init}) is written before
+                        # its owner field, so a channel mid-initialization has no owner
+                        # here. The ownership lock is taken first and is authoritative.
+                        owner = self.get_channel_owner(channel_id) or ''
 
-                    # Check if owner is still alive
+                    # Check if owner is still alive (a worker never treats its own
+                    # in-flight channel as stale, as in check_if_channel_exists)
                     owner_alive = False
                     if owner:
                         owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
-                        owner_alive = self.redis_client.exists(owner_heartbeat_key)
+                        owner_alive = owner == self.worker_id or self.redis_client.exists(owner_heartbeat_key)
 
                     # Check client count
                     client_set_key = RedisKeys.clients(channel_id)
