@@ -830,6 +830,11 @@ class RecordingSerializer(serializers.ModelSerializer):
         }
     )
 
+    # Attribution only -- who currently owns this recording, if anyone (a
+    # recording created before ownership tracking existed has no owner).
+    # Set via RecordingViewSet.create(), never client-writable.
+    owner = serializers.SerializerMethodField()
+
     class Meta:
         model = Recording
         fields = "__all__"
@@ -838,6 +843,12 @@ class RecordingSerializer(serializers.ModelSerializer):
     def validate_channel(self, channel):
         _require_accessible_channel(self.context, channel)
         return channel
+
+    def get_owner(self, obj):
+        owner = getattr(obj, "owner", None)
+        if owner is None:
+            return None
+        return {"id": owner.id, "username": owner.username}
 
     def validate_custom_properties(self, value):
         if value is None:
