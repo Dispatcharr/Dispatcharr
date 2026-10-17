@@ -1242,6 +1242,20 @@ def extract_duration_from_data(movie_data):
     return duration_secs
 
 
+def normalize_duration_secs(value):
+    """Return non-negative integer seconds that fit a PostgreSQL IntegerField."""
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, float) and value != seconds:
+        return None
+    # Bad provider metadata must not abort a whole bulk insert/update.
+    return seconds if 0 <= seconds <= 2147483647 else None
+
+
 def normalize_rating(rating_value):
     """Normalize rating value by converting commas to decimals and validating as float"""
     if not rating_value:
@@ -1538,7 +1552,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             description = info.get('plot') or info.get('overview', '') if info else ''
             rating = normalize_rating(info.get('rating')) if info else None
             air_date = extract_date_from_data(info) if info else None
-            duration_secs = info.get('duration_secs') if info else None
+            duration_secs = normalize_duration_secs(info.get('duration_secs')) if info else None
             tmdb_id = info.get('tmdb_id') if info else None
             imdb_id = info.get('imdb_id') if info else None
 
