@@ -995,13 +995,13 @@ class Channel(models.Model):
                   no stream/profile info could be found for cleanup.
         """
         redis_client = RedisClient.get_client()
+        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
 
-        stream_id = redis_client.get(f"channel_stream:{self.id}")
+        stream_id = redis_client.getdel(f"channel_stream:{self.id}")
         if not stream_id:
             # Primary key missing — try metadata hash fallback.
             # The proxy may have already cleaned up channel_stream/stream_profile
             # keys, but the metadata hash can still have the stream_id and profile.
-            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
             meta_stream_id = redis_client.hget(
                 metadata_key, ChannelMetadataField.STREAM_ID
             )
@@ -1020,13 +1020,9 @@ class Channel(models.Model):
                 redis_client.delete(f"channel_stream:{self.id}")
                 redis_client.delete(f"stream_profile:{stream_id}")
 
-                # Clear metadata fields so duplicate release_stream() calls
-                # won't find them and DECR again
-                redis_client.hdel(
-                    metadata_key,
-                    ChannelMetadataField.STREAM_ID,
-                    ChannelMetadataField.M3U_PROFILE,
-                )
+                if not self._claim_metadata_profile(redis_client, metadata_key):
+                    return False
+                redis_client.hdel(metadata_key, ChannelMetadataField.STREAM_ID)
 
                 release_profile_slot(profile_id, redis_client)
                 return True
@@ -1037,55 +1033,52 @@ class Channel(models.Model):
             )
             return False
 
-        redis_client.delete(f"channel_stream:{self.id}")  # Remove active stream
-
         stream_id = int(stream_id)
         logger.debug(
             f"Channel {self.uuid}: found stream_id={stream_id} for "
             f"channel_stream:{self.id}"
         )
 
-        # Get the matched profile for cleanup
-        profile_id = redis_client.get(f"stream_profile:{stream_id}")
+        meta_profile_id = redis_client.hget(
+            metadata_key, ChannelMetadataField.M3U_PROFILE
+        )
+        profile_id = redis_client.getdel(f"stream_profile:{stream_id}")
         if profile_id:
-            redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
             profile_id = int(profile_id)
-        else:
-            # stream_profile key missing — try metadata hash fallback
-            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-            meta_profile_id = redis_client.hget(
-                metadata_key, ChannelMetadataField.M3U_PROFILE
+        elif meta_profile_id:
+            profile_id = int(meta_profile_id)
+            logger.debug(
+                f"Channel {self.uuid}: recovered profile_id={profile_id} "
+                f"from metadata fallback (stream_profile:{stream_id} was missing)"
             )
-            if meta_profile_id:
-                profile_id = int(meta_profile_id)
-                logger.debug(
-                    f"Channel {self.uuid}: recovered profile_id={profile_id} "
-                    f"from metadata fallback (stream_profile:{stream_id} was missing)"
-                )
-            else:
-                logger.warning(
-                    f"Channel {self.uuid}: no profile found for "
-                    f"stream_profile:{stream_id} or in metadata fallback"
-                )
-                return False
+        else:
+            logger.warning(
+                f"Channel {self.uuid}: no profile found for "
+                f"stream_profile:{stream_id} or in metadata fallback"
+            )
+            return False
         logger.debug(
             f"Channel {self.uuid}: found profile_id={profile_id} for "
             f"stream {stream_id}"
         )
 
+        if meta_profile_id and not self._claim_metadata_profile(
+            redis_client, metadata_key
+        ):
+            return False
+        redis_client.hdel(metadata_key, ChannelMetadataField.STREAM_ID)
+
         release_profile_slot(profile_id, redis_client)
-
-        # Clear metadata fields so duplicate release_stream() calls
-        # (e.g. from _clean_redis_keys or ChannelService.stop_channel)
-        # won't find them via fallback and DECR again
-        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-        redis_client.hdel(
-            metadata_key,
-            ChannelMetadataField.STREAM_ID,
-            ChannelMetadataField.M3U_PROFILE,
-        )
-
         return True
+
+    def _claim_metadata_profile(self, redis_client, metadata_key):
+        if redis_client.hdel(metadata_key, ChannelMetadataField.M3U_PROFILE):
+            return True
+        logger.debug(
+            f"Channel {self.uuid}: profile slot already released by a "
+            f"concurrent teardown"
+        )
+        return False
 
     def update_stream_profile(self, new_profile_id):
         """

@@ -2353,11 +2353,13 @@ class ProxyServer:
             if stream_id is not None:
                 self.redis_client.delete(f"stream_profile:{stream_id}")
 
-        self.redis_client.hdel(
-            metadata_key,
-            ChannelMetadataField.STREAM_ID,
-            ChannelMetadataField.M3U_PROFILE,
-        )
+        if not self.redis_client.hdel(metadata_key, ChannelMetadataField.M3U_PROFILE):
+            logger.debug(
+                f"Channel {channel_id}: profile slot already released by a "
+                f"concurrent teardown"
+            )
+            return False
+        self.redis_client.hdel(metadata_key, ChannelMetadataField.STREAM_ID)
         release_profile_slot(profile_id, self.redis_client)
         logger.info(
             f"Released profile slot {profile_id} for deleted channel {channel_id} "
