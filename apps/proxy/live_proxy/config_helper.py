@@ -42,6 +42,27 @@ class ConfigHelper:
         return ConfigHelper.get('INITIAL_BEHIND_CHUNKS', 4)
 
     @staticmethod
+    def initial_chunks_needed(redis_client, channel_id):
+        """Chunks a new channel must buffer before it counts as ready.
+
+        Uses the smaller audio-only threshold once FFmpeg has reported the
+        current stream as audio without video (see StreamManager).
+        """
+        from .constants import ChannelMetadataField
+        from .redis_keys import RedisKeys
+
+        needed = ConfigHelper.initial_behind_chunks()
+        try:
+            flag = redis_client.hget(
+                RedisKeys.channel_metadata(channel_id), ChannelMetadataField.AUDIO_ONLY
+            )
+        except Exception:
+            return needed
+        if flag in (b"1", "1"):
+            return min(needed, ConfigHelper.get('AUDIO_ONLY_INITIAL_BEHIND_CHUNKS', 2))
+        return needed
+
+    @staticmethod
     def new_client_behind_seconds():
         """Get number of seconds behind live to start new clients.
         0 means start at live (buffer head).
