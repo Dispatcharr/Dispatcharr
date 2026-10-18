@@ -72,30 +72,6 @@ class UserMeAdminOnlyPropsTests(TestCase):
         self.user.refresh_from_db()
         self.assertNotIn("xc_password", self.user.custom_properties or {})
 
-    def test_cannot_enable_client_refresh_via_me(self):
-        response = self.client.patch(
-            self.url,
-            {"custom_properties": {"xc_live_refresh_on_request": True}},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-        self.user.refresh_from_db()
-        self.assertIsNot(self.user.custom_properties.get("xc_live_refresh_on_request"), True)
-
-    def test_cannot_change_client_wait_settings_via_me(self):
-        response = self.client.patch(
-            self.url,
-            {"custom_properties": {
-                "xc_live_refresh_wait_for_completion": True,
-                "xc_live_refresh_wait_timeout_seconds": 60,
-            }},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-        self.user.refresh_from_db()
-        self.assertNotIn("xc_live_refresh_wait_for_completion", self.user.custom_properties)
-        self.assertNotIn("xc_live_refresh_wait_timeout_seconds", self.user.custom_properties)
-
     def test_cannot_change_user_level_via_me(self):
         response = self.client.patch(
             self.url,

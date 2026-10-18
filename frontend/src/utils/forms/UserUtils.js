@@ -88,7 +88,6 @@ export const userToFormValues = (user) => {
     catchup_enabled: customProps.catchup_enabled !== false,
     vod_movies_enabled: customProps.vod_movies_enabled !== false,
     vod_series_enabled: customProps.vod_series_enabled !== false,
-    xc_live_refresh_on_request: customProps.xc_live_refresh_on_request === true,
     dvr_access:
       customProps.dvr_access === DVR_ACCESS.NONE ||
       customProps.dvr_access === DVR_ACCESS.VIEW ||
@@ -155,19 +154,6 @@ export const formValuesToPayload = (values, existingUser) => {
   customProps.vod_series_enabled = payload.vod_series_enabled !== false;
   delete payload.vod_series_enabled;
 
-  customProps.xc_live_refresh_on_request =
-    payload.xc_live_refresh_on_request === true;
-  delete payload.xc_live_refresh_on_request;
-
-  for (const key of [
-    'xc_live_refresh_request_interval_minutes',
-    'xc_live_refresh_wait_for_completion',
-    'xc_live_refresh_wait_timeout_seconds',
-  ]) {
-    delete customProps[key];
-    delete payload[key];
-  }
-
   // DVR is a single access level for standard users and admins. Streamers
   // have no DVR surface (unlike catchup/VOD via XC), so force none.
   // Coerce with == so string form values ('0') match numeric USER_LEVELS.
@@ -229,7 +215,6 @@ export const getFormInitialValues = () => {
     catchup_enabled: true,
     vod_movies_enabled: true,
     vod_series_enabled: true,
-    xc_live_refresh_on_request: false,
     dvr_access: DVR_ACCESS.VIEW,
     epg_days: '',
     epg_prev_days: '',

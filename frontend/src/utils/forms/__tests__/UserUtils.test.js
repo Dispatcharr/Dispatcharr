@@ -304,80 +304,6 @@ describe('UserUtils', () => {
       expect(result.custom_properties.output_format).toBe('ts');
     });
 
-    it('saves the refresh permission without retired wait settings or a user interval', () => {
-      const result = formValuesToPayload(
-        makeValues({
-          xc_live_refresh_on_request: true,
-          xc_live_refresh_wait_for_completion: true,
-          xc_live_refresh_wait_timeout_seconds: 20,
-        }),
-        null
-      );
-      expect(result.custom_properties.xc_live_refresh_on_request).toBe(true);
-      expect(
-        result.custom_properties.xc_live_refresh_wait_for_completion
-      ).toBeUndefined();
-      expect(
-        result.custom_properties.xc_live_refresh_wait_timeout_seconds
-      ).toBeUndefined();
-      expect(result.xc_live_refresh_wait_for_completion).toBeUndefined();
-      expect(result.xc_live_refresh_wait_timeout_seconds).toBeUndefined();
-      expect(
-        result.custom_properties.xc_live_refresh_request_interval_minutes
-      ).toBeUndefined();
-    });
-
-    it('does not expose retired wait settings in form values', () => {
-      const defaults = userToFormValues({
-        channel_profiles: [],
-        custom_properties: {},
-      });
-      expect(defaults.xc_live_refresh_on_request).toBe(false);
-      expect(defaults.xc_live_refresh_wait_for_completion).toBeUndefined();
-      expect(defaults.xc_live_refresh_wait_timeout_seconds).toBeUndefined();
-      const saved = userToFormValues({
-        channel_profiles: [],
-        custom_properties: {
-          xc_live_refresh_wait_for_completion: true,
-          xc_live_refresh_wait_timeout_seconds: 45,
-        },
-      });
-      expect(saved.xc_live_refresh_wait_for_completion).toBeUndefined();
-      expect(saved.xc_live_refresh_wait_timeout_seconds).toBeUndefined();
-    });
-
-    it('removes retired wait settings copied from an existing user', () => {
-      const result = formValuesToPayload(makeValues(), {
-        custom_properties: {
-          xc_live_refresh_wait_for_completion: true,
-          xc_live_refresh_wait_timeout_seconds: 60,
-          unrelated: 'preserved',
-        },
-      });
-      expect(result.custom_properties.unrelated).toBe('preserved');
-      expect(
-        result.custom_properties.xc_live_refresh_wait_for_completion
-      ).toBeUndefined();
-      expect(
-        result.custom_properties.xc_live_refresh_wait_timeout_seconds
-      ).toBeUndefined();
-    });
-
-    it('keeps the client-refresh permission but removes the retired user interval', () => {
-      const result = formValuesToPayload(
-        makeValues({
-          xc_live_refresh_on_request: true,
-          xc_live_refresh_request_interval_minutes: 55,
-        }),
-        { custom_properties: { xc_live_refresh_request_interval_minutes: 120 } }
-      );
-      expect(result.custom_properties.xc_live_refresh_on_request).toBe(true);
-      expect(
-        result.custom_properties.xc_live_refresh_request_interval_minutes
-      ).toBeUndefined();
-      expect(result.xc_live_refresh_request_interval_minutes).toBeUndefined();
-    });
-
     it('parses output_profile as int in custom_properties', () => {
       const result = formValuesToPayload(makeValues(), null);
       expect(result.output_profile).toBeUndefined();
@@ -604,7 +530,6 @@ describe('UserUtils', () => {
         catchup_enabled: true,
         vod_movies_enabled: true,
         vod_series_enabled: true,
-        xc_live_refresh_on_request: false,
         dvr_access: 'view',
         epg_days: '',
         epg_prev_days: '',
