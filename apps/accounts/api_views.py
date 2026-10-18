@@ -450,9 +450,6 @@ class UserViewSet(viewsets.ModelViewSet):
                 "vod_movies_enabled",
                 "vod_series_enabled",
                 "dvr_access",
-                "xc_live_refresh_on_request",
-                "xc_live_refresh_wait_for_completion",
-                "xc_live_refresh_wait_timeout_seconds",
                 "allowed_m3u_profile_ids",
             }
             cp = request.data.get("custom_properties")
