@@ -1,15 +1,20 @@
-"""Limits and validation for per-app user storage (User.app_data)."""
+"""Limits and storage helpers for per-app user JSON (UserAppData rows)."""
 
 import json
 import re
+
+from django.db import transaction
+from django.db.models import Count, Sum
+
+from .models import User, UserAppData
 
 # App-supplied namespace: 8 to 64 chars, reverse-DNS style is fine.
 APP_DATA_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$")
 APP_DATA_KEY_MIN_LEN = 8
 APP_DATA_KEY_MAX_LEN = 64
 
-APP_DATA_MAX_VALUE_BYTES = 32 * 1024  # 32 KiB per app
-APP_DATA_MAX_TOTAL_BYTES = 128 * 1024  # 128 KiB per user
+APP_DATA_MAX_VALUE_BYTES = 128 * 1024  # 128 KiB per app
+APP_DATA_MAX_TOTAL_BYTES = 1024 * 1024  # 1 MiB per user
 APP_DATA_MAX_APPS = 25
 APP_DATA_MAX_DEPTH = 8
 # Allow a little whitespace beyond the compact stored size before we refuse to parse.
@@ -150,38 +155,98 @@ def validate_app_data_value(value):
     return size
 
 
-def summarize_app_data(app_data):
-    """Build the list response: limits, total size, and per-app key/bytes only."""
-    apps = []
-    total_bytes = 0
-    for key, value in (app_data or {}).items():
-        size = json_byte_size(value)
-        apps.append({"key": key, "bytes": size})
-        total_bytes += size
-    apps.sort(key=lambda item: item["key"])
+def _entries():
+    return UserAppData.objects
+
+
+def get_app_data_value(user_pk, key):
+    """Return the JSON object for one key, or None if missing."""
+    return (
+        _entries()
+        .filter(user_id=user_pk, key=key)
+        .values_list("value", flat=True)
+        .first()
+    )
+
+
+def summarize_user_app_data(user_pk):
+    """List keys/sizes and totals without loading JSON values."""
+    rows = list(
+        _entries()
+        .filter(user_id=user_pk)
+        .order_by("key")
+        .values("key", "byte_size")
+    )
+    apps = [{"key": row["key"], "bytes": row["byte_size"]} for row in rows]
     return {
         "limits": app_data_limits_payload(),
-        "total_bytes": total_bytes,
+        "total_bytes": sum(row["byte_size"] for row in rows),
         "apps": apps,
     }
 
 
-def check_put_fits(app_data, key, new_size):
-    """Ensure replacing or inserting key keeps the user under total and app caps."""
-    current = app_data or {}
-    total = sum(json_byte_size(v) for v in current.values())
-    if key in current:
-        total -= json_byte_size(current[key])
-    else:
-        if len(current) >= APP_DATA_MAX_APPS:
-            raise AppDataError(
-                f"User already has the maximum of {APP_DATA_MAX_APPS} apps stored",
-                status_code=409,
-                code=CODE_MAX_APPS,
-            )
+def _check_put_fits(user_pk, new_size, existing_byte_size):
+    """Ensure replacing or inserting a key keeps the user under total and app caps."""
+    aggregates = _entries().filter(user_id=user_pk).aggregate(
+        total=Sum("byte_size"),
+        count=Count("id"),
+    )
+    total = aggregates["total"] or 0
+    if existing_byte_size is not None:
+        total -= existing_byte_size
+    elif aggregates["count"] >= APP_DATA_MAX_APPS:
+        raise AppDataError(
+            f"User already has the maximum of {APP_DATA_MAX_APPS} apps stored",
+            status_code=409,
+            code=CODE_MAX_APPS,
+        )
     if total + new_size > APP_DATA_MAX_TOTAL_BYTES:
         raise AppDataError(
             f"App data would exceed maximum total size of {APP_DATA_MAX_TOTAL_BYTES} bytes",
             status_code=413,
             code=CODE_TOTAL_TOO_LARGE,
         )
+
+
+def put_app_data_value(user_pk, key, value, new_size):
+    """Replace one app's JSON. Touches only that row; locks the user for quotas."""
+    with transaction.atomic():
+        # Serialize quota checks across concurrent writers for this user.
+        # NO KEY UPDATE conflicts with other writers here but not with foreign
+        # key checks from unrelated tables that reference the user.
+        User.objects.select_for_update(no_key=True).only("id").get(pk=user_pk)
+        entry = (
+            _entries()
+            .select_for_update()
+            .filter(user_id=user_pk, key=key)
+            .first()
+        )
+        # Apps often re-PUT unchanged settings on launch; skip the write.
+        if entry is not None and entry.value == value:
+            return value
+
+        existing_size = entry.byte_size if entry is not None else None
+        _check_put_fits(user_pk, new_size, existing_size)
+
+        if entry is None:
+            _entries().create(
+                user_id=user_pk,
+                key=key,
+                value=value,
+                byte_size=new_size,
+            )
+        else:
+            entry.value = value
+            entry.byte_size = new_size
+            entry.save(update_fields=["value", "byte_size", "updated_at"])
+    return value
+
+
+def delete_app_data_key(user_pk, key):
+    """Delete one key. Idempotent when missing."""
+    _entries().filter(user_id=user_pk, key=key).delete()
+
+
+def clear_user_app_data(user_pk):
+    """Delete every app key for the user."""
+    _entries().filter(user_id=user_pk).delete()

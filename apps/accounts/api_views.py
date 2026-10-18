@@ -1,7 +1,6 @@
 from django.contrib.auth import authenticate, login, logout
 import logging
 from django.contrib.auth.models import Group, Permission
-from django.db import transaction
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
@@ -23,8 +22,11 @@ from .app_data import (
     CODE_VALUE_TOO_DEEP,
     AppDataError,
     app_data_error_body,
-    check_put_fits,
-    summarize_app_data,
+    clear_user_app_data,
+    delete_app_data_key,
+    get_app_data_value,
+    put_app_data_value,
+    summarize_user_app_data,
     validate_app_data_key,
     validate_app_data_value,
 )
@@ -554,7 +556,7 @@ class APIKeyViewSet(viewsets.ViewSet):
 
 
 class UserAppDataMixin:
-    """Shared auth and storage helpers for per-app user JSON blobs.
+    """Shared auth helpers for per-app user JSON (one DB row per key).
 
     Keys are namespaces chosen by the client app (not secrets). Any credential
     for that user can read every key. Values are replace-only PUT of a JSON
@@ -586,19 +588,6 @@ class UserAppDataMixin:
                 app_data_error_body("User not found.", CODE_USER_NOT_FOUND),
                 status=status.HTTP_404_NOT_FOUND,
             )
-
-    def _read_app_data(self, user_pk):
-        app_data = (
-            User.objects.defer(None)
-            .filter(pk=user_pk)
-            .values_list("app_data", flat=True)
-            .first()
-        )
-        return app_data or {}
-
-    def _load_app_data_user(self, pk):
-        # Clear the default defer("app_data") so this path can read/write the blob.
-        return User.objects.defer(None).select_for_update().get(pk=pk)
 
     def _app_data_error_response(self, exc):
         return Response(exc.as_response_data(), status=exc.status_code)
@@ -672,7 +661,7 @@ class UserAppDataCollectionView(UserAppDataMixin, APIView):
             "Use `/api/accounts/users/me/app-data/` for the authenticated user "
             "(including streamers), or `/api/accounts/users/{user_id}/app-data/` "
             "as an admin for another user (owners may also use their own id).\n\n"
-            "Caps: 32 KiB per app, 128 KiB and 25 apps per user, nesting depth 8."
+            "Caps: 128 KiB per app, 1 MiB and 25 apps per user, nesting depth 8."
         ),
         responses={
             200: AppDataListResponseSerializer,
@@ -684,7 +673,7 @@ class UserAppDataCollectionView(UserAppDataMixin, APIView):
         target = self._resolve_target_user(request, user_id=user_id)
         if isinstance(target, Response):
             return target
-        return Response(summarize_app_data(self._read_app_data(target.pk)))
+        return Response(summarize_user_app_data(target.pk))
 
     @extend_schema(
         summary="Clear all app data",
@@ -703,17 +692,7 @@ class UserAppDataCollectionView(UserAppDataMixin, APIView):
         if isinstance(target, Response):
             return target
 
-        try:
-            with transaction.atomic():
-                user = self._load_app_data_user(target.pk)
-                current = dict(user.app_data or {})
-                if not current:
-                    return Response(status=status.HTTP_204_NO_CONTENT)
-                user.app_data = {}
-                user.save(update_fields=["app_data"])
-        except User.DoesNotExist:
-            return self._user_not_found_response()
-
+        clear_user_app_data(target.pk)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -744,8 +723,8 @@ class UserAppDataKeyView(UserAppDataMixin, APIView):
             validate_app_data_key(key)
         except AppDataError as exc:
             return self._app_data_error_response(exc)
-        app_data = self._read_app_data(target.pk)
-        if key not in app_data:
+        value = get_app_data_value(target.pk, key)
+        if value is None:
             return Response(
                 app_data_error_body(
                     "App data not found for this key.",
@@ -753,14 +732,14 @@ class UserAppDataKeyView(UserAppDataMixin, APIView):
                 ),
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response(app_data[key])
+        return Response(value)
 
     @extend_schema(
         summary="Replace one app's stored JSON object",
         description=(
             "Replace the JSON object stored under the given app key. "
             "Request body must be a JSON object (not an array or scalar). "
-            "Caps: 32 KiB per app, 128 KiB and 25 apps per user, nesting "
+            "Caps: 128 KiB per app, 1 MiB and 25 apps per user, nesting "
             "depth 8. Owner or admin only.\n\n"
             "Error `code` values include `value_too_large` (413), "
             "`total_too_large` (413), `max_apps` (409), `key_invalid` (400), "
@@ -797,20 +776,7 @@ class UserAppDataKeyView(UserAppDataMixin, APIView):
                     code=CODE_VALUE_TOO_DEEP,
                 )
             new_size = validate_app_data_value(value)
-        except AppDataError as exc:
-            return self._app_data_error_response(exc)
-
-        try:
-            with transaction.atomic():
-                user = self._load_app_data_user(target.pk)
-                current = dict(user.app_data or {})
-                # Apps often re-PUT their settings unchanged on every launch;
-                # skip the write (and its WAL/TOAST churn) when nothing differs.
-                if current.get(key) != value:
-                    check_put_fits(current, key, new_size)
-                    current[key] = value
-                    user.app_data = current
-                    user.save(update_fields=["app_data"])
+            put_app_data_value(target.pk, key, value, new_size)
         except AppDataError as exc:
             return self._app_data_error_response(exc)
         except User.DoesNotExist:
@@ -844,18 +810,7 @@ class UserAppDataKeyView(UserAppDataMixin, APIView):
         except AppDataError as exc:
             return self._app_data_error_response(exc)
 
-        try:
-            with transaction.atomic():
-                user = self._load_app_data_user(target.pk)
-                current = dict(user.app_data or {})
-                if key not in current:
-                    return Response(status=status.HTTP_204_NO_CONTENT)
-                current.pop(key, None)
-                user.app_data = current
-                user.save(update_fields=["app_data"])
-        except User.DoesNotExist:
-            return self._user_not_found_response()
-
+        delete_app_data_key(target.pk, key)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

@@ -122,8 +122,8 @@ import UserAppData from '../UserAppData';
 
 const summary = {
   limits: {
-    max_value_bytes: 32768,
-    max_total_bytes: 131072,
+    max_value_bytes: 131072,
+    max_total_bytes: 1048576,
     max_apps: 25,
   },
   total_bytes: 42,

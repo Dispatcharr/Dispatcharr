@@ -302,28 +302,71 @@ class UserAppDataEndpointTests(TestCase):
         )
         self.assertEqual(self.client.get(me_key_url(key)).json(), {"a": 2})
 
-    def test_idempotent_delete_does_not_rewrite_row(self):
-        key = "com.example.gone"
-        self.client.put(me_key_url(key), {"a": 1}, format="json")
-        self.client.delete(me_key_url(key))
+    def test_delete_only_touches_the_target_user_and_key(self):
+        from apps.accounts.models import UserAppData
 
-        with CaptureQueriesContext(connection) as ctx:
-            response = self.client.delete(me_key_url(key))
-        self.assertEqual(response.status_code, 204)
-        self.assertFalse(
-            [q for q in ctx.captured_queries if q["sql"].lstrip().upper().startswith("UPDATE")]
+        gone = "com.example.gone"
+        kept = "com.example.kept"
+        self.client.put(me_key_url(gone), {"a": 1}, format="json")
+        self.client.put(me_key_url(kept), {"b": 2}, format="json")
+        UserAppData.objects.create(
+            user=self.other, key=gone, value={"theirs": True}, byte_size=16
         )
 
-        with CaptureQueriesContext(connection) as clear_all:
-            response = self.client.delete(ME_APP_DATA)
-        self.assertEqual(response.status_code, 204)
-        self.assertFalse(
-            [
-                q
-                for q in clear_all.captured_queries
-                if q["sql"].lstrip().upper().startswith("UPDATE")
-            ]
+        self.assertEqual(self.client.delete(me_key_url(gone)).status_code, 204)
+        # Deleting a key that is already gone is still 204.
+        self.assertEqual(self.client.delete(me_key_url(gone)).status_code, 204)
+
+        remaining = set(
+            UserAppData.objects.values_list("user_id", "key")
         )
+        self.assertEqual(
+            remaining, {(self.user.id, kept), (self.other.id, gone)}
+        )
+
+        self.assertEqual(self.client.delete(ME_APP_DATA).status_code, 204)
+        self.assertEqual(self.client.delete(ME_APP_DATA).status_code, 204)
+        self.assertEqual(
+            set(UserAppData.objects.values_list("user_id", "key")),
+            {(self.other.id, gone)},
+        )
+
+    def test_same_key_is_independent_per_user(self):
+        key = "com.example.shared"
+        self.client.put(me_key_url(key), {"owner": "viewer"}, format="json")
+        self.client.force_authenticate(self.other)
+        self.client.put(me_key_url(key), {"owner": "other"}, format="json")
+
+        self.assertEqual(
+            self.client.get(me_key_url(key)).json(), {"owner": "other"}
+        )
+        self.client.force_authenticate(self.user)
+        self.assertEqual(
+            self.client.get(me_key_url(key)).json(), {"owner": "viewer"}
+        )
+
+    def test_deleting_a_user_removes_their_app_data(self):
+        from apps.accounts.models import UserAppData
+
+        self.client.put(me_key_url("com.example.cascade"), {"a": 1}, format="json")
+        self.assertTrue(UserAppData.objects.filter(user=self.user).exists())
+
+        self.user.delete()
+        self.assertFalse(UserAppData.objects.filter(user_id=self.user.id).exists())
+
+    def test_stored_byte_size_matches_list_and_total(self):
+        from apps.accounts.app_data import json_byte_size
+        from apps.accounts.models import UserAppData
+
+        payload = {"title": "caf\u00e9 \u2603", "n": [1, 2, 3]}
+        self.client.put(me_key_url("com.example.sized"), payload, format="json")
+
+        entry = UserAppData.objects.get(user=self.user, key="com.example.sized")
+        self.assertEqual(entry.byte_size, json_byte_size(payload))
+
+        listed = self.client.get(ME_APP_DATA).json()
+        self.assertEqual(listed["apps"][0]["bytes"], entry.byte_size)
+        self.assertEqual(listed["total_bytes"], entry.byte_size)
 
     def test_per_app_size_cap(self):
         # Compact JSON size of {"d": "<padding>"} must exceed the per-app limit.
@@ -337,7 +380,7 @@ class UserAppDataEndpointTests(TestCase):
         assert_error(self, response, 413, CODE_VALUE_TOO_LARGE)
 
     def test_total_size_cap(self):
-        # Four max-sized apps fill the 128 KiB user budget; one more tips over.
+        # Eight max-sized apps fill the 1 MiB user budget; one more tips over.
         overhead = len('{"d":""}')
         padding = "x" * (APP_DATA_MAX_VALUE_BYTES - overhead)
         apps_to_fill = APP_DATA_MAX_TOTAL_BYTES // APP_DATA_MAX_VALUE_BYTES
@@ -447,32 +490,61 @@ class UserAppDataEndpointTests(TestCase):
             self.client.get(me_key_url("com.example.evil")).status_code, 404
         )
 
-    def test_default_queryset_defers_app_data(self):
-        user = User.objects.get(pk=self.user.pk)
-        self.assertIn("app_data", user.get_deferred_fields())
+    def test_user_save_does_not_affect_app_data_rows(self):
+        from apps.accounts.models import UserAppData
 
-    def test_stale_user_save_does_not_wipe_app_data(self):
         self.client.put(
             me_key_url("com.example.stale"), {"alive": True}, format="json"
         )
-
-        stale = User.objects.get(pk=self.user.pk)
-        self.assertIn("app_data", stale.get_deferred_fields())
-
-        # Concurrent write via the dedicated path.
         self.client.put(
             me_key_url("com.example.stale"), {"alive": True, "v": 2}, format="json"
         )
 
+        stale = User.objects.get(pk=self.user.pk)
         stale.first_name = "Stale"
         stale.save()
 
-        stored = (
-            User.objects.defer(None)
-            .filter(pk=self.user.pk)
-            .values_list("app_data", flat=True)
-            .get()
-        )
-        self.assertEqual(stored.get("com.example.stale"), {"alive": True, "v": 2})
+        entry = UserAppData.objects.get(user_id=self.user.pk, key="com.example.stale")
+        self.assertEqual(entry.value, {"alive": True, "v": 2})
         self.user.refresh_from_db()
         self.assertEqual(self.user.first_name, "Stale")
+
+    def test_get_one_key_loads_only_that_row(self):
+        from apps.accounts.models import UserAppData
+
+        self.client.put(
+            me_key_url("com.example.one"), {"a": 1}, format="json"
+        )
+        self.client.put(
+            me_key_url("com.example.two"),
+            {"pad": "x" * 2000},
+            format="json",
+        )
+        self.assertEqual(UserAppData.objects.filter(user=self.user).count(), 2)
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get(me_key_url("com.example.one"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"a": 1})
+
+        value_selects = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if "accounts_userappdata" in q["sql"].lower()
+            and "select" in q["sql"].lower()
+        ]
+        self.assertEqual(len(value_selects), 1)
+        self.assertIn("key", value_selects[0].lower())
+
+    def test_list_does_not_select_value_column(self):
+        self.client.put(
+            me_key_url("com.example.one"), {"a": 1}, format="json"
+        )
+        with CaptureQueriesContext(connection) as ctx:
+            listed = self.client.get(ME_APP_DATA)
+        self.assertEqual(listed.status_code, 200)
+        sql = " ".join(q["sql"] for q in ctx.captured_queries).lower()
+        # values("key", "byte_size") should not pull the JSON payload column.
+        self.assertIn("byte_size", sql)
+        self.assertNotIn('"value"', sql)
+        self.assertNotIn(".value", sql)
