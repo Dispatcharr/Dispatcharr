@@ -36,8 +36,37 @@ def get_total_viewers(channel_id):
         return 0
 
 
+class ChannelGroupManager(models.Manager):
+    def create(self, **kwargs):
+        if kwargs.get("is_manual", True):
+            group, _ = self.get_or_create(name=kwargs["name"])
+            return group
+        return super().create(**kwargs)
+
+    def get_or_create(self, defaults=None, **kwargs):
+        defaults = {"is_manual": True, **(defaults or {})}
+        group, created = super().get_or_create(defaults=defaults, **kwargs)
+        if not created and not group.is_manual:
+            group.is_manual = True
+            group.save(update_fields=["is_manual"])
+        return group, created
+
+    def bulk_create_provider_groups(self, names):
+        names = list(names)
+        self.bulk_create(
+            [
+                self.model(name=name, is_manual=False)
+                for name in names
+            ]
+        )
+        return self.filter(name__in=names)
+
+
 class ChannelGroup(models.Model):
     name = models.TextField(unique=True, db_index=True)
+    is_manual = models.BooleanField(default=True)
+
+    objects = ChannelGroupManager()
 
     def related_channels(self):
         # local import if needed to avoid cyc. Usually fine in a single file though
@@ -45,17 +74,6 @@ class ChannelGroup(models.Model):
 
     def __str__(self):
         return self.name
-
-    @classmethod
-    def bulk_create_and_fetch(cls, objects):
-        # Perform the bulk create operation
-        cls.objects.bulk_create(objects)
-
-        # Use a unique field to fetch the created objects (assuming 'name' is unique)
-        created_objects = cls.objects.filter(name__in=[obj.name for obj in objects])
-
-        return created_objects
-
 
 class Stream(models.Model):
     """

@@ -12,7 +12,11 @@ from celery import shared_task
 from django.conf import settings
 from django.db import models, transaction
 from .models import M3UAccount
-from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
+from apps.channels.models import (
+    Stream,
+    ChannelGroup,
+    ChannelGroupM3UAccount,
+)
 from django.utils import timezone
 import time
 import json
@@ -776,11 +780,16 @@ def process_groups(account, groups, scan_start_time=None):
             groups_to_create.append(ChannelGroup(name=group_name))
 
     # Create new groups and fetch them back with IDs
-    newly_created_group_objs = []
     if groups_to_create:
         logger.info(f"Creating {len(groups_to_create)} new groups for account {account.id}")
-        newly_created_group_objs = list(ChannelGroup.bulk_create_and_fetch(groups_to_create))
+        newly_created_group_objs = list(
+            ChannelGroup.objects.bulk_create_provider_groups(
+                group.name for group in groups_to_create
+            )
+        )
         logger.debug(f"Successfully created {len(newly_created_group_objs)} new groups")
+    else:
+        newly_created_group_objs = []
 
     # Combine all groups
     all_group_objs = existing_group_objs + newly_created_group_objs
@@ -909,16 +918,28 @@ def cleanup_stale_group_relationships(account, scan_start_time):
             # Check if this group has any direct channels (not through M3U accounts)
             has_direct_channels = group.related_channels().exists()
 
-            # If no relationships and no direct channels, it's safe to delete
-            if not remaining_m3u_relationships and not has_direct_channels:
+            # Only provider-created groups can be safely removed. Existing
+            # groups may predate provenance tracking or have been manual
+            # before a provider referenced them.
+            if (
+                not group.is_manual
+                and not remaining_m3u_relationships
+                and not has_direct_channels
+            ):
                 orphaned_group_ids.append(group.id)
                 logger.debug(f"Group '{group.name}' has no remaining associations and will be deleted")
 
         # Delete truly orphaned groups
         if orphaned_group_ids:
-            deleted_groups = list(ChannelGroup.objects.filter(id__in=orphaned_group_ids).values_list('name', flat=True))
-            ChannelGroup.objects.filter(id__in=orphaned_group_ids).delete()
-            logger.info(f"Deleted {len(orphaned_group_ids)} orphaned groups that had no remaining associations: {deleted_groups}")
+            provider_groups = ChannelGroup.objects.filter(
+                id__in=orphaned_group_ids,
+                is_manual=False,
+            )
+            deleted_groups = list(provider_groups.values_list('name', flat=True))
+            provider_groups.delete()
+            logger.info(
+                f"Deleted {len(deleted_groups)} orphaned groups that had no remaining associations: {deleted_groups}"
+            )
     else:
         logger.debug(f"No stale group relationships found for account {account.id}")
 
