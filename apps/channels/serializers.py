@@ -197,6 +197,16 @@ class StreamSerializer(serializers.ModelSerializer):
 
         return fields
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Provider stream URLs often embed M3U/XC logins. Match M3UAccountSerializer:
+        # only admins receive them. Fail closed when there is no request user.
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        if user is None or getattr(user, "user_level", 0) < 10:
+            data.pop("url", None)
+        return data
+
 
 class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
     m3u_accounts = serializers.IntegerField(source="m3u_accounts.id", read_only=True)
@@ -620,7 +630,9 @@ class ChannelSerializer(serializers.ModelSerializer):
             for cs in obj.channelstream_set.all()
             if cs.stream_id is not None
         ]
-        return StreamSerializer(ordered_streams, many=True).data
+        return StreamSerializer(
+            ordered_streams, many=True, context=self.context
+        ).data
 
     def create(self, validated_data):
         streams = validated_data.pop("streams", [])

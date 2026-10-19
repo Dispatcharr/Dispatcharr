@@ -298,6 +298,13 @@ describe('ChannelStreams', () => {
       expect(screen.queryByText('URL')).not.toBeInTheDocument();
     });
 
+    it('renders the preview Eye action icon when stream has no url', () => {
+      const streams = [makeStream({ url: null })];
+      setupMocks({ streams });
+      render(<ChannelStreams channel={makeChannel(streams)} />);
+      expect(screen.getByTestId('icon-eye')).toBeInTheDocument();
+    });
+
     it('renders "No Data" when there are no streams', () => {
       setupMocks({ streams: [] });
       render(<ChannelStreams channel={makeChannel([])} />);

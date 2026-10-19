@@ -60,6 +60,20 @@ describe('networkUtils', () => {
     });
   });
 
+  describe('getPublicBaseUrl', () => {
+    it('uses the current origin outside of dev mode', () => {
+      const origin = `${window.location.protocol}//${window.location.host}`;
+      expect(networkUtils.getPublicBaseUrl('aio')).toBe(origin);
+      expect(networkUtils.getPublicBaseUrl(undefined)).toBe(origin);
+    });
+
+    it('points at the backend port in dev mode', () => {
+      expect(networkUtils.getPublicBaseUrl('dev')).toBe(
+        `${window.location.protocol}//${window.location.hostname}:5656`
+      );
+    });
+  });
+
   describe('formatBytes', () => {
     it('should return "0 Bytes" for zero bytes', () => {
       expect(networkUtils.formatBytes(0)).toBe('0 Bytes');

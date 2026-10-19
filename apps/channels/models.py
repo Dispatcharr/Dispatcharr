@@ -235,6 +235,15 @@ class Stream(models.Model):
 
         return stream_profile
 
+    @staticmethod
+    def preview_profile_key(stream_id) -> str:
+        """Redis key for a default (stream_hash) preview's M3U profile slot.
+
+        Kept separate from ``stream_profile:{id}`` (channel assignments) so a
+        preview never adopts or frees a live channel's provider reservation.
+        """
+        return f"stream_profile:{stream_id}:preview"
+
     def get_stream(self, requester=None, preferred_profile_id=None):
         """
         Finds an available profile for this stream and reserves a connection slot.
@@ -244,6 +253,10 @@ class Stream(models.Model):
         ``:p{id}`` so another profile on the same stream can run separately.
         The live worker id itself uses ``{stream_hash}.p{id}`` (no colon) so it
         does not break ``live:channel:{id}:…`` key parsers.
+
+        Default previews (no preferred_profile_id) use
+        ``stream_profile:{id}:preview`` and never touch channel assignment keys
+        (``stream_profile:{id}`` / ``channel_stream:{id}``).
 
         Returns:
             Tuple[Optional[int], Optional[int], Optional[str], bool]:
@@ -271,6 +284,14 @@ class Stream(models.Model):
                 )
                 # Only the caller that actually removes the key releases the slot.
                 if redis_client.delete(scoped_key):
+                    self._clear_preview_slot_metadata(
+                        redis_client,
+                        (
+                            f"{self.stream_hash}.p{preferred_profile_id}"
+                            if self.stream_hash
+                            else None
+                        ),
+                    )
                     release_profile_slot(preferred_profile_id, redis_client)
 
             m3u_account = self.m3u_account
@@ -296,10 +317,21 @@ class Stream(models.Model):
                 False,
             )
 
-        profile_id = redis_client.get(f"stream_profile:{self.id}")
-        if profile_id:
-            profile_id = int(profile_id)
-            return self.id, profile_id, None, False
+        preview_key = self.preview_profile_key(self.id)
+        existing_profile_id = redis_client.get(preview_key)
+        if existing_profile_id:
+            existing_profile_id = int(existing_profile_id)
+            if self._preview_assignment_is_reusable(redis_client):
+                return self.id, existing_profile_id, None, False
+            logger.info(
+                "Stream %s: releasing stale preview assignment "
+                "(profile=%s, preview worker not active)",
+                self.id,
+                existing_profile_id,
+            )
+            if redis_client.delete(preview_key):
+                self._clear_preview_slot_metadata(redis_client, self.stream_hash)
+                release_profile_slot(existing_profile_id, redis_client)
 
         # Retrieve the M3U account associated with the stream.
         m3u_account = self.m3u_account
@@ -321,22 +353,37 @@ class Stream(models.Model):
             )
 
             if reserved:
-                redis_client.set(f"channel_stream:{self.id}", self.id)
-                redis_client.set(f"stream_profile:{self.id}", profile.id)
+                # Preview-owned key only. Never write channel_stream or the bare
+                # stream_profile key used by live channel assignments.
+                redis_client.set(preview_key, profile.id)
                 return self.id, profile.id, None, True
 
         return None, None, "All active M3U profiles have reached maximum connection limits", False
 
-    def _scoped_preview_assignment_is_reusable(self, redis_client, m3u_profile_id):
-        """Reuse a .p{id} worker slot only while that preview worker is still live.
+    def _clear_preview_slot_metadata(self, redis_client, worker_id):
+        """Drop this preview worker's slot fields after its reservation is deleted.
+
+        A later metadata-only fallback releases whatever profile is still
+        named here. Clearing it keeps that fallback from decrementing a slot
+        this path already released. Other metadata, including state, stays.
+        """
+        if not worker_id:
+            return
+        redis_client.hdel(
+            RedisKeys.channel_metadata(worker_id),
+            ChannelMetadataField.STREAM_ID,
+            ChannelMetadataField.M3U_PROFILE,
+        )
+
+    def _preview_worker_is_reusable(self, redis_client, worker_id: str) -> bool:
+        """True when a stream-preview worker assignment should be reused.
 
         Mirrors Channel._stream_assignment_is_reusable: a key with no metadata
         yet is the gap between reserve and initialize, so it stays reusable.
         Metadata that exists but is not an active state is a leftover slot.
         """
-        if not self.stream_hash:
+        if not worker_id:
             return False
-        worker_id = f"{self.stream_hash}.p{int(m3u_profile_id)}"
         metadata_key = RedisKeys.channel_metadata(worker_id)
         if not redis_client.exists(metadata_key):
             return True
@@ -353,12 +400,25 @@ class Stream(models.Model):
             ChannelState.CONNECTING,
         )
 
+    def _preview_assignment_is_reusable(self, redis_client) -> bool:
+        """Reuse a default stream_hash preview slot only while that worker is live."""
+        return self._preview_worker_is_reusable(redis_client, self.stream_hash)
+
+    def _scoped_preview_assignment_is_reusable(self, redis_client, m3u_profile_id):
+        """Reuse a .p{id} worker slot only while that preview worker is still live."""
+        if not self.stream_hash:
+            return False
+        worker_id = f"{self.stream_hash}.p{int(m3u_profile_id)}"
+        return self._preview_worker_is_reusable(redis_client, worker_id)
+
     def release_stream(self, m3u_profile_id=None):
         """
         Called when a stream is finished to release the lock.
 
         m3u_profile_id: when set, release the profile-scoped preview assignment
-        (``stream_profile:{id}:p{profile_id}``) instead of the unscoped key.
+        (``stream_profile:{id}:p{profile_id}``). Otherwise release the default
+        preview assignment (``stream_profile:{id}:preview``). Never deletes a
+        channel's bare ``stream_profile:{id}`` key.
 
         Returns:
             bool: True if stream was successfully released, False if
@@ -392,24 +452,23 @@ class Stream(models.Model):
             release_profile_slot(m3u_profile_id, redis_client)
             return True
 
-        # Get the matched profile for cleanup
-        profile_id = redis_client.get(f"stream_profile:{stream_id}")
+        preview_key = self.preview_profile_key(stream_id)
+        profile_id = redis_client.get(preview_key)
         if not profile_id:
             logger.debug(
-                f"Stream {stream_id}: no profile found in "
-                f"stream_profile:{stream_id}"
+                f"Stream {stream_id}: no profile found in {preview_key}"
             )
             return False
 
-        redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
+        redis_client.delete(preview_key)
 
         profile_id = int(profile_id)
         logger.debug(
-            f"Stream {stream_id}: found profile_id={profile_id}"
+            f"Stream {stream_id}: found preview profile_id={profile_id}"
         )
 
-        # Same as Channel.release_stream: clear metadata before DECR so a later
-        # metadata-only fallback cannot release the slot a second time.
+        # Clear metadata before DECR so a later metadata-only fallback cannot
+        # release the slot a second time.
         if self.stream_hash:
             metadata_key = RedisKeys.channel_metadata(self.stream_hash)
             redis_client.hdel(

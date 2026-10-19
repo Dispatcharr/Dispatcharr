@@ -207,43 +207,42 @@ const StreamInfoCell = React.memo(
             </Badge>
           )}
           {stream.url && (
-            <>
-              <Tooltip label={stream.url}>
-                <Badge
-                  size="xs"
-                  variant="light"
-                  color="indigo"
-                  style={{ cursor: 'pointer' }}
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    await copyToClipboard(stream.url, {
-                      successTitle: 'URL Copied',
-                      successMessage: 'Stream URL copied to clipboard',
-                    });
-                  }}
-                >
-                  URL
-                </Badge>
-              </Tooltip>
-              <Tooltip label="Preview Stream">
-                <ActionIcon
-                  size="xs"
-                  color="blue"
-                  variant="light"
-                  onClick={() =>
-                    handleWatchStream(
-                      stream.stream_hash || stream.id,
-                      stream.name,
-                      stream.id
-                    )
-                  }
-                  style={{ marginLeft: 2 }}
-                >
-                  <Eye size={16} />
-                </ActionIcon>
-              </Tooltip>
-            </>
+            <Tooltip label={stream.url}>
+              <Badge
+                size="xs"
+                variant="light"
+                color="indigo"
+                style={{ cursor: 'pointer' }}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  await copyToClipboard(stream.url, {
+                    successTitle: 'URL Copied',
+                    successMessage: 'Stream URL copied to clipboard',
+                  });
+                }}
+              >
+                URL
+              </Badge>
+            </Tooltip>
           )}
+          <Tooltip label="Preview Stream">
+            <ActionIcon
+              size="xs"
+              color="blue"
+              variant="transparent"
+              aria-label="Preview Stream"
+              onClick={() =>
+                handleWatchStream(
+                  stream.stream_hash || stream.id,
+                  stream.name,
+                  stream.id
+                )
+              }
+              style={{ marginLeft: 2 }}
+            >
+              <Eye size={16} />
+            </ActionIcon>
+          </Tooltip>
         </Group>
 
         {/* Basic Stream Stats (always shown) */}

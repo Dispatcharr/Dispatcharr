@@ -1,5 +1,8 @@
+import contextlib
 import importlib
+import importlib.machinery
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -10,11 +13,32 @@ import types
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from django.db import close_old_connections, transaction
+from django.db import close_old_connections, connection, transaction
+from django.db.models import Case, DateTimeField, Value, When
+from django.utils import timezone
 
 from .models import PluginConfig
 
 logger = logging.getLogger(__name__)
+
+
+class _PluginSourceLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self, fullname):
+        return self.source_to_code(self.get_data(self.path), self.path)
+
+
+def _use_plugin_sources(path):
+    # Same-size edits within one timestamp tick can leave valid-looking bytecode.
+    # Keep source-only finders for lazy imports too, without changing bytecode
+    # files or requiring write access to user-managed plugin files.
+    for directory, subdirs, _ in os.walk(os.path.abspath(path)):
+        subdirs[:] = [name for name in subdirs if name != "__pycache__"]
+        sys.path_importer_cache[directory] = importlib.machinery.FileFinder(
+            directory,
+            (importlib.machinery.ExtensionFileLoader, importlib.machinery.EXTENSION_SUFFIXES),
+            (_PluginSourceLoader, importlib.machinery.SOURCE_SUFFIXES),
+            (importlib.machinery.SourcelessFileLoader, importlib.machinery.BYTECODE_SUFFIXES),
+        )
 
 
 @dataclass
@@ -246,9 +270,11 @@ class PluginManager:
 
             if force_reload:
                 # Remove stale modules for plugins that no longer exist
-                removed_keys = set(previous_packages.keys()) - set(new_packages.keys())
+                removed_keys = (set(previous_packages) | set(previous_paths)) - set(new_packages)
                 for key in removed_keys:
-                    self._unload_package(previous_packages[key])
+                    prev_package = previous_packages.get(key)
+                    if prev_package:
+                        self._unload_package(prev_package)
                     prev_alias = previous_aliases.get(key)
                     if prev_alias:
                         self._unload_alias(prev_alias)
@@ -256,13 +282,37 @@ class PluginManager:
                     if prev_path:
                         self._unload_path_modules(prev_path)
 
+            retirement_results = []
+            retirement_count = 0
+            registered_paths = self._registered_plugin_paths()
+            if force_reload and configs is not None:
+                # Retained Task objects survive failed discovery and rolled-back cleanup.
+                paths = set(previous_paths.items()) | registered_paths
+                for key, path in paths:
+                    if key not in configs and not os.path.exists(path):
+                        retirement_count += 1
+
+                        def retire(key=key, path=path):
+                            retirement_results.append(self._retire_missing_plugin_tasks(key, path))
+
+                        transaction.on_commit(retire)
+
             with self._lock:
                 self._registry = new_registry
                 self._package_names = new_packages
                 self._alias_names = new_aliases
-                if token > self._last_reload_token:
+                complete = (
+                    (configs is not None or not (new_registry or registered_paths))
+                    and len(retirement_results) == retirement_count
+                    and all(retirement_results)
+                )
+                if complete and token > self._last_reload_token:
                     self._last_reload_token = token
-                self._discovery_completed = True
+                self._discovery_completed = complete
+
+            for plugin_key, lp in new_registry.items():
+                if lp.loaded:
+                    self._record_owned_tasks(plugin_key, configs.get(plugin_key) if configs else None)
 
             (logger.info if new_registry else logger.debug)(
                 f"Discovered {len(new_registry)} plugin(s)"
@@ -296,6 +346,239 @@ class PluginManager:
                 ):
                     yield key, action_id
 
+    def _own_alias(self, key: str) -> Optional[str]:
+        """The plugin's folder name, if sys.modules holds a package rooted in this plugin's directory."""
+        with self._lock:
+            lp = self._registry.get(key)
+        if not lp or not lp.folder_name or not lp.path or not self._is_valid_identifier(lp.folder_name):
+            return None
+        module = sys.modules.get(lp.folder_name)
+        plugin_dir = os.path.abspath(lp.path)
+        if any(os.path.abspath(entry) == plugin_dir for entry in getattr(module, "__path__", None) or ()):
+            return lp.folder_name
+        return None
+
+    def _registered_task_names(self, key: str) -> set:
+        """Celery tasks whose callable is defined in this plugin's directory."""
+        # Different folder names can resolve to the same internal package name.
+        return self._task_names_from_path(self.get_plugin_path(key))
+
+    def _record_owned_tasks(self, key: str, cfg: Optional[PluginConfig]) -> None:
+        if cfg is None:
+            return
+        try:
+            registered = self._registered_task_names(key)
+            stored = PluginConfig.objects.filter(key=key).values_list("owned_tasks", flat=True).first()
+            if registered <= set(stored or []):
+                return
+            # Re-read under the lock: other processes may have recorded different names since the read above.
+            with transaction.atomic():
+                locked = PluginConfig.objects.select_for_update().filter(key=key).first()
+                if locked is None:
+                    return
+                names = sorted(set(locked.owned_tasks or []) | registered)
+                PluginConfig.objects.filter(pk=locked.pk).update(owned_tasks=names)
+        except Exception:
+            logger.exception("Could not record Celery tasks owned by plugin '%s'", key)
+
+    def _owned_task_names(self, cfg: PluginConfig, *, path: Optional[str] = None) -> set:
+        from dispatcharr.celery import app as celery_app
+
+        names = set(cfg.owned_tasks or [])
+        root = os.path.abspath(path or self.get_plugin_path(cfg.key))
+        try:
+            names |= self._task_names_from_path(root)
+        except Exception:
+            logger.exception("Could not read registered Celery tasks for plugin '%s'", cfg.key)
+        for name in list(names):
+            task = celery_app.tasks.get(name)
+            source = self._task_source_path(task) if task is not None else None
+            # A current callable outside the plugin overrides recorded ownership.
+            if source and not os.path.abspath(source).startswith(f"{root}{os.sep}"):
+                names.discard(name)
+        return names
+
+    @staticmethod
+    def _task_source_path(task):
+        run = inspect.unwrap(task.run)
+        return getattr(run, "__globals__", {}).get("__file__")
+
+    def _task_names_from_path(self, path: str) -> set:
+        from dispatcharr.celery import app as celery_app
+
+        root = os.path.abspath(path)
+        names = set()
+        for name, task in celery_app.tasks.copy().items():
+            source = self._task_source_path(task)
+            if source and os.path.abspath(source).startswith(f"{root}{os.sep}"):
+                names.add(name)
+        return names
+
+    def _unregister_tasks_from_path(self, path: str) -> None:
+        from dispatcharr.celery import app as celery_app
+
+        with self._lock:
+            for name in self._task_names_from_path(path):
+                celery_app.tasks.pop(name, None)
+
+    def _registered_plugin_paths(self) -> set:
+        from dispatcharr.celery import app as celery_app
+
+        root = os.path.abspath(self.plugins_dir)
+        paths = set()
+        for task in celery_app.tasks.copy().values():
+            source = self._task_source_path(task)
+            if not source or not os.path.abspath(source).startswith(f"{root}{os.sep}"):
+                continue
+            folder, separator, _ = os.path.relpath(os.path.abspath(source), root).partition(os.sep)
+            if separator:
+                paths.add((folder.replace(" ", "_").lower(), os.path.join(root, folder)))
+        return paths
+
+    def _retire_missing_plugin_tasks(self, key: str, path: str) -> bool:
+        try:
+            if PluginConfig.objects.filter(key=key).exists() or os.path.exists(path):
+                return True
+            self._unregister_tasks_from_path(path)
+            return True
+        except Exception:
+            with self._lock:
+                self._discovery_completed = False
+            logger.exception("Could not retire Celery tasks for removed plugin '%s'", key)
+            return False
+
+    def refresh_task_ownership(self) -> None:
+        with self._lock:
+            warm_registry = bool(self._registry)
+        # A cold process can clean recorded history without importing enabled code.
+        if warm_registry or self._registered_plugin_paths():
+            self.discover_plugins(sync_db=False, use_cache=True)
+
+    def _load_current_task_names(self, cfg: PluginConfig) -> set:
+        """Load only this plugin before deciding which schedules can resume."""
+        from dispatcharr.celery import app as celery_app
+
+        with self._lock:
+            path = self.get_plugin_path(cfg.key)
+            folder = os.path.basename(path)
+            package = self._resolve_package_name(cfg.key)
+            old_tasks = {
+                name: celery_app.tasks[name]
+                for name in self._task_names_from_path(path)
+            }
+            # Callable globals retain the source path after alias modules unload.
+            # Remove only this plugin's task objects before importing current code.
+            for name in old_tasks:
+                celery_app.tasks.pop(name, None)
+            self._unload_package(package)
+            self._unload_path_modules(path)
+            try:
+                loaded, package = self._load_plugin(
+                    cfg.key, path, folder_name=folder, force_reload=True,
+                    previous_package=package,
+                )
+                if loaded is None:
+                    raise ValueError(f"Plugin '{cfg.key}' could not be loaded")
+            except Exception:
+                celery_app.tasks.update(old_tasks)
+                raise
+            loaded.loaded = True
+            loaded.trusted = True
+            self._registry[cfg.key] = loaded
+            self._package_names[cfg.key] = package
+            alias = self._own_alias(cfg.key)
+            if alias:
+                self._alias_names[cfg.key] = alias
+            else:
+                self._alias_names.pop(cfg.key, None)
+            names = self._task_names_from_path(path)
+            cfg.owned_tasks = sorted(set(cfg.owned_tasks or []) | names)
+            cfg.save(update_fields=["owned_tasks", "updated_at"])
+            return names
+
+    def suspend_schedules(self, cfg: PluginConfig) -> int:
+        """Disable the plugin's enabled PeriodicTask rows and record their pks.
+
+        `cfg` must be row-locked by the caller's transaction.
+        """
+        from django_celery_beat.models import PeriodicTask, PeriodicTasks
+
+        with transaction.atomic():
+            names = self._owned_task_names(cfg)
+            pks = list(
+                PeriodicTask.objects.select_for_update().filter(
+                    task__in=names, enabled=True
+                ).order_by("pk").values_list("pk", flat=True)
+            )
+            if not pks:
+                return 0
+            PeriodicTask.objects.filter(pk__in=pks, task__in=names, enabled=True).update(
+                enabled=False, last_run_at=None, date_changed=timezone.now()
+            )
+            PeriodicTasks.update_changed()
+            cfg.suspended_schedules = sorted(set(cfg.suspended_schedules or []) | set(pks))
+            cfg.save(update_fields=["suspended_schedules", "updated_at"])
+        return len(pks)
+
+    def restore_schedules(self, cfg: PluginConfig) -> int:
+        """Re-enable suspended rows that still run one of the plugin's tasks.
+
+        `cfg` must be row-locked by the caller's transaction.
+        """
+        from django_celery_beat.models import PeriodicTask, PeriodicTasks
+
+        pks = list(cfg.suspended_schedules or [])
+        if not pks:
+            return 0
+        with transaction.atomic():
+            names = self._load_current_task_names(cfg)
+            now = timezone.now()
+            # Beat backdates an unset last_run_at when start_time is set, making the row
+            # due at once. Leave it unset only for rows that have not reached start_time.
+            restored = PeriodicTask.objects.filter(
+                pk__in=pks, task__in=names, enabled=False
+            ).update(
+                enabled=True,
+                last_run_at=Case(
+                    When(start_time__gt=now, then=None),
+                    default=Value(now),
+                    output_field=DateTimeField(),
+                ),
+                date_changed=now,
+            )
+            PeriodicTasks.update_changed()
+            cfg.suspended_schedules = []
+            cfg.save(update_fields=["suspended_schedules", "updated_at"])
+        return restored
+
+    def delete_plugin_periodic_tasks(self, key: str, *, path: Optional[str] = None) -> int:
+        """Delete the PeriodicTask rows of a plugin being removed.
+
+        Rows are matched only by exact Celery task name, from the names recorded
+        while the plugin was enabled plus those registered in this process. Must
+        run before its PluginConfig row is deleted.
+        """
+        from django_celery_beat.models import PeriodicTask
+
+        cfg = PluginConfig.objects.filter(key=key).first()
+        names = (
+            self._owned_task_names(cfg, path=path) if cfg
+            else self._task_names_from_path(path or self.get_plugin_path(key))
+        )
+        if not names:
+            logger.info("No Celery tasks recorded for plugin '%s'; its schedules are left untouched", key)
+            return 0
+        with transaction.atomic():
+            pks = list(
+                PeriodicTask.objects.select_for_update().filter(
+                    task__in=names
+                ).order_by("pk").values_list("pk", flat=True)
+            )
+            # Schedule definitions may be shared with a concurrent task writer.
+            # Remove only these tasks; leave interval and crontab rows intact.
+            _, deleted = PeriodicTask.objects.filter(pk__in=pks, task__in=names).delete()
+        return deleted.get(PeriodicTask._meta.label, 0)
+
     def _load_plugin(
         self,
         key: str,
@@ -305,6 +588,7 @@ class PluginManager:
         force_reload: bool,
         previous_package: Optional[str],
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
+        path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
         has_pkg = os.path.exists(os.path.join(path, "__init__.py"))
         has_pluginpy = os.path.exists(os.path.join(path, "plugin.py"))
@@ -312,6 +596,7 @@ class PluginManager:
             logger.debug(f"Skipping {path}: no plugin.py or package")
             return None, None
 
+        _use_plugin_sources(path)
         package_name = self._resolve_package_name(key)
         alias_name = self._resolve_alias_name(folder_name, path)
 
@@ -415,7 +700,7 @@ class PluginManager:
                     obj.description = lp.description
                     changed = True
                 if changed:
-                    obj.save()
+                    obj.save(update_fields=["name", "version", "description", "updated_at"])
 
     def list_plugins(self) -> List[Dict[str, Any]]:
         from .models import PluginConfig, PluginRepo
@@ -534,6 +819,26 @@ class PluginManager:
         with self._lock:
             return self._registry.get(key)
 
+    def get_plugin_path(self, key: str) -> str:
+        with self._lock:
+            plugin = self._registry.get(key)
+            if plugin and plugin.path:
+                return plugin.path
+        path = os.path.join(self.plugins_dir, key)
+        for entry in sorted(os.listdir(self.plugins_dir)):
+            candidate = os.path.join(self.plugins_dir, entry)
+            if entry.replace(" ", "_").lower() == key and os.path.isdir(candidate):
+                path = candidate
+        if os.path.isdir(path):
+            return path
+
+        # A failed cleanup can remove files before its database transaction rolls back.
+        with self._lock:
+            candidates = {path for owner, path in self._registered_plugin_paths() if owner == key}
+        if len(candidates) == 1:
+            return candidates.pop()
+        return path
+
     def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
         cfg = PluginConfig.objects.get(key=key)
         cfg.settings = settings or {}
@@ -591,14 +896,19 @@ class PluginManager:
             if reason:
                 context["reason"] = reason
 
+            # A savepoint keeps a database error in plugin code from aborting the caller's transaction.
+            savepoint = transaction.atomic if connection.in_atomic_block else contextlib.nullcontext
+
             stop_method = getattr(lp.instance, "stop", None)
             if callable(stop_method):
                 try:
-                    stop_method(context)
+                    with savepoint():
+                        stop_method(context)
                     return True
                 except TypeError:
                     try:
-                        stop_method()
+                        with savepoint():
+                            stop_method()
                         return True
                     except Exception:
                         logger.exception("Plugin '%s' stop() failed", key)
@@ -612,14 +922,17 @@ class PluginManager:
                 actions = {a.get("id") for a in (lp.actions or []) if isinstance(a, dict)}
                 if "stop" in actions:
                     try:
-                        run_method("stop", {}, context)
+                        with savepoint():
+                            run_method("stop", {}, context)
                         return True
                     except Exception:
                         logger.exception("Plugin '%s' stop action failed", key)
                         return False
             return False
         finally:
-            close_old_connections()
+            # Closing the connection inside an atomic block would abort the caller's transaction.
+            if not connection.in_atomic_block:
+                close_old_connections()
 
     def stop_all_plugins(self, reason: Optional[str] = None) -> int:
         stopped = 0
@@ -795,6 +1108,7 @@ class PluginManager:
             module_name,
             path,
             submodule_search_locations=[os.path.dirname(path)] if is_package else None,
+            loader=_PluginSourceLoader(module_name, path),
         )
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load spec for {module_name} from {path}")

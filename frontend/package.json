@@ -30,6 +30,7 @@
     "hls.js": "^1.5.20",
     "lucide-react": "^0.511.0",
     "mpegts.js": "^1.8.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-draggable": "^4.4.6",
@@ -40,7 +41,7 @@
     "react-virtualized-auto-sizer": "^1.0.26",
     "react-window": "^1.8.11",
     "recharts": "^2.15.1",
-    "source-map-js": "^1.2.1",
+    "source-map-js": "^1.2.2",
     "video.js": "^8.21.0",
     "yup": "^1.6.1",
     "zustand": "^5.0.3"
@@ -73,8 +74,9 @@
   "overrides": {
     "@humanfs/node": "^0.16.8",
     "@xmldom/xmldom": "^0.8.15",
+    "brace-expansion": "^5.0.12",
     "esbuild": "^0.28.1",
-    "js-yaml": "^5.2.2",
+    "js-yaml": "^5.5.0",
     "minimatch": "^10.2.1"
   }
 }

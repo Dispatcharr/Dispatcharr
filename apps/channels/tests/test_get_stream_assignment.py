@@ -252,7 +252,12 @@ class StreamScopedPreviewAssignmentTests(TestCase):
         mock_get_client.return_value = self.redis
         self.redis.set(self.scoped_key, self.profile.id)
         self.redis.hset(
-            self.metadata_key, {ChannelMetadataField.STATE: ChannelState.STOPPED}
+            self.metadata_key,
+            {
+                ChannelMetadataField.STATE: ChannelState.STOPPED,
+                ChannelMetadataField.STREAM_ID: self.stream.id,
+                ChannelMetadataField.M3U_PROFILE: self.profile.id,
+            },
         )
 
         result = self.stream.get_stream(preferred_profile_id=self.profile.id)
@@ -260,6 +265,16 @@ class StreamScopedPreviewAssignmentTests(TestCase):
         mock_release.assert_called_once_with(self.profile.id, self.redis)
         mock_reserve.assert_called_once()
         self.assertEqual(result, (self.stream.id, self.profile.id, None, True))
+        self.assertEqual(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.STATE),
+            ChannelState.STOPPED,
+        )
+        self.assertIsNone(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.M3U_PROFILE)
+        )
+        self.assertIsNone(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.STREAM_ID)
+        )
 
     @patch("apps.channels.models.RedisClient.get_client")
     def test_unknown_profile_is_rejected(self, mock_get_client):
@@ -320,4 +335,189 @@ class StreamScopedPreviewAssignmentTests(TestCase):
         )
         self.assertIsNone(
             self.redis.hget(self.metadata_key, ChannelMetadataField.STREAM_ID)
+        )
+
+
+class StreamDefaultPreviewAssignmentTests(TestCase):
+    """Default stream_hash previews use :preview keys, not channel assignments."""
+
+    def setUp(self):
+        self.redis = FakeAssignmentRedis()
+        self.account = M3UAccount.objects.create(
+            name="default-preview-test",
+            account_type="XC",
+            username="user",
+            password="pass",
+            max_streams=5,
+        )
+        self.profile = M3UAccountProfile.objects.get(
+            m3u_account=self.account, is_default=True
+        )
+        self.stream = Stream.objects.create(
+            name="Default Preview Stream",
+            url="http://example.com/live/user/pass/3.ts",
+            m3u_account=self.account,
+            stream_hash="defaulthash",
+        )
+        self.preview_key = Stream.preview_profile_key(self.stream.id)
+        self.channel_key = f"stream_profile:{self.stream.id}"
+        self.metadata_key = RedisKeys.channel_metadata(self.stream.stream_hash)
+
+    @patch("apps.channels.models.RedisClient.get_client")
+    @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
+    def test_reserves_preview_key_without_channel_keys(
+        self, mock_reserve, mock_get_client
+    ):
+        mock_get_client.return_value = self.redis
+
+        result = self.stream.get_stream()
+
+        self.assertEqual(result, (self.stream.id, self.profile.id, None, True))
+        mock_reserve.assert_called_once()
+        self.assertTrue(self.redis.exists(self.preview_key))
+        self.assertFalse(self.redis.exists(self.channel_key))
+        self.assertFalse(self.redis.exists(f"channel_stream:{self.stream.id}"))
+
+    @patch("apps.channels.models.RedisClient.get_client")
+    @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 2, None))
+    def test_does_not_adopt_live_channel_assignment(
+        self, mock_reserve, mock_get_client
+    ):
+        """Previewing a stream a channel started on must take its own slot."""
+        mock_get_client.return_value = self.redis
+        self.redis.set(self.channel_key, self.profile.id)
+        self.redis.set("channel_stream:99", self.stream.id)
+
+        result = self.stream.get_stream()
+
+        self.assertEqual(result, (self.stream.id, self.profile.id, None, True))
+        mock_reserve.assert_called_once()
+        self.assertEqual(int(self.redis.get(self.preview_key)), self.profile.id)
+        self.assertEqual(int(self.redis.get(self.channel_key)), self.profile.id)
+        self.assertEqual(int(self.redis.get("channel_stream:99")), self.stream.id)
+
+    @patch("apps.channels.models.RedisClient.get_client")
+    @patch("apps.channels.models.release_profile_slot")
+    def test_release_leaves_channel_assignment_intact(
+        self, mock_release, mock_get_client
+    ):
+        mock_get_client.return_value = self.redis
+        self.redis.set(self.preview_key, self.profile.id)
+        self.redis.set(self.channel_key, self.profile.id)
+        self.redis.hset(
+            self.metadata_key,
+            {
+                ChannelMetadataField.STREAM_ID: self.stream.id,
+                ChannelMetadataField.M3U_PROFILE: self.profile.id,
+            },
+        )
+
+        self.assertTrue(self.stream.release_stream())
+
+        mock_release.assert_called_once_with(self.profile.id, self.redis)
+        self.assertFalse(self.redis.exists(self.preview_key))
+        self.assertTrue(self.redis.exists(self.channel_key))
+        self.assertIsNone(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.M3U_PROFILE)
+        )
+        self.assertIsNone(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.STREAM_ID)
+        )
+
+    @patch("apps.channels.models.RedisClient.get_client")
+    @patch("apps.channels.models.release_profile_slot")
+    def test_release_without_preview_key_does_not_touch_channel_key(
+        self, mock_release, mock_get_client
+    ):
+        mock_get_client.return_value = self.redis
+        self.redis.set(self.channel_key, self.profile.id)
+
+        self.assertFalse(self.stream.release_stream())
+
+        mock_release.assert_not_called()
+        self.assertTrue(self.redis.exists(self.channel_key))
+
+    @patch("apps.channels.models.RedisClient.get_client")
+    @patch("apps.channels.models.reserve_profile_slot")
+    def test_reuses_preview_slot_while_worker_active(
+        self, mock_reserve, mock_get_client
+    ):
+        mock_get_client.return_value = self.redis
+        self.redis.set(self.preview_key, self.profile.id)
+        self.redis.hset(
+            self.metadata_key, {ChannelMetadataField.STATE: ChannelState.ACTIVE}
+        )
+
+        result = self.stream.get_stream()
+
+        self.assertEqual(result, (self.stream.id, self.profile.id, None, False))
+        mock_reserve.assert_not_called()
+
+    @patch("apps.channels.models.RedisClient.get_client")
+    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
+    def test_stale_preview_slot_is_released_and_reserved_again(
+        self, mock_reserve, mock_release, mock_get_client
+    ):
+        mock_get_client.return_value = self.redis
+        self.redis.set(self.preview_key, self.profile.id)
+        self.redis.hset(
+            self.metadata_key,
+            {
+                ChannelMetadataField.STATE: ChannelState.STOPPED,
+                ChannelMetadataField.STREAM_ID: self.stream.id,
+                ChannelMetadataField.M3U_PROFILE: self.profile.id,
+            },
+        )
+
+        result = self.stream.get_stream()
+
+        mock_release.assert_called_once_with(self.profile.id, self.redis)
+        mock_reserve.assert_called_once()
+        self.assertEqual(result, (self.stream.id, self.profile.id, None, True))
+        self.assertEqual(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.STATE),
+            ChannelState.STOPPED,
+        )
+        self.assertIsNone(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.M3U_PROFILE)
+        )
+        self.assertIsNone(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.STREAM_ID)
+        )
+
+    @patch("apps.channels.models.RedisClient.get_client")
+    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.channels.models.reserve_profile_slot", return_value=(False, 1, "full"))
+    def test_stale_release_clears_metadata_when_rereserve_fails(
+        self, mock_reserve, mock_release, mock_get_client
+    ):
+        mock_get_client.return_value = self.redis
+        self.redis.set(self.preview_key, self.profile.id)
+        self.redis.set(self.channel_key, self.profile.id)
+        self.redis.hset(
+            self.metadata_key,
+            {
+                ChannelMetadataField.STATE: ChannelState.STOPPED,
+                ChannelMetadataField.STREAM_ID: self.stream.id,
+                ChannelMetadataField.M3U_PROFILE: self.profile.id,
+            },
+        )
+
+        stream_id, profile_id, error, slot_reserved = self.stream.get_stream()
+
+        self.assertIsNone(stream_id)
+        self.assertIsNone(profile_id)
+        self.assertFalse(slot_reserved)
+        self.assertIsNotNone(error)
+        mock_release.assert_called_once_with(self.profile.id, self.redis)
+        mock_reserve.assert_called_once()
+        self.assertFalse(self.redis.exists(self.preview_key))
+        self.assertTrue(self.redis.exists(self.channel_key))
+        self.assertIsNone(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.M3U_PROFILE)
+        )
+        self.assertEqual(
+            self.redis.hget(self.metadata_key, ChannelMetadataField.STATE),
+            ChannelState.STOPPED,
         )

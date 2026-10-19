@@ -1,13 +1,22 @@
 import io
 import os
+import shutil
 import tempfile
+import threading
+import time
 import zipfile
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
-from rest_framework.test import APIClient
+from django.db import connections
+from django.test import TestCase, TransactionTestCase
+from rest_framework.test import APIClient, APIRequestFactory
 
+from apps.plugins.api_views import (
+    PluginDeleteAPIView,
+    _plugin_mutation_lock,
+)
 from apps.plugins.models import PluginConfig, PluginRepo
 
 
@@ -97,7 +106,9 @@ class ManagedPluginRepoInstallTests(TestCase):
             version="1.0.0",
         )
         response = self._zip_response("legacy_plugin")
-        plugin_manager = Mock(plugins_dir="/unused")
+        plugins_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plugins_dir, ignore_errors=True)
+        plugin_manager = Mock(plugins_dir=plugins_dir)
         plugin_manager.list_plugins.return_value = []
 
         with (
@@ -140,7 +151,9 @@ class ManagedPluginRepoInstallTests(TestCase):
             settings={"keep": "this"},
         )
         response = self._zip_response(config.key)
-        plugin_manager = Mock(plugins_dir="/unused")
+        plugins_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plugins_dir, ignore_errors=True)
+        plugin_manager = Mock(plugins_dir=plugins_dir)
 
         with (
             patch(
@@ -175,6 +188,50 @@ class ManagedPluginRepoInstallTests(TestCase):
         self.assertTrue(config.enabled)
         self.assertEqual(config.settings, {"keep": "this"})
         response.close.assert_called_once()
+
+    def test_update_deleted_while_waiting_for_lock_is_not_recreated(self):
+        config = PluginConfig.objects.create(
+            key="managed_plugin",
+            name="Managed plugin",
+            version="1.0.0",
+            slug="registry-plugin",
+            source_repo=self.repo,
+        )
+        plugins_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plugins_dir, ignore_errors=True)
+        plugin_manager = Mock(plugins_dir=plugins_dir)
+
+        @contextmanager
+        def delete_before_update(_plugins_dir):
+            config.delete()
+            yield
+
+        with (
+            patch(
+                "apps.plugins.api_views.PluginManager.get",
+                return_value=plugin_manager,
+            ),
+            patch(
+                "apps.plugins.api_views._plugin_mutation_lock",
+                delete_before_update,
+            ),
+            patch("apps.plugins.api_views.get_with_validated_redirects") as download,
+        ):
+            result = self.client.post(
+                "/api/plugins/repos/install/",
+                {
+                    "repo_id": self.repo.id,
+                    "slug": "registry-plugin",
+                    "version": "2.0.0",
+                    "download_url": "https://plugins.example.test/registry-plugin.zip",
+                },
+                format="json",
+            )
+
+        self.assertEqual(result.status_code, 404)
+        self.assertEqual(result.data["error"], "Plugin was deleted while its update was pending")
+        self.assertFalse(PluginConfig.objects.filter(key=config.key).exists())
+        download.assert_not_called()
 
     def test_update_consolidates_duplicate_managed_slug_records(self):
         config = PluginConfig.objects.create(
@@ -240,3 +297,56 @@ class ManagedPluginRepoInstallTests(TestCase):
 
             with open(os.path.join(stable_dir, "plugin.py")) as plugin_file:
                 self.assertEqual(plugin_file.read(), "UPDATED = True\n")
+
+
+class ManagedPluginLockTests(TransactionTestCase):
+    def setUp(self):
+        self.plugins_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.plugins_dir, ignore_errors=True)
+
+    def test_unmanaged_delete_waits_for_matching_update_lock(self):
+        key = "unmanaged_plugin"
+        plugin_dir = os.path.join(self.plugins_dir, key)
+        os.makedirs(plugin_dir)
+        update_entered = threading.Event()
+        release_update = threading.Event()
+        deleted = threading.Event()
+        responses = []
+        manager = Mock(plugins_dir=self.plugins_dir)
+        manager.get_plugin_path.return_value = plugin_dir
+
+        def update():
+            try:
+                with _plugin_mutation_lock(self.plugins_dir):
+                    update_entered.set()
+                    self.assertTrue(release_update.wait(5))
+            finally:
+                connections.close_all()
+
+        def delete():
+            try:
+                request = APIRequestFactory().delete(f"/plugins/{key}/delete/")
+                responses.append(PluginDeleteAPIView.as_view()(request, key=key))
+                deleted.set()
+            finally:
+                connections.close_all()
+
+        with (
+            patch("apps.plugins.api_views.PluginManager.get", return_value=manager),
+            patch.object(PluginDeleteAPIView, "get_permissions", return_value=[]),
+        ):
+            updating = threading.Thread(target=update)
+            deleting = threading.Thread(target=delete)
+            updating.start()
+            self.assertTrue(update_entered.wait(5))
+            deleting.start()
+            time.sleep(0.1)
+            self.assertFalse(deleted.is_set())
+            release_update.set()
+            updating.join(5)
+            deleting.join(5)
+
+        self.assertFalse(updating.is_alive())
+        self.assertFalse(deleting.is_alive())
+        self.assertEqual(responses[0].status_code, 200)
+        self.assertFalse(os.path.exists(plugin_dir))
