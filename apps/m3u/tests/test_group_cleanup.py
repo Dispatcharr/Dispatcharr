@@ -88,7 +88,7 @@ class GroupCleanupTests(TestCase):
 
         ChannelGroup.objects.filter(
             id=stale_group.id,
-            source_type=ChannelGroupSource.PROVIDER,
+            is_manual=False,
         ).delete()
 
         self.assertTrue(ChannelGroup.objects.filter(id=provider_group.id).exists())
