@@ -1259,24 +1259,11 @@ def parse_channels_only(source):
             should_log_memory = False
             logger.warning("psutil not available for memory tracking")
 
-        # Replace full dictionary load with more efficient lookup set
-        existing_tvg_ids = set()
+        existing_tvg_ids = set(
+            EPGData.objects.filter(epg_source=source).values_list('tvg_id', flat=True)
+        )
         existing_epgs = {}
         scanned_tvg_ids = set()  # Track tvg_ids seen in the current scan for stale cleanup
-        last_id = 0
-        chunk_size = 5000
-
-        while True:
-            tvg_id_chunk = set(EPGData.objects.filter(
-                epg_source=source,
-                id__gt=last_id
-            ).order_by('id').values_list('tvg_id', flat=True)[:chunk_size])
-
-            if not tvg_id_chunk:
-                break
-
-            existing_tvg_ids.update(tvg_id_chunk)
-            last_id = EPGData.objects.filter(tvg_id__in=tvg_id_chunk).order_by('-id')[0].id
         # Update progress to show file read starting
         send_epg_update(source.id, "parsing_channels", 10)
 
