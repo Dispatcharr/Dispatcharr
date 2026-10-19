@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stream previews no longer free a live channel's provider connection slot.** Default `/proxy/ts/stream/{stream_hash}` previews used the same `stream_profile:{stream_id}` Redis key as channel assignments, so closing a preview of a stream a channel had started on could DECR that channel's M3U profile counter and delete its assignment. Previews now reserve and release under `stream_profile:{id}:preview`, never write `channel_stream:{stream.id}`, and leave channel keys alone. (Fixes #1773)
 - **Saving User Level Access or Mature Content on an auto-created channel persists again.** The channel editor routed auto-synced identity fields through the override row and only wrote `hidden_from_output` on the channel itself, so changing a level (for example Streamer to Admin) or the mature flag looked successful but reverted on refresh. Those flags now patch the channel row the same way bulk edit already did.
 - **M3U refreshes no longer fail on invalid UTF-8 bytes in provider playlists.** Plain, gzip, xz, and ZIP sources now skip invalid bytes while decoding so a malformed metadata value does not abort the entire refresh. - Thanks [@locomike](https://github.com/locomike)
 - **Plugin-owned schedules now follow plugin state.** They pause when a plugin is disabled, resume only for tasks still present after an upgrade, and are removed when the plugin is deleted. (Fixes #1749) - Thanks [@JonathanAlbarran](https://github.com/JonathanAlbarran)
