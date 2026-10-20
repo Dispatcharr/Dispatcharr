@@ -37,11 +37,7 @@ def get_total_viewers(channel_id):
 
 
 class ChannelGroupManager(models.Manager):
-    def create(self, **kwargs):
-        group, _ = self.get_or_create(name=kwargs["name"])
-        return group
-
-    def get_or_create(self, defaults=None, **kwargs):
+    def get_or_create_manual(self, defaults=None, **kwargs):
         group, created = super().get_or_create(defaults=defaults, **kwargs)
         custom_account = M3UAccount.get_custom_account()
         ChannelGroupM3UAccount.objects.get_or_create(
@@ -49,6 +45,9 @@ class ChannelGroupManager(models.Manager):
             m3u_account=custom_account,
         )
         return group, created
+
+    def create_manual(self, **kwargs):
+        return self.get_or_create_manual(**kwargs)[0]
 
     def bulk_create_provider_groups(self, names):
         names = list(names)

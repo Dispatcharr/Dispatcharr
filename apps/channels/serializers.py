@@ -302,6 +302,9 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
         model = ChannelGroup
         fields = ["id", "name", "channel_count", "m3u_account_count", "m3u_accounts"]
 
+    def create(self, validated_data):
+        return ChannelGroup.objects.create_manual(**validated_data)
+
     def get_channel_count(self, obj):
         # Use the queryset annotation when available (list path); fall back
         # to a live query for retrieve/create/update where it isn't set.
@@ -646,7 +649,9 @@ class ChannelSerializer(serializers.ModelSerializer):
         # Auto-assign Default Group if no channel_group is specified
         if "channel_group" not in validated_data or validated_data.get("channel_group") is None:
             from apps.channels.models import ChannelGroup
-            default_group, _ = ChannelGroup.objects.get_or_create(name="Default Group")
+            default_group, _ = ChannelGroup.objects.get_or_create_manual(
+                name="Default Group"
+            )
             validated_data["channel_group"] = default_group
 
         # Atomic wrapper keeps the channel insert and its override row

@@ -24,8 +24,17 @@ class GroupCleanupTests(TestCase):
             m3u_account=self.custom_account,
         ).exists()
 
+    def test_plain_orm_creation_does_not_require_or_mark_custom_account(self):
+        M3UAccount.objects.filter(id=self.custom_account.id).delete()
+
+        group = ChannelGroup.objects.create(name="Provider Fixture")
+
+        self.assertFalse(
+            ChannelGroupM3UAccount.objects.filter(channel_group=group).exists()
+        )
+
     def test_stale_provider_relationship_keeps_manual_group(self):
-        manual_group = ChannelGroup.objects.create(name="Sports")
+        manual_group = ChannelGroup.objects.create_manual(name="Sports")
         self.assertTrue(self.has_custom_relation(manual_group))
         process_groups(self.account, {"Sports": {}})
         relationship = ChannelGroupM3UAccount.objects.get(
@@ -46,7 +55,7 @@ class GroupCleanupTests(TestCase):
         )
 
     def test_provider_deletion_keeps_manual_group(self):
-        manual_group = ChannelGroup.objects.create(name="Sports")
+        manual_group = ChannelGroup.objects.create_manual(name="Sports")
         process_groups(self.account, {"Sports": {}})
 
         self.account.delete()
@@ -55,7 +64,7 @@ class GroupCleanupTests(TestCase):
         self.assertTrue(self.has_custom_relation(manual_group))
 
     def test_custom_marker_is_not_stale_cleaned(self):
-        manual_group = ChannelGroup.objects.create(name="Sports")
+        manual_group = ChannelGroup.objects.create_manual(name="Sports")
         marker = ChannelGroupM3UAccount.objects.get(
             channel_group=manual_group,
             m3u_account=self.custom_account,
@@ -91,7 +100,7 @@ class GroupCleanupTests(TestCase):
         provider_group = ChannelGroup.objects.get(name="ESPN +")
         self.assertFalse(self.has_custom_relation(provider_group))
 
-        manual_group = ChannelGroup.objects.create(name="ESPN +")
+        manual_group = ChannelGroup.objects.create_manual(name="ESPN +")
 
         self.assertEqual(manual_group.id, provider_group.id)
         self.assertTrue(self.has_custom_relation(manual_group))
@@ -105,7 +114,7 @@ class GroupCleanupTests(TestCase):
         )
         relationship.delete()
 
-        ChannelGroup.objects.create(name="ESPN +")
+        ChannelGroup.objects.create_manual(name="ESPN +")
 
         ChannelGroup.objects.filter(
             id=provider_group.id,
@@ -150,7 +159,14 @@ class GroupCleanupTests(TestCase):
         )
         client = APIClient()
         client.force_authenticate(user=user)
-        group = ChannelGroup.objects.create(name="Sports")
+        response = client.post(
+            "/api/channels/groups/",
+            {"name": "Sports"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        group = ChannelGroup.objects.get(name="Sports")
+        self.assertTrue(self.has_custom_relation(group))
 
         response = client.get("/api/channels/groups/")
         self.assertEqual(response.status_code, 200)
@@ -172,7 +188,7 @@ class GroupCleanupTests(TestCase):
         )
         client = APIClient()
         client.force_authenticate(user=user)
-        group = ChannelGroup.objects.create(name="Empty Sports")
+        group = ChannelGroup.objects.create_manual(name="Empty Sports")
 
         response = client.post("/api/channels/groups/cleanup/")
 
