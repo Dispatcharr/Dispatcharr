@@ -2251,8 +2251,10 @@ class ProxyServer:
                     # in-flight channel as stale, as in check_if_channel_exists)
                     owner_alive = False
                     if owner:
-                        owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
-                        owner_alive = owner == self.worker_id or self.redis_client.exists(owner_heartbeat_key)
+                        owner_alive = (
+                            owner == self.worker_id
+                            or self.redis_client.exists(RedisKeys.worker_heartbeat(owner))
+                        )
 
                     # Check client count
                     client_set_key = RedisKeys.clients(channel_id)

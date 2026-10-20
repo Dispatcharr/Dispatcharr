@@ -604,7 +604,7 @@ class CheckIfChannelExistsOwnerWithoutMetadataTests(SimpleTestCase):
 
 
 class CheckOrphanedMetadataMidInitTests(SimpleTestCase):
-    """Initial metadata has no owner field yet; the owner lock decides (#1823)."""
+    """Initial metadata has no owner field yet; the owner lock decides."""
 
     OTHER_WORKER = "other-host:2"
     INITIAL_METADATA = {"stream_id": "233", "temp_init": "1792260823.709"}
