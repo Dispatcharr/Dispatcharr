@@ -164,3 +164,19 @@ class GroupCleanupTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 200)
+
+    def test_group_cleanup_removes_empty_manual_group(self):
+        user = get_user_model().objects.create_superuser(
+            username="cleanup-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        group = ChannelGroup.objects.create(name="Empty Sports")
+
+        response = client.post("/api/channels/groups/cleanup/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["deleted_count"], 1)
+        self.assertEqual(response.data["deleted_groups"], ["Empty Sports"])
+        self.assertFalse(ChannelGroup.objects.filter(id=group.id).exists())

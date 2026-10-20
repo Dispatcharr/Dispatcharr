@@ -844,7 +844,10 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         from .models import Channel, ChannelGroupM3UAccount
 
         has_channels = Channel.objects.filter(channel_group_id=OuterRef('pk'))
-        has_accounts = ChannelGroupM3UAccount.objects.filter(channel_group_id=OuterRef('pk'))
+        has_accounts = ChannelGroupM3UAccount.objects.filter(
+            channel_group_id=OuterRef('pk'),
+            m3u_account__locked=False,
+        )
 
         unused_groups = ChannelGroup.objects.annotate(
             has_channels=Exists(has_channels),
