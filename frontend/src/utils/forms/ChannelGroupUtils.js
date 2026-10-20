@@ -18,3 +18,6 @@ export const cleanupUnusedChannelGroups = (includeCustom = false) => {
 export const claimChannelGroupAsCustom = (group) => {
   return API.claimChannelGroupAsCustom(group.id);
 };
+export const unclaimChannelGroup = (group) => {
+  return API.unclaimChannelGroup(group.id);
+};

@@ -167,6 +167,85 @@ class GroupCleanupTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(self.has_custom_relation(group))
 
+    def test_unclaiming_empty_custom_provider_group_demotes_it_to_m3u(self):
+        user = get_user_model().objects.create_superuser(
+            username="demote-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        group = ChannelGroup.objects.create_manual(name="Sports")
+        process_groups(self.account, {"Sports": {}})
+
+        response = client.post(f"/api/channels/groups/{group.id}/unclaim-custom/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(ChannelGroup.objects.filter(id=group.id).exists())
+        self.assertFalse(self.has_custom_relation(group))
+        self.assertTrue(
+            ChannelGroupM3UAccount.objects.filter(
+                channel_group=group,
+                m3u_account=self.account,
+            ).exists()
+        )
+        self.assertFalse(response.data["is_custom"])
+
+    def test_unclaiming_group_with_channels_is_rejected(self):
+        user = get_user_model().objects.create_superuser(
+            username="unclaim-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        group = ChannelGroup.objects.create_manual(name="Sports")
+        Channel.objects.create(name="Manual Sports", channel_group=group)
+
+        response = client.post(f"/api/channels/groups/{group.id}/unclaim-custom/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(self.has_custom_relation(group))
+
+    def test_renaming_custom_provider_group_keeps_provider_group_and_moves_manual_channels(self):
+        user = get_user_model().objects.create_superuser(
+            username="rename-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        group = ChannelGroup.objects.create_manual(name="Sports")
+        process_groups(self.account, {"Sports": {}})
+        manual_channel = Channel.objects.create(
+            name="Manual Sports",
+            channel_group=group,
+            auto_created=False,
+        )
+        provider_channel = Channel.objects.create(
+            name="Provider Sports",
+            channel_group=group,
+            auto_created=True,
+        )
+
+        response = client.patch(
+            f"/api/channels/groups/{group.id}/",
+            {"name": "My Sports"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        renamed_group = ChannelGroup.objects.get(name="My Sports")
+        group.refresh_from_db()
+        manual_channel.refresh_from_db()
+        provider_channel.refresh_from_db()
+        self.assertNotEqual(renamed_group.id, group.id)
+        self.assertEqual(response.data["id"], renamed_group.id)
+        self.assertEqual(response.data["demoted_group"]["id"], group.id)
+        self.assertFalse(response.data["demoted_group"]["is_custom"])
+        self.assertEqual(group.name, "Sports")
+        self.assertFalse(self.has_custom_relation(group))
+        self.assertTrue(self.has_custom_relation(renamed_group))
+        self.assertEqual(manual_channel.channel_group, renamed_group)
+        self.assertEqual(provider_channel.channel_group, group)
+
     def test_group_api_hides_custom_marker_and_allows_manual_edits(self):
         user = get_user_model().objects.create_superuser(
             username="group-admin",
@@ -186,6 +265,7 @@ class GroupCleanupTests(TestCase):
         response = client.get("/api/channels/groups/")
         self.assertEqual(response.status_code, 200)
         group_data = next(item for item in response.data if item["id"] == group.id)
+        self.assertTrue(group_data["is_custom"])
         self.assertEqual(group_data["m3u_account_count"], 0)
         self.assertEqual(group_data["m3u_accounts"], [])
 

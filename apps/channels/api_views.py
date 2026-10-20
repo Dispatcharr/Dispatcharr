@@ -12,7 +12,7 @@ from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.core.paginator import Paginator
 from django.db import connection, transaction
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.db.models.functions import Coalesce
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
@@ -36,6 +36,7 @@ from apps.channels.dvr_access import (
     is_dvr_view_enabled,
     recordings_queryset_for_user,
 )
+from apps.m3u.models import M3UAccount
 
 from core.models import CoreSettings
 from core.utils import (
@@ -724,11 +725,24 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             }
             return ChannelGroup.objects.filter(
                 pk__in=self._visible_group_counts.keys()
+            ).annotate(
+                is_custom=Exists(
+                    ChannelGroupM3UAccount.objects.filter(
+                        channel_group_id=OuterRef('pk'),
+                        m3u_account__locked=True,
+                    )
+                )
             ).only('id', 'name')
 
         return (
             ChannelGroup.objects.annotate(
                 channel_count=Count('channels', distinct=True),
+                is_custom=Exists(
+                    ChannelGroupM3UAccount.objects.filter(
+                        channel_group_id=OuterRef('pk'),
+                        m3u_account__locked=True,
+                    )
+                ),
                 m3u_account_count=Count(
                     'm3u_accounts',
                     filter=Q(m3u_accounts__m3u_account__locked=False),
@@ -764,6 +778,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
                         'id': g.id,
                         'name': g.name,
                         'channel_count': counts.get(g.id, 0),
+                        'is_custom': g.is_custom,
                         'm3u_account_count': 0,
                         'm3u_accounts': [],
                     }
@@ -801,30 +816,45 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     def update(self, request, *args, **kwargs):
-        """Override update to check M3U associations"""
-        instance = self.get_object()
-
-        # Check if group has M3U account associations
-        if instance.provider_m3u_accounts().exists():
-            return Response(
-                {"error": "Cannot edit group with M3U account associations"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        return super().update(request, *args, **kwargs)
+        return self._update_group(request, partial=False)
 
     def partial_update(self, request, *args, **kwargs):
-        """Override partial_update to check M3U associations"""
-        instance = self.get_object()
+        return self._update_group(request, partial=True)
 
-        # Check if group has M3U account associations
-        if instance.provider_m3u_accounts().exists():
+    def _update_group(self, request, partial):
+        """Rename claimed provider groups without changing their provider identity."""
+        instance = self.get_object()
+        has_provider_accounts = instance.provider_m3u_accounts().exists()
+        is_custom = instance.m3u_accounts.filter(m3u_account__locked=True).exists()
+
+        if has_provider_accounts and not is_custom:
             return Response(
                 {"error": "Cannot edit group with M3U account associations"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return super().partial_update(request, *args, **kwargs)
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial,
+        )
+        serializer.is_valid(raise_exception=True)
+        name = serializer.validated_data.get("name", instance.name)
+
+        if has_provider_accounts and name != instance.name:
+            with transaction.atomic():
+                renamed_group = ChannelGroup.objects.create_manual(name=name)
+                instance.channels.filter(auto_created=False).update(
+                    channel_group=renamed_group
+                )
+                instance.m3u_accounts.filter(m3u_account__locked=True).delete()
+                demoted_group = ChannelGroup.objects.get(pk=instance.pk)
+            response_data = self.get_serializer(renamed_group).data
+            response_data["demoted_group"] = self.get_serializer(demoted_group).data
+            return Response(response_data)
+
+        serializer.save()
+        return Response(serializer.data)
 
     @extend_schema(
         methods=["POST"],
@@ -841,8 +871,6 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     )
     def cleanup_unused_groups(self, request):
         """Delete unused provider-only groups, optionally including custom groups."""
-        from django.db.models import Exists, OuterRef
-
         # Find groups with no channels or provider associations using Exists subqueries.
         from .models import Channel, ChannelGroupM3UAccount
 
@@ -891,7 +919,24 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         """Mark a group as custom so provider cleanup cannot remove it."""
         instance = self.get_object()
         ChannelGroup.objects.mark_custom(instance)
-        return Response({"message": f"Claimed '{instance.name}' as custom."})
+        return Response(self.get_serializer(instance).data)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="unclaim-custom",
+        permission_classes=[IsAdmin],
+    )
+    def unclaim_custom(self, request, *args, **kwargs):
+        """Remove custom ownership from a group with no assigned channels."""
+        instance = self.get_object()
+        if instance.channels.exists():
+            return Response(
+                {"error": "Cannot unclaim group with associated channels"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.m3u_accounts.filter(m3u_account__locked=True).delete()
+        return Response(self.get_serializer(instance).data)
 
     def destroy(self, request, *args, **kwargs):
         """Override destroy to check for associations before deletion"""
@@ -1458,6 +1503,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # Apply all updates in a transaction
         with transaction.atomic():
             streams_updates = []
+            manual_groups_to_mark = set()
             for channel, validated_data in validated_updates:
                 # Streams (M2M) and override (reverse OneToOne) cannot
                 # ride the setattr loop; handle each separately below.
@@ -1465,6 +1511,11 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 if streams is not None:
                     streams_updates.append((channel, streams))
                 validated_data.pop("override", None)
+                if (
+                    not channel.auto_created
+                    and validated_data.get("channel_group") is not None
+                ):
+                    manual_groups_to_mark.add(validated_data["channel_group"])
                 for key, value in validated_data.items():
                     setattr(channel, key, value)
 
@@ -1483,6 +1534,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         fields=list(all_fields),
                         batch_size=100
                     )
+
+            for group in manual_groups_to_mark:
+                try:
+                    ChannelGroup.objects.mark_custom(group)
+                except M3UAccount.DoesNotExist:
+                    # The locked account is created by a data migration and
+                    # can be absent from isolated test fixtures.
+                    continue
 
             # On unhide under compact mode, assign a number so the
             # channel is immediately addressable by clients.

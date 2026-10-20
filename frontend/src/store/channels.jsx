@@ -179,8 +179,10 @@ const useChannelsStore = create((set, get) => ({
           ...group,
           hasChannels: group.channel_count > 0,
           hasM3UAccounts: group.m3u_account_count > 0,
-          canEdit: group.m3u_account_count === 0,
-          canDelete: group.channel_count === 0 && group.m3u_account_count === 0,
+          canEdit: group.m3u_account_count === 0 || group.is_custom,
+          canDelete:
+            group.channel_count === 0 &&
+            group.m3u_account_count === 0,
         };
         return acc;
       }, {});

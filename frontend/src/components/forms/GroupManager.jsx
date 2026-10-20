@@ -20,9 +20,10 @@ import {
 import {
   AlertCircle,
   Check,
-  ShieldCheck,
   Database,
   Filter,
+  Minus,
+  Plus,
   SquareMinus,
   SquarePen,
   SquarePlus,
@@ -39,8 +40,16 @@ import {
   claimChannelGroupAsCustom,
   cleanupUnusedChannelGroups,
   deleteChannelGroup,
+  unclaimChannelGroup,
   updateChannelGroup,
 } from '../../utils/forms/ChannelGroupUtils.js';
+
+const toGroupUsage = (group) => ({
+  hasChannels: group.channel_count > 0,
+  hasM3UAccounts: group.m3u_account_count > 0,
+  canEdit: group.m3u_account_count === 0 || group.is_custom,
+  canDelete: group.channel_count === 0 && group.m3u_account_count === 0,
+});
 
 // Move GroupItem outside to prevent recreation on every render
 const GroupItem = React.memo(
@@ -53,15 +62,16 @@ const GroupItem = React.memo(
     onCancelEdit,
     onEdit,
     onDelete,
+    onDemote,
     onClaimCustom,
     groupUsage,
     canEditGroup,
     canDeleteGroup,
   }) => {
     const theme = useMantineTheme();
+    const usage = groupUsage[group.id];
 
     const getGroupBadges = (group) => {
-      const usage = groupUsage[group.id];
       const badges = [];
 
       if (usage?.hasChannels) {
@@ -86,6 +96,22 @@ const GroupItem = React.memo(
             leftSection={<Database size={10} />}
           >
             M3U
+          </Badge>
+        );
+      }
+
+      if (!usage?.hasChannels && !usage?.hasM3UAccounts) {
+        badges.push(
+          <Badge key="unused" size="xs" color="gray">
+            Unused
+          </Badge>
+        );
+      }
+
+      if (group.is_custom) {
+        badges.push(
+          <Badge key="custom" size="xs" color="dark">
+            Custom
           </Badge>
         );
       }
@@ -142,12 +168,31 @@ const GroupItem = React.memo(
               <>
                 <ActionIcon
                   variant="transparent"
-                  color={theme.tailwind.blue[3]}
+                  color={
+                    group.is_custom
+                      ? theme.tailwind.orange[4]
+                      : theme.tailwind.green[4]
+                  }
                   size="sm"
-                  title="Claim as custom"
-                  onClick={() => onClaimCustom(group)}
+                  title={
+                    group.is_custom ? 'Demote from Custom' : 'Upgrade to Custom'
+                  }
+                  aria-label={
+                    group.is_custom ? 'Demote from Custom' : 'Upgrade to Custom'
+                  }
+                  onClick={() =>
+                    group.is_custom ? onDemote(group) : onClaimCustom(group)
+                  }
+                  disabled={
+                    group.is_custom &&
+                    (usage?.hasChannels || !usage?.hasM3UAccounts)
+                  }
                 >
-                  <ShieldCheck size={18} />
+                  {group.is_custom ? (
+                    <Minus size={18} strokeWidth={3} />
+                  ) : (
+                    <Plus size={18} strokeWidth={3} />
+                  )}
                 </ActionIcon>
                 <ActionIcon
                   variant="transparent"
@@ -162,6 +207,8 @@ const GroupItem = React.memo(
                   variant="transparent"
                   color={theme.tailwind.red[6]}
                   size="sm"
+                  title="Delete group"
+                  aria-label="Delete group"
                   onClick={() => onDelete(group)}
                   disabled={!canDeleteGroup(group)}
                 >
@@ -200,6 +247,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   // Confirmation dialog states
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [groupToDelete, setGroupToDelete] = useState(null);
+  const [groupAction, setGroupAction] = useState(null);
   const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
   const [includeCustomInCleanup, setIncludeCustomInCleanup] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
@@ -300,9 +348,19 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     }
 
     try {
-      await updateChannelGroup(channelGroups[editingGroupId], {
+      const updatedGroup = await updateChannelGroup(channelGroups[editingGroupId], {
         name: editName.trim(),
       });
+
+      if (updatedGroup?.demoted_group) {
+        setGroupUsage((usage) => ({
+          ...usage,
+          [updatedGroup.id]: toGroupUsage(updatedGroup),
+          [updatedGroup.demoted_group.id]: toGroupUsage(
+            updatedGroup.demoted_group
+          ),
+        }));
+      }
 
       showNotification({
         title: 'Success',
@@ -312,7 +370,6 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
 
       setEditingGroupId(null);
       setEditName('');
-      await fetchGroupUsage(); // Refresh usage data
     } catch (error) {
       showNotification({
         title: 'Error',
@@ -320,7 +377,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
         color: 'red',
       });
     }
-  }, [editName, editingGroupId, fetchGroupUsage]);
+  }, [channelGroups, editName, editingGroupId]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingGroupId(null);
@@ -391,14 +448,10 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     async (group) => {
       const usage = groupUsage[group.id];
 
-      if (
-        usage &&
-        (!usage.canDelete || usage.hasChannels || usage.hasM3UAccounts)
-      ) {
+      if (!usage?.canDelete) {
         showNotification({
           title: 'Cannot Delete',
-          message:
-            'This group is associated with channels or M3U accounts and cannot be deleted',
+          message: 'This group is associated with channels or M3U accounts and cannot be deleted',
           color: 'orange',
         });
         return;
@@ -406,6 +459,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
 
       // Store group for confirmation dialog
       setGroupToDelete(group);
+      setGroupAction('delete');
 
       // Skip warning if it's been suppressed
       if (isWarningSuppressed('delete-group')) {
@@ -415,6 +469,45 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
       setConfirmDeleteOpen(true);
     },
     [groupUsage, isWarningSuppressed, executeDeleteGroup]
+  );
+
+  const executeDemoteGroup = useCallback(
+    async (group) => {
+      setDeletingGroup(true);
+      try {
+        await unclaimChannelGroup(group);
+        showNotification({
+          title: 'Success',
+          message: 'Group unclaimed successfully',
+          color: 'green',
+        });
+        await fetchGroupUsage();
+      } catch (error) {
+        showNotification({
+          title: 'Error',
+          message: 'Failed to unclaim group',
+          color: 'red',
+        });
+      } finally {
+        setDeletingGroup(false);
+        setConfirmDeleteOpen(false);
+      }
+    },
+    [fetchGroupUsage]
+  );
+
+  const handleDemote = useCallback(
+    (group) => {
+      if (groupUsage[group.id]?.hasChannels) return;
+
+      setGroupToDelete(group);
+      setGroupAction('demote');
+      if (isWarningSuppressed('delete-group')) {
+        return executeDemoteGroup(group);
+      }
+      setConfirmDeleteOpen(true);
+    },
+    [executeDemoteGroup, groupUsage, isWarningSuppressed]
   );
 
   const handleClaimCustom = useCallback(
@@ -498,8 +591,8 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
       >
         <Stack>
           <Alert icon={<AlertCircle size={16} />} color="blue" variant="light">
-            Manage channel groups. Groups associated with M3U accounts or
-            containing channels cannot be deleted.
+            Manage channel groups. Promote groups to protect them from automatic
+            removal, or demote empty custom groups to remove that protection.
           </Alert>
 
           {/* Create new group section */}
@@ -660,6 +753,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
                     onCancelEdit={handleCancelEdit}
                     onEdit={handleEdit}
                     onDelete={handleDelete}
+                    onDemote={handleDemote}
                     onClaimCustom={handleClaimCustom}
                     groupUsage={groupUsage}
                     canEditGroup={canEditChannelGroup}
@@ -683,23 +777,40 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
       <ConfirmationDialog
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
-        onConfirm={() => groupToDelete && executeDeleteGroup(groupToDelete)}
+        onConfirm={() =>
+          groupToDelete &&
+          (groupAction === 'demote'
+            ? executeDemoteGroup(groupToDelete)
+            : executeDeleteGroup(groupToDelete))
+        }
         loading={deletingGroup}
-        title="Confirm Group Deletion"
+        title={
+          groupAction === 'demote'
+            ? 'Confirm Group Demotion'
+            : 'Confirm Group Deletion'
+        }
         message={
           groupToDelete ? (
             <div style={{ whiteSpace: 'pre-line' }}>
-              {`Are you sure you want to delete the following group?
+              {groupAction === 'demote'
+                ? `Are you sure you want to unclaim the following group?
+
+Name: ${groupToDelete.name}
+
+Provider-only cleanup can remove it after it is unclaimed.`
+                : `Are you sure you want to delete the following group?
 
 Name: ${groupToDelete.name}
 
 This action cannot be undone.`}
             </div>
           ) : (
-            'Are you sure you want to delete this group? This action cannot be undone.'
+            groupAction === 'demote'
+              ? 'Are you sure you want to unclaim this group?'
+              : 'Are you sure you want to delete this group? This action cannot be undone.'
           )
         }
-        confirmLabel="Delete"
+        confirmLabel={groupAction === 'demote' ? 'Demote' : 'Delete'}
         cancelLabel="Cancel"
         actionKey="delete-group"
         onSuppressChange={suppressWarning}

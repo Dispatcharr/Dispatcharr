@@ -291,6 +291,7 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 #
 class ChannelGroupSerializer(serializers.ModelSerializer):
     channel_count = serializers.SerializerMethodField()
+    is_custom = serializers.SerializerMethodField()
     m3u_account_count = serializers.SerializerMethodField()
     m3u_accounts = ChannelGroupM3UAccountSerializer(
         many=True,
@@ -300,7 +301,14 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChannelGroup
-        fields = ["id", "name", "channel_count", "m3u_account_count", "m3u_accounts"]
+        fields = [
+            "id",
+            "name",
+            "channel_count",
+            "is_custom",
+            "m3u_account_count",
+            "m3u_accounts",
+        ]
 
     def create(self, validated_data):
         return ChannelGroup.objects.create_manual(**validated_data)
@@ -310,6 +318,12 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
         # to a live query for retrieve/create/update where it isn't set.
         v = getattr(obj, 'channel_count', None)
         return v if v is not None else obj.channels.count()
+
+    def get_is_custom(self, obj):
+        v = getattr(obj, "is_custom", None)
+        return v if v is not None else obj.m3u_accounts.filter(
+            m3u_account__locked=True
+        ).exists()
 
     def get_m3u_account_count(self, obj):
         v = getattr(obj, 'm3u_account_count', None)

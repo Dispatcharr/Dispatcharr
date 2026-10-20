@@ -16,6 +16,7 @@ vi.mock('../../../utils/forms/ChannelGroupUtils.js', () => ({
   claimChannelGroupAsCustom: vi.fn(),
   cleanupUnusedChannelGroups: vi.fn(),
   deleteChannelGroup: vi.fn(),
+  unclaimChannelGroup: vi.fn(),
   updateChannelGroup: vi.fn(),
 }));
 
@@ -51,9 +52,10 @@ vi.mock('../../ConfirmationDialog', () => ({
 vi.mock('lucide-react', () => ({
   AlertCircle: () => <svg data-testid="icon-alert-circle" />,
   Check: () => <svg data-testid="icon-check" />,
-  ShieldCheck: () => <svg data-testid="icon-shield-check" />,
   Database: () => <svg data-testid="icon-database" />,
   Filter: () => <svg data-testid="icon-filter" />,
+  Minus: () => <svg data-testid="icon-minus" />,
+  Plus: () => <svg data-testid="icon-plus" />,
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
   SquarePen: () => <svg data-testid="icon-square-pen" />,
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
@@ -64,12 +66,13 @@ vi.mock('lucide-react', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', async () => ({
-  ActionIcon: ({ children, onClick, disabled, title }) => (
+  ActionIcon: ({ children, onClick, disabled, title, 'aria-label': ariaLabel }) => (
     <button
       data-testid="action-icon"
       onClick={onClick}
       disabled={disabled}
       title={title}
+      aria-label={ariaLabel}
     >
       {children}
     </button>
@@ -148,6 +151,8 @@ vi.mock('@mantine/core', async () => ({
       blue: ['#bfdbfe', '#93c5fd', '#60a5fa', '#3b82f6'],
       yellow: ['#fefcbf'],
       red: ['#f56565'],
+      green: ['#9ae6b4', '#68d391', '#48bb78', '#38a169', '#25855a'],
+      orange: ['#feebc8', '#fbd38d', '#f6ad55', '#ed8936', '#dd6b20'],
     },
   }),
 }));
@@ -166,6 +171,7 @@ const makeGroup = (overrides = {}) => ({
   hasM3UAccounts: false,
   canEdit: true,
   canDelete: true,
+  is_custom: true,
   ...overrides,
 });
 
@@ -225,7 +231,7 @@ describe('GroupManager', () => {
 
   describe('group list rendering', () => {
     it('renders a group name', () => {
-      setupMocks({ groups: { 1: makeGroup() } });
+      setupMocks({ groups: { 1: makeGroup({ is_custom: false }) } });
       renderGroupManager();
       expect(screen.getByText('Group A')).toBeInTheDocument();
     });
@@ -258,14 +264,34 @@ describe('GroupManager', () => {
       expect(screen.getByTestId('icon-database')).toBeInTheDocument();
     });
 
+    it('renders unused before custom with an inverse custom color', () => {
+      setupMocks({
+        groups: {
+          1: makeGroup({
+            hasChannels: false,
+            hasM3UAccounts: false,
+            is_custom: true,
+          }),
+        },
+      });
+      renderGroupManager();
+
+      const badges = screen.getAllByTestId('badge');
+      expect(badges.map((badge) => badge.textContent)).toEqual([
+        'Unused',
+        'Custom',
+      ]);
+      expect(badges[1]).toHaveAttribute('data-color', 'dark');
+    });
+
     it('claims a group as custom', async () => {
-      setupMocks({ groups: { 1: makeGroup() } });
+      setupMocks({ groups: { 1: makeGroup({ is_custom: false }) } });
       vi.mocked(ChannelGroupUtils.claimChannelGroupAsCustom).mockResolvedValue(
         {}
       );
       renderGroupManager();
 
-      fireEvent.click(screen.getByTitle('Claim as custom'));
+      fireEvent.click(screen.getByLabelText('Upgrade to Custom'));
 
       await waitFor(() =>
         expect(ChannelGroupUtils.claimChannelGroupAsCustom).toHaveBeenCalledWith(
@@ -275,6 +301,46 @@ describe('GroupManager', () => {
       expect(showNotification).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Success' })
       );
+    });
+
+    it('changes promotion to disabled demotion for a custom channel group', () => {
+      setupMocks({
+        groups: { 1: makeGroup({ hasChannels: true, is_custom: true }) },
+      });
+      renderGroupManager();
+
+      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByLabelText('Demote from Custom')).toBeDisabled();
+    });
+
+    it('disables demotion for an unused custom group', () => {
+      setupMocks({
+        groups: {
+          1: makeGroup({
+            hasChannels: false,
+            hasM3UAccounts: false,
+            is_custom: true,
+          }),
+        },
+      });
+      renderGroupManager();
+
+      expect(screen.getByLabelText('Demote from Custom')).toBeDisabled();
+    });
+
+    it('allows upgrade for a provider-only M3U group', () => {
+      setupMocks({
+        groups: {
+          1: makeGroup({
+            hasChannels: false,
+            hasM3UAccounts: true,
+            is_custom: false,
+          }),
+        },
+      });
+      renderGroupManager();
+
+      expect(screen.getByLabelText('Upgrade to Custom')).toBeEnabled();
     });
 
     it('shows empty state when no groups match filter', () => {
@@ -539,59 +605,76 @@ describe('GroupManager', () => {
     it('opens confirmation dialog when delete is clicked', async () => {
       setupMocks({
         groups: {
-          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: true },
         },
       });
       renderGroupManager();
 
       fireEvent.click(
-        screen.getByTestId('icon-square-minus').closest('button')
+        screen.getByLabelText('Demote from Custom')
       );
       await waitFor(() => {
         expect(screen.getByTestId('confirmation-dialog')).toBeInTheDocument();
         expect(screen.getByTestId('confirm-title')).toHaveTextContent(
-          'Confirm Group Deletion'
+          'Confirm Group Demotion'
         );
       });
     });
 
-    it('calls deleteChannelGroup when confirmed', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(
+    it('disables demotion for a group with assigned channels', () => {
+      setupMocks({
+        groups: {
+          1: {
+            ...makeGroup(),
+            hasChannels: true,
+            hasM3UAccounts: true,
+            canDelete: true,
+            is_custom: true,
+          },
+        },
+      });
+      renderGroupManager();
+
+      expect(screen.getByLabelText('Demote from Custom')).toBeDisabled();
+    });
+
+    it('calls unclaimChannelGroup when confirmed', async () => {
+      vi.mocked(ChannelGroupUtils.unclaimChannelGroup).mockResolvedValue(
         undefined
       );
       const groupToDelete = {
         ...makeGroup(),
         hasChannels: false,
-        hasM3UAccounts: false,
+        hasM3UAccounts: true,
       };
       setupMocks({ groups: { 1: groupToDelete } });
       renderGroupManager();
 
       fireEvent.click(
-        screen.getByTestId('icon-square-minus').closest('button')
+        screen.getByLabelText('Demote from Custom')
       );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 
       await waitFor(() => {
-        expect(ChannelGroupUtils.deleteChannelGroup).toHaveBeenCalledWith(
+        expect(ChannelGroupUtils.unclaimChannelGroup).toHaveBeenCalledWith(
           groupToDelete
         );
       });
     });
 
     it('shows success notification after delete', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(
+      vi.mocked(ChannelGroupUtils.unclaimChannelGroup).mockResolvedValue(
         undefined
       );
       setupMocks({
         groups: {
-          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: true },
         },
       });
       renderGroupManager();
 
       fireEvent.click(
-        screen.getByTestId('icon-square-minus').closest('button')
+        screen.getByLabelText('Demote from Custom')
       );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 
@@ -602,19 +685,19 @@ describe('GroupManager', () => {
       });
     });
 
-    it('shows error notification when deleteChannelGroup throws', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockRejectedValue(
+    it('shows error notification when unclaimChannelGroup throws', async () => {
+      vi.mocked(ChannelGroupUtils.unclaimChannelGroup).mockRejectedValue(
         new Error('fail')
       );
       setupMocks({
         groups: {
-          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: true },
         },
       });
       renderGroupManager();
 
       fireEvent.click(
-        screen.getByTestId('icon-square-minus').closest('button')
+        screen.getByLabelText('Demote from Custom')
       );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 
@@ -628,13 +711,13 @@ describe('GroupManager', () => {
     it('closes confirmation dialog on cancel', () => {
       setupMocks({
         groups: {
-          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: true },
         },
       });
       renderGroupManager();
 
       fireEvent.click(
-        screen.getByTestId('icon-square-minus').closest('button')
+        screen.getByLabelText('Demote from Custom')
       );
       fireEvent.click(screen.getByTestId('cancel-btn'));
 
@@ -644,18 +727,18 @@ describe('GroupManager', () => {
     });
 
     it('closes confirmation dialog after successful delete', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(
+      vi.mocked(ChannelGroupUtils.unclaimChannelGroup).mockResolvedValue(
         undefined
       );
       setupMocks({
         groups: {
-          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: true },
         },
       });
       renderGroupManager();
 
       fireEvent.click(
-        screen.getByTestId('icon-square-minus').closest('button')
+        screen.getByLabelText('Demote from Custom')
       );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 

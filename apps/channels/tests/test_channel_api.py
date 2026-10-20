@@ -5,7 +5,13 @@ from datetime import timedelta
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from apps.channels.models import Channel, ChannelGroup, ChannelOverride
+from apps.channels.models import (
+    Channel,
+    ChannelGroup,
+    ChannelGroupM3UAccount,
+    ChannelOverride,
+)
+from apps.m3u.models import M3UAccount
 
 User = get_user_model()
 
@@ -19,6 +25,10 @@ class ChannelBulkEditAPITests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
         self.bulk_edit_url = "/api/channels/channels/edit/bulk/"
+        self.custom_account, _ = M3UAccount.objects.get_or_create(
+            name="custom",
+            defaults={"locked": True},
+        )
 
         # Create test channel group
         self.group1 = ChannelGroup.objects.create(name="Test Group 1")
@@ -139,6 +149,50 @@ class ChannelBulkEditAPITests(TestCase):
         self.channel3.refresh_from_db()
         self.assertEqual(self.channel1.channel_group, self.group2)
         self.assertEqual(self.channel3.channel_group, self.group1)
+
+    def test_bulk_edit_marks_manual_channel_destination_group_as_custom(self):
+        self.assertFalse(
+            ChannelGroupM3UAccount.objects.filter(
+                channel_group=self.group2,
+                m3u_account=self.custom_account,
+            ).exists()
+        )
+
+        response = self.client.patch(
+            self.bulk_edit_url,
+            [{"id": self.channel1.id, "channel_group_id": self.group2.id}],
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            ChannelGroupM3UAccount.objects.filter(
+                channel_group=self.group2,
+                m3u_account=self.custom_account,
+            ).exists()
+        )
+
+    def test_bulk_edit_does_not_mark_auto_created_channel_destination_group(self):
+        auto_created = Channel.objects.create(
+            channel_number=4.0,
+            name="Auto Created",
+            channel_group=self.group1,
+            auto_created=True,
+        )
+
+        response = self.client.patch(
+            self.bulk_edit_url,
+            [{"id": auto_created.id, "channel_group_id": self.group2.id}],
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(
+            ChannelGroupM3UAccount.objects.filter(
+                channel_group=self.group2,
+                m3u_account=self.custom_account,
+            ).exists()
+        )
 
     def test_bulk_edit_nonexistent_channel(self):
         """Test bulk update with a channel that doesn't exist"""
