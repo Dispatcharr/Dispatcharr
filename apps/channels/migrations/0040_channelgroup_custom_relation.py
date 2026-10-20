@@ -20,14 +20,8 @@ def create_custom_group_relations(apps, schema_editor):
         channel_group_id__isnull=False,
         auto_created=False,
     ).values_list("channel_group_id", flat=True)
-    provider_only_group_ids = Channel.objects.filter(
-        channel_group_id__isnull=False,
-        auto_created=True,
-    ).exclude(channel_group_id__in=manual_group_ids).values_list(
-        "channel_group_id", flat=True
-    )
-    custom_group_ids = ChannelGroup.objects.exclude(
-        id__in=provider_only_group_ids
+    custom_group_ids = ChannelGroup.objects.filter(
+        id__in=manual_group_ids
     ).values_list("id", flat=True)
 
     ChannelGroupM3UAccount.objects.bulk_create(

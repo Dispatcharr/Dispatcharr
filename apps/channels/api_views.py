@@ -828,7 +828,10 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         methods=["POST"],
-        description="Delete all channel groups that have no associations (no channels or M3U accounts)",
+        description=(
+            "Delete unused provider-only channel groups. Set include_custom=true "
+            "to also delete unused custom groups."
+        ),
     )
     @action(
         detail=False,
@@ -837,25 +840,34 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         permission_classes=[IsAdmin],
     )
     def cleanup_unused_groups(self, request):
-        """Delete all channel groups with no channels or M3U account associations"""
-        from django.db.models import Q, Exists, OuterRef
+        """Delete unused provider-only groups, optionally including custom groups."""
+        from django.db.models import Exists, OuterRef
 
-        # Find groups with no channels and no M3U account associations using Exists subqueries
+        # Find groups with no channels or provider associations using Exists subqueries.
         from .models import Channel, ChannelGroupM3UAccount
 
         has_channels = Channel.objects.filter(channel_group_id=OuterRef('pk'))
-        has_accounts = ChannelGroupM3UAccount.objects.filter(
+        has_provider_accounts = ChannelGroupM3UAccount.objects.filter(
             channel_group_id=OuterRef('pk'),
             m3u_account__locked=False,
         )
+        has_custom_account = ChannelGroupM3UAccount.objects.filter(
+            channel_group_id=OuterRef('pk'),
+            m3u_account__locked=True,
+        )
+        include_custom = request.data.get("include_custom", False)
+        include_custom = str(include_custom).lower() in {"1", "true", "yes"}
 
         unused_groups = ChannelGroup.objects.annotate(
             has_channels=Exists(has_channels),
-            has_accounts=Exists(has_accounts)
+            has_provider_accounts=Exists(has_provider_accounts),
+            has_custom_account=Exists(has_custom_account),
         ).filter(
             has_channels=False,
-            has_accounts=False
+            has_provider_accounts=False,
         )
+        if not include_custom:
+            unused_groups = unused_groups.filter(has_custom_account=False)
 
         deleted_count = unused_groups.count()
         group_names = list(unused_groups.values_list('name', flat=True))
@@ -868,6 +880,18 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             "deleted_count": deleted_count,
             "deleted_groups": group_names
         })
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="claim-custom",
+        permission_classes=[IsAdmin],
+    )
+    def claim_custom(self, request, *args, **kwargs):
+        """Mark a group as custom so provider cleanup cannot remove it."""
+        instance = self.get_object()
+        ChannelGroup.objects.mark_custom(instance)
+        return Response({"message": f"Claimed '{instance.name}' as custom."})
 
     def destroy(self, request, *args, **kwargs):
         """Override destroy to check for associations before deletion"""

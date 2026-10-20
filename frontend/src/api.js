@@ -647,10 +647,11 @@ export default class API {
     }
   }
 
-  static async cleanupUnusedChannelGroups() {
+  static async cleanupUnusedChannelGroups(includeCustom = false) {
     try {
       const response = await request(`${host}/api/channels/groups/cleanup/`, {
         method: 'POST',
+        body: { include_custom: includeCustom },
       });
 
       // Refresh channel groups to update the UI
@@ -660,6 +661,16 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to cleanup unused channel groups', e);
       throw e;
+    }
+  }
+
+  static async claimChannelGroupAsCustom(id) {
+    try {
+      return await request(`${host}/api/channels/groups/${id}/claim-custom/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to claim channel group as custom', e);
     }
   }
 

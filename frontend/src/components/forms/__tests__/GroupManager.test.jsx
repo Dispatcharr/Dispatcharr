@@ -13,6 +13,7 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 
 vi.mock('../../../utils/forms/ChannelGroupUtils.js', () => ({
   addChannelGroup: vi.fn(),
+  claimChannelGroupAsCustom: vi.fn(),
   cleanupUnusedChannelGroups: vi.fn(),
   deleteChannelGroup: vi.fn(),
   updateChannelGroup: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock('../../ConfirmationDialog', () => ({
 vi.mock('lucide-react', () => ({
   AlertCircle: () => <svg data-testid="icon-alert-circle" />,
   Check: () => <svg data-testid="icon-check" />,
+  ShieldCheck: () => <svg data-testid="icon-shield-check" />,
   Database: () => <svg data-testid="icon-database" />,
   Filter: () => <svg data-testid="icon-filter" />,
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
@@ -62,8 +64,13 @@ vi.mock('lucide-react', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', async () => ({
-  ActionIcon: ({ children, onClick, disabled }) => (
-    <button data-testid="action-icon" onClick={onClick} disabled={disabled}>
+  ActionIcon: ({ children, onClick, disabled, title }) => (
+    <button
+      data-testid="action-icon"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+    >
       {children}
     </button>
   ),
@@ -90,6 +97,16 @@ vi.mock('@mantine/core', async () => ({
       )}
       {children}
     </button>
+  ),
+  Checkbox: ({ checked, onChange, label }) => (
+    <label>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange({ currentTarget: event.target })}
+      />
+      {label}
+    </label>
   ),
   Chip: ({ children, checked, onChange }) => (
     <label>
@@ -127,7 +144,11 @@ vi.mock('@mantine/core', async () => ({
     />
   ),
   useMantineTheme: () => ({
-    tailwind: { yellow: ['#fefcbf'], red: ['#f56565'] },
+    tailwind: {
+      blue: ['#bfdbfe', '#93c5fd', '#60a5fa', '#3b82f6'],
+      yellow: ['#fefcbf'],
+      red: ['#f56565'],
+    },
   }),
 }));
 
@@ -235,6 +256,25 @@ describe('GroupManager', () => {
       });
       renderGroupManager();
       expect(screen.getByTestId('icon-database')).toBeInTheDocument();
+    });
+
+    it('claims a group as custom', async () => {
+      setupMocks({ groups: { 1: makeGroup() } });
+      vi.mocked(ChannelGroupUtils.claimChannelGroupAsCustom).mockResolvedValue(
+        {}
+      );
+      renderGroupManager();
+
+      fireEvent.click(screen.getByTitle('Claim as custom'));
+
+      await waitFor(() =>
+        expect(ChannelGroupUtils.claimChannelGroupAsCustom).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 1 })
+        )
+      );
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Success' })
+      );
     });
 
     it('shows empty state when no groups match filter', () => {

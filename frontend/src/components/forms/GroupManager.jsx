@@ -5,6 +5,7 @@ import {
   Badge,
   Box,
   Button,
+  Checkbox,
   Chip,
   Divider,
   Flex,
@@ -19,6 +20,7 @@ import {
 import {
   AlertCircle,
   Check,
+  ShieldCheck,
   Database,
   Filter,
   SquareMinus,
@@ -34,6 +36,7 @@ import ConfirmationDialog from '../ConfirmationDialog';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
   addChannelGroup,
+  claimChannelGroupAsCustom,
   cleanupUnusedChannelGroups,
   deleteChannelGroup,
   updateChannelGroup,
@@ -50,6 +53,7 @@ const GroupItem = React.memo(
     onCancelEdit,
     onEdit,
     onDelete,
+    onClaimCustom,
     groupUsage,
     canEditGroup,
     canDeleteGroup,
@@ -138,6 +142,15 @@ const GroupItem = React.memo(
               <>
                 <ActionIcon
                   variant="transparent"
+                  color={theme.tailwind.blue[3]}
+                  size="sm"
+                  title="Claim as custom"
+                  onClick={() => onClaimCustom(group)}
+                >
+                  <ShieldCheck size={18} />
+                </ActionIcon>
+                <ActionIcon
+                  variant="transparent"
                   color={theme.tailwind.yellow[3]}
                   size="sm"
                   onClick={() => onEdit(group)}
@@ -188,6 +201,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [groupToDelete, setGroupToDelete] = useState(null);
   const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
+  const [includeCustomInCleanup, setIncludeCustomInCleanup] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
 
   // Memoize the channel groups array to prevent unnecessary re-renders
@@ -403,10 +417,30 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     [groupUsage, isWarningSuppressed, executeDeleteGroup]
   );
 
-  const executeCleanup = useCallback(async () => {
+  const handleClaimCustom = useCallback(
+    async (group) => {
+      try {
+        await claimChannelGroupAsCustom(group);
+        showNotification({
+          title: 'Success',
+          message: 'Group claimed as custom',
+          color: 'green',
+        });
+      } catch {
+        showNotification({
+          title: 'Error',
+          message: 'Failed to claim group as custom',
+          color: 'red',
+        });
+      }
+    },
+    []
+  );
+
+  const executeCleanup = useCallback(async (includeCustom = false) => {
     setIsCleaningUp(true);
     try {
-      const result = await cleanupUnusedChannelGroups();
+      const result = await cleanupUnusedChannelGroups(includeCustom);
 
       showNotification({
         title: 'Cleanup Complete',
@@ -429,9 +463,10 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   }, [fetchGroupUsage]);
 
   const handleCleanup = useCallback(async () => {
+    setIncludeCustomInCleanup(false);
     // Skip warning if it's been suppressed
     if (isWarningSuppressed('cleanup-groups')) {
-      return executeCleanup();
+      return executeCleanup(false);
     }
 
     setConfirmCleanupOpen(true);
@@ -625,6 +660,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
                     onCancelEdit={handleCancelEdit}
                     onEdit={handleEdit}
                     onDelete={handleDelete}
+                    onClaimCustom={handleClaimCustom}
                     groupUsage={groupUsage}
                     canEditGroup={canEditChannelGroup}
                     canDeleteGroup={canDeleteChannelGroup}
@@ -674,16 +710,24 @@ This action cannot be undone.`}
       <ConfirmationDialog
         opened={confirmCleanupOpen}
         onClose={() => setConfirmCleanupOpen(false)}
-        onConfirm={executeCleanup}
+        onConfirm={() => executeCleanup(includeCustomInCleanup)}
         loading={isCleaningUp}
         title="Confirm Group Cleanup"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>
-            {`Are you sure you want to cleanup all unused groups?
+            {`Are you sure you want to cleanup unused provider-only groups?
 
-This will permanently delete all groups that are not associated with any channels or M3U accounts.
+Custom groups are kept unless you choose to include them.
 
 This action cannot be undone.`}
+            <Checkbox
+              mt="sm"
+              label="Also delete unused custom groups"
+              checked={includeCustomInCleanup}
+              onChange={(event) =>
+                setIncludeCustomInCleanup(event.currentTarget.checked)
+              }
+            />
           </div>
         }
         confirmLabel="Cleanup"

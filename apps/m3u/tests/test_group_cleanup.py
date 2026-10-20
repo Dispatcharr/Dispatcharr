@@ -124,7 +124,7 @@ class GroupCleanupTests(TestCase):
 
         self.assertTrue(ChannelGroup.objects.filter(id=provider_group.id).exists())
 
-    def test_migration_marks_empty_and_manual_groups_as_custom(self):
+    def test_migration_marks_only_manual_channel_groups_as_custom(self):
         empty_group, manual_group, provider_group = ChannelGroup.objects.bulk_create(
             [
                 ChannelGroup(name="Empty"),
@@ -148,9 +148,24 @@ class GroupCleanupTests(TestCase):
         )
         migration.create_custom_group_relations(django_apps, None)
 
-        self.assertTrue(self.has_custom_relation(empty_group))
+        self.assertFalse(self.has_custom_relation(empty_group))
         self.assertTrue(self.has_custom_relation(manual_group))
         self.assertFalse(self.has_custom_relation(provider_group))
+
+    def test_claim_custom_action_marks_provider_group(self):
+        user = get_user_model().objects.create_superuser(
+            username="claim-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        process_groups(self.account, {"Sports": {}})
+        group = ChannelGroup.objects.get(name="Sports")
+
+        response = client.post(f"/api/channels/groups/{group.id}/claim-custom/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.has_custom_relation(group))
 
     def test_group_api_hides_custom_marker_and_allows_manual_edits(self):
         user = get_user_model().objects.create_superuser(
@@ -181,7 +196,7 @@ class GroupCleanupTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def test_group_cleanup_removes_empty_manual_group(self):
+    def test_group_cleanup_keeps_empty_manual_group_by_default(self):
         user = get_user_model().objects.create_superuser(
             username="cleanup-admin",
             password="pw",
@@ -193,6 +208,52 @@ class GroupCleanupTests(TestCase):
         response = client.post("/api/channels/groups/cleanup/")
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["deleted_count"], 0)
+        self.assertTrue(ChannelGroup.objects.filter(id=group.id).exists())
+
+    def test_group_cleanup_can_remove_empty_manual_group(self):
+        user = get_user_model().objects.create_superuser(
+            username="cleanup-all-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        group = ChannelGroup.objects.create_manual(name="Empty Sports")
+
+        response = client.post(
+            "/api/channels/groups/cleanup/",
+            {"include_custom": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["deleted_count"], 1)
         self.assertEqual(response.data["deleted_groups"], ["Empty Sports"])
         self.assertFalse(ChannelGroup.objects.filter(id=group.id).exists())
+
+    def test_manual_channel_marks_group_as_custom(self):
+        process_groups(self.account, {"Sports": {}})
+        group = ChannelGroup.objects.get(name="Sports")
+
+        Channel.objects.create(
+            name="Manual Sports",
+            channel_group=group,
+            auto_created=False,
+        )
+
+        self.assertTrue(self.has_custom_relation(group))
+
+    def test_moving_manual_channel_marks_destination_group_as_custom(self):
+        source = ChannelGroup.objects.create_manual(name="Source")
+        process_groups(self.account, {"Sports": {}})
+        destination = ChannelGroup.objects.get(name="Sports")
+        channel = Channel.objects.create(
+            name="Manual Sports",
+            channel_group=source,
+            auto_created=False,
+        )
+
+        channel.channel_group = destination
+        channel.save(update_fields=["channel_group"])
+
+        self.assertTrue(self.has_custom_relation(destination))
