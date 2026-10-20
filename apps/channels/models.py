@@ -38,24 +38,23 @@ def get_total_viewers(channel_id):
 
 class ChannelGroupManager(models.Manager):
     def create(self, **kwargs):
-        if kwargs.get("is_manual", True):
-            group, _ = self.get_or_create(name=kwargs["name"])
-            return group
-        return super().create(**kwargs)
+        group, _ = self.get_or_create(name=kwargs["name"])
+        return group
 
     def get_or_create(self, defaults=None, **kwargs):
-        defaults = {"is_manual": True, **(defaults or {})}
         group, created = super().get_or_create(defaults=defaults, **kwargs)
-        if not created and not group.is_manual:
-            group.is_manual = True
-            group.save(update_fields=["is_manual"])
+        custom_account = M3UAccount.get_custom_account()
+        ChannelGroupM3UAccount.objects.get_or_create(
+            channel_group=group,
+            m3u_account=custom_account,
+        )
         return group, created
 
     def bulk_create_provider_groups(self, names):
         names = list(names)
         self.bulk_create(
             [
-                self.model(name=name, is_manual=False)
+                self.model(name=name)
                 for name in names
             ]
         )
@@ -64,9 +63,19 @@ class ChannelGroupManager(models.Manager):
 
 class ChannelGroup(models.Model):
     name = models.TextField(unique=True, db_index=True)
-    is_manual = models.BooleanField(default=True)
 
     objects = ChannelGroupManager()
+
+    def provider_m3u_accounts(self):
+        return self.m3u_accounts.exclude(m3u_account__locked=True)
+
+    @property
+    def provider_m3u_account_relations(self):
+        return getattr(
+            self,
+            "_provider_m3u_account_relations",
+            self.provider_m3u_accounts(),
+        )
 
     def related_channels(self):
         # local import if needed to avoid cyc. Usually fine in a single file though

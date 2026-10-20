@@ -294,7 +294,8 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
     m3u_account_count = serializers.SerializerMethodField()
     m3u_accounts = ChannelGroupM3UAccountSerializer(
         many=True,
-        read_only=True
+        read_only=True,
+        source="provider_m3u_account_relations",
     )
 
     class Meta:
@@ -309,7 +310,7 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
 
     def get_m3u_account_count(self, obj):
         v = getattr(obj, 'm3u_account_count', None)
-        return v if v is not None else obj.m3u_accounts.count()
+        return v if v is not None else obj.provider_m3u_accounts().count()
 
 
 class ChannelProfileSerializer(serializers.ModelSerializer):

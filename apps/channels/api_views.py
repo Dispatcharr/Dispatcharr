@@ -55,6 +55,7 @@ from .models import (
     Stream,
     Channel,
     ChannelGroup,
+    ChannelGroupM3UAccount,
     ChannelStream,
     Logo,
     ChannelProfile,
@@ -728,9 +729,21 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         return (
             ChannelGroup.objects.annotate(
                 channel_count=Count('channels', distinct=True),
-                m3u_account_count=Count('m3u_accounts', distinct=True),
+                m3u_account_count=Count(
+                    'm3u_accounts',
+                    filter=Q(m3u_accounts__m3u_account__locked=False),
+                    distinct=True,
+                ),
             )
-            .prefetch_related('m3u_accounts')
+            .prefetch_related(
+                Prefetch(
+                    'm3u_accounts',
+                    queryset=ChannelGroupM3UAccount.objects.exclude(
+                        m3u_account__locked=True
+                    ),
+                    to_attr='_provider_m3u_account_relations',
+                )
+            )
         )
 
     def list(self, request, *args, **kwargs):
@@ -792,7 +805,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
 
         # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
+        if instance.provider_m3u_accounts().exists():
             return Response(
                 {"error": "Cannot edit group with M3U account associations"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -805,7 +818,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
 
         # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
+        if instance.provider_m3u_accounts().exists():
             return Response(
                 {"error": "Cannot edit group with M3U account associations"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -865,7 +878,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             )
 
         # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
+        if instance.provider_m3u_accounts().exists():
             return Response(
                 {"error": "Cannot delete group with M3U account associations"},
                 status=status.HTTP_400_BAD_REQUEST

@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
 from django.conf import settings
 from django.db import models, transaction
-from .models import M3UAccount
+from .models import CUSTOM_M3U_ACCOUNT_NAME, M3UAccount
 from apps.channels.models import (
     Stream,
     ChannelGroup,
@@ -881,6 +881,9 @@ def cleanup_stale_group_relationships(account, scan_start_time):
     Remove group relationships that haven't been seen since the stale retention period.
     This follows the same logic as stream cleanup for consistency.
     """
+    if account.locked and account.name == CUSTOM_M3U_ACCOUNT_NAME:
+        return 0
+
     # Calculate cutoff date for stale group relationships
     stale_cutoff = scan_start_time - timezone.timedelta(days=account.stale_stream_days)
     logger.info(
@@ -918,25 +921,19 @@ def cleanup_stale_group_relationships(account, scan_start_time):
             # Check if this group has any direct channels (not through M3U accounts)
             has_direct_channels = group.related_channels().exists()
 
-            # Only provider-created groups can be safely removed. Existing
-            # groups may predate provenance tracking or have been manual
-            # before a provider referenced them.
-            if (
-                not group.is_manual
-                and not remaining_m3u_relationships
-                and not has_direct_channels
-            ):
+            if not remaining_m3u_relationships and not has_direct_channels:
                 orphaned_group_ids.append(group.id)
                 logger.debug(f"Group '{group.name}' has no remaining associations and will be deleted")
 
         # Delete truly orphaned groups
         if orphaned_group_ids:
-            provider_groups = ChannelGroup.objects.filter(
+            orphaned_groups = ChannelGroup.objects.filter(
                 id__in=orphaned_group_ids,
-                is_manual=False,
+                m3u_accounts__isnull=True,
+                channels__isnull=True,
             )
-            deleted_groups = list(provider_groups.values_list('name', flat=True))
-            provider_groups.delete()
+            deleted_groups = list(orphaned_groups.values_list('name', flat=True))
+            orphaned_groups.delete()
             logger.info(
                 f"Deleted {len(deleted_groups)} orphaned groups that had no remaining associations: {deleted_groups}"
             )
