@@ -25,9 +25,15 @@ class _Redis:
         bucket.update(kwargs)
 
     def hdel(self, key, *fields):
-        bucket = self.hashes.get(key, {})
+        bucket = self.hashes.get(key)
+        if not bucket:
+            return 0
+        removed = 0
         for field in fields:
-            bucket.pop(field, None)
+            if field in bucket:
+                del bucket[field]
+                removed += 1
+        return removed
 
     def delete(self, key):
         self.strings.pop(key, None)
@@ -68,7 +74,7 @@ class MetadataSlotReleaseTests(SimpleTestCase):
             },
         )
 
-    @patch("apps.m3u.connection_pool.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_channel_uuid_keeps_preview_keys(self, mock_release):
         worker_id = "11111111-2222-3333-4444-555555555555"
         self._seed_channel_keys()
@@ -88,7 +94,7 @@ class MetadataSlotReleaseTests(SimpleTestCase):
         self.assertNotIn(ChannelMetadataField.M3U_PROFILE, metadata)
         self.assertEqual(metadata[ChannelMetadataField.STATE], "stopped")
 
-    @patch("apps.m3u.connection_pool.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_stream_hash_deletes_preview_key_only(self, mock_release):
         worker_id = "a" * 64
         self._seed_channel_keys()
@@ -105,7 +111,7 @@ class MetadataSlotReleaseTests(SimpleTestCase):
         self.assertIn(self.channel_stream_key, self.redis.strings)
         self.assertIn(self.scoped_key, self.redis.strings)
 
-    @patch("apps.m3u.connection_pool.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_scoped_worker_deletes_scoped_key_only(self, mock_release):
         worker_id = f"{'b' * 64}.p{self.profile_id}"
         self._seed_channel_keys()
@@ -122,7 +128,7 @@ class MetadataSlotReleaseTests(SimpleTestCase):
         self.assertIn(self.preview_key, self.redis.strings)
         self.assertIn(self.channel_stream_key, self.redis.strings)
 
-    @patch("apps.m3u.connection_pool.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_second_call_does_not_release_again(self, mock_release):
         worker_id = "c" * 64
         self._seed_channel_keys()

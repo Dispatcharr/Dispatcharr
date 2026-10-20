@@ -29,6 +29,7 @@ class FakeRedis:
 
     def __init__(self):
         self._data = {}
+        self._hashes = {}
 
     def get(self, key):
         val = self._data.get(key)
@@ -44,6 +45,11 @@ class FakeRedis:
         except (ValueError, TypeError):
             self._data[key] = value
 
+    def getdel(self, key):
+        value = self.get(key)
+        self._data.pop(key, None)
+        return value
+
     def incr(self, key):
         self._data[key] = self._data.get(key, 0) + 1
         return self._data[key]
@@ -54,6 +60,27 @@ class FakeRedis:
 
     def delete(self, key):
         self._data.pop(key, None)
+        self._hashes.pop(key, None)
+
+    def hget(self, key, field):
+        return self._hashes.get(key, {}).get(field)
+
+    def hset(self, key, mapping=None, **kwargs):
+        bucket = self._hashes.setdefault(key, {})
+        if mapping:
+            bucket.update(mapping)
+        bucket.update(kwargs)
+
+    def hdel(self, key, *fields):
+        bucket = self._hashes.get(key)
+        if not bucket:
+            return 0
+        removed = 0
+        for field in fields:
+            if field in bucket:
+                del bucket[field]
+                removed += 1
+        return removed
 
     def pipeline(self):
         return FakeRedisPipeline(self)

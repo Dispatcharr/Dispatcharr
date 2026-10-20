@@ -39,6 +39,11 @@ class FakeAssignmentRedis:
         self._hashes.pop(key, None)
         return 1 if existed else 0
 
+    def getdel(self, key):
+        value = self.get(key)
+        self._strings.pop(key, None)
+        return value
+
     def exists(self, key):
         return key in self._strings or key in self._hashes
 
@@ -142,7 +147,7 @@ class ChannelGetStreamAssignmentTests(TestCase):
         mock_reserve.assert_not_called()
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     @patch("apps.channels.models.reserve_profile_slot")
     def test_releases_stale_assignment_when_proxy_stopped(
         self, mock_reserve, mock_release, mock_get_client
@@ -244,7 +249,7 @@ class StreamScopedPreviewAssignmentTests(TestCase):
         mock_reserve.assert_not_called()
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
     def test_stale_slot_is_released_and_reserved_again(
         self, mock_reserve, mock_release, mock_get_client
@@ -290,7 +295,7 @@ class StreamScopedPreviewAssignmentTests(TestCase):
         self.assertFalse(slot_reserved)
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_release_scoped_slot_leaves_unscoped_assignment(
         self, mock_release, mock_get_client
     ):
@@ -306,7 +311,7 @@ class StreamScopedPreviewAssignmentTests(TestCase):
         self.assertTrue(self.redis.exists(f"stream_profile:{self.stream.id}"))
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_release_without_scoped_key_is_noop(self, mock_release, mock_get_client):
         mock_get_client.return_value = self.redis
 
@@ -314,7 +319,7 @@ class StreamScopedPreviewAssignmentTests(TestCase):
         mock_release.assert_not_called()
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_scoped_release_clears_metadata_to_prevent_double_decr(
         self, mock_release, mock_get_client
     ):
@@ -397,7 +402,7 @@ class StreamDefaultPreviewAssignmentTests(TestCase):
         self.assertEqual(int(self.redis.get("channel_stream:99")), self.stream.id)
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_release_leaves_channel_assignment_intact(
         self, mock_release, mock_get_client
     ):
@@ -425,7 +430,7 @@ class StreamDefaultPreviewAssignmentTests(TestCase):
         )
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     def test_release_without_preview_key_does_not_touch_channel_key(
         self, mock_release, mock_get_client
     ):
@@ -454,7 +459,7 @@ class StreamDefaultPreviewAssignmentTests(TestCase):
         mock_reserve.assert_not_called()
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
     def test_stale_preview_slot_is_released_and_reserved_again(
         self, mock_reserve, mock_release, mock_get_client
@@ -487,7 +492,7 @@ class StreamDefaultPreviewAssignmentTests(TestCase):
         )
 
     @patch("apps.channels.models.RedisClient.get_client")
-    @patch("apps.channels.models.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     @patch("apps.channels.models.reserve_profile_slot", return_value=(False, 1, "full"))
     def test_stale_release_clears_metadata_when_rereserve_fails(
         self, mock_reserve, mock_release, mock_get_client

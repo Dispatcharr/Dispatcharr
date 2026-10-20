@@ -2321,8 +2321,8 @@ class ProxyServer:
         from uuid import UUID
 
         from apps.channels.models import Stream
-        from apps.m3u.connection_pool import release_profile_slot
 
+        from .slot_release import claim_and_release_profile_slot
         from .url_utils import parse_preview_worker_id
 
         metadata_key = RedisKeys.channel_metadata(channel_id)
@@ -2381,19 +2381,19 @@ class ProxyServer:
             else:
                 self.redis_client.delete(Stream.preview_profile_key(stream_id))
 
-        if not self.redis_client.hdel(metadata_key, ChannelMetadataField.M3U_PROFILE):
-            logger.debug(
-                f"Channel {channel_id}: profile slot already released by a "
-                f"concurrent teardown"
-            )
-            return False
-        self.redis_client.hdel(metadata_key, ChannelMetadataField.STREAM_ID)
-        release_profile_slot(profile_id, self.redis_client)
-        logger.info(
-            f"Released profile slot {profile_id} for deleted channel {channel_id} "
-            f"via Redis metadata"
+        released = claim_and_release_profile_slot(
+            self.redis_client,
+            metadata_key,
+            meta_profile_id,
+            profile_id,
+            log_label=f"Channel {channel_id}",
         )
-        return True
+        if released:
+            logger.info(
+                f"Released profile slot {profile_id} for deleted channel {channel_id} "
+                f"via Redis metadata"
+            )
+        return released
 
     def _release_stream_resources(self, channel_id):
         """Release profile slot before wiping live Redis keys.
