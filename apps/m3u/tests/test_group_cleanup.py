@@ -6,7 +6,12 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.channels.models import Channel, ChannelGroup, ChannelGroupM3UAccount
+from apps.channels.models import (
+    Channel,
+    ChannelGroup,
+    ChannelGroupM3UAccount,
+    ChannelOverride,
+)
 from apps.m3u.models import M3UAccount
 from apps.m3u.tasks import cleanup_stale_group_relationships, process_groups
 
@@ -165,6 +170,7 @@ class GroupCleanupTests(TestCase):
         response = client.post(f"/api/channels/groups/{group.id}/claim-custom/")
 
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["is_custom"])
         self.assertTrue(self.has_custom_relation(group))
 
     def test_unclaiming_empty_custom_provider_group_demotes_it_to_m3u(self):
@@ -310,6 +316,68 @@ class GroupCleanupTests(TestCase):
         self.assertEqual(response.data["deleted_count"], 1)
         self.assertEqual(response.data["deleted_groups"], ["Empty Sports"])
         self.assertFalse(ChannelGroup.objects.filter(id=group.id).exists())
+
+    def test_group_api_and_cleanup_use_auto_channel_override_group(self):
+        user = get_user_model().objects.create_superuser(
+            username="override-group-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        provider_group = ChannelGroup.objects.create(name="Provider Sports")
+        override_group = ChannelGroup.objects.create(name="My Sports")
+        channel = Channel.objects.create(
+            name="Provider Sports",
+            channel_group=provider_group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=channel,
+            channel_group=override_group,
+        )
+
+        response = client.get("/api/channels/groups/")
+
+        self.assertEqual(response.status_code, 200)
+        groups = {group["id"]: group for group in response.data}
+        self.assertEqual(groups[provider_group.id]["channel_count"], 0)
+        self.assertEqual(groups[override_group.id]["channel_count"], 1)
+
+        response = client.delete(f"/api/channels/groups/{provider_group.id}/")
+
+        self.assertEqual(response.status_code, 204)
+
+        response = client.post("/api/channels/groups/cleanup/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(ChannelGroup.objects.filter(id=override_group.id).exists())
+
+    def test_unclaim_uses_effective_channel_group(self):
+        user = get_user_model().objects.create_superuser(
+            username="effective-unclaim-admin",
+            password="pw",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        source_group = ChannelGroup.objects.create_manual(name="Provider Sports")
+        process_groups(self.account, {"Provider Sports": {}})
+        destination_group = ChannelGroup.objects.create(name="My Sports")
+        channel = Channel.objects.create(
+            name="Provider Sports",
+            channel_group=source_group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=channel,
+            channel_group=destination_group,
+        )
+
+        response = client.post(
+            f"/api/channels/groups/{source_group.id}/unclaim-custom/"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.has_custom_relation(source_group))
 
     def test_manual_channel_marks_group_as_custom(self):
         process_groups(self.account, {"Sports": {}})

@@ -12,7 +12,16 @@ from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.core.paginator import Paginator
 from django.db import connection, transaction
-from django.db.models import Count, Exists, OuterRef, Prefetch, Q
+from django.db.models import (
+    Count,
+    Exists,
+    IntegerField,
+    OuterRef,
+    Prefetch,
+    Q,
+    Subquery,
+    Value,
+)
 from django.db.models.functions import Coalesce
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
@@ -57,6 +66,7 @@ from .models import (
     Channel,
     ChannelGroup,
     ChannelGroupM3UAccount,
+    ChannelOverride,
     ChannelStream,
     Logo,
     ChannelProfile,
@@ -693,6 +703,15 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return permissions_for_action(self)
 
+    @staticmethod
+    def _has_effective_channels(group):
+        return Channel.objects.annotate(
+            effective_group_id=Coalesce(
+                "override__channel_group_id",
+                "channel_group_id",
+            )
+        ).filter(effective_group_id=group.id).exists()
+
     def get_queryset(self):
         # Annotate both counts at the SQL level so the serializer methods
         # can read them from the object rather than issuing a COUNT per row.
@@ -734,9 +753,27 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
                 )
             ).only('id', 'name')
 
+        effective_channel_count = (
+            Channel.objects.annotate(
+                effective_group_id=Coalesce(
+                    "override__channel_group_id",
+                    "channel_group_id",
+                )
+            )
+            .filter(effective_group_id=OuterRef("pk"))
+            .order_by()
+            .values("effective_group_id")
+            .annotate(count=Count("id"))
+            .values("count")[:1]
+        )
+
         return (
             ChannelGroup.objects.annotate(
-                channel_count=Count('channels', distinct=True),
+                channel_count=Coalesce(
+                    Subquery(effective_channel_count),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
                 is_custom=Exists(
                     ChannelGroupM3UAccount.objects.filter(
                         channel_group_id=OuterRef('pk'),
@@ -874,7 +911,12 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         # Find groups with no channels or provider associations using Exists subqueries.
         from .models import Channel, ChannelGroupM3UAccount
 
-        has_channels = Channel.objects.filter(channel_group_id=OuterRef('pk'))
+        has_channels = Channel.objects.annotate(
+            effective_group_id=Coalesce(
+                "override__channel_group_id",
+                "channel_group_id",
+            )
+        ).filter(effective_group_id=OuterRef("pk"))
         has_provider_accounts = ChannelGroupM3UAccount.objects.filter(
             channel_group_id=OuterRef('pk'),
             m3u_account__locked=False,
@@ -919,7 +961,9 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         """Mark a group as custom so provider cleanup cannot remove it."""
         instance = self.get_object()
         ChannelGroup.objects.mark_custom(instance)
-        return Response(self.get_serializer(instance).data)
+        return Response(
+            self.get_serializer(ChannelGroup.objects.get(pk=instance.pk)).data
+        )
 
     @action(
         detail=True,
@@ -930,20 +974,22 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     def unclaim_custom(self, request, *args, **kwargs):
         """Remove custom ownership from a group with no assigned channels."""
         instance = self.get_object()
-        if instance.channels.exists():
+        if self._has_effective_channels(instance):
             return Response(
                 {"error": "Cannot unclaim group with associated channels"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         instance.m3u_accounts.filter(m3u_account__locked=True).delete()
-        return Response(self.get_serializer(instance).data)
+        return Response(
+            self.get_serializer(ChannelGroup.objects.get(pk=instance.pk)).data
+        )
 
     def destroy(self, request, *args, **kwargs):
         """Override destroy to check for associations before deletion"""
         instance = self.get_object()
 
         # Check if group has associated channels
-        if instance.channels.exists():
+        if self._has_effective_channels(instance):
             return Response(
                 {"error": "Cannot delete group with associated channels"},
                 status=status.HTTP_400_BAD_REQUEST

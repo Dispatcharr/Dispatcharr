@@ -35,6 +35,14 @@ const errorNotification = (message, error) => {
   throw error;
 };
 
+const hasChannelGroupChange = (update) =>
+  Object.prototype.hasOwnProperty.call(update, 'channel_group_id') ||
+  update.override === null ||
+  Object.prototype.hasOwnProperty.call(
+    update.override ?? {},
+    'channel_group_id'
+  );
+
 // FormData cannot encode null. Empty string clears hash_key so the account
 // inherits the global M3U Hash Key (same as JSON body sending null).
 const appendPlaylistFormData = (body, values) => {
@@ -857,7 +865,7 @@ export default class API {
       );
 
       useChannelsStore.getState().updateChannel(response);
-      if (Object.prototype.hasOwnProperty.call(payload, 'channel_group_id')) {
+      if (hasChannelGroupChange(payload)) {
         await useChannelsStore.getState().fetchChannelGroups();
       }
       if (Object.prototype.hasOwnProperty.call(payload, 'streams')) {
@@ -968,7 +976,7 @@ export default class API {
         });
       }
 
-      if (Object.prototype.hasOwnProperty.call(values, 'channel_group_id')) {
+      if (hasChannelGroupChange(values)) {
         await useChannelsStore.getState().fetchChannelGroups();
       }
 
@@ -989,11 +997,7 @@ export default class API {
         }
       );
 
-      if (
-        updates.some((update) =>
-          Object.prototype.hasOwnProperty.call(update, 'channel_group_id')
-        )
-      ) {
+      if (updates.some(hasChannelGroupChange)) {
         await useChannelsStore.getState().fetchChannelGroups();
       }
 
