@@ -1,26 +1,11 @@
 import json
 import os
 
-from django.db import migrations
-
-
-# This is the registry that 0004 incorrectly granted to every previously
-# enabled plugin. Keep it fixed so a later capability does not alter repair.
-SEEDED_CAPABILITIES = {
-    "background_tasks",
-    "persistent_service",
-    "network_listener",
-    "subprocess",
-    "outbound_network",
-    "filesystem_write",
-    "celery_dispatch",
-    "proxy_internals",
-    "user_data",
-    "external_dependencies",
-}
+from django.db import migrations, models
 
 
 def effective_capabilities_for_plugin(plugin_key):
+    """Read the installed manifest without booting plugin discovery in a migration."""
     from apps.plugins.capabilities import compute_effective_capabilities
 
     plugins_dir = os.environ.get("DISPATCHARR_PLUGINS_DIR", "/data/plugins")
@@ -35,21 +20,30 @@ def effective_capabilities_for_plugin(plugin_key):
     return compute_effective_capabilities(manifest) if isinstance(manifest, dict) else []
 
 
-def repair_acknowledged_capabilities(apps, schema_editor):
+def seed_acknowledged_capabilities(apps, schema_editor):
+    """Preserve consent for capabilities an existing plugin actually used."""
     PluginConfig = apps.get_model("plugins", "PluginConfig")
     for plugin in PluginConfig.objects.filter(ever_enabled=True).iterator():
-        if set(plugin.acknowledged_capabilities or []) != SEEDED_CAPABILITIES:
-            continue
         plugin.acknowledged_capabilities = effective_capabilities_for_plugin(plugin.key)
         plugin.save(update_fields=["acknowledged_capabilities"])
+
+
+def revert_acknowledged_capabilities(apps, schema_editor):
+    PluginConfig = apps.get_model("plugins", "PluginConfig")
+    PluginConfig.objects.update(acknowledged_capabilities=[])
 
 
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("plugins", "0004_plugin_acknowledged_capabilities"),
+        ("plugins", "0004_plugin_schedule_ownership"),
     ]
 
     operations = [
-        migrations.RunPython(repair_acknowledged_capabilities, migrations.RunPython.noop),
+        migrations.AddField(
+            model_name="pluginconfig",
+            name="acknowledged_capabilities",
+            field=models.JSONField(blank=True, default=list),
+        ),
+        migrations.RunPython(seed_acknowledged_capabilities, revert_acknowledged_capabilities),
     ]
