@@ -63,6 +63,8 @@ class BaseConfig:
                 "stream_startup_timeout": 8,
                 "connection_timeout": 10,
                 "validate_redirect_urls": True,
+                "max_retries": 3,
+                "stream_retry_timeout": 3,
             }
 
         finally:
