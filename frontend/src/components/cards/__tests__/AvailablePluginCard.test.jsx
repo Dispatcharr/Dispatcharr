@@ -38,7 +38,7 @@ vi.mock('../../PluginWarnings.jsx', () => ({
 
 // ── PluginDetailPanel ──────────────────────────────────────────────────────────
 vi.mock('../../PluginDetailPanel.jsx', () => ({
-  default: ({ detail, onInstall, onUninstall }) => (
+  default: ({ detail, onInstall, onUninstall, metadataActions }) => (
     <div
       data-testid="plugin-detail-panel"
       data-changelog={detail?.manifest?.versions?.[0]?.changelog}
@@ -60,8 +60,22 @@ vi.mock('../../PluginDetailPanel.jsx', () => ({
       <button data-testid="detail-uninstall" onClick={onUninstall}>
         Detail Uninstall
       </button>
+      {metadataActions}
     </div>
   ),
+}));
+
+vi.mock('../../PluginHeader.jsx', () => ({
+  PluginLinks: ({ helpUrl, repoUrl, discordThread }) =>
+    helpUrl || repoUrl || discordThread ? <div data-testid="plugin-links" /> : null,
+  PluginMetadata: ({ plugin, license, trailing }) => (
+    <div>
+      {plugin.author && <span>{plugin.author}</span>}
+      {license && <><svg data-testid="icon-scale" /><span>{license}</span></>}
+      {trailing}
+    </div>
+  ),
+  SignatureIndicator: () => null,
 }));
 
 // ── pluginUtils ────────────────────────────────────────────────────────────────
@@ -112,7 +126,7 @@ vi.mock('@mantine/core', () => ({
       </span>
     ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, disabled, loading, color, variant }) => (
+  Button: ({ children, onClick, disabled, loading, color, variant, leftSection }) => (
     <button
       onClick={onClick}
       disabled={disabled || loading}
@@ -120,6 +134,7 @@ vi.mock('@mantine/core', () => ({
       data-variant={variant}
       data-loading={String(loading)}
     >
+      {leftSection}
       {children}
     </button>
   ),
@@ -165,15 +180,18 @@ vi.mock('@mantine/core', () => ({
 vi.mock('lucide-react', () => ({
   AlertTriangle: () => <svg data-testid="icon-alert-triangle" />,
   Ban: () => <svg data-testid="icon-ban" />,
+  CalendarClock: () => <svg data-testid="icon-calendar-clock" />,
   Check: () => <svg data-testid="icon-check" />,
   Download: () => <svg data-testid="icon-download" />,
   FlaskConical: () => <svg data-testid="icon-flask-conical" />,
   Info: () => <svg data-testid="icon-info" />,
   RefreshCw: () => <svg data-testid="icon-refresh-cw" />,
   RotateCcw: () => <svg data-testid="icon-rotate-ccw" />,
+  Scale: () => <svg data-testid="icon-scale" />,
   ShieldAlert: () => <svg data-testid="icon-shield-alert" />,
   ShieldCheck: () => <svg data-testid="icon-shield-check" />,
   Trash2: () => <svg data-testid="icon-trash2" />,
+  User: () => <svg data-testid="icon-user" />,
 }));
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -367,12 +385,13 @@ describe('AvailablePluginCard', () => {
       expect(screen.queryByText('12,345')).not.toBeInTheDocument();
     });
 
-    it('renders the license badge', () => {
+    it('renders the license with its icon', () => {
       setupMocks();
       render(
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
       );
       expect(screen.getByText('MIT')).toBeInTheDocument();
+      expect(screen.getByTestId('icon-scale')).toBeInTheDocument();
     });
 
     it('renders a last_updated badge', () => {
@@ -392,6 +411,7 @@ describe('AvailablePluginCard', () => {
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
       );
       expect(screen.getByText('More Info')).toBeInTheDocument();
+      expect(screen.queryByTestId('icon-info')).not.toBeInTheDocument();
     });
 
     it('renders Install button for not_installed plugin', () => {
@@ -480,7 +500,7 @@ describe('AvailablePluginCard', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('renders min version badge when min_dispatcharr_version is set', () => {
+    it('does not render min version metadata on the card', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -488,10 +508,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('0.9.0')).toBeInTheDocument();
+      expect(screen.queryByText('0.9.0')).not.toBeInTheDocument();
     });
 
-    it('renders max version badge when max_dispatcharr_version is set', () => {
+    it('does not render max version metadata on the card', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -499,7 +519,7 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('2.0.0')).toBeInTheDocument();
+      expect(screen.queryByText('2.0.0')).not.toBeInTheDocument();
     });
 
     it('renders Downgrade button when backend reports downgrade_available', () => {
@@ -733,6 +753,25 @@ describe('AvailablePluginCard', () => {
           'https://example.com/manifest.json'
         );
       });
+    });
+
+    it('shows manifest links in the modal header', async () => {
+      setupMocks();
+      vi.mocked(PluginsUtils.getPluginDetailManifest).mockResolvedValue({
+        manifest: {
+          versions: [],
+          repo_url: 'https://github.com/example/plugin',
+        },
+        signature_verified: true,
+      });
+      render(
+        <AvailablePluginCard
+          plugin={makePlugin({ manifest_url: 'https://example.com/manifest.json' })}
+          appVersion={APP_VERSION}
+        />
+      );
+      fireEvent.click(screen.getByText('More Info'));
+      expect(await screen.findByTestId('plugin-links')).toBeInTheDocument();
     });
 
     it('closes detail modal when modal close button is clicked', () => {

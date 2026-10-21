@@ -147,7 +147,7 @@ describe('PluginCard', () => {
     fireEvent.click(screen.getByRole('checkbox'));
 
     await waitFor(() => {
-      expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', false);
+      expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', false, []);
     });
   });
 
@@ -166,7 +166,11 @@ describe('PluginCard', () => {
 
     await waitFor(() => {
       expect(defaultProps.onRequireTrust).toHaveBeenCalledWith(firstTimePlugin);
-      expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', true);
+      expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith(
+        'test-plugin',
+        true,
+        ['background_tasks']
+      );
     });
   });
 
@@ -207,7 +211,11 @@ describe('PluginCard', () => {
 
     await waitFor(() => {
       expect(defaultProps.onRequireTrust).toHaveBeenCalledWith(updatedPlugin);
-      expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', true);
+      expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith(
+        'test-plugin',
+        true,
+        ['background_tasks', 'persistent_service']
+      );
     });
   });
 

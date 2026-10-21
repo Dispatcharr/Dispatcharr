@@ -1,8 +1,6 @@
 import React from 'react';
 import {
-  ActionIcon,
   Alert,
-  Badge,
   Button,
   Group,
   Loader,
@@ -22,8 +20,6 @@ import {
   Download,
   Info,
   RefreshCw,
-  ShieldAlert,
-  ShieldCheck,
   Trash2,
 } from 'lucide-react';
 import {
@@ -33,7 +29,7 @@ import {
 } from '../utils/components/pluginUtils.js';
 import { formatKB } from '../utils/networkUtils.js';
 import { isSafeHttpUrl } from '../utils/url.js';
-import { DiscordIcon, GitHubIcon } from './icons.jsx';
+import { PluginMetadata } from './PluginHeader.jsx';
 
 const changelogLink = (changelog) => {
   if (typeof changelog === 'number' && Number.isInteger(changelog) && changelog > 0) {
@@ -56,99 +52,6 @@ const changelogLink = (changelog) => {
 };
 
 /**
- * Author/license/signature/repo-link/discord-link badges, exported so a
- * caller embedding PluginDetailPanel inline (e.g. PluginDetail.jsx's
- * "Plugin Management" pane) can merge these into its own pill row instead
- * of getting a second, separate one from this component (see `hideMeta`).
- */
-export const PluginMetaBadges = ({ manifest, signatureVerified, size = 'sm' }) => {
-  const safeRepoUrl = isSafeHttpUrl(manifest.repo_url) ? manifest.repo_url : null;
-  // Only rewrite to the discord:// deep-link scheme when the source matched
-  // the strict https://discord.com/channels/ pattern; any other value still
-  // has to pass the plain http(s) allowlist before it's rendered at all.
-  const isDiscordChannel = /^https:\/\/discord\.com\/channels\//.test(manifest.discord_thread || '');
-  const safeDiscordHref = isDiscordChannel
-    ? manifest.discord_thread.replace('https://', 'discord://')
-    : isSafeHttpUrl(manifest.discord_thread)
-      ? manifest.discord_thread
-      : null;
-
-  return (
-    <>
-      {manifest.author && (
-        <Badge size={size} variant="default">
-          <span style={{ opacity: 0.5, marginRight: 4 }}>AUTHOR</span>
-          {manifest.author}
-        </Badge>
-      )}
-      {manifest.license && (
-        <Badge
-          size={size}
-          variant="default"
-          component="a"
-          href={`https://spdx.org/licenses/${encodeURIComponent(manifest.license)}.html`}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ cursor: 'pointer' }}
-        >
-          <span style={{ opacity: 0.5, marginRight: 4 }}>LICENSE</span>
-          {manifest.license}
-        </Badge>
-      )}
-      {signatureVerified != null &&
-        (signatureVerified ? (
-          <Badge size={size} variant="default" leftSection={<ShieldCheck size={10} />}>
-            Verified Signature
-          </Badge>
-        ) : (
-          <Tooltip label="Invalid Signature">
-            <Badge
-              size={size}
-              variant="filled"
-              color="red"
-              leftSection={<ShieldAlert size={10} />}
-            >
-              Unverified
-            </Badge>
-          </Tooltip>
-        ))}
-      {safeRepoUrl && (
-        <Tooltip label="Source Repository">
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            size="sm"
-            component="a"
-            href={safeRepoUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <GitHubIcon size={16} />
-          </ActionIcon>
-        </Tooltip>
-      )}
-      {safeDiscordHref && (
-        <Tooltip label="Discord Discussion">
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            size="sm"
-            component="a"
-            href={safeDiscordHref}
-            {...(!isDiscordChannel && {
-              target: '_blank',
-              rel: 'noopener noreferrer',
-            })}
-          >
-            <DiscordIcon size={16} />
-          </ActionIcon>
-        </Tooltip>
-      )}
-    </>
-  );
-};
-
-/**
  * Shared plugin detail panel used in both PluginCard and AvailablePluginCard modals.
  *
  * Props:
@@ -167,9 +70,11 @@ export const PluginMetaBadges = ({ manifest, signatureVerified, size = 'sm' }) =
  *  - installedVersionIsPrerelease  boolean
  *  - repoId          number
  *  - slug            string
- *  - hideMeta        boolean  skip the description text and PluginMetaBadges
- *                     row; set when the caller renders those itself, merged
- *                     into its own pill row (see PluginDetail.jsx)
+ *  - hideMeta        boolean  skip the description text and metadata row;
+ *                     set when the caller renders metadata in its header
+ *  - hideMetadata    boolean  skip only the author/license metadata while
+ *                     retaining the description
+ *  - metadataActions optional elements placed beside the version action
  *  - compactVersionDetails  boolean  hide the release-details table behind a
  *                     "Details" popover button instead of showing it inline
  *                     (default: inline table, used by AvailablePluginCard's
@@ -180,6 +85,8 @@ export const PluginMetaBadges = ({ manifest, signatureVerified, size = 'sm' }) =
  */
 const PluginDetailPanel = ({
   hideMeta = false,
+  hideMetadata = false,
+  metadataActions,
   compactVersionDetails = false,
   hideVersionLabel = false,
   detail,
@@ -272,10 +179,10 @@ const PluginDetailPanel = ({
         color: 'orange',
         icon: installing ? <Loader size={14} /> : <Download size={14} />,
         variant: 'filled',
-        tooltip:
-          installStatus === 'unmanaged'
-            ? 'Installed manually – installing will take over management'
-            : `Managed by ${installedSourceRepoName || 'another repo'} – installing will transfer management to this repo`,
+          tooltip:
+            installStatus === 'unmanaged'
+            ? 'Installed manually. Installing will take over management'
+            : `Managed by ${installedSourceRepoName || 'another repo'}. Installing will transfer management to this repo`,
       };
     }
     if (isSelSame) {
@@ -329,9 +236,12 @@ const PluginDetailPanel = ({
         <Text size="sm">{manifest.description}</Text>
       )}
 
-      {!hideMeta && (
+      {!hideMeta && !hideMetadata && (
         <Group gap="xs" wrap="wrap">
-          <PluginMetaBadges manifest={manifest} signatureVerified={detail.signature_verified} />
+          <PluginMetadata
+            plugin={{ author: manifest.author }}
+            license={manifest.license}
+          />
         </Group>
       )}
 
@@ -480,27 +390,42 @@ const PluginDetailPanel = ({
 
           return (
             <>
-              <Group gap="xs" align="flex-end" grow={compactVersionDetails}>
-                <Select
-                  label={hideVersionLabel ? undefined : 'Version'}
-                  size="xs"
-                  allowDeselect={false}
-                  value={selectedVersion}
-                  onChange={onVersionChange}
-                  data={versionItems}
-                  style={{ maxWidth: 240 }}
-                />
-                {compactVersionDetails && selectedVersionData && (
-                  <Popover width={260} position="bottom-start" withArrow shadow="md">
-                    <Popover.Target>
-                      <Button size="xs" variant="default" leftSection={<Info size={14} />}>
-                        Details
-                      </Button>
-                    </Popover.Target>
-                    <Popover.Dropdown>{versionTable}</Popover.Dropdown>
-                  </Popover>
-                )}
-                <Group gap="xs" align="center" grow={compactVersionDetails}>
+              <Group
+                gap="xs"
+                align="flex-end"
+                wrap="nowrap"
+                grow={compactVersionDetails}
+                style={metadataActions ? { width: '100%' } : undefined}
+              >
+                <Group
+                  gap="xs"
+                  align="flex-end"
+                  style={
+                    metadataActions
+                      ? { flex: '0 0 calc(50% - 4px)' }
+                      : undefined
+                  }
+                >
+                  <Select
+                    label={hideVersionLabel ? undefined : 'Version'}
+                    size="xs"
+                    allowDeselect={false}
+                    value={selectedVersion}
+                    onChange={onVersionChange}
+                    data={versionItems}
+                    style={{ maxWidth: 240, flex: 1 }}
+                  />
+                  {compactVersionDetails && selectedVersionData && (
+                    <Popover width={260} position="bottom-start" withArrow shadow="md">
+                      <Popover.Target>
+                        <Button size="xs" variant="default" leftSection={<Info size={14} />}>
+                          Details
+                        </Button>
+                      </Popover.Target>
+                      <Popover.Dropdown>{versionTable}</Popover.Dropdown>
+                    </Popover>
+                  )}
+                  <Group gap="xs" align="center" grow={compactVersionDetails}>
                   {btnProps.tooltip ? (
                     <Tooltip label={btnProps.tooltip}>
                       <Button
@@ -553,8 +478,20 @@ const PluginDetailPanel = ({
                           </Group>
                         </Tooltip>
                       );
-                    })()}
+                     })()}
+                  </Group>
                 </Group>
+                {metadataActions && (
+                  <Group
+                    gap="xs"
+                    align="center"
+                    justify="center"
+                    wrap="nowrap"
+                    style={{ flex: 1, alignSelf: 'flex-end' }}
+                  >
+                    {metadataActions}
+                  </Group>
+                )}
               </Group>
               {!compactVersionDetails && versionTable}
             </>

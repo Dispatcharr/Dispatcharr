@@ -1,31 +1,86 @@
 import React from 'react';
-import { ActionIcon, Avatar, Box, Group, Text, Tooltip } from '@mantine/core';
-import { BookOpen, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { ActionIcon, Avatar, Box, Button, Group, Text, Tooltip } from '@mantine/core';
+import { BookOpen, GitBranch, Scale, ShieldAlert, ShieldCheck, User } from 'lucide-react';
 import { DiscordIcon, GitHubIcon } from './icons.jsx';
 import { isSafeHttpUrl } from '../utils/url.js';
 
 /** Author name row, reused by both header layouts below. */
-const AuthorRow = ({ plugin, onClick, justify = 'flex-start' }) => {
-  if (!plugin.author) return null;
+export const PluginMetadata = ({
+  plugin,
+  onClick,
+  justify = 'flex-start',
+  sourceRepoName,
+  license,
+  className,
+  authorClassName,
+  licenseClassName,
+  separatorClassName,
+  signatureVerified,
+  trailing,
+}) => {
+  if (!plugin.author && !sourceRepoName && !license) return null;
   return (
-    <Group gap={6} align="center" wrap="nowrap" justify={justify}>
-      <Text
-        size="xs"
-        c="dimmed"
-        truncate
-        onClick={onClick}
-        style={{ minWidth: 0, maxWidth: '100%', ...(onClick ? { cursor: 'pointer' } : {}) }}
-      >
-        {plugin.author}
-      </Text>
+    <Group
+      className={className}
+      gap={6}
+      align="center"
+      wrap="nowrap"
+      justify={justify}
+    >
+      {plugin.author && (
+        <Group
+          className={authorClassName}
+          gap={3}
+          align="center"
+          wrap="nowrap"
+          style={{ minWidth: 0 }}
+        >
+          <User size={12} color="var(--mantine-color-dimmed)" />
+          <Text
+            size="xs"
+            c="dimmed"
+            truncate
+            onClick={onClick}
+            style={{ minWidth: 0, maxWidth: '100%', ...(onClick ? { cursor: 'pointer' } : {}) }}
+          >
+            {plugin.author}
+          </Text>
+        </Group>
+      )}
+      {plugin.author && license && <Text className={separatorClassName} size="xs" c="dimmed">•</Text>}
+      {license && (
+        <a
+          className={licenseClassName}
+          href={`https://spdx.org/licenses/${encodeURIComponent(license)}.html`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: 'var(--mantine-color-dimmed)', display: 'flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
+        >
+          <Scale size={12} />
+          <Text size="xs" c="dimmed">{license}</Text>
+        </a>
+      )}
+      {(plugin.author || license) && sourceRepoName && <Text className={separatorClassName} size="xs" c="dimmed">•</Text>}
+      {sourceRepoName && <PluginRepository name={sourceRepoName} />}
+      <SignatureIndicator signatureVerified={signatureVerified} />
+      {trailing}
+    </Group>
+  );
+};
+
+export const PluginRepository = ({ name }) => {
+  if (!name) return null;
+  return (
+    <Group gap={3} align="center" wrap="nowrap">
+      <GitBranch size={12} color="var(--mantine-color-dimmed)" />
+      <Text size="xs" c="dimmed">{name}</Text>
     </Group>
   );
 };
 
 /** Plain (non-interactive) verified-signature indicator, just an icon with
- * a hover tooltip, not a button, since it's status not an action. Sits next
- * to the plugin name rather than in the icon-link row below. */
-const SignatureIndicator = ({ signatureVerified }) => {
+ * a hover tooltip, not a button, since it's status not an action. */
+export const SignatureIndicator = ({ signatureVerified }) => {
   if (signatureVerified == null) return null;
   return signatureVerified ? (
     <Tooltip label="Verified Signature">
@@ -39,30 +94,34 @@ const SignatureIndicator = ({ signatureVerified }) => {
 };
 
 /**
- * Plugin name + verified-signature indicator, positioned like a `::after` on
- * the title rather than a sibling flex item: the indicator takes no layout
- * width, so a `justify="center"` ancestor centers on the title text alone
- * instead of centering the (title + badge) pair as one wider unit.
+ * Plugin name, version, and verified-signature indicator. The signature comes
+ * after the version so version information remains visually contiguous.
  */
-const TitleWithSignature = ({ plugin, onClick, signatureVerified, lineClamp, fw = 600 }) => (
-  <Box style={{ position: 'relative', display: 'inline-block', maxWidth: '100%' }}>
+const TitleWithSignature = ({ plugin, onClick, signatureVerified, lineClamp, fw = 600, version }) => (
+  <Group gap={4} align="baseline" wrap="nowrap">
     <Text
       fw={fw}
       lineClamp={lineClamp}
       onClick={onClick}
-      style={onClick ? { cursor: 'pointer' } : undefined}
+      style={{ minWidth: 0, ...(onClick ? { cursor: 'pointer' } : {}) }}
     >
       {plugin.name}
     </Text>
-    <Box style={{ position: 'absolute', left: '100%', top: '50%', transform: 'translateY(-50%)', marginLeft: 6 }}>
-      <SignatureIndicator signatureVerified={signatureVerified} />
-    </Box>
-  </Box>
+    {version && <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>v{version}</Text>}
+    <SignatureIndicator signatureVerified={signatureVerified} />
+  </Group>
 );
 
 /** Docs/repo/discord icon-links, all icon+tooltip to match each other rather
  * than mixing pill badges and text links. */
-const LinksRow = ({ helpUrl, repoUrl, discordThread, justify = 'flex-start' }) => {
+export const PluginLinks = ({
+  helpUrl,
+  repoUrl,
+  discordThread,
+  justify = 'flex-start',
+  compact = false,
+  asButtons = false,
+}) => {
   const safeHelpUrl = isSafeHttpUrl(helpUrl) ? helpUrl : null;
   const safeRepoUrl = isSafeHttpUrl(repoUrl) ? repoUrl : null;
   // Only rewrite to the discord:// deep-link scheme when the source matched
@@ -77,7 +136,15 @@ const LinksRow = ({ helpUrl, repoUrl, discordThread, justify = 'flex-start' }) =
 
   if (!safeHelpUrl && !safeRepoUrl && !safeDiscordHref) return null;
   return (
-    <Group gap={6} align="center" wrap="wrap" justify={justify} mt={4}>
+    <Group
+      gap={asButtons ? 'xs' : 6}
+      align="center"
+      wrap={compact ? 'nowrap' : 'wrap'}
+      justify={justify}
+      mt={compact ? 0 : 4}
+      grow={asButtons}
+      style={asButtons ? { width: '100%' } : undefined}
+    >
       {safeHelpUrl && (
         <Tooltip label="Documentation">
           <ActionIcon
@@ -95,35 +162,62 @@ const LinksRow = ({ helpUrl, repoUrl, discordThread, justify = 'flex-start' }) =
         </Tooltip>
       )}
       {safeRepoUrl && (
-        <Tooltip label="Source Repository">
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            size="sm"
+        asButtons ? (
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<GitHubIcon size={14} />}
             component="a"
             href={safeRepoUrl}
             target="_blank"
             rel="noopener noreferrer"
-            aria-label="Source Repository"
           >
-            <GitHubIcon size={16} />
-          </ActionIcon>
-        </Tooltip>
+            Source
+          </Button>
+        ) : (
+          <Tooltip label="Source Repository">
+            <ActionIcon
+              variant="subtle"
+              color="gray"
+              size="sm"
+              component="a"
+              href={safeRepoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Source Repository"
+            >
+              <GitHubIcon size={16} />
+            </ActionIcon>
+          </Tooltip>
+        )
       )}
       {safeDiscordHref && (
-        <Tooltip label="Discord Discussion">
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            size="sm"
+        asButtons ? (
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<DiscordIcon size={14} />}
             component="a"
             href={safeDiscordHref}
             {...(!isDiscordChannel && { target: '_blank', rel: 'noopener noreferrer' })}
-            aria-label="Discord Discussion"
           >
-            <DiscordIcon size={16} />
-          </ActionIcon>
-        </Tooltip>
+            Discord
+          </Button>
+        ) : (
+          <Tooltip label="Discord Discussion">
+            <ActionIcon
+              variant="subtle"
+              color="gray"
+              size="sm"
+              component="a"
+              href={safeDiscordHref}
+              {...(!isDiscordChannel && { target: '_blank', rel: 'noopener noreferrer' })}
+              aria-label="Discord Discussion"
+            >
+              <DiscordIcon size={16} />
+            </ActionIcon>
+          </Tooltip>
+        )
       )}
     </Group>
   );
@@ -151,6 +245,9 @@ const PluginHeader = ({
   repoUrl,
   discordThread,
   signatureVerified,
+  version = plugin.version,
+  sourceRepoName,
+  license,
   centered = false,
   hideLinks = false,
 }) => {
@@ -173,11 +270,11 @@ const PluginHeader = ({
       <Box style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
         {avatar}
         <Box mt="xs">
-          <TitleWithSignature plugin={plugin} onClick={onClick} signatureVerified={signatureVerified} />
+          <TitleWithSignature plugin={plugin} onClick={onClick} signatureVerified={signatureVerified} version={version} />
         </Box>
-        <AuthorRow plugin={plugin} onClick={onClick} justify="center" />
+        <PluginMetadata plugin={plugin} onClick={onClick} justify="center" sourceRepoName={sourceRepoName} license={license} />
         {!hideLinks && (
-          <LinksRow helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} justify="center" />
+          <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} justify="center" />
         )}
       </Box>
     );
@@ -192,10 +289,11 @@ const PluginHeader = ({
           onClick={onClick}
           signatureVerified={signatureVerified}
           lineClamp={1}
+          version={version}
         />
-        <AuthorRow plugin={plugin} onClick={onClick} />
+        <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} />
         {!hideLinks && (
-          <LinksRow helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} />
+          <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} />
         )}
       </Box>
     </Group>

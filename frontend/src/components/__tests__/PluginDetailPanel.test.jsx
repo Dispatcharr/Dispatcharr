@@ -35,6 +35,7 @@ vi.mock('lucide-react', () => ({
   RefreshCw: ({ size }) => (
     <svg data-testid="icon-refresh-cw" data-size={size} />
   ),
+  Scale: ({ size }) => <svg data-testid="icon-scale" data-size={size} />,
   ShieldAlert: ({ size }) => (
     <svg data-testid="icon-shield-alert" data-size={size} />
   ),
@@ -42,6 +43,7 @@ vi.mock('lucide-react', () => ({
     <svg data-testid="icon-shield-check" data-size={size} />
   ),
   Trash2: ({ size }) => <svg data-testid="icon-trash2" data-size={size} />,
+  User: ({ size }) => <svg data-testid="icon-user" data-size={size} />,
 }));
 
 // ── Mantine core mock ──────────────────────────────────────────────────────────
@@ -275,17 +277,25 @@ describe('PluginDetailPanel', () => {
       );
       expect(screen.queryByText('A useful plugin.')).not.toBeInTheDocument();
     });
+
+    it('keeps the description while hiding duplicate header metadata', () => {
+      render(<PluginDetailPanel {...defaultProps({ hideMetadata: true })} />);
+      expect(screen.getByText('A useful plugin.')).toBeInTheDocument();
+      expect(screen.queryByText('Test Author')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'MIT' })).not.toBeInTheDocument();
+    });
   });
 
-  // ── Author & license badges ────────────────────────────────────────────────
+  // ── Author & license metadata ──────────────────────────────────────────────
 
-  describe('author and license badges', () => {
-    it('renders author badge', () => {
+  describe('author and license metadata', () => {
+    it('renders author metadata without an information badge', () => {
       render(<PluginDetailPanel {...defaultProps()} />);
       expect(screen.getByText('Test Author')).toBeInTheDocument();
+      expect(screen.queryByText('AUTHOR')).not.toBeInTheDocument();
     });
 
-    it('does not render author badge when author is absent', () => {
+    it('does not render author metadata when author is absent', () => {
       render(
         <PluginDetailPanel
           {...defaultProps({ detail: makeDetail({ author: null }) })}
@@ -294,132 +304,20 @@ describe('PluginDetailPanel', () => {
       expect(screen.queryByText('Test Author')).not.toBeInTheDocument();
     });
 
-    it('renders license badge as a link to spdx.org', () => {
+    it('renders license metadata as a link to spdx.org', () => {
       render(<PluginDetailPanel {...defaultProps()} />);
-      const badge = screen
-        .getAllByTestId('badge')
-        .find((el) => el.tagName === 'A' && el.href?.includes('spdx.org'));
-      expect(badge).toBeTruthy();
-      expect(badge.href).toContain('MIT');
+      const link = screen.getByRole('link', { name: 'MIT' });
+      expect(link.href).toContain('spdx.org');
+      expect(link.href).toContain('MIT');
     });
 
-    it('does not render license badge when license is absent', () => {
+    it('does not render license metadata when license is absent', () => {
       render(
         <PluginDetailPanel
           {...defaultProps({ detail: makeDetail({ license: null }) })}
         />
       );
-      const badges = screen.getAllByTestId('badge');
-      expect(badges.find((b) => b.href?.includes('spdx.org'))).toBeUndefined();
-    });
-  });
-
-  // ── Signature badges ───────────────────────────────────────────────────────
-
-  describe('signature badge', () => {
-    it('shows "Verified Signature" badge when signature_verified is true', () => {
-      render(<PluginDetailPanel {...defaultProps()} />);
-      expect(screen.getByText('Verified Signature')).toBeInTheDocument();
-      expect(screen.getByTestId('icon-shield-check')).toBeInTheDocument();
-    });
-
-    it('shows "Unverified" badge when signature_verified is false', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({}, { signature_verified: false }),
-          })}
-        />
-      );
-      expect(screen.getByText('Unverified')).toBeInTheDocument();
-      expect(screen.getByTestId('icon-shield-alert')).toBeInTheDocument();
-    });
-
-    it('renders no signature badge when signature_verified is null', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({}, { signature_verified: null }),
-          })}
-        />
-      );
-      expect(screen.queryByText('Verified Signature')).not.toBeInTheDocument();
-      expect(screen.queryByText('Unverified')).not.toBeInTheDocument();
-    });
-  });
-
-  // ── GitHub link ────────────────────────────────────────────────────────────
-
-  describe('GitHub link', () => {
-    it('renders GitHub icon linking to repo_url', () => {
-      render(<PluginDetailPanel {...defaultProps()} />);
-      expect(screen.getByTestId('github-icon')).toBeInTheDocument();
-      const link = screen
-        .getAllByTestId('action-icon')
-        .find((el) => el.href?.includes('github.com'));
-      expect(link).toBeTruthy();
-    });
-
-    it('does not render GitHub icon when repo_url is absent', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({ detail: makeDetail({ repo_url: null }) })}
-        />
-      );
-      expect(screen.queryByTestId('github-icon')).not.toBeInTheDocument();
-    });
-  });
-
-  // ── Discord link ───────────────────────────────────────────────────────────
-
-  describe('Discord link', () => {
-    it('renders Discord icon when discord_thread is set', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({
-              discord_thread: 'https://example.com/discord',
-            }),
-          })}
-        />
-      );
-      expect(screen.getByTestId('discord-icon')).toBeInTheDocument();
-    });
-
-    it('does not render Discord icon when discord_thread is null', () => {
-      render(<PluginDetailPanel {...defaultProps()} />);
-      expect(screen.queryByTestId('discord-icon')).not.toBeInTheDocument();
-    });
-
-    it('rewrites discord.com/channels URL to discord:// protocol', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({
-              discord_thread: 'https://discord.com/channels/123/456',
-            }),
-          })}
-        />
-      );
-      const link = screen
-        .getAllByTestId('action-icon')
-        .find((el) => el.href?.startsWith('discord://'));
-      expect(link).toBeTruthy();
-    });
-
-    it('keeps non-discord.com/channels URL unchanged', () => {
-      const url = 'https://discord.gg/invite/abc';
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({ discord_thread: url }),
-          })}
-        />
-      );
-      const link = screen
-        .getAllByTestId('action-icon')
-        .find((el) => el.href === url);
-      expect(link).toBeTruthy();
+      expect(screen.queryByRole('link', { name: 'MIT' })).not.toBeInTheDocument();
     });
   });
 
