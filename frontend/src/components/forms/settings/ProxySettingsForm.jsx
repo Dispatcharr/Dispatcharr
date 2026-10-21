@@ -30,6 +30,8 @@ const isNumericField = (key) => {
     'new_client_behind_seconds',
     'stream_startup_timeout',
     'connection_timeout',
+    'max_retries',
+    'stream_retry_timeout',
   ].includes(key);
 };
 
@@ -44,6 +46,8 @@ const getNumericFieldMax = (key) => {
   if (key === 'channel_client_wait_period') return 300;
   if (key === 'new_client_behind_seconds') return 120;
   if (key === 'stream_startup_timeout' || key === 'connection_timeout') return 120;
+  if (key === 'max_retries') return 100;
+  if (key === 'stream_retry_timeout') return 300;
   return 300;
 };
 
