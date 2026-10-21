@@ -58,6 +58,8 @@ class BaseConfig:
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
                 "validate_redirect_urls": True,
+                "max_retries": 3,
+                "stream_retry_timeout": 3,
             }
 
         finally:
