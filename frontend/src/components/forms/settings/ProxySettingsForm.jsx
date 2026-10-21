@@ -28,6 +28,8 @@ const isNumericField = (key) => {
     'channel_init_grace_period',
     'channel_client_wait_period',
     'new_client_behind_seconds',
+    'max_retries',
+    'stream_retry_timeout',
   ].includes(key);
 };
 
@@ -41,6 +43,8 @@ const getNumericFieldMax = (key) => {
   if (key === 'channel_shutdown_delay') return 300;
   if (key === 'channel_client_wait_period') return 300;
   if (key === 'new_client_behind_seconds') return 120;
+  if (key === 'max_retries') return 100;
+  if (key === 'stream_retry_timeout') return 300;
   return 300;
 };
 

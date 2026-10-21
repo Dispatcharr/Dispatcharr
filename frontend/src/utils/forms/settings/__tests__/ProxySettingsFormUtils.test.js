@@ -64,6 +64,8 @@ describe('ProxySettingsFormUtils', () => {
         channel_client_wait_period: 5,
         new_client_behind_seconds: 5,
         validate_redirect_urls: true,
+        max_retries: 3,
+        stream_retry_timeout: 3,
       });
     });
 
@@ -86,6 +88,8 @@ describe('ProxySettingsFormUtils', () => {
       expect(typeof result.channel_client_wait_period).toBe('number');
       expect(typeof result.new_client_behind_seconds).toBe('number');
       expect(typeof result.validate_redirect_urls).toBe('boolean');
+      expect(typeof result.max_retries).toBe('number');
+      expect(typeof result.stream_retry_timeout).toBe('number');
     });
   });
 });
