@@ -35,6 +35,26 @@ import { formatKB } from '../utils/networkUtils.js';
 import { isSafeHttpUrl } from '../utils/url.js';
 import { DiscordIcon, GitHubIcon } from './icons.jsx';
 
+const changelogLink = (changelog) => {
+  if (typeof changelog === 'number' && Number.isInteger(changelog) && changelog > 0) {
+    return {
+      href: `https://github.com/Dispatcharr/Plugins/pull/${changelog}`,
+      label: `PR #${changelog}`,
+    };
+  }
+
+  if (typeof changelog !== 'string') return null;
+  const value = changelog.trim();
+  if (/^[1-9]\d*$/.test(value)) {
+    return {
+      href: `https://github.com/Dispatcharr/Plugins/pull/${value}`,
+      label: `PR #${value}`,
+    };
+  }
+  if (isSafeHttpUrl(value)) return { href: value, label: value };
+  return null;
+};
+
 /**
  * Author/license/signature/repo-link/discord-link badges, exported so a
  * caller embedding PluginDetailPanel inline (e.g. PluginDetail.jsx's
@@ -201,6 +221,7 @@ const PluginDetailPanel = ({
   const selectedVersionData = manifest.versions?.find(
     (v) => v.version === selectedVersion
   );
+  const selectedChangelog = changelogLink(selectedVersionData?.changelog);
 
   const isSelSame =
     installedVersion &&
@@ -365,6 +386,36 @@ const PluginDetailPanel = ({
                       <TableTd>{formatKB(selectedVersionData.size)}</TableTd>
                     </TableTr>
                   )}
+                {Number.isFinite(selectedVersionData.download_count) &&
+                  selectedVersionData.download_count >= 0 && (
+                    <TableTr>
+                      <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                        Downloads
+                      </TableTd>
+                      <TableTd>
+                        {selectedVersionData.download_count.toLocaleString()}
+                      </TableTd>
+                    </TableTr>
+                  )}
+                {selectedChangelog && (
+                  <TableTr>
+                    <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      Changelog
+                    </TableTd>
+                    <TableTd>
+                      <Text
+                        size="xs"
+                        component="a"
+                        href={selectedChangelog.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        c="blue"
+                      >
+                        {selectedChangelog.label}
+                      </Text>
+                    </TableTd>
+                  </TableTr>
+                )}
                 {selectedVersionData.min_dispatcharr_version && (
                   <TableTr>
                     <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
