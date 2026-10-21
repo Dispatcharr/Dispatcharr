@@ -332,6 +332,33 @@ describe('PluginBrowsePage', () => {
       render(<PluginBrowsePage />);
       expect(screen.queryByTestId('plugin-card')).not.toBeInTheDocument();
     });
+
+    it('shows the download count sort option only when counts are available', () => {
+      setupStore({ availablePlugins: [makePlugin({ download_count: 42 })] });
+      render(<PluginBrowsePage />);
+      expect(screen.getByTestId('sort-select')).toHaveTextContent(
+        'Download Count'
+      );
+    });
+
+    it('sorts plugins by download count descending', () => {
+      setupStore({
+        availablePlugins: [
+          makePlugin({ slug: 'low', name: 'Low', download_count: 10 }),
+          makePlugin({ slug: 'missing', name: 'Missing' }),
+          makePlugin({ slug: 'high', name: 'High', download_count: 100 }),
+        ],
+      });
+      render(<PluginBrowsePage />);
+      fireEvent.change(screen.getByTestId('sort-select'), {
+        target: { value: 'downloads' },
+      });
+      expect(screen.getAllByTestId('plugin-card').map((card) => card.dataset.slug)).toEqual([
+        'high',
+        'low',
+        'missing',
+      ]);
+    });
   });
 
   // ── Manage Repos modal ─────────────────────────────────────────────────────

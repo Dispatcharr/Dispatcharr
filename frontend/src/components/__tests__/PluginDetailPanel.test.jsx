@@ -774,6 +774,68 @@ describe('PluginDetailPanel', () => {
       expect(screen.queryByText('File Size')).not.toBeInTheDocument();
     });
 
+    it('renders a formatted version download count', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { download_count: 12345 })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText('Downloads')).toBeInTheDocument();
+      expect(screen.getByText('12,345')).toBeInTheDocument();
+    });
+
+    it('does not render a version download count when absent', () => {
+      render(<PluginDetailPanel {...defaultProps()} />);
+      expect(screen.queryByText('Downloads')).not.toBeInTheDocument();
+    });
+
+    it('links numeric changelogs to the Dispatcharr Plugins pull request', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog: 459 })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText('Changelog')).toBeInTheDocument();
+      expect(screen.getByText('PR #459').closest('a')).toHaveAttribute(
+        'href',
+        'https://github.com/Dispatcharr/Plugins/pull/459'
+      );
+    });
+
+    it('links numeric-string changelogs to the Dispatcharr Plugins pull request', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog: '459' })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText('PR #459').closest('a')).toHaveAttribute(
+        'href',
+        'https://github.com/Dispatcharr/Plugins/pull/459'
+      );
+    });
+
+    it('links URL changelogs to their supplied URL', () => {
+      const changelog = 'https://example.com/changelog';
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText(changelog).closest('a')).toHaveAttribute(
+        'href',
+        changelog
+      );
+    });
+
+    it('omits unsupported changelog values', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog: 'javascript:alert(1)' })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.queryByText('Changelog')).not.toBeInTheDocument();
+    });
+
     it('renders min version row when present', () => {
       const detail = makeDetail({
         versions: [makeVersion('2.0.0', { min_dispatcharr_version: '1.0.0' })],

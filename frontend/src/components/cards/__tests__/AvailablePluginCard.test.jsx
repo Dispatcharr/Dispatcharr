@@ -38,8 +38,11 @@ vi.mock('../../PluginWarnings.jsx', () => ({
 
 // ── PluginDetailPanel ──────────────────────────────────────────────────────────
 vi.mock('../../PluginDetailPanel.jsx', () => ({
-  default: ({ onInstall, onUninstall }) => (
-    <div data-testid="plugin-detail-panel">
+  default: ({ detail, onInstall, onUninstall }) => (
+    <div
+      data-testid="plugin-detail-panel"
+      data-changelog={detail?.manifest?.versions?.[0]?.changelog}
+    >
       <button
         data-testid="detail-install"
         onClick={() =>
@@ -343,6 +346,25 @@ describe('AvailablePluginCard', () => {
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
       );
       expect(screen.getByText(/1\.0\.0/)).toBeInTheDocument();
+    });
+
+    it('renders a formatted download count when present', () => {
+      setupMocks();
+      render(
+        <AvailablePluginCard
+          plugin={makePlugin({ download_count: 12345 })}
+          appVersion={APP_VERSION}
+        />
+      );
+      expect(screen.getByText('12,345')).toBeInTheDocument();
+    });
+
+    it('does not render a download count when absent', () => {
+      setupMocks();
+      render(
+        <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
+      );
+      expect(screen.queryByText('12,345')).not.toBeInTheDocument();
     });
 
     it('renders the license badge', () => {
@@ -665,6 +687,21 @@ describe('AvailablePluginCard', () => {
   // ── More Info modal ────────────────────────────────────────────────────────
 
   describe('More Info modal', () => {
+    it('includes the latest changelog in a manifest-less detail fallback', () => {
+      setupMocks();
+      render(
+        <AvailablePluginCard
+          plugin={makePlugin({ latest_changelog: '459' })}
+          appVersion={APP_VERSION}
+        />
+      );
+      fireEvent.click(screen.getByText('More Info'));
+      expect(screen.getByTestId('plugin-detail-panel')).toHaveAttribute(
+        'data-changelog',
+        '459'
+      );
+    });
+
     it('opens detail modal when More Info is clicked', () => {
       setupMocks();
       render(

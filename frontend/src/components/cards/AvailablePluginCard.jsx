@@ -399,6 +399,7 @@ const AvailablePluginCard = ({
                   max_dispatcharr_version: plugin.max_dispatcharr_version,
                   build_timestamp: plugin.last_updated,
                   size: plugin.latest_size,
+                  changelog: plugin.latest_changelog,
                 },
               ]
             : [],
@@ -527,6 +528,16 @@ const AvailablePluginCard = ({
                 {plugin.latest_version}
               </Badge>
             )}
+            {Number.isFinite(plugin.download_count) &&
+              plugin.download_count >= 0 && (
+                <Badge
+                  size="xs"
+                  variant="default"
+                  leftSection={<Download size={10} />}
+                >
+                  {plugin.download_count.toLocaleString()}
+                </Badge>
+              )}
             {plugin.license && (
               <Badge
                 size="xs"

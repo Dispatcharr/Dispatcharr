@@ -107,6 +107,15 @@ export default function PluginBrowsePage() {
     ];
   }, [availablePlugins]);
 
+  const hasDownloadCounts = React.useMemo(
+    () =>
+      availablePlugins.some(
+        (plugin) =>
+          Number.isFinite(plugin.download_count) && plugin.download_count >= 0
+      ),
+    [availablePlugins]
+  );
+
   // Filter and sort plugins
   const filteredPlugins = React.useMemo(() => {
     let list = [...availablePlugins];
@@ -177,6 +186,15 @@ export default function PluginBrowsePage() {
           return (a.author || '').localeCompare(b.author || '');
         case 'updated':
           return (b.last_updated || '').localeCompare(a.last_updated || '');
+        case 'downloads': {
+          const aDownloads = Number.isFinite(a.download_count)
+            ? a.download_count
+            : -1;
+          const bDownloads = Number.isFinite(b.download_count)
+            ? b.download_count
+            : -1;
+          return bDownloads - aDownloads;
+        }
         default:
           return 0;
       }
@@ -283,6 +301,9 @@ export default function PluginBrowsePage() {
                 { value: 'name-desc', label: 'Name Z-A' },
                 { value: 'author', label: 'Author' },
                 { value: 'updated', label: 'Recently Updated' },
+                ...(hasDownloadCounts
+                  ? [{ value: 'downloads', label: 'Download Count' }]
+                  : []),
               ]}
               style={{ width: 170 }}
             />
