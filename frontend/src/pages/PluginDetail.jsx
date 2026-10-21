@@ -4,7 +4,6 @@ import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import {
   ActionIcon,
   AppShellMain,
-  Badge,
   Box,
   Button,
   Collapse,
@@ -40,7 +39,6 @@ import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx
 import PluginHeader from '../components/PluginHeader.jsx';
 import PluginDetailPanel from '../components/PluginDetailPanel.jsx';
 import PluginFieldList from '../components/PluginFieldList.jsx';
-import EvenlyWrappedPills from '../components/EvenlyWrappedPills.jsx';
 import { PluginActionList, PluginActionStatus, PluginTaskList } from '../components/PluginActionList.jsx';
 import API from '../api';
 import './plugin-detail.css';
@@ -281,49 +279,6 @@ function PluginDetailForKey({ routeKey: key }) {
     !!selectedVersion &&
     compareVersions(selectedVersion, plugin.version) === 0;
 
-  const pillItems = [
-    {
-      key: 'version',
-      node: (
-        <Badge size="xs" variant="default">
-          <span style={{ opacity: 0.5, marginRight: 4 }}>VERSION</span>v{plugin.version || '1.0.0'}
-        </Badge>
-      ),
-    },
-  ];
-  if (plugin.is_managed && plugin.source_repo_name) {
-    pillItems.push({
-      key: 'repo',
-      node: (
-        <Badge size="xs" variant="default">
-          <span style={{ opacity: 0.5, marginRight: 4 }}>REPO</span>
-          {plugin.source_repo_name}
-        </Badge>
-      ),
-    });
-  }
-  // Author isn't a pill here: it's already shown right under the plugin
-  // name in the header (PluginHeader's AuthorRow).
-  if (isManaged && detail?.manifest?.license) {
-    pillItems.push({
-      key: 'license',
-      node: (
-        <Badge
-          size="xs"
-          variant="default"
-          component="a"
-          href={`https://spdx.org/licenses/${encodeURIComponent(detail.manifest.license)}.html`}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ cursor: 'pointer' }}
-        >
-          <span style={{ opacity: 0.5, marginRight: 4 }}>LICENSE</span>
-          {detail.manifest.license}
-        </Badge>
-      ),
-    });
-  }
-
   const updateField = (id, val) => {
     setSettings((prev) => ({ ...prev, [id]: val }));
   };
@@ -508,6 +463,8 @@ function PluginDetailForKey({ routeKey: key }) {
                 plugin={plugin}
                 avatarSize={56}
                 centered
+                sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
+                license={isManaged ? detail?.manifest?.license : undefined}
                 repoUrl={isManaged ? detail?.manifest?.repo_url : undefined}
                 discordThread={isManaged ? detail?.manifest?.discord_thread : undefined}
                 signatureVerified={isManaged ? detail?.signature_verified : undefined}
@@ -525,7 +482,6 @@ function PluginDetailForKey({ routeKey: key }) {
                 </Text>
               )}
 
-              <EvenlyWrappedPills items={pillItems} gap="xs" justify="center" />
             </Stack>
 
             {/* Dispatcharr-provided controls (not part of the plugin's own

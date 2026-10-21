@@ -360,7 +360,6 @@ export default function PluginBrowsePage() {
                 key={`${p.repo_id}-${p.slug}`}
                 plugin={p}
                 appVersion={appVersion}
-                multiRepo={repos.length > 1}
                 onBeforeInstall={(slug) => {
                   if (slug) {
                     if (p.install_status === 'update_available') {

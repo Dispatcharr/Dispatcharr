@@ -16,10 +16,10 @@ import {
 import {
   AlertTriangle,
   Ban,
+  CalendarClock,
   Check,
   Download,
   FlaskConical,
-  Info,
   RefreshCw,
   RotateCcw,
   ShieldAlert,
@@ -37,6 +37,11 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { usePluginStore, needsCapabilityAck } from '../../store/plugins';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
 import {
+  PluginLinks,
+  PluginMetadata,
+  SignatureIndicator,
+} from '../PluginHeader.jsx';
+import {
   buildCompatibilityTooltip,
   compareVersions,
   getInstallInfo,
@@ -47,6 +52,7 @@ import {
   getPluginDetailManifest,
   setPluginEnabled,
 } from '../../utils/pages/PluginsUtils.js';
+import './AvailablePluginCard.css';
 
 const RepoBadge = ({ isOfficial, repoName, signatureVerified }) => {
   if (isOfficial) {
@@ -223,10 +229,67 @@ const StatusBadge = ({
   return null;
 };
 
+const AvailablePluginCardHeader = ({
+  plugin,
+  signatureVerified = plugin.signature_verified,
+}) => (
+  <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
+    <Group
+      gap="sm"
+      align="center"
+      wrap="nowrap"
+      style={{ minWidth: 0, flex: 1 }}
+    >
+      <Avatar
+        src={plugin.icon_url}
+        radius="sm"
+        size={48}
+        alt={`${plugin.name} logo`}
+        imageProps={{ draggable: false }}
+      >
+        {plugin.name?.[0]?.toUpperCase()}
+      </Avatar>
+      <Box style={{ minWidth: 0, flex: 1 }}>
+        <Group gap={4} align="baseline" wrap="nowrap">
+          <Text fw={600} lineClamp={1} style={{ minWidth: 0 }}>
+            {plugin.name}
+          </Text>
+          {plugin.latest_version && (
+            <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+              v{plugin.latest_version}
+            </Text>
+          )}
+        </Group>
+        <Group gap={6} align="center" wrap="nowrap">
+          <PluginMetadata
+            plugin={plugin}
+            license={plugin.license}
+            authorClassName="available-plugin-card__author"
+            licenseClassName="available-plugin-card__license"
+            separatorClassName="available-plugin-card__license-separator"
+          />
+          <StatusBadge
+            status={plugin.install_status}
+            deprecated={plugin.deprecated}
+            isPrerelease={plugin.installed_version_is_prerelease}
+            installedSourceRepoName={plugin.installed_source_repo_name}
+          />
+        </Group>
+      </Box>
+    </Group>
+    <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
+      <RepoBadge
+        isOfficial={plugin.is_official_repo}
+        repoName={plugin.repo_name}
+        signatureVerified={signatureVerified}
+      />
+    </Stack>
+  </Group>
+);
+
 const AvailablePluginCard = ({
   plugin,
   appVersion,
-  multiRepo = false,
   autoOpenDetail = false,
   onDetailClose,
   onInstalled,
@@ -266,6 +329,8 @@ const AvailablePluginCard = ({
   const onMyPlugins = pathname === '/plugins';
 
   const isLatestDowngrade = plugin.install_status === 'downgrade_available';
+  const hasDownloadCount =
+    Number.isFinite(plugin.download_count) && plugin.download_count >= 0;
 
   const doInstall = (params) => {
     if (plugin.deprecated) {
@@ -383,7 +448,7 @@ const AvailablePluginCard = ({
     setDetailOpen(true);
     if (detailLoading) return;
     if (!plugin.manifest_url) {
-      // No per-plugin manifest — synthesize from top-level repo entry (latest only)
+      // No per-plugin manifest: synthesize from the top-level repo entry (latest only)
       setDetail({
         manifest: {
           description: plugin.description,
@@ -440,70 +505,25 @@ const AvailablePluginCard = ({
     min_dispatcharr_version: plugin.min_dispatcharr_version,
     max_dispatcharr_version: plugin.max_dispatcharr_version,
   };
+  const hasModalActionLinks = Boolean(
+    detail?.manifest?.repo_url || detail?.manifest?.discord_thread
+  );
 
   return (
     <Card
+      className="available-plugin-card"
       shadow="sm"
       radius="md"
       withBorder
       style={{
         display: 'flex',
         flexDirection: 'column',
-        minHeight: 220,
+        minHeight: 200,
+        paddingTop: 12,
         backgroundColor: '#27272A',
-        ...(multiRepo && plugin.is_official_repo
-          ? { borderColor: '#0e6459' }
-          : {}),
       }}
     >
-      <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
-        <Group
-          gap="sm"
-          align="flex-start"
-          wrap="nowrap"
-          style={{ minWidth: 0, flex: 1 }}
-        >
-          <Avatar
-            src={plugin.icon_url}
-            radius="sm"
-            size={48}
-            alt={`${plugin.name} logo`}
-            imageProps={{ draggable: false }}
-          >
-            {plugin.name?.[0]?.toUpperCase()}
-          </Avatar>
-          <Box style={{ minWidth: 0, flex: 1 }}>
-            <Text fw={600} lineClamp={1}>
-              {plugin.name}
-            </Text>
-            <Group gap={6} align="center" wrap="nowrap">
-              {plugin.author && (
-                <Text
-                  size="xs"
-                  c="dimmed"
-                  truncate
-                  style={{ minWidth: 0, maxWidth: '100%' }}
-                >
-                  {plugin.author}
-                </Text>
-              )}
-              <StatusBadge
-                status={plugin.install_status}
-                deprecated={plugin.deprecated}
-                isPrerelease={plugin.installed_version_is_prerelease}
-                installedSourceRepoName={plugin.installed_source_repo_name}
-              />
-            </Group>
-          </Box>
-        </Group>
-        <Group gap={4} wrap="nowrap" style={{ flexShrink: 0 }}>
-          <RepoBadge
-            isOfficial={plugin.is_official_repo}
-            repoName={plugin.repo_name}
-            signatureVerified={plugin.signature_verified}
-          />
-        </Group>
-      </Group>
+      <AvailablePluginCardHeader plugin={plugin} />
 
       <Box
         style={{
@@ -515,63 +535,10 @@ const AvailablePluginCard = ({
         }}
       >
         <div style={{ overflow: 'hidden' }}>
-          <Text size="sm" c="dimmed" lineClamp={3} mb={0}>
+          <Text size="sm" c="dimmed" lineClamp={4} mb={0}>
             {plugin.description}
           </Text>
         </div>
-
-        <Stack gap={2} mt="auto" pt={4} style={{ flexShrink: 0 }}>
-          <Group gap="xs" wrap="wrap">
-            {plugin.latest_version && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>LATEST</span>v
-                {plugin.latest_version}
-              </Badge>
-            )}
-            {Number.isFinite(plugin.download_count) &&
-              plugin.download_count >= 0 && (
-                <Badge
-                  size="xs"
-                  variant="default"
-                  leftSection={<Download size={10} />}
-                >
-                  {plugin.download_count.toLocaleString()}
-                </Badge>
-              )}
-            {plugin.license && (
-              <Badge
-                size="xs"
-                variant="default"
-                component="a"
-                href={`https://spdx.org/licenses/${encodeURIComponent(plugin.license)}.html`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ cursor: 'pointer' }}
-              >
-                <span style={{ opacity: 0.5, marginRight: 4 }}>LICENSE</span>
-                {plugin.license}
-              </Badge>
-            )}
-            {plugin.min_dispatcharr_version && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>MIN</span>
-                {plugin.min_dispatcharr_version}
-              </Badge>
-            )}
-            {plugin.max_dispatcharr_version && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>MAX</span>
-                {plugin.max_dispatcharr_version}
-              </Badge>
-            )}
-            {plugin.last_updated && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>UPDATED</span>
-                {new Date(plugin.last_updated).toLocaleDateString()}
-              </Badge>
-            )}
-          </Group>
-        </Stack>
       </Box>
 
       <Group justify="space-between" mt="sm" align="center" wrap="nowrap">
@@ -601,12 +568,57 @@ const AvailablePluginCard = ({
               </Tooltip>
             );
           })()}
-        {meetsVersion && <span />}
+        {meetsVersion && (plugin.last_updated || hasDownloadCount) && (
+          <Group
+            gap={4}
+            align="center"
+            wrap="nowrap"
+          >
+            {plugin.last_updated && (
+              <Group
+                className="available-plugin-card__updated"
+                gap={4}
+                align="center"
+                wrap="nowrap"
+              >
+                <CalendarClock
+                  size={12}
+                  color="var(--mantine-color-dimmed)"
+                />
+                <Text size="xs" c="dimmed">
+                  {new Date(plugin.last_updated).toLocaleDateString()}
+                </Text>
+              </Group>
+            )}
+            {hasDownloadCount && plugin.last_updated && (
+              <Text
+                className="available-plugin-card__action-separator"
+                size="xs"
+                c="dimmed"
+              >
+                •
+              </Text>
+            )}
+            {hasDownloadCount && (
+              <Group
+                className="available-plugin-card__downloads"
+                gap={3}
+                align="center"
+                wrap="nowrap"
+              >
+                <Download size={12} color="var(--mantine-color-dimmed)" />
+                <Text size="xs" c="dimmed">
+                  {plugin.download_count.toLocaleString()}
+                </Text>
+              </Group>
+            )}
+          </Group>
+        )}
+        {meetsVersion && !plugin.last_updated && !hasDownloadCount && <span />}
         <Group gap="xs" wrap="nowrap">
           <Button
             size="xs"
             variant="default"
-            leftSection={<Info size={14} />}
             onClick={handleMoreInfo}
           >
             More Info
@@ -715,24 +727,39 @@ const AvailablePluginCard = ({
           onDetailClose?.();
         }}
         title={
-          <Group gap="xs" align="center">
+          <Group gap="sm" align="center" wrap="nowrap" style={{ minWidth: 0 }}>
             <Avatar
               src={plugin.icon_url}
               radius="sm"
-              size={28}
+              size={48}
               alt={`${plugin.name} logo`}
               imageProps={{ draggable: false }}
             >
               {plugin.name?.[0]?.toUpperCase()}
             </Avatar>
-            <Text fw={600}>{plugin.name}</Text>
-            <RepoBadge
-              isOfficial={plugin.is_official_repo}
-              repoName={plugin.repo_name}
-              signatureVerified={
-                detail?.signature_verified ?? plugin.signature_verified
-              }
-            />
+            <Box style={{ minWidth: 0, flex: 1 }}>
+              <Group gap={4} align="baseline" wrap="nowrap">
+                <Text fw={600} lineClamp={1} style={{ minWidth: 0 }}>
+                  {plugin.name}
+                </Text>
+                {plugin.latest_version && (
+                  <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+                    v{plugin.latest_version}
+                  </Text>
+                )}
+                <SignatureIndicator
+                  signatureVerified={
+                    detail?.signature_verified ?? plugin.signature_verified
+                  }
+                />
+              </Group>
+              <PluginMetadata
+                plugin={{ author: detail?.manifest?.author ?? plugin.author }}
+                license={detail?.manifest?.license ?? plugin.license}
+                sourceRepoName={plugin.repo_name}
+                trailing={<PluginLinks helpUrl={detail?.manifest?.help_url} compact />}
+              />
+            </Box>
           </Group>
         }
         size="lg"
@@ -755,6 +782,15 @@ const AvailablePluginCard = ({
           installedSourceRepoName={plugin.installed_source_repo_name}
           repoId={plugin.repo_id}
           slug={plugin.slug}
+          hideMetadata
+          metadataActions={hasModalActionLinks ? (
+            <PluginLinks
+              repoUrl={detail?.manifest?.repo_url}
+              discordThread={detail?.manifest?.discord_thread}
+              compact
+              asButtons
+            />
+          ) : null}
         />
       </Modal>
 

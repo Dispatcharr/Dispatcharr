@@ -6,7 +6,6 @@ import {
   Button,
   Card,
   Group,
-  Stack,
   Switch,
   Text,
   Tooltip,
@@ -84,7 +83,12 @@ const PluginCard = ({
     >
       {/* Header: avatar, name/author, badges, toggle */}
       <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
-        <PluginHeader plugin={plugin} onClick={openDetail} hideLinks />
+        <PluginHeader
+          plugin={plugin}
+          onClick={openDetail}
+          hideLinks
+          sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
+        />
         <Group gap={6} wrap="nowrap" align="center" style={{ flexShrink: 0 }}>
           {plugin.is_managed && plugin.installed_version_is_prerelease ? (
             <Tooltip
@@ -186,24 +190,8 @@ const PluginCard = ({
         </Text>
       )}
 
-      {/* Bottom metadata pills */}
-      <Stack gap={2} mt="auto" pt={4} style={{ flexShrink: 0 }}>
-        <Group gap="xs" wrap="wrap">
-          <Badge size="xs" variant="default">
-            <span style={{ opacity: 0.5, marginRight: 4 }}>VERSION</span>v
-            {plugin.version || '1.0.0'}
-          </Badge>
-          {plugin.is_managed && plugin.source_repo_name && (
-            <Badge size="xs" variant="default">
-              <span style={{ opacity: 0.5, marginRight: 4 }}>REPO</span>
-              {plugin.source_repo_name}
-            </Badge>
-          )}
-        </Group>
-      </Stack>
-
       {/* Bottom button row */}
-      <Group justify="flex-end" mt="sm" gap="xs">
+      <Group justify="flex-end" mt="auto" pt="sm" gap="xs">
         <Button
           size="xs"
           variant="default"
