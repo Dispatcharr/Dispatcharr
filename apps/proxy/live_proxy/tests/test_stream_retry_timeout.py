@@ -1,34 +1,30 @@
-import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from django.test import SimpleTestCase
 
-from apps.proxy.config import BaseConfig
+from apps.proxy.config import TSConfig
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 
 
 class StreamRetryTimeoutConfigTests(SimpleTestCase):
-    def test_default_stream_retry_timeout(self):
-        """Default stream retry timeout is 3.0 seconds."""
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(ConfigHelper.stream_retry_timeout(), 3.0)
+    @patch.object(TSConfig, "get_proxy_settings", return_value={})
+    def test_default_stream_retry_timeout(self, _mock_settings):
+        """Default stream retry timeout is 3 seconds."""
+        self.assertEqual(ConfigHelper.stream_retry_timeout(), 3)
 
-    def test_env_var_overrides_stream_retry_timeout(self):
-        """DISPATCHARR_STREAM_RETRY_TIMEOUT environment variable overrides stream retry timeout."""
-        with patch.dict(os.environ, {"DISPATCHARR_STREAM_RETRY_TIMEOUT": "8.5"}):
-            # Test that BaseConfig / ConfigHelper returns float value from env var
-            with patch.object(BaseConfig, "STREAM_RETRY_TIMEOUT", float(os.environ["DISPATCHARR_STREAM_RETRY_TIMEOUT"])):
-                self.assertEqual(ConfigHelper.stream_retry_timeout(), 8.5)
+    @patch.object(TSConfig, "get_proxy_settings", return_value={"stream_retry_timeout": 15})
+    def test_proxy_settings_override_stream_retry_timeout(self, _mock_settings):
+        """proxy_settings overrides stream retry timeout."""
+        self.assertEqual(ConfigHelper.stream_retry_timeout(), 15)
 
-    def test_default_max_retries(self):
+    @patch.object(TSConfig, "get_proxy_settings", return_value={})
+    def test_default_max_retries(self, _mock_settings):
         """Default MAX_RETRIES is 3."""
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(ConfigHelper.max_retries(), 3)
+        self.assertEqual(ConfigHelper.max_retries(), 3)
 
-    def test_env_var_overrides_max_retries(self):
-        """DISPATCHARR_MAX_RETRIES environment variable overrides max retries."""
-        with patch.dict(os.environ, {"DISPATCHARR_MAX_RETRIES": "5"}):
-            with patch.object(BaseConfig, "MAX_RETRIES", int(os.environ["DISPATCHARR_MAX_RETRIES"])):
-                self.assertEqual(ConfigHelper.max_retries(), 5)
+    @patch.object(TSConfig, "get_proxy_settings", return_value={"max_retries": 5})
+    def test_proxy_settings_override_max_retries(self, _mock_settings):
+        """proxy_settings overrides max retries."""
+        self.assertEqual(ConfigHelper.max_retries(), 5)
 
 
 class ObtainStreamWithRetriesTimeoutTests(SimpleTestCase):
