@@ -1,5 +1,4 @@
 """Shared configuration between proxy types"""
-import os
 import time
 from django.db import connection
 
@@ -7,8 +6,8 @@ class BaseConfig:
     DEFAULT_USER_AGENT = 'VLC/3.0.20 LibVLC/3.0.20' # Will only be used if connection to settings fail
     CHUNK_SIZE = 8192
     CLIENT_POLL_INTERVAL = 0.1
-    MAX_RETRIES = int(os.environ.get("DISPATCHARR_MAX_RETRIES", 3))
-    STREAM_RETRY_TIMEOUT = float(os.environ.get("DISPATCHARR_STREAM_RETRY_TIMEOUT", 3.0))
+    MAX_RETRIES = 3
+    STREAM_RETRY_TIMEOUT = 3
     RETRY_WINDOW_SECONDS = 1800  # Reset retry counter after this long without a failure
     STABLE_CONNECTION_THRESHOLD = 30  # Seconds of uptime before switch rotation state resets
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
