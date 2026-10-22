@@ -20,6 +20,7 @@ from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
 from apps.epg.models import EPGData
 from django.db import connection, transaction
+from django.db.models.functions import Coalesce
 from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
@@ -315,9 +316,16 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
 
     def get_channel_count(self, obj):
         # Use the queryset annotation when available (list path); fall back
-        # to a live query for retrieve/create/update where it isn't set.
+        # to an override-aware live query for retrieve/create/update.
         v = getattr(obj, 'channel_count', None)
-        return v if v is not None else obj.channels.count()
+        if v is not None:
+            return v
+        return Channel.objects.annotate(
+            effective_group_id=Coalesce(
+                'override__channel_group_id',
+                'channel_group_id',
+            )
+        ).filter(effective_group_id=obj.id).count()
 
     def get_is_custom(self, obj):
         v = getattr(obj, "is_custom", None)

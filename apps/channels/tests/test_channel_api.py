@@ -1624,6 +1624,46 @@ class ChannelGroupVisibilityTests(TestCase):
         )
 
 
+class ChannelGroupEffectiveCountTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="group_count_admin", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.source = ChannelGroup.objects.create(name="Source")
+        self.target = ChannelGroup.objects.create(name="Target")
+        channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Overridden channel",
+            channel_group=self.source,
+        )
+        ChannelOverride.objects.create(channel=channel, channel_group=self.target)
+
+    def test_list_and_claim_responses_use_effective_channel_counts(self):
+        response = self.client.get("/api/channels/groups/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        counts = {group["name"]: group["channel_count"] for group in response.data}
+        self.assertEqual(counts["Source"], 0)
+        self.assertEqual(counts["Target"], 1)
+
+        response = self.client.post(
+            f"/api/channels/groups/{self.target.id}/claim-custom/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["channel_count"], 1)
+
+    def test_unclaim_response_uses_effective_channel_count(self):
+        self.client.post(f"/api/channels/groups/{self.source.id}/claim-custom/")
+
+        response = self.client.post(
+            f"/api/channels/groups/{self.source.id}/unclaim-custom/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["channel_count"], 0)
+
+
 class ChannelListOnlyCatchupFilterTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="catchup_filter", password="x")

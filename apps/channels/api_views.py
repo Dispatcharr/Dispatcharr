@@ -712,11 +712,33 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             )
         ).filter(effective_group_id=group.id).exists()
 
+    @staticmethod
+    def _with_effective_channel_count(queryset):
+        """Annotate groups with their override-aware channel totals."""
+        effective_channel_count = (
+            Channel.objects.annotate(
+                effective_group_id=Coalesce(
+                    "override__channel_group_id",
+                    "channel_group_id",
+                )
+            )
+            .filter(effective_group_id=OuterRef("pk"))
+            .order_by()
+            .values("effective_group_id")
+            .annotate(count=Count("id"))
+            .values("count")[:1]
+        )
+        return queryset.annotate(
+            channel_count=Coalesce(
+                Subquery(effective_channel_count),
+                Value(0),
+                output_field=IntegerField(),
+            )
+        )
+
     def get_queryset(self):
-        # Annotate both counts at the SQL level so the serializer methods
-        # can read them from the object rather than issuing a COUNT per row.
-        # `distinct=True` is required when multiple reverse-FK annotations
-        # share the same queryset to avoid row-multiplication artifacts.
+        # Annotate group metadata for serializer access. List channel totals
+        # are computed separately with one effective-group aggregation query.
         # m3u_accounts is still prefetched for the nested serializer data.
         user = getattr(self.request, 'user', None)
         self._visible_group_counts = None
@@ -753,27 +775,8 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
                 )
             ).only('id', 'name')
 
-        effective_channel_count = (
-            Channel.objects.annotate(
-                effective_group_id=Coalesce(
-                    "override__channel_group_id",
-                    "channel_group_id",
-                )
-            )
-            .filter(effective_group_id=OuterRef("pk"))
-            .order_by()
-            .values("effective_group_id")
-            .annotate(count=Count("id"))
-            .values("count")[:1]
-        )
-
         return (
             ChannelGroup.objects.annotate(
-                channel_count=Coalesce(
-                    Subquery(effective_channel_count),
-                    Value(0),
-                    output_field=IntegerField(),
-                ),
                 is_custom=Exists(
                     ChannelGroupM3UAccount.objects.filter(
                         channel_group_id=OuterRef('pk'),
@@ -824,6 +827,25 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             )
 
         group_ids = [g.id for g in groups]
+
+        # Count effective groups in one GROUP BY query rather than using a
+        # correlated count subquery for every group in the list query.
+        effective_group_counts = {
+            row['gid']: row['c']
+            for row in (
+                Channel.objects.annotate(
+                    gid=Coalesce(
+                        'override__channel_group_id',
+                        'channel_group_id',
+                    )
+                )
+                .filter(gid__in=group_ids)
+                .values('gid')
+                .annotate(c=Count('id'))
+            )
+        }
+        for group in groups:
+            group.channel_count = effective_group_counts.get(group.id, 0)
 
         # Pre-aggregate stream counts for all (account, group) pairs in a
         # single query so the nested ChannelGroupM3UAccountSerializer never
@@ -962,7 +984,11 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         ChannelGroup.objects.mark_custom(instance)
         return Response(
-            self.get_serializer(ChannelGroup.objects.get(pk=instance.pk)).data
+            self.get_serializer(
+                self._with_effective_channel_count(
+                    ChannelGroup.objects.filter(pk=instance.pk)
+                ).get()
+            ).data
         )
 
     @action(
@@ -981,7 +1007,11 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             )
         instance.m3u_accounts.filter(m3u_account__locked=True).delete()
         return Response(
-            self.get_serializer(ChannelGroup.objects.get(pk=instance.pk)).data
+            self.get_serializer(
+                self._with_effective_channel_count(
+                    ChannelGroup.objects.filter(pk=instance.pk)
+                ).get()
+            ).data
         )
 
     def destroy(self, request, *args, **kwargs):

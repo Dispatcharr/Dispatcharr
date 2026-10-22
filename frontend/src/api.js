@@ -665,12 +665,8 @@ export default class API {
         method: 'DELETE',
       });
 
-      if (response?.demoted) {
-        await useChannelsStore.getState().fetchChannelGroups();
-      } else {
-        // Remove from store after successful deletion
-        useChannelsStore.getState().removeChannelGroup(id);
-      }
+      // DELETE returns 204 with no response body, so remove it directly.
+      useChannelsStore.getState().removeChannelGroup(id);
 
       return response ?? true;
     } catch (e) {
