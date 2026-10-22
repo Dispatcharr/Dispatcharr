@@ -41,7 +41,7 @@ class GroupSettingsCategoryLanguageTests(TestCase):
         relation = M3UVODCategoryRelation.objects.get(
             m3u_account=self.account, category=self.category
         )
-        self.assertEqual(relation.custom_properties.get("language"), "es")
+        self.assertEqual(relation.metadata_defaults.get("audio_languages"), ["spa"])
 
     def test_merges_quality_without_wiping_existing_language(self):
         M3UVODCategoryRelation.objects.create(
@@ -59,8 +59,8 @@ class GroupSettingsCategoryLanguageTests(TestCase):
         relation = M3UVODCategoryRelation.objects.get(
             m3u_account=self.account, category=self.category
         )
-        self.assertEqual(relation.custom_properties.get("language"), "es")
-        self.assertEqual(relation.custom_properties.get("quality"), "1080p")
+        self.assertEqual(relation.metadata_defaults.get("audio_languages"), ["spa"])
+        self.assertEqual(relation.metadata_defaults.get("resolution"), "1080p")
 
     def test_updating_language_overwrites_only_that_key(self):
         M3UVODCategoryRelation.objects.create(
@@ -78,12 +78,12 @@ class GroupSettingsCategoryLanguageTests(TestCase):
         relation = M3UVODCategoryRelation.objects.get(
             m3u_account=self.account, category=self.category
         )
-        self.assertEqual(relation.custom_properties.get("language"), "fr")
-        self.assertEqual(relation.custom_properties.get("quality"), "720p")
+        self.assertEqual(relation.metadata_defaults.get("audio_languages"), ["fre"])
+        self.assertEqual(relation.metadata_defaults.get("resolution"), "720p")
 
     def test_rejects_invalid_language_code(self):
         response = self._patch([
-            {"id": self.category.id, "enabled": True, "custom_properties": {"language": "eng"}}
+            {"id": self.category.id, "enabled": True, "custom_properties": {"language": "xx"}}
         ])
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(
@@ -116,12 +116,12 @@ class GroupSettingsCategoryLanguageTests(TestCase):
         self.assertEqual(
             M3UVODCategoryRelation.objects.get(
                 m3u_account=self.account, category=self.category
-            ).custom_properties.get("language"),
-            "es",
+            ).metadata_defaults.get("audio_languages"),
+            ["spa"],
         )
         self.assertEqual(
             M3UVODCategoryRelation.objects.get(
                 m3u_account=self.account, category=other_category
-            ).custom_properties.get("language"),
-            "fr",
+            ).metadata_defaults.get("audio_languages"),
+            ["fre"],
         )

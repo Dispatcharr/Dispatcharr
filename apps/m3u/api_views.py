@@ -29,6 +29,7 @@ from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
 from apps.vod.utils import validate_category_custom_properties
+from apps.vod.metadata import METADATA_FIELDS, legacy_category_metadata, validate_source_metadata
 
 from .serializers import (
     M3UAccountSerializer,
@@ -601,6 +602,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
         try:
             validated_category_props = {}
+            validated_category_defaults = {}
             for setting in category_settings:
                 try:
                     validated_category_props[setting.get("id")] = (
@@ -608,6 +610,10 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                             setting.get("custom_properties")
                         )
                     )
+                    if "metadata_defaults" in setting:
+                        validated_category_defaults[setting.get("id")] = validate_source_metadata(
+                            setting["metadata_defaults"], allow_reset=True
+                        )
                 except ValueError as e:
                     return Response(
                         {"error": f"Category {setting.get('id')}: {e}"},
@@ -677,35 +683,56 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 category_ids = [
                     setting["id"] for setting in category_settings if setting.get("id")
                 ]
-                existing_category_props = {
-                    rel.category_id: rel.custom_properties or {}
+                existing_categories = {
+                    rel.category_id: rel
                     for rel in M3UVODCategoryRelation.objects.filter(
                         m3u_account=account, category_id__in=category_ids
-                    )
+                    ).select_for_update()
                 }
 
-                category_objects = [
-                    M3UVODCategoryRelation(
+                category_objects = []
+                metadata_keys = METADATA_FIELDS | {"language", "quality"}
+                for setting in category_settings:
+                    if not setting.get("id"):
+                        continue
+                    existing = existing_categories.get(setting["id"])
+                    incoming = validated_category_props.get(setting["id"], {})
+                    defaults = {
+                        **legacy_category_metadata(existing.custom_properties if existing else {}),
+                        **(existing.metadata_defaults or {} if existing else {}),
+                    }
+                    patch = legacy_category_metadata(incoming)
+                    for key in METADATA_FIELDS:
+                        if key in incoming and incoming[key] is None:
+                            patch[key] = None
+                    if "language" in incoming and incoming["language"] is None:
+                        patch["audio_languages"] = None
+                    if "quality" in incoming and incoming["quality"] is None:
+                        patch["resolution"] = None
+                    patch.update(validated_category_defaults.get(setting["id"], {}))
+                    for key, value in patch.items():
+                        if value is None:
+                            defaults.pop(key, None)
+                        else:
+                            defaults[key] = value
+                    properties = {
+                        **(existing.custom_properties or {} if existing else {}),
+                        **incoming,
+                    }
+                    category_objects.append(M3UVODCategoryRelation(
                         category_id=setting["id"],
                         m3u_account=account,
                         enabled=setting.get("enabled", True),
-                        # Merged so a partial update (e.g. only `quality`) keeps
-                        # the category's language, which keys its VOD identity
-                        custom_properties={
-                            **existing_category_props.get(setting["id"], {}),
-                            **validated_category_props.get(setting["id"], {}),
-                        },
-                    )
-                    for setting in category_settings
-                    if setting.get("id")
-                ]
+                        custom_properties={key: value for key, value in properties.items() if key not in metadata_keys},
+                        metadata_defaults=defaults,
+                    ))
 
                 if category_objects:
                     M3UVODCategoryRelation.objects.bulk_create(
                         category_objects,
                         update_conflicts=True,
                         unique_fields=["m3u_account", "category"],
-                        update_fields=["enabled", "custom_properties"],
+                        update_fields=["enabled", "custom_properties", "metadata_defaults"],
                     )
 
             return Response({"message": "Group settings updated successfully"})
