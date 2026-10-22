@@ -116,7 +116,8 @@ class ManifestVersionTests(SimpleTestCase):
 
     def test_min_app_version_known(self):
         self.assertIsNone(min_app_version_for_manifest_version(0))
-        self.assertEqual(min_app_version_for_manifest_version(2), "0.29.0")
+        self.assertEqual(min_app_version_for_manifest_version(1), "0.34.0")
+        self.assertEqual(min_app_version_for_manifest_version(2), "0.34.0")
 
     def test_max_app_version_is_unbounded_for_all_current_schemas(self):
         for manifest_version in (0, 1, 2):
@@ -131,9 +132,9 @@ class ManifestVersionTests(SimpleTestCase):
 
     def test_manifest_version_supported(self):
         self.assertTrue(manifest_version_supported(0, "0.1.0"))
-        self.assertTrue(manifest_version_supported(1, "0.29.0"))
+        self.assertTrue(manifest_version_supported(1, "0.34.0"))
         self.assertFalse(manifest_version_supported(1, "0.1.0"))
-        self.assertTrue(manifest_version_supported(2, "0.29.0"))
+        self.assertTrue(manifest_version_supported(2, "0.34.0"))
         self.assertFalse(manifest_version_supported(2, "0.28.2"))
 
     def test_manifest_version_respects_an_upper_compatibility_bound(self):
