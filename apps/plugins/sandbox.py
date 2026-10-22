@@ -5,6 +5,7 @@ are defense in depth only: a plugin shares this interpreter and is not isolated.
 """
 import builtins
 import os
+from contextvars import copy_context
 from functools import wraps
 from types import ModuleType
 from typing import Any, Dict
@@ -18,6 +19,18 @@ def _guard(capability_id, func):
         require_plugin_capability(capability_id)
         return func(*args, **kwargs)
     return guarded
+
+
+def _context_thread(thread_cls):
+    class ContextThread(thread_cls):
+        def __init__(self, *args, **kwargs):
+            self._plugin_context = copy_context()
+            super().__init__(*args, **kwargs)
+
+        def run(self):
+            return self._plugin_context.run(super().run)
+
+    return ContextThread
 
 
 class _SocketProxy:
@@ -59,7 +72,12 @@ def _guard_module(name: str, module):
             for attr in ("Popen", "run", "call", "check_call", "check_output")
         })
     if name == "socket":
-        return _ModuleProxy(module, {"socket": lambda value: lambda *a, **kw: _SocketProxy(value(*a, **kw))})
+        return _ModuleProxy(module, {
+            "socket": lambda value: lambda *a, **kw: _SocketProxy(value(*a, **kw)),
+            "create_connection": lambda value: _guard("outbound_network", value),
+        })
+    if name == "threading":
+        return _ModuleProxy(module, {"Thread": _context_thread})
     if name == "requests":
         return _ModuleProxy(module, {
             attr: lambda value: _guard("outbound_network", value)
@@ -69,6 +87,11 @@ def _guard_module(name: str, module):
         return _ModuleProxy(module, {
             attr: lambda value: _guard("outbound_network", value)
             for attr in ("urlopen", "urlretrieve")
+        })
+    if name == "http.client":
+        return _ModuleProxy(module, {
+            attr: lambda value: _guard("outbound_network", value)
+            for attr in ("HTTPConnection", "HTTPSConnection")
         })
     return module
 
@@ -115,7 +138,14 @@ def plugin_builtins(plugin_key: str, plugin_path: str, storage_key: str = "") ->
         module = original_import(name, globals, locals, fromlist, level)
         if current_plugin_key() != plugin_key:
             return module
-        if name in {"subprocess", "socket", "requests", "urllib.request"}:
+        if name in {"urllib.request", "http.client"}:
+            child = original_import(name, globals, locals, ("*",), level)
+            guarded_child = _guard_module(name, child)
+            if fromlist:
+                return guarded_child
+            child_name = name.rsplit(".", 1)[1]
+            return _ModuleProxy(module, {child_name: lambda value: guarded_child})
+        if name in {"subprocess", "socket", "threading", "requests"}:
             return _guard_module(name, module)
         return module
 

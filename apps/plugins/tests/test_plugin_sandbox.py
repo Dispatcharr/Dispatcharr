@@ -3,6 +3,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 
 from apps.plugins.context import running_as_plugin
+from apps.plugins.loader import LoadedPlugin
 from apps.plugins.sandbox import _plugin_open, plugin_builtins, stable_plugin_data_path
 
 
@@ -97,3 +98,48 @@ class PluginSandboxTests(SimpleTestCase):
 
         require.assert_any_call("subprocess")
         require.assert_any_call("outbound_network")
+
+    def test_urllib_request_import_forms_remain_guarded(self):
+        values = plugin_builtins("example", "/data/plugins/example")
+        with patch("apps.plugins.sandbox.require_plugin_capability") as require, patch(
+            "urllib.request.urlopen"
+        ):
+            with running_as_plugin("example"):
+                values["__import__"]("urllib.request", fromlist=("urlopen",)).urlopen("https://example.com")
+                values["__import__"]("urllib.request").request.urlopen("https://example.com")
+
+        self.assertEqual(require.call_count, 2)
+        require.assert_called_with("outbound_network")
+
+    def test_socket_and_http_client_helpers_remain_guarded(self):
+        values = plugin_builtins("example", "/data/plugins/example")
+        with patch("apps.plugins.sandbox.require_plugin_capability") as require, patch(
+            "socket.create_connection"
+        ), patch("http.client.HTTPConnection"):
+            with running_as_plugin("example"):
+                values["__import__"]("socket").create_connection(("example.com", 443))
+                values["__import__"]("http.client", fromlist=("HTTPConnection",)).HTTPConnection("example.com")
+
+        self.assertEqual(require.call_count, 2)
+        require.assert_called_with("outbound_network")
+
+    def test_thread_inherits_plugin_context(self):
+        values = plugin_builtins("example", "/data/plugins/example")
+        plugin = LoadedPlugin(key="example", name="Example", manifest_schema_version=2)
+        errors = []
+
+        def target():
+            try:
+                values["__import__"]("subprocess").run(["true"])
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch("apps.plugins.loader.PluginManager.get") as get_manager, patch("subprocess.run"):
+            get_manager.return_value.get_plugin.return_value = plugin
+            with running_as_plugin("example"):
+                thread = values["__import__"]("threading").Thread(target=target)
+                thread.start()
+                thread.join()
+
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], PermissionError)
