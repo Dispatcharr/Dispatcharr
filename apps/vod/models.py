@@ -99,6 +99,24 @@ class VODCategory(models.Model):
         return f"{self.name} ({self.get_category_type_display()})"
 
 
+class VODSourceMetadataMixin(models.Model):
+    """Metadata belongs to an exact account/provider relation, not a title."""
+
+    declared_metadata = models.JSONField(default=dict, blank=True)
+    observed_metadata = models.JSONField(default=dict, blank=True)
+    manual_metadata = models.JSONField(default=dict, blank=True)
+    locked_fields = models.JSONField(default=list, blank=True)
+    last_observed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        abstract = True
+
+    def effective_metadata(self, category_defaults=None):
+        from .metadata import effective_source_metadata
+
+        return effective_source_metadata(self, category_defaults=category_defaults)
+
+
 class Series(models.Model):
     """Series information for TV shows"""
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
@@ -109,16 +127,9 @@ class Series(models.Model):
     genre = models.CharField(max_length=255, blank=True, null=True)
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='series')
 
-    # Metadata IDs for deduplication - unique per language when present
+    # Content identity is independent of source languages and technical features.
     tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
     imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
-    # '' rather than NULL so untagged rows collide in the unique constraints
-    language = models.CharField(
-        max_length=2,
-        blank=True,
-        default='',
-        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
-    )
 
     # Additional metadata and properties
     custom_properties = models.JSONField(blank=True, null=True, help_text='Additional metadata and properties for the series')
@@ -130,23 +141,21 @@ class Series(models.Model):
         verbose_name = 'Series'
         verbose_name_plural = 'Series'
         ordering = ['name']
-        # Identity is (external ID, language), falling back to
-        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['tmdb_id', 'language'],
+                fields=['tmdb_id'],
                 condition=models.Q(tmdb_id__isnull=False),
-                name='unique_series_tmdb_id_language'
+                name='unique_series_tmdb_id'
             ),
             models.UniqueConstraint(
-                fields=['imdb_id', 'language'],
+                fields=['imdb_id'],
                 condition=models.Q(imdb_id__isnull=False),
-                name='unique_series_imdb_id_language'
+                name='unique_series_imdb_id'
             ),
             models.UniqueConstraint(
-                fields=['name', 'year', 'language'],
+                fields=['name', 'year'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_series_name_year_language_no_external_id'
+                name='unique_series_name_year_no_external_id'
             ),
         ]
 
@@ -166,16 +175,9 @@ class Movie(models.Model):
     duration_secs = models.IntegerField(blank=True, null=True, help_text="Duration in seconds")
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='movie')
 
-    # Metadata IDs for deduplication - unique per language when present
+    # Content identity is independent of source languages and technical features.
     tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
     imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
-    # '' rather than NULL so untagged rows collide in the unique constraints
-    language = models.CharField(
-        max_length=2,
-        blank=True,
-        default='',
-        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
-    )
 
     is_adult = models.BooleanField(
         default=False,
@@ -193,23 +195,21 @@ class Movie(models.Model):
         verbose_name = 'Movie'
         verbose_name_plural = 'Movies'
         ordering = ['name']
-        # Identity is (external ID, language), falling back to
-        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['tmdb_id', 'language'],
+                fields=['tmdb_id'],
                 condition=models.Q(tmdb_id__isnull=False),
-                name='unique_movie_tmdb_id_language'
+                name='unique_movie_tmdb_id'
             ),
             models.UniqueConstraint(
-                fields=['imdb_id', 'language'],
+                fields=['imdb_id'],
                 condition=models.Q(imdb_id__isnull=False),
-                name='unique_movie_imdb_id_language'
+                name='unique_movie_imdb_id'
             ),
             models.UniqueConstraint(
-                fields=['name', 'year', 'language'],
+                fields=['name', 'year'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_movie_name_year_language_no_external_id'
+                name='unique_movie_name_year_no_external_id'
             ),
         ]
 
@@ -257,7 +257,7 @@ class Episode(models.Model):
 
 # New relation models to link M3U accounts with VOD content
 
-class M3USeriesRelation(models.Model):
+class M3USeriesRelation(VODSourceMetadataMixin):
     """Links M3U accounts to Series with provider-specific information"""
     m3u_account = models.ForeignKey(M3UAccount, on_delete=models.CASCADE, related_name='series_relations')
     series = models.ForeignKey(Series, on_delete=models.CASCADE, related_name='m3u_relations')
@@ -282,7 +282,7 @@ class M3USeriesRelation(models.Model):
         return f"{self.m3u_account.name} - {self.series.name}"
 
 
-class M3UMovieRelation(models.Model):
+class M3UMovieRelation(VODSourceMetadataMixin):
     """Links M3U accounts to Movies with provider-specific information"""
     m3u_account = models.ForeignKey(M3UAccount, on_delete=models.CASCADE, related_name='movie_relations')
     movie = models.ForeignKey(Movie, on_delete=models.CASCADE, related_name='m3u_relations')
@@ -340,7 +340,7 @@ class M3UMovieRelation(models.Model):
         )
 
 
-class M3UEpisodeRelation(models.Model):
+class M3UEpisodeRelation(VODSourceMetadataMixin):
     """Links M3U accounts to Episodes with provider-specific information"""
     m3u_account = models.ForeignKey(M3UAccount, on_delete=models.CASCADE, related_name='episode_relations')
     episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='m3u_relations')
@@ -413,6 +413,7 @@ class M3UVODCategoryRelation(models.Model):
     )
 
     custom_properties = models.JSONField(blank=True, null=True, help_text="Provider-specific data like quality, language, etc.")
+    metadata_defaults = models.JSONField(default=dict, blank=True)
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
@@ -425,3 +426,34 @@ class M3UVODCategoryRelation(models.Model):
 
     def __str__(self):
         return f"{self.m3u_account.name} - {self.category.name}"
+
+
+class VODContentAlias(models.Model):
+    """Stable public selections and retired IDs retain playback requirements.
+
+    Targets are numeric canonical IDs rather than provider IDs. A missing
+    target resolves to 404; an old identifier is never reused for a source.
+    """
+
+    content_type = models.CharField(
+        max_length=7,
+        choices=(("movie", "Movie"), ("series", "Series"), ("episode", "Episode")),
+    )
+    legacy_id = models.PositiveBigIntegerField()
+    legacy_uuid = models.UUIDField()
+    target_id = models.PositiveBigIntegerField()
+    requirements = models.JSONField(default=dict, blank=True)
+    selection_key = models.CharField(max_length=100, unique=True, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("content_type", "legacy_id"), name="vod_alias_legacy_id"
+            ),
+            models.UniqueConstraint(
+                fields=("content_type", "legacy_uuid"), name="vod_alias_legacy_uuid"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("content_type", "target_id"), name="vod_alias_target_idx"),
+        ]

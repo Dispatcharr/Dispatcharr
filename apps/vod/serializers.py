@@ -8,6 +8,57 @@ from .models import (
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
 from apps.m3u.serializers import M3UAccountSerializer
+from .metadata import METADATA_FIELDS, validate_source_metadata
+
+
+class SourceMetadataLanguageOptionSerializer(serializers.Serializer):
+    value = serializers.CharField()
+    label = serializers.CharField()
+
+
+class SourceMetadataOptionsSerializer(serializers.Serializer):
+    languages = SourceMetadataLanguageOptionSerializer(many=True)
+    resolutions = serializers.ListField(child=serializers.CharField())
+    video_features = serializers.ListField(child=serializers.CharField())
+
+
+class SourceMetadataSerializerMixin(serializers.Serializer):
+    declared_metadata = serializers.JSONField(read_only=True)
+    observed_metadata = serializers.JSONField(read_only=True)
+    last_observed_at = serializers.DateTimeField(read_only=True)
+    manual_metadata = serializers.JSONField(required=False)
+    locked_fields = serializers.ListField(
+        child=serializers.ChoiceField(choices=sorted(METADATA_FIELDS)), required=False
+    )
+    effective_metadata = serializers.SerializerMethodField()
+
+    def validate_manual_metadata(self, value):
+        try:
+            return validate_source_metadata(value, allow_reset=True)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    @extend_schema_field(serializers.JSONField())
+    def get_effective_metadata(self, obj):
+        return obj.effective_metadata()
+
+    def update(self, instance, validated_data):
+        if "manual_metadata" in validated_data:
+            metadata = dict(instance.manual_metadata or {})
+            for key, value in validated_data["manual_metadata"].items():
+                if value is None:
+                    metadata.pop(key, None)
+                else:
+                    metadata[key] = value
+            validated_data["manual_metadata"] = metadata
+        return super().update(instance, validated_data)
+
+
+class SourceMetadataPatchSerializer(serializers.Serializer):
+    manual_metadata = serializers.JSONField(required=False)
+    locked_fields = serializers.ListField(
+        child=serializers.ChoiceField(choices=sorted(METADATA_FIELDS)), required=False
+    )
 
 
 class QualityInfoSerializer(serializers.Serializer):
@@ -110,11 +161,23 @@ class VODLogoSerializer(serializers.ModelSerializer):
 class M3UVODCategoryRelationSerializer(serializers.ModelSerializer):
     category = serializers.IntegerField(source="category.id")
     m3u_account = serializers.IntegerField(source="m3u_account.id")
-    custom_properties = serializers.JSONField(required=False, allow_null=True)
+    custom_properties = serializers.SerializerMethodField()
+    metadata_defaults = serializers.JSONField(read_only=True)
+
+    @extend_schema_field(serializers.JSONField())
+    def get_custom_properties(self, obj):
+        # Keep the category-settings payload compatible without maintaining a
+        # second authoritative copy of metadata in custom_properties.
+        from .metadata import legacy_category_metadata
+        return {
+            **(obj.custom_properties or {}),
+            **legacy_category_metadata(obj.custom_properties),
+            **(obj.metadata_defaults or {}),
+        }
 
     class Meta:
         model = M3UVODCategoryRelation
-        fields = ["category", "m3u_account", "enabled", "custom_properties"]
+        fields = ["category", "m3u_account", "enabled", "custom_properties", "metadata_defaults"]
 
 
 class VODCategorySerializer(serializers.ModelSerializer):
@@ -166,7 +229,7 @@ class EpisodeSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-class M3USeriesRelationSerializer(serializers.ModelSerializer):
+class M3USeriesRelationSerializer(SourceMetadataSerializerMixin, serializers.ModelSerializer):
     series = SeriesSerializer(read_only=True)
     category = VODCategorySerializer(read_only=True)
     m3u_account = M3UAccountSerializer(read_only=True)
@@ -177,7 +240,7 @@ class M3USeriesRelationSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-class M3UMovieRelationSerializer(serializers.ModelSerializer):
+class M3UMovieRelationSerializer(SourceMetadataSerializerMixin, serializers.ModelSerializer):
     movie = MovieSerializer(read_only=True)
     category = VODCategorySerializer(read_only=True)
     m3u_account = M3UAccountSerializer(read_only=True)
@@ -192,6 +255,9 @@ class M3UMovieRelationSerializer(serializers.ModelSerializer):
     def get_quality_info(self, obj):
         """Extract quality information from various sources"""
         quality_info = {}
+        resolution = obj.effective_metadata()['values'].get('resolution')
+        if resolution:
+            return {'quality': '4K' if resolution == '2160p' else resolution, 'resolution': resolution}
 
         # 1. Check custom_properties first
         if obj.custom_properties:
@@ -257,7 +323,7 @@ class M3UMovieRelationSerializer(serializers.ModelSerializer):
         return None
 
 
-class M3UEpisodeRelationSerializer(serializers.ModelSerializer):
+class M3UEpisodeRelationSerializer(SourceMetadataSerializerMixin, serializers.ModelSerializer):
     episode = EpisodeSerializer(read_only=True)
     m3u_account = M3UAccountSerializer(read_only=True)
     quality_info = serializers.SerializerMethodField()
@@ -271,6 +337,9 @@ class M3UEpisodeRelationSerializer(serializers.ModelSerializer):
     def get_quality_info(self, obj):
         """Extract quality information from various sources"""
         quality_info = {}
+        resolution = obj.effective_metadata()['values'].get('resolution')
+        if resolution:
+            return {'quality': '4K' if resolution == '2160p' else resolution, 'resolution': resolution}
 
         # 1. Check custom_properties first
         if obj.custom_properties:
