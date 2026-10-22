@@ -1,5 +1,6 @@
-from rest_framework import viewsets, status
+from rest_framework import mixins, viewsets, status
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
@@ -26,6 +27,9 @@ from .serializers import (
     VODLogoSerializer,
     M3UMovieRelationSerializer,
     M3USeriesRelationSerializer,
+    M3UEpisodeRelationSerializer,
+    SourceMetadataOptionsSerializer,
+    SourceMetadataPatchSerializer,
     EpisodeWithProvidersSerializer,
     MovieProviderInfoSerializer,
     SeriesProviderInfoSerializer,
@@ -54,6 +58,57 @@ from datetime import timedelta
 from rest_framework.utils.urls import replace_query_param, remove_query_param
 
 logger = logging.getLogger(__name__)
+
+
+class SourceMetadataOptionsView(APIView):
+    permission_classes = [IsAdmin]
+
+    @extend_schema(responses=SourceMetadataOptionsSerializer)
+    def get(self, request):
+        from .language_codes import LANGUAGES
+        from .metadata import RESOLUTIONS, VIDEO_FEATURES
+        return Response(SourceMetadataOptionsSerializer({
+            "languages": sorted([
+                {"value": code, "label": f"{entry['name']} ({code})"}
+                for code, entry in LANGUAGES.items()
+            ], key=lambda entry: entry["label"]),
+            # Keep legacy SD values readable, but offer exact numeric tiers for new defaults.
+            "resolutions": [value for value in RESOLUTIONS if value != "SD"],
+            "video_features": sorted(VIDEO_FEATURES),
+        }).data)
+
+
+class SourceMetadataViewSet(mixins.UpdateModelMixin, viewsets.ReadOnlyModelViewSet):
+    """Admin metadata edits cannot change a source's provider/content identity."""
+    permission_classes = [IsAdmin]
+    http_method_names = ["get", "patch", "head", "options"]
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["m3u_account"]
+
+    @extend_schema(request=SourceMetadataPatchSerializer)
+    def partial_update(self, request, *args, **kwargs):
+        from rest_framework.exceptions import ValidationError
+        if set(request.data) - {"manual_metadata", "locked_fields"}:
+            raise ValidationError("Only manual_metadata and locked_fields may be changed.")
+        from django.db import transaction
+        with transaction.atomic():
+            self.queryset = self.get_queryset().select_for_update(of=("self",))
+            return super().partial_update(request, *args, **kwargs)
+
+
+class MovieSourceViewSet(SourceMetadataViewSet):
+    queryset = M3UMovieRelation.objects.select_related("movie", "category", "m3u_account")
+    serializer_class = M3UMovieRelationSerializer
+
+
+class SeriesSourceViewSet(SourceMetadataViewSet):
+    queryset = M3USeriesRelation.objects.select_related("series", "category", "m3u_account")
+    serializer_class = M3USeriesRelationSerializer
+
+
+class EpisodeSourceViewSet(SourceMetadataViewSet):
+    queryset = M3UEpisodeRelation.objects.select_related("episode", "series_relation", "m3u_account")
+    serializer_class = M3UEpisodeRelationSerializer
 
 
 def _authenticated_user(request):

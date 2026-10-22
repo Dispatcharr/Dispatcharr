@@ -4,7 +4,13 @@ from django.urls import reverse
 from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number, is_catchup_enabled, resolve_epg_output_window
-from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled, xc_language_suffix
+from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
+from apps.vod.metadata import (
+    category_key, category_metadata_map, effective_source_metadata,
+    metadata_suffix, metadata_satisfies, requirements_from_metadata,
+)
+from apps.vod.references import output_references, selection_key
+from apps.vod.selection import resolve_content, select_source, source_candidates
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -1003,9 +1009,29 @@ def xc_get_epg(request, user, short=False):
     return output
 
 
+def _xc_source_metadata(rows):
+    from types import SimpleNamespace
+
+    sources = [SimpleNamespace(
+        id=row['id'], m3u_account_id=row['m3u_account_id'],
+        category_id=row.get('category_id'), custom_properties={},
+        declared_metadata=row['declared_metadata'],
+        observed_metadata=row['observed_metadata'],
+        manual_metadata=row['manual_metadata'],
+    ) for row in rows]
+    categories = category_metadata_map(sources)
+    return {
+        source.id: effective_source_metadata(
+            source, category_defaults=categories.get(category_key(source), {})
+        )['values']
+        for source in sources
+    }
+
+
 XC_MOVIE_VALUE_FIELDS = (
-    'id', 'movie_id', 'category_id', 'container_extension',
-    'movie__id', 'movie__name', 'movie__language', 'movie__rating', 'movie__created_at',
+    'id', 'movie_id', 'category_id', 'container_extension', 'm3u_account_id',
+    'declared_metadata', 'observed_metadata', 'manual_metadata',
+    'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
     'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
     'movie__year', 'movie__is_adult', 'movie__custom_properties', 'movie__logo_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
@@ -1013,8 +1039,9 @@ XC_MOVIE_VALUE_FIELDS = (
 )
 
 XC_SERIES_VALUE_FIELDS = (
-    'id', 'series_id', 'category_id', 'updated_at',
-    'series__id', 'series__name', 'series__language', 'series__description', 'series__genre',
+    'id', 'series_id', 'category_id', 'updated_at', 'm3u_account_id',
+    'declared_metadata', 'observed_metadata', 'manual_metadata',
+    'series__id', 'series__name', 'series__description', 'series__genre',
     'series__year', 'series__rating', 'series__custom_properties', 'series__logo_id',
     'series__tmdb_id', 'series__imdb_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
@@ -1218,6 +1245,11 @@ def xc_get_vod_streams(request, user, category_id=None):
         value_fields=XC_MOVIE_VALUE_FIELDS,
         order_by_name_field='movie__name',
     )
+    source_metadata = _xc_source_metadata(relations)
+    references = output_references('movie', [
+        (row['movie_id'], requirements_from_metadata(source_metadata[row['id']]))
+        for row in relations
+    ])
 
     _logo_url_parts = _xc_vodlogo_url_parts(request)
     # One reverse for the fallback-icon proxy rewrites below.
@@ -1235,9 +1267,9 @@ def xc_get_vod_streams(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": xc_language_suffix(row['movie__name'], row['movie__language']),
+            "name": metadata_suffix(row['movie__name'], source_metadata[row['id']]),
             "stream_type": "movie",
-            "stream_id": row['movie__id'],
+            "stream_id": references[selection_key('movie', row['movie_id'], requirements_from_metadata(source_metadata[row['id']]))].legacy_id,
             "stream_icon": _xc_cover_or_logo(
                 request,
                 'movie',
@@ -1313,6 +1345,11 @@ def xc_get_series(request, user, category_id=None):
         value_fields=XC_SERIES_VALUE_FIELDS,
         order_by_name_field='series__name',
     )
+    source_metadata = _xc_source_metadata(relations)
+    references = output_references('series', [
+        (row['series_id'], requirements_from_metadata(source_metadata[row['id']]))
+        for row in relations
+    ])
 
     _logo_url_parts = _xc_vodlogo_url_parts(request)
     # One reverse for all series backdrop rewrites.
@@ -1330,8 +1367,8 @@ def xc_get_series(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": xc_language_suffix(row['series__name'], row['series__language']),
-            "series_id": row['series__id'],
+            "name": metadata_suffix(row['series__name'], source_metadata[row['id']]),
+            "series_id": references[selection_key('series', row['series_id'], requirements_from_metadata(source_metadata[row['id']]))].legacy_id,
             "cover": _xc_cover_or_logo(
                 request,
                 'series',
@@ -1378,21 +1415,25 @@ def xc_get_series_info(request, user, series_id):
     if not series_id:
         raise Http404()
 
-    # Users with VOD access get series from all active M3U accounts
-    filters = {"series_id": series_id, "m3u_account__is_active": True}
+    series, requirements = resolve_content('series', series_id)
+    if series is None:
+        raise Http404()
+    filters = {"series_id": series.pk, "m3u_account__is_active": True}
 
     try:
-        series_relation = (
+        series_relation = select_source(
             M3USeriesRelation.objects.select_related('series', 'series__logo')
             .filter(**filters)
-            .order_by('-m3u_account__priority', 'id')
-            .first()
+            .order_by('-m3u_account__priority', 'id'),
+            requirements=requirements,
         )
     except (ValueError, TypeError):
         raise Http404()
     if not series_relation:
         raise Http404()
     series = series_relation.series
+    selected_metadata = effective_source_metadata(series_relation)['values']
+    requirements = {**requirements_from_metadata(selected_metadata), **requirements}
 
     # Check if we need to refresh detailed info (similar to vod api_views pattern)
     try:
@@ -1419,6 +1460,10 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
+    selected_metadata = effective_source_metadata(series_relation)['values']
+    if not metadata_satisfies(selected_metadata, requirements):
+        raise Http404()
+
     # Include episodes from any active provider for this shared Series (XC clients
     # see a unified catalog). Prefer the highest-priority account's stream metadata.
     from apps.vod.models import Episode, M3UEpisodeRelation
@@ -1431,25 +1476,34 @@ def xc_get_series_info(request, user, series_id):
     )
 
     relations_by_episode_id = {}
-    for rel in M3UEpisodeRelation.objects.filter(
+    episode_sources = M3UEpisodeRelation.objects.filter(
         episode_id__in=[ep.id for ep in episodes],
         m3u_account__is_active=True,
-    ).select_related('m3u_account').only(
-        'episode_id',
-        'container_extension',
-        'created_at',
-        'custom_properties',
-        'm3u_account__priority',
-    ).order_by('episode_id', '-m3u_account__priority', 'id'):
+    ).select_related('m3u_account', 'series_relation').order_by('episode_id', '-m3u_account__priority', 'id')
+    for rel in source_candidates(episode_sources, requirements=requirements, preserve_selection=False):
         # First row per episode wins due to priority/id ordering.
         if rel.episode_id not in relations_by_episode_id:
             relations_by_episode_id[rel.episode_id] = rel
+
+    episode_categories = category_metadata_map(relations_by_episode_id.values())
+    episode_requirements = {
+        episode_id: {
+            **requirements_from_metadata(effective_source_metadata(
+                source, category_defaults=episode_categories.get(category_key(source), {})
+            )['values']),
+            **requirements,
+        }
+        for episode_id, source in relations_by_episode_id.items()
+    }
+    episode_references = output_references('episode', list(episode_requirements.items()))
 
     # Group episodes by season
     seasons = {}
     # One reverse for all episode image rewrites in this response.
     _episode_image_parts = vod_image_url_parts(request, "episode")
     for episode in episodes:
+        if episode.id not in relations_by_episode_id:
+            continue
         season_num = (
             episode.season_number if episode.season_number is not None else 1
         )
@@ -1457,6 +1511,9 @@ def xc_get_series_info(request, user, series_id):
             seasons[season_num] = []
 
         best_relation = relations_by_episode_id.get(episode.id)
+        public_episode_id = episode_references[
+            selection_key('episode', episode.id, episode_requirements[episode.id])
+        ].legacy_id
 
         video = audio = bitrate = None
         container_extension = "mp4"
@@ -1487,7 +1544,7 @@ def xc_get_series_info(request, user, series_id):
         )
 
         seasons[season_num].append({
-            "id": episode.id,
+            "id": public_episode_id,
             "season": season_num,
             "episode_num": episode.episode_number or 0,
             "title": episode.name,
@@ -1496,7 +1553,7 @@ def xc_get_series_info(request, user, series_id):
             "custom_sid": None,
             "direct_source": "",
             "info": {
-                "id": int(episode.id),
+                "id": public_episode_id,
                 "name": episode.name,
                 "overview": episode.description or "",
                 "crew": str(episode.custom_properties.get('crew', "") if episode.custom_properties else ""),
@@ -1609,7 +1666,7 @@ def xc_get_series_info(request, user, series_id):
     info = {
         'seasons': seasons_list,
         "info": {
-            "name": xc_language_suffix(series_data['name'], series.language),
+            "name": metadata_suffix(series_data['name'], selected_metadata),
             "cover": series_cover,
             "plot": series_data['description'],
             "cast": series_data['cast'],
@@ -1651,19 +1708,25 @@ def xc_get_vod_info(request, user, vod_id):
     if not vod_id:
         raise Http404()
 
-    # Users with VOD access get it from all active M3U accounts
-    filters = {"movie_id": vod_id, "m3u_account__is_active": True}
+    movie, requirements = resolve_content('movie', vod_id)
+    if movie is None:
+        raise Http404()
+    filters = {"movie_id": movie.pk, "m3u_account__is_active": True}
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
         filters["movie__is_adult"] = False
 
     try:
         # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+        movie_relation = select_source(
+            M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(**filters).order_by('-m3u_account__priority', 'id'),
+            requirements=requirements,
+        )
         if not movie_relation:
             raise Http404()
         movie = movie_relation.movie
     except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
         raise Http404()
+    selected_metadata = effective_source_metadata(movie_relation)['values']
 
     # Initialize basic movie data first
     movie_data = {
@@ -1739,6 +1802,10 @@ def xc_get_vod_info(request, user, vod_id):
     except Exception as e:
         logger.error(f"Failed to process movie data: {e}")
 
+    selected_metadata = effective_source_metadata(movie_relation)['values']
+    if not metadata_satisfies(selected_metadata, requirements):
+        raise Http404()
+
     # Real XC servers return the same URL for cover_big and movie_image, so both
     # are set from a single resolved cover: winning-provider still first, synced
     # VODLogo only when the relation/object has no proxyable image.
@@ -1765,8 +1832,8 @@ def xc_get_vod_info(request, user, vod_id):
     # Transform API response to XtreamCodes format
     info = {
         "info": {
-            "name": xc_language_suffix(movie_data.get('name', movie.name), movie.language),
-            "o_name": xc_language_suffix(movie_data.get('name', movie.name), movie.language),
+            "name": metadata_suffix(movie_data.get('name', movie.name), selected_metadata),
+            "o_name": metadata_suffix(movie_data.get('name', movie.name), selected_metadata),
             "cover_big": movie_cover,
             "movie_image": movie_cover,
             'description': movie_data.get('description', ''),
@@ -1794,8 +1861,8 @@ def xc_get_vod_info(request, user, vod_id):
             'audio': movie_data.get('audio', {}),
         },
         "movie_data": {
-            "stream_id": movie.id,
-            "name": xc_language_suffix(movie.name, movie.language),
+            "stream_id": int(vod_id),
+            "name": metadata_suffix(movie.name, selected_metadata),
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
