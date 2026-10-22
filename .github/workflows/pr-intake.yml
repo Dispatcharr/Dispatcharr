@@ -2,11 +2,13 @@ name: "PR: Intake"
 
 on:
   pull_request_target:
-    types: [opened]
+    types: [opened, closed]
+  pull_request_review:
+    types: [submitted]
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Preview eligible pull requests without adding labels or comments
+        description: Preview lifecycle changes without modifying pull requests
         required: true
         type: boolean
         default: true
@@ -25,6 +27,7 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           dry-run: ${{ inputs.dry_run || 'false' }}
+          review-label: In Review
           intake-comment: |
             ## Pull request received
 
