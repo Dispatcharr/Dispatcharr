@@ -553,7 +553,7 @@ Existing plugins without `manifest_version` are version `0`. They remain support
 
 This is not process isolation. Plugins still run in the Dispatcharr process and are trusted code. Version `2` adds guards around supported plugin APIs so that a plugin cannot accidentally use an undeclared capability through those APIs.
 
-Manifest versions `1` and `2` require Dispatcharr `0.34.0` or newer. Version `0` remains compatible with older releases.
+Manifest versions `1` and `2` require Dispatcharr `0.34.0` or newer. Timestamped development images satisfy lower compatibility bounds while they carry unreleased code, but do not satisfy an explicit maximum version. Version `0` remains compatible with older releases.
 
 ### Version 0 to 1
 
