@@ -73,7 +73,10 @@ def _parse_bool(value):
 
 
 def _sanitize_plugin_key(value: str) -> str:
-    return normalize_plugin_key(value)
+    base = normalize_plugin_key(value)
+    base = re.sub(r"[^a-z0-9_-]", "_", base)
+    base = base.strip("._-")
+    return base or "plugin"
 
 
 def _create_plugin_import_dir(plugins_dir):

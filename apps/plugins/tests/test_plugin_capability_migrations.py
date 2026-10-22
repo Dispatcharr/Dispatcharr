@@ -62,6 +62,24 @@ class PluginCapabilityMigrationTests(TestCase):
 
         self.assertEqual(PluginConfig.objects.get(key="my_plugin").acknowledged_capabilities, ["subprocess"])
 
+    def test_initial_seed_preserves_hyphens_in_manually_placed_directory_keys(self):
+        PluginConfig.objects.create(key="epg-janitor", name="EPG Janitor", ever_enabled=True)
+
+        with tempfile.TemporaryDirectory() as plugins_dir, patch.dict(
+            os.environ, {"DISPATCHARR_PLUGINS_DIR": plugins_dir}
+        ):
+            self._write_manifest(
+                plugins_dir,
+                "EPG-Janitor",
+                {"manifest_version": 2, "capabilities": ["subprocess"]},
+            )
+            self.migration_0005.seed_acknowledged_capabilities(apps, None)
+
+        self.assertEqual(
+            PluginConfig.objects.get(key="epg-janitor").acknowledged_capabilities,
+            ["subprocess"],
+        )
+
     def test_repair_only_replaces_the_old_global_seed(self):
         old_seed = sorted(self.migration_0006.SEEDED_CAPABILITIES)
         PluginConfig.objects.create(
