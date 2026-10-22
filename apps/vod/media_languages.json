@@ -1,0 +1,252 @@
+[
+  {
+    "value": "afr",
+    "legacyValue": "af",
+    "label": "Afrikaans (afr)"
+  },
+  {
+    "value": "amh",
+    "legacyValue": "am",
+    "label": "Amharic (amh)"
+  },
+  {
+    "value": "ara",
+    "legacyValue": "ar",
+    "label": "Arabic (ara)"
+  },
+  {
+    "value": "ben",
+    "legacyValue": "bn",
+    "label": "Bengali (ben)"
+  },
+  {
+    "value": "bos",
+    "legacyValue": "bs",
+    "label": "Bosnian (bos)"
+  },
+  {
+    "value": "bul",
+    "legacyValue": "bg",
+    "label": "Bulgarian (bul)"
+  },
+  {
+    "value": "chi",
+    "legacyValue": "zh",
+    "label": "Chinese (chi)"
+  },
+  {
+    "value": "hrv",
+    "legacyValue": "hr",
+    "label": "Croatian (hrv)"
+  },
+  {
+    "value": "cze",
+    "legacyValue": "cs",
+    "label": "Czech (cze)"
+  },
+  {
+    "value": "dan",
+    "legacyValue": "da",
+    "label": "Danish (dan)"
+  },
+  {
+    "value": "dut",
+    "legacyValue": "nl",
+    "label": "Dutch (dut)"
+  },
+  {
+    "value": "eng",
+    "legacyValue": "en",
+    "label": "English (eng)"
+  },
+  {
+    "value": "fin",
+    "legacyValue": "fi",
+    "label": "Finnish (fin)"
+  },
+  {
+    "value": "fre",
+    "legacyValue": "fr",
+    "label": "French (fre)"
+  },
+  {
+    "value": "ger",
+    "legacyValue": "de",
+    "label": "German (ger)"
+  },
+  {
+    "value": "gre",
+    "legacyValue": "el",
+    "label": "Greek (gre)"
+  },
+  {
+    "value": "heb",
+    "legacyValue": "he",
+    "label": "Hebrew (heb)"
+  },
+  {
+    "value": "hin",
+    "legacyValue": "hi",
+    "label": "Hindi (hin)"
+  },
+  {
+    "value": "hun",
+    "legacyValue": "hu",
+    "label": "Hungarian (hun)"
+  },
+  {
+    "value": "ice",
+    "legacyValue": "is",
+    "label": "Icelandic (ice)"
+  },
+  {
+    "value": "ind",
+    "legacyValue": "id",
+    "label": "Indonesian (ind)"
+  },
+  {
+    "value": "ita",
+    "legacyValue": "it",
+    "label": "Italian (ita)"
+  },
+  {
+    "value": "jpn",
+    "legacyValue": "ja",
+    "label": "Japanese (jpn)"
+  },
+  {
+    "value": "kan",
+    "legacyValue": "kn",
+    "label": "Kannada (kan)"
+  },
+  {
+    "value": "kor",
+    "legacyValue": "ko",
+    "label": "Korean (kor)"
+  },
+  {
+    "value": "may",
+    "legacyValue": "ms",
+    "label": "Malay (may)"
+  },
+  {
+    "value": "mal",
+    "legacyValue": "ml",
+    "label": "Malayalam (mal)"
+  },
+  {
+    "value": "mar",
+    "legacyValue": "mr",
+    "label": "Marathi (mar)"
+  },
+  {
+    "value": "nor",
+    "legacyValue": "no",
+    "label": "Norwegian (nor)"
+  },
+  {
+    "value": "per",
+    "legacyValue": "fa",
+    "label": "Persian (per)"
+  },
+  {
+    "value": "pol",
+    "legacyValue": "pl",
+    "label": "Polish (pol)"
+  },
+  {
+    "value": "por",
+    "legacyValue": "pt",
+    "label": "Portuguese (por)"
+  },
+  {
+    "value": "pan",
+    "legacyValue": "pa",
+    "label": "Punjabi (pan)"
+  },
+  {
+    "value": "rum",
+    "legacyValue": "ro",
+    "label": "Romanian (rum)"
+  },
+  {
+    "value": "rus",
+    "legacyValue": "ru",
+    "label": "Russian (rus)"
+  },
+  {
+    "value": "srp",
+    "legacyValue": "sr",
+    "label": "Serbian (srp)"
+  },
+  {
+    "value": "slo",
+    "legacyValue": "sk",
+    "label": "Slovak (slo)"
+  },
+  {
+    "value": "slv",
+    "legacyValue": "sl",
+    "label": "Slovenian (slv)"
+  },
+  {
+    "value": "spa",
+    "legacyValue": "es",
+    "label": "Spanish (spa)"
+  },
+  {
+    "value": "swa",
+    "legacyValue": "sw",
+    "label": "Swahili (swa)"
+  },
+  {
+    "value": "swe",
+    "legacyValue": "sv",
+    "label": "Swedish (swe)"
+  },
+  {
+    "value": "tgl",
+    "legacyValue": "tl",
+    "label": "Tagalog (tgl)"
+  },
+  {
+    "value": "tam",
+    "legacyValue": "ta",
+    "label": "Tamil (tam)"
+  },
+  {
+    "value": "tel",
+    "legacyValue": "te",
+    "label": "Telugu (tel)"
+  },
+  {
+    "value": "tha",
+    "legacyValue": "th",
+    "label": "Thai (tha)"
+  },
+  {
+    "value": "tur",
+    "legacyValue": "tr",
+    "label": "Turkish (tur)"
+  },
+  {
+    "value": "ukr",
+    "legacyValue": "uk",
+    "label": "Ukrainian (ukr)"
+  },
+  {
+    "value": "urd",
+    "legacyValue": "ur",
+    "label": "Urdu (urd)"
+  },
+  {
+    "value": "vie",
+    "legacyValue": "vi",
+    "label": "Vietnamese (vie)"
+  },
+  {
+    "value": "zul",
+    "legacyValue": "zu",
+    "label": "Zulu (zul)"
+  }
+]
