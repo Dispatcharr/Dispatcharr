@@ -7,6 +7,8 @@ from django.test import SimpleTestCase
 from apps.plugins.capabilities import (
     MANIFEST_SCHEMA_POLICIES,
     capability_supported_by_manifest_version,
+    app_version_meets_maximum,
+    app_version_meets_minimum,
     compute_effective_capabilities,
     describe_capabilities,
     max_app_version_for_manifest_version,
@@ -139,6 +141,10 @@ class ManifestVersionTests(SimpleTestCase):
 
     def test_dev_builds_satisfy_lower_compatibility_bounds(self):
         self.assertTrue(manifest_version_supported(2, "0.33.0", is_dev_build=True))
+
+    def test_dev_build_compatibility_helpers(self):
+        self.assertTrue(app_version_meets_minimum("0.33.0", "0.34.0", is_dev_build=True))
+        self.assertFalse(app_version_meets_maximum("0.33.0", "0.34.0", is_dev_build=True))
 
     def test_manifest_version_respects_an_upper_compatibility_bound(self):
         with patch.dict(MANIFEST_SCHEMA_POLICIES, {
