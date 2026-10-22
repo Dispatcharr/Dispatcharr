@@ -55,19 +55,20 @@ class LeaderElectionRedisPrimitiveTests(SimpleTestCase):
     def test_acquire_fails_when_held_by_another_worker(self):
         client = MagicMock()
         client.set.return_value = False
-        client.get.return_value = "other-host:999"
+        client.eval.return_value = 0
         pm = self._pm_with_redis(client)
 
         self.assertFalse(pm.try_acquire_leadership("p"))
+        self.assertEqual(client.set.call_count, 2)
 
     def test_acquire_treats_own_stale_lock_as_success(self):
         client = MagicMock()
         client.set.return_value = False
-        client.get.return_value = "host:123"
+        client.eval.return_value = 1
         pm = self._pm_with_redis(client)
 
         self.assertTrue(pm.try_acquire_leadership("p"))
-        client.expire.assert_called_once()
+        client.eval.assert_called_once()
 
     def test_acquire_with_no_redis_always_succeeds(self):
         pm = PluginManager()
@@ -76,22 +77,34 @@ class LeaderElectionRedisPrimitiveTests(SimpleTestCase):
 
     def test_extend_succeeds_when_still_owner(self):
         client = MagicMock()
-        client.get.return_value = "host:123"
+        client.eval.return_value = 1
         pm = self._pm_with_redis(client)
 
         self.assertTrue(pm.extend_leadership("p"))
-        client.expire.assert_called_once_with("plugin:p:leader", pm.LEADER_LEASE_TTL)
+        client.eval.assert_called_once_with(
+            """
+                if redis.call('GET', KEYS[1]) == ARGV[1] then
+                    return redis.call('EXPIRE', KEYS[1], ARGV[2])
+                end
+                return 0
+                """,
+            1,
+            "plugin:p:leader",
+            "host:123",
+            pm.LEADER_LEASE_TTL,
+        )
 
     def test_extend_fails_when_owned_by_another(self):
         client = MagicMock()
-        client.get.return_value = "other-host:999"
+        client.eval.return_value = 0
+        client.set.return_value = False
         pm = self._pm_with_redis(client)
 
         self.assertFalse(pm.extend_leadership("p"))
 
     def test_extend_reacquires_on_outright_expiry(self):
         client = MagicMock()
-        client.get.return_value = None
+        client.eval.return_value = 0
         client.set.return_value = True
         pm = self._pm_with_redis(client)
 
@@ -99,19 +112,29 @@ class LeaderElectionRedisPrimitiveTests(SimpleTestCase):
 
     def test_release_only_deletes_if_still_owner(self):
         client = MagicMock()
-        client.get.return_value = "other-host:999"
+        client.eval.return_value = 0
         pm = self._pm_with_redis(client)
 
         pm.release_leadership("p")
-        client.delete.assert_not_called()
+        client.eval.assert_called_once()
 
     def test_release_deletes_when_owner(self):
         client = MagicMock()
-        client.get.return_value = "host:123"
+        client.eval.return_value = 1
         pm = self._pm_with_redis(client)
 
         pm.release_leadership("p")
-        client.delete.assert_called_once_with("plugin:p:leader")
+        client.eval.assert_called_once_with(
+            """
+                if redis.call('GET', KEYS[1]) == ARGV[1] then
+                    return redis.call('DEL', KEYS[1])
+                end
+                return 0
+                """,
+            1,
+            "plugin:p:leader",
+            "host:123",
+        )
 
 
 class LeaderElectionTransitionTests(SimpleTestCase):

@@ -56,7 +56,9 @@ class TriggerEventDispatchTests(SimpleTestCase):
             "apps.plugins.models.PluginConfig"
         ) as mock_cfg, patch(
             "apps.plugins.tasks.run_plugin_action_task.apply_async"
-        ) as mock_apply_async:
+        ) as mock_apply_async, patch(
+            "apps.plugins.task_history.record_task_started"
+        ):
             mock_cfg.objects.filter.return_value = enabled_qs
             from apps.connect.utils import trigger_event
 
@@ -143,7 +145,9 @@ class TriggerEventDispatchTests(SimpleTestCase):
         ) as mock_cfg, patch(
             "apps.plugins.tasks.run_plugin_action_task.apply_async",
             side_effect=[RuntimeError("boom"), MagicMock()],
-        ) as mock_apply_async:
+        ) as mock_apply_async, patch(
+            "apps.plugins.task_history.record_task_started"
+        ):
             mock_cfg.objects.filter.return_value = enabled_qs
             from apps.connect.utils import trigger_event
 
