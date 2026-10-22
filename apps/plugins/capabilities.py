@@ -271,11 +271,15 @@ def max_app_version_for_manifest_version(manifest_version: int) -> Optional[str]
     return manifest_schema_policy(manifest_version)["max_app_version"]
 
 
-def manifest_version_supported(manifest_version: int, app_version: str) -> bool:
-    """True if `app_version` is within the manifest compatibility bounds."""
+def manifest_version_supported(manifest_version: int, app_version: str, *, is_dev_build: bool = False) -> bool:
+    """True if `app_version` is within the manifest compatibility bounds.
+
+    Timestamped dev images contain unreleased code. They satisfy lower bounds,
+    but do not satisfy an explicit upper bound for a released version.
+    """
     min_app_version = min_app_version_for_manifest_version(manifest_version)
     max_app_version = max_app_version_for_manifest_version(manifest_version)
     return (
-        (min_app_version is None or compare_versions(app_version, min_app_version) >= 0)
-        and (max_app_version is None or compare_versions(app_version, max_app_version) <= 0)
+        (is_dev_build or min_app_version is None or compare_versions(app_version, min_app_version) >= 0)
+        and (not is_dev_build and (max_app_version is None or compare_versions(app_version, max_app_version) <= 0))
     )

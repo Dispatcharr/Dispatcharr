@@ -32,7 +32,7 @@ from .keys import normalize_plugin_key
 from .sandbox import plugin_builtins, stable_plugin_data_path
 from .models import PluginConfig
 from .version_utils import get_plugin_status
-from version import __version__
+from version import __timestamp__, __version__
 
 logger = logging.getLogger(__name__)
 
@@ -637,7 +637,11 @@ class PluginManager:
             manifest_actions = self._normalize_actions(manifest.get("actions", []))
             manifest_capabilities = compute_effective_capabilities(manifest)
             manifest_schema_version = parse_manifest_version(manifest)
-            if not manifest_version_supported(manifest_schema_version, __version__):
+            if not manifest_version_supported(
+                manifest_schema_version,
+                __version__,
+                is_dev_build=__timestamp__ is not None,
+            ):
                 logger.warning(
                     "Plugin '%s' declares manifest_version=%s, which requires "
                     "Dispatcharr >= %s (running %s). Falling back to best-effort "
