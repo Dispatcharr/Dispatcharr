@@ -197,16 +197,19 @@ vi.mock('@mantine/core', () => ({
   Group: ({ children }) => <div>{children}</div>,
   LoadingOverlay: ({ visible }) =>
     visible ? <div data-testid="loading-overlay" /> : null,
-  Modal: ({ children, opened, onClose, title, size }) =>
-    opened ? (
-      <div data-testid="modal" data-size={size}>
-        <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>
-          ×
-        </button>
-        {children}
-      </div>
-    ) : null,
+  Modal: Object.assign(
+    ({ children, opened, onClose, title, size }) =>
+      opened ? (
+        <div data-testid="modal" data-size={size}>
+          <div data-testid="modal-title">{title}</div>
+          <button data-testid="modal-close" onClick={onClose}>
+            ×
+          </button>
+          {children}
+        </div>
+      ) : null,
+    { Stack: ({ children }) => <>{children}</> }
+  ),
   MultiSelect: ({
     id,
     label,

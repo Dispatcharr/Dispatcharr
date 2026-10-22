@@ -3838,6 +3838,14 @@ export default class API {
     }
   }
 
+  static async getVODMetadataOptions() {
+    try {
+      return await request(`${host}/api/vod/source-metadata-options/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve VOD metadata options', e);
+    }
+  }
+
   static async getSeriesInfo(seriesId, relationId = null) {
     try {
       const params = new URLSearchParams({ include_episodes: 'true' });
