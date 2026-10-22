@@ -3438,7 +3438,7 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
 
     Returns the number of DVR clients stopped.
     """
-    from core.utils import RedisClient
+    from core.utils import RedisClient, dispatcharr_dvr_user_agent
     from apps.proxy.live_proxy.redis_keys import RedisKeys
     from apps.proxy.live_proxy.services.channel_service import ChannelService
 
@@ -3459,7 +3459,8 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
             # When a recording_id is specified, only stop the client for that recording.
             # Each run_recording task connects with User-Agent "Dispatcharr-DVR/recording-{id}",
             # so we can safely target just this recording without affecting others on the channel.
-            if recording_id is not None and f"recording-{recording_id}" not in ua_s:
+            # Exact match: recording-4 must not also match recording-42.
+            if recording_id is not None and ua_s != dispatcharr_dvr_user_agent(recording_id):
                 continue
             try:
                 ChannelService.stop_client(channel_uuid, cid)
@@ -4011,7 +4012,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
         try:
             channel_uuid = str(instance.channel.uuid)
             # Lazy imports to avoid module overhead if proxy isn't used
-            from core.utils import RedisClient
+            from core.utils import RedisClient, dispatcharr_dvr_user_agent
             from apps.proxy.live_proxy.redis_keys import RedisKeys
             from apps.proxy.live_proxy.services.channel_service import ChannelService
 
@@ -4024,8 +4025,9 @@ class RecordingViewSet(viewsets.ModelViewSet):
                     try:
                         meta_key = RedisKeys.client_metadata(channel_uuid, cid)
                         ua = r.hget(meta_key, "user_agent")
-                        # Identify DVR recording client by its user agent
-                        if ua and "Dispatcharr-DVR" in ua:
+                        # Identify this recording's DVR client by its user agent;
+                        # other recordings on the channel keep their clients
+                        if ua and ua == dispatcharr_dvr_user_agent(recording_id):
                             try:
                                 ChannelService.stop_client(channel_uuid, cid)
                                 stopped += 1

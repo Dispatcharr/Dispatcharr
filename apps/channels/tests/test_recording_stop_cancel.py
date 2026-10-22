@@ -6,6 +6,7 @@ Covers:
   - signals.py update_fields re-entrancy guard
   - run_recording race guard before status write
   - _stop_dvr_clients() DVR client isolation
+  - destroy() stops only the deleted recording's DVR client
 """
 from datetime import timedelta
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -159,6 +160,71 @@ class CancelDestroyWasInProgressTests(TestCase):
         )
         self._delete(rec)
         self.assertFalse(mock_ws.call_args[0][2]["was_in_progress"])
+
+
+class DestroyStopsOnlyOwnDvrClientTests(TestCase):
+    """destroy() must not stop other recordings' DVR clients on the same channel."""
+
+    def setUp(self):
+        self.channel = Channel.objects.create(channel_number=94, name="Destroy Clients Channel")
+        self.user = _make_admin()
+        self.factory = APIRequestFactory()
+        now = timezone.now()
+        self.other = Recording.objects.create(
+            channel=self.channel,
+            start_time=now - timedelta(minutes=5),
+            end_time=now + timedelta(hours=1),
+            custom_properties={"status": "recording"},
+        )
+
+    def _make_rec(self, status):
+        now = timezone.now()
+        return Recording.objects.create(
+            channel=self.channel,
+            start_time=now - timedelta(minutes=10),
+            end_time=now + timedelta(hours=1),
+            custom_properties={"status": status},
+        )
+
+    def _mock_redis(self, ua_map):
+        # The proxy's Redis client decodes responses, so IDs and user agents are str
+        r = MagicMock()
+        r.smembers.return_value = set(ua_map)
+        r.hget.side_effect = lambda key, field: next(
+            (ua for cid, ua in ua_map.items() if key.endswith(f":{cid}")), None
+        )
+        r.scard.return_value = len(ua_map)
+        return r
+
+    def _delete(self, rec, ua_map):
+        """Delete rec, run the deferred teardown inline; return the stopped client IDs."""
+        r = self._mock_redis(ua_map)
+        with patch("core.utils.RedisClient") as rc,              patch("apps.proxy.live_proxy.services.channel_service.ChannelService.stop_client") as sc,              patch("apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"),              patch("core.utils.send_websocket_update"),              patch("threading.Thread") as mock_thread:
+            rc.get_client.return_value = r
+            request = self.factory.delete(f"/api/channels/recordings/{rec.id}/")
+            force_authenticate(request, user=self.user)
+            RecordingViewSet.as_view({"delete": "destroy"})(request, pk=rec.id)
+            with patch("django.db.connection"):
+                mock_thread.call_args.kwargs["target"]()
+        return {c.args[1] for c in sc.call_args_list}
+
+    def test_deleting_in_progress_recording_stops_only_its_client(self):
+        rec = self._make_rec("recording")
+        stopped = self._delete(rec, {
+            "dvr-own": f"Dispatcharr-DVR/recording-{rec.id}",
+            "dvr-other": f"Dispatcharr-DVR/recording-{self.other.id}",
+            "dvr-longer-id": f"Dispatcharr-DVR/recording-{rec.id}0",
+            "viewer": "VLC/3.0.20 LibVLC/3.0.20",
+        })
+        self.assertEqual(stopped, {"dvr-own"})
+
+    def test_deleting_completed_recording_stops_no_client(self):
+        rec = self._make_rec("completed")
+        stopped = self._delete(rec, {
+            "dvr-other": f"Dispatcharr-DVR/recording-{self.other.id}",
+            "viewer": "VLC/3.0.20 LibVLC/3.0.20",
+        })
+        self.assertEqual(stopped, set())
 
 
 class SignalUpdateFieldsReentrancyGuardTests(TestCase):
@@ -315,6 +381,19 @@ class StopDvrClientsTests(TestCase):
         stopped = [c[0][1] for c in sc.call_args_list]
         self.assertIn("client-a", stopped)
         self.assertNotIn("client-b", stopped)
+
+    def test_recording_id_does_not_match_longer_id(self):
+        """recording-4 must not also stop recording-42's client."""
+        r = self._mock_redis(
+            ["client-4", "client-42"],
+            {"client-42": "Dispatcharr-DVR/recording-42",
+             "client-4": "Dispatcharr-DVR/recording-4"},
+        )
+        with patch(self._redis) as rc, patch(self._sc) as sc:
+            rc.get_client.return_value = r
+            result = _stop_dvr_clients(str(self.channel.uuid), recording_id=4)
+        self.assertEqual(result, 1)
+        self.assertEqual([c[0][1] for c in sc.call_args_list], ["client-4"])
 
     def test_stops_all_dvr_clients_without_recording_id(self):
         r = self._mock_redis(
