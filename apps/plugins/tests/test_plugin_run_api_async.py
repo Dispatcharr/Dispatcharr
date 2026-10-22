@@ -36,6 +36,7 @@ class PluginRunAPIViewAsyncTests(TestCase):
         self._pm_patcher.start()
         self.addCleanup(self._pm_patcher.stop)
         self.pm = pm
+        self.pm.discover_plugins = MagicMock()
         self._get_plugin_patcher = patch.object(pm, "get_plugin", return_value=self.plugin)
         self._get_plugin_patcher.start()
         self.addCleanup(self._get_plugin_patcher.stop)

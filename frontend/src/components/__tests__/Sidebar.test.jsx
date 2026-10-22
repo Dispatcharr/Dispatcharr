@@ -351,6 +351,8 @@ describe('Sidebar', () => {
           logout: vi.fn(),
           getNavOrder: () => null,
           getHiddenNav: () => [],
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
         };
         return selector(state);
       });
@@ -381,6 +383,8 @@ describe('Sidebar', () => {
           logout: vi.fn(),
           getNavOrder: () => null,
           getHiddenNav: () => [],
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
         };
         return selector(state);
       });

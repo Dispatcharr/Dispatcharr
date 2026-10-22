@@ -383,6 +383,10 @@ def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerele
         dash_key = plugin_key.replace("_", "-")
         if dash_key != plugin_key:
             existing_cfg = PluginConfig.objects.filter(key=dash_key).first()
+    if not existing_cfg:
+        underscore_key = plugin_key.replace("-", "_")
+        if underscore_key != plugin_key:
+            existing_cfg = PluginConfig.objects.filter(key=underscore_key).first()
 
     result = _install_plugin_from_zip(
         tmp_file,
@@ -828,7 +832,8 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
             return Response({"success": False, "error": "Invalid 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             pm = PluginManager.get()
-            pm.discover_plugins(sync_db=False, use_cache=True)
+            if enabled:
+                pm.discover_plugins(sync_db=False, use_cache=True)
             lp = pm.get_plugin(key)
             effective = list(lp.capabilities or []) if lp else []
             acknowledged = request.data.get("acknowledge_capabilities", [])
@@ -932,10 +937,10 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
         pm = PluginManager.get()
         with _plugin_mutation_lock(pm.plugins_dir):
             pm.refresh_task_ownership()
-            pm.discover_plugins(sync_db=False, use_cache=True)
             plugins_dir = pm.plugins_dir
             lp = pm.get_plugin(key)
-            target_dir = lp.path if lp and lp.path else pm.get_plugin_path(key)
+            plugin_path = getattr(lp, "path", None)
+            target_dir = plugin_path if isinstance(plugin_path, str) and plugin_path else pm.get_plugin_path(key)
             # Safety: ensure path inside plugins_dir
             abs_plugins = os.path.abspath(plugins_dir) + os.sep
             abs_target = os.path.abspath(target_dir)

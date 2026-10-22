@@ -361,6 +361,8 @@ class LeadershipTickTests(SimpleTestCase):
 
 
 class ReleasePluginLeadershipTests(SimpleTestCase):
+    databases = {"default"}
+
     def test_full_reload_stops_old_leader_before_replacing_it(self):
         pm = PluginManager()
         old_lp, old_instance = _plugin_with_leader_hooks("svc")
@@ -370,10 +372,13 @@ class ReleasePluginLeadershipTests(SimpleTestCase):
         pm._leadership_state["svc"] = "leader"
         pm.release_leadership = MagicMock()
         pm.try_acquire_leadership = MagicMock(return_value=True)
+        pm._get_reload_token = MagicMock(return_value=0)
 
         with patch("apps.plugins.loader.PluginConfig.objects.all", return_value=[]), patch(
             "apps.plugins.loader.os.listdir", return_value=["svc"]
-        ), patch("apps.plugins.loader.os.path.isdir", return_value=True), patch.object(
+        ), patch("apps.plugins.loader.os.path.isdir", return_value=True), patch(
+            "apps.plugins.loader.os.path.exists", return_value=True
+        ), patch.object(
             pm, "_load_and_merge_plugin_entry", return_value=(new_lp, None, None)
         ):
             pm._discover_plugins_impl(
