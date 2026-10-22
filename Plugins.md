@@ -1,6 +1,8 @@
 # Dispatcharr Plugins
 
-This document explains how to build, install, and use Python plugins in Dispatcharr. It covers discovery, the plugin interface, settings, actions, how to access application APIs, and examples.
+This document explains how to build, install, and use Python plugins in Dispatcharr. It covers discovery, manifests, settings, actions, storage, services, and application APIs.
+
+For maintained plugins and working examples, see the [official Dispatcharr Plugins repository](https://github.com/Dispatcharr/Plugins).
 
 ---
 
@@ -13,6 +15,7 @@ This document explains how to build, install, and use Python plugins in Dispatch
 `/app/data/plugins/my_plugin/plugin.json`
 ```json
 {
+  "manifest_version": 2,
   "name": "My Plugin",
   "version": "0.1.0",
   "description": "Does something useful",
@@ -403,7 +406,7 @@ Clicking an action calls your plugin’s `run(action, params, context)` and show
 
 ### Long-Running Actions (Async Dispatch)
 
-The manual Run button and event hooks normally call `run()` inline and wait for it to return, so anything slower than a typical reverse-proxy timeout (60-120s) fails. Two ways to avoid that:
+Manual actions are queued on the `plugins` Celery queue and normally wait for the result. Event hooks are queued and return immediately. Use either of the following when the action itself should return immediately and report its work asynchronously:
 
 **1. Mark the action `async` in its manifest.** The button dispatches immediately and returns; your `run()` executes on a Celery worker instead of the request:
 ```python
@@ -447,7 +450,7 @@ def run(self, action, params, context):
 
 Approved tasks are always queued on `plugins`, regardless of any queue supplied by plugin code. Currently, `apps.m3u.tasks.refresh_single_m3u_account` and `apps.epg.tasks.refresh_epg_data` are approved. Other tasks are rejected until Dispatcharr adds `@plugin_callable_task` at the task definition.
 
-### Action Confirmation (Modal)
+### Action Confirmation
 Developers can request a confirmation modal per action using the `confirm` key on the action. Options:
 
 - Boolean: `confirm: true` will show a default confirmation modal.
@@ -467,166 +470,17 @@ actions = [
 
 ---
 
-## Accessing Dispatcharr APIs from Plugins
+## Using Dispatcharr APIs
 
-Plugins are server-side Python code running within the Django application. You can:
+Plugins run inside the Django application. They can import models and use normal Django transactions, but should use the plugin APIs instead of reaching around them:
 
-- Import models and run queries/updates:
-  ```
-  from apps.m3u.models import M3UAccount
-  from apps.epg.models import EPGSource
-  from apps.channels.models import Channel
-  from core.models import CoreSettings
-  ```
+- Use `context["dispatch_task"]` for the plugin's own long-running work and `context["report_progress"]` to update its task UI.
+- Use `context["dispatch_internal_task"]` only for an approved first-party task. It is intentionally not a general Celery escape hatch.
+- Use internal models and tasks where appropriate. A plugin must not ask users for a Dispatcharr URL, username, or password to call its own host application.
+- If HTTP is genuinely necessary, use `reverse()` to build an internal URL, use a short timeout, and declare `outbound_network` before moving to manifest version `2`.
+- Use `context["logger"]` for plugin logging. Do not put credentials or sensitive user data in log messages or plugin settings.
 
-- Dispatch Celery tasks for heavy work (recommended):
-  ```
-  from apps.m3u.tasks import refresh_m3u_accounts            # apps/m3u/tasks.py
-  from apps.epg.tasks import refresh_all_epg_data            # apps/epg/tasks.py
-
-  refresh_m3u_accounts.delay()
-  refresh_all_epg_data.delay()
-  ```
-  A plugin's own `@shared_task` registers correctly on worker startup regardless of which queue it's routed to; avoid `queue='dvr'` yourself, since that's reserved for recordings.
-
-- Send WebSocket updates:
-  ```
-  from core.utils import send_websocket_update
-  send_websocket_update('updates', 'update', {"type": "plugin", "plugin": "my_plugin", "message": "Done"})
-  ```
-
-- Use transactions:
-  ```
-  from django.db import transaction
-  with transaction.atomic():
-      # bulk updates here
-      ...
-  ```
-
-- Log via provided context or standard logging:
-  ```
-  def run(self, action, params, context):
-      logger = context.get("logger")  # already configured
-      logger.info("running action %s", action)
-  ```
-
-Prefer Celery tasks (`.delay()`) to keep `run` fast and non-blocking.
-
-### Database connections
-
-Dispatcharr uses `django-db-geventpool` with a bounded per-uWSGI-worker pool (`MAX_CONNS=8`). Each greenlet or OS thread that runs ORM code checks out a connection until Django closes it.
-
-`PluginManager.run_action()` and `stop_plugin()` call `close_old_connections()` in a `finally` block after your plugin returns (success or error), except that `stop_plugin()` skips it when called inside a transaction, as on disable and delete. That returns the current greenlet's checkout to the pool. **You do not need to call `close_old_connections()` yourself for normal inline ORM inside `run()` or `stop()`.**
-
-Still follow these rules:
-
-- **Heavy or long work:** dispatch a Celery task (`.delay()`) and return quickly from `run()`. Celery workers close connections after each task; blocking the uWSGI gevent hub with `time.sleep`, sync HTTP, or large CPU work can freeze the whole worker regardless of DB cleanup.
-- **Background threads or greenlets you spawn:** each thread/greenlet that uses the ORM must call `close_old_connections()` (or `connection.close()`) in its own `finally` block when done. The wrapper only covers the thread/greenlet that called `run_action()`.
-- **Connect event hooks:** actions with an `"events"` list are dispatched from `log_system_event()` on a separate gevent when uWSGI has an active hub (otherwise synchronously, e.g. Celery). Keep handlers short or defer heavy work to Celery.
-
-### Important: Don’t Ask Users for URL/User/Password
-Dispatcharr plugins run **inside** the Dispatcharr backend process. That means they already have direct access to the app’s models, tasks, and internal utilities.  
-Plugins **should not** ask users for “Dispatcharr URL”, “Admin Username”, or “Admin Password” just to call the API. That is unnecessary and unsafe because:
-
-- It encourages users to enter privileged credentials.
-- Malicious plugins could exfiltrate credentials.
-- It duplicates access that plugins already have internally.
-
-If you are writing a plugin, **use internal Python APIs** (models/tasks/utils) instead of making HTTP calls with user credentials.
-
-### When You Do Need HTTP
-In rare cases you may need to call a Dispatcharr HTTP endpoint (for example, to reuse an existing API response serializer). In that case:
-
-1. **Do not ask the user for credentials.**  
-   Use the backend’s internal access where possible.
-
-2. Prefer **local/internal URLs** (never user-provided):
-   - Docker: `http://web:9191` (service name inside the container network)
-   - Dev: `http://127.0.0.1:5656`
-
-3. Use Django helpers when building URLs:
-   ```
-   from django.urls import reverse
-   path = reverse("api:channels:list")  # example name
-   url = f"http://127.0.0.1:5656{path}"
-   ```
-
-4. Use a short timeout and robust error handling:
-   ```
-   import requests
-   resp = requests.get(url, timeout=10)
-   resp.raise_for_status()
-   data = resp.json()
-   ```
-
-### Examples: Preferred Internal Access (No HTTP, No Credentials)
-
-**Example 1: List channels directly from the DB**
-```
-from apps.channels.models import Channel
-
-channels = Channel.objects.all().values("id", "name", "number")[:50]
-return {"status": "ok", "channels": list(channels)}
-```
-
-**Example 2: Kick off an existing refresh task**
-```
-from apps.m3u.tasks import refresh_m3u_accounts
-from apps.epg.tasks import refresh_all_epg_data
-
-refresh_m3u_accounts.delay()
-refresh_all_epg_data.delay()
-return {"status": "queued"}
-```
-
-**Example 3: Send a WebSocket update to the UI**
-```
-from core.utils import send_websocket_update
-
-send_websocket_update(
-    "updates",
-    "update",
-    {"type": "plugin", "plugin": "my_plugin", "message": "Refresh queued"}
-)
-```
-
-### Example: HTTP Access (Only If You Must)
-
-**Find the endpoint**
-- Use `reverse()` with the named route when possible.
-- If you don’t know the route name, inspect `apps/*/api_urls.py` or Django’s URL config to find it.
-
-```
-from django.urls import reverse
-import requests
-
-path = reverse("api:channels:list")  # named route from apps/channels/api_urls.py
-url = f"http://127.0.0.1:5656{path}"
-
-resp = requests.get(url, timeout=10)
-resp.raise_for_status()
-data = resp.json()
-```
-
-### How Developers Find the API
-
-1. **Prefer internal models/tasks** (best and safest).
-2. **Check `apps/*/api_urls.py`** for named routes and endpoint patterns.
-   - Example: `apps/channels/api_urls.py` for channel endpoints.
-3. **Find the view** referenced in the URL config to see required params.
-   - Example: `apps/channels/api_views.py` or `apps/epg/api_views.py`.
-4. **Use `reverse()`** with the named route to build the path.
-   - This avoids hardcoding paths and keeps plugins compatible if URLs change.
-5. **Only use internal hostnames** (never user-provided URL).
-
-### What Plugins Can Access
-Because plugins run inside the server process, they can:
-- Read and write database models (same permissions as the app)
-- Invoke Celery tasks
-- Send websocket updates
-- Read configuration and settings
-
-Treat plugins as **trusted server code** and avoid exposing sensitive data in plugin settings or logs.
+Normal ORM work in `run()` and `stop()` is cleaned up by Dispatcharr. Threads or greenlets started by a plugin must close their own database connections when they finish. Keep CPU-heavy or blocking work out of those methods and dispatch it to the background queue instead.
 
 ---
 
@@ -666,45 +520,13 @@ Notes:
 
 ---
 
-## Example: Refresh All Sources Plugin
-
-Path: `data/plugins/refresh_all/plugin.py`
-
-```
-class Plugin:
-    name = "Refresh All Sources"
-    version = "1.0.0"
-    description = "Force refresh all M3U accounts and EPG sources."
-
-    fields = [
-        {"id": "confirm", "label": "Require confirmation", "type": "boolean", "default": True,
-         "help_text": "If enabled, the UI should ask before running."}
-    ]
-
-    actions = [
-        {"id": "refresh_all", "label": "Refresh All M3Us and EPGs",
-         "description": "Queues background refresh for all active M3U accounts and EPG sources."}
-    ]
-
-    def run(self, action: str, params: dict, context: dict):
-        if action == "refresh_all":
-            from apps.m3u.tasks import refresh_m3u_accounts
-            from apps.epg.tasks import refresh_all_epg_data
-            refresh_m3u_accounts.delay()
-            refresh_all_epg_data.delay()
-            return {"status": "queued", "message": "Refresh jobs queued"}
-        return {"status": "error", "message": f"Unknown action: {action}"}
-```
-
----
-
 ## Best Practices
 
 - Keep `run` short and schedule heavy operations via Celery tasks.
 - Validate and sanitize `params` received from the UI.
 - Use database transactions for bulk or related updates.
 - Log actionable messages for troubleshooting.
-- Only write files under `/data` or `/app/data` paths.
+- Keep mutable files in `context["data_dir"]`. Declare `filesystem_write` before writing elsewhere in a version `2` plugin.
 - Treat plugins as trusted code: they run with full app permissions.
 
 ---
@@ -713,7 +535,7 @@ class Plugin:
 
 - Plugin not listed: ensure the folder exists and contains `plugin.py` with a `Plugin` class.
 - Import errors: ensure the folder contains `plugin.py` or a package `__init__.py`. Folder names with spaces or dashes are supported; if you need to import by folder name inside your plugin, use a valid Python identifier.
-- No confirmation: include a boolean field with `id: "confirm"` and set it to true or default true.
+- No capability approval prompt: version `0` manifests ignore capability declarations. Set `manifest_version` to `1` or `2`.
 - HTTP 403 on run: the plugin is disabled; enable it from the toggle or via the `enabled/` endpoint.
 
 ---
@@ -722,17 +544,6 @@ class Plugin:
 
 - Keep dependencies minimal. Vendoring small helpers into the plugin folder is acceptable.
 - Use the existing task and model APIs where possible; propose extensions if you need new capabilities.
-
----
-
-## Internals Reference
-
-- Loader: `apps/plugins/loader.py`
-- API Views: `apps/plugins/api_views.py`
-- API URLs: `apps/plugins/api_urls.py`
-- Model: `apps/plugins/models.py`
-- Frontend page: `frontend/src/pages/Plugins.jsx`
-- Sidebar entry: `frontend/src/components/Sidebar.jsx`
 
 ---
 
@@ -754,6 +565,31 @@ Add `manifest_version` and list the capabilities your plugin uses in `plugin.jso
 ```
 
 Version `1` parses and displays capabilities, asks the administrator to approve them, and otherwise keeps version `0` behavior. Use it as the compatibility step before version `2`.
+
+### Move mutable files to plugin storage
+
+Plugin code can be replaced when a managed plugin is updated. Do not keep a database, cache, download, or other mutable state beside `plugin.py`, and do not build a storage path from the versioned install folder.
+
+Dispatcharr provides two paths in every action, `stop()` hook, and leader hook:
+
+- `context["code_dir"]`: the installed plugin code. Treat this as read-only.
+- `context["data_dir"]`: a durable, version-stable directory owned by the plugin. Use this for mutable state.
+
+```python
+from pathlib import Path
+
+def run(self, action, params, context):
+    state_file = Path(context["data_dir"]) / "state.json"
+    state_file.write_text('{"last_run": "now"}', encoding="utf-8")
+```
+
+Writes under `data_dir` do not need `filesystem_write`. A plugin that writes anywhere else, including a general temporary or shared directory, must declare `filesystem_write` before moving to version `2`.
+
+### Adopt the new action and service APIs
+
+- For long-running work, set `"async": true` on an action or call `context["dispatch_task"]`. Dispatcharr runs the work on its background queue and records progress and task history. Use `context["report_progress"]` from dispatched work to update the UI.
+- For a long-lived service, use `on_leader_acquired(context)` and `on_leader_lost(context)`. Dispatcharr elects one process to run the service and calls the lost hook when leadership is released.
+- Use `context["dispatch_internal_task"]` only for an explicitly approved first-party Dispatcharr task. It is not a general way to queue arbitrary Celery task names.
 
 ### Version 1 to 2
 
@@ -790,6 +626,6 @@ The other capabilities are disclosures for the approval dialog and are not curre
 
 1. Start with version `1` and declare every capability the plugin uses. Confirm the approval prompt is accurate.
 2. For a service plugin, move startup and shutdown work out of `__init__` and into `on_leader_acquired` and `on_leader_lost` before moving to version `2`. For example, an exporter that starts an HTTP server needs `persistent_service` and `network_listener`.
-3. Use `context["data_dir"]` for persistent files instead of writing beside the plugin code or to a general temporary path.
+3. Move mutable files to `context["data_dir"]`, and use the new async action or leader lifecycle APIs where they fit the plugin.
 4. Change to version `2`, then test every action and lifecycle hook with only the declared capabilities.
 5. Treat new capabilities in an update as a user-visible permission change. Dispatcharr requires approval before the updated plugin can be enabled.
