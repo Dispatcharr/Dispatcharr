@@ -28,7 +28,12 @@ from core.utils import build_absolute_uri_with_port
 from dispatcharr.utils import network_access_allowed
 from core.utils import safe_upload_path
 
-from .capabilities import compute_effective_capabilities, describe_capabilities
+from .capabilities import (
+    app_version_meets_maximum,
+    app_version_meets_minimum,
+    compute_effective_capabilities,
+    describe_capabilities,
+)
 from .loader import PluginManager
 from .keys import normalize_plugin_key
 from .models import PluginConfig, PluginRepo
@@ -1724,14 +1729,15 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
         min_version = request.data.get("min_dispatcharr_version")
         max_version = request.data.get("max_dispatcharr_version")
         if min_version or max_version:
-            from version import __version__ as app_version
+            from version import __timestamp__, __version__ as app_version
             try:
-                if min_version and compare_versions(app_version, min_version) < 0:
+                is_dev_build = __timestamp__ is not None
+                if not app_version_meets_minimum(app_version, min_version, is_dev_build=is_dev_build):
                     return Response(
                         {"error": f"This plugin version requires Dispatcharr {min_version} or newer (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                if max_version and compare_versions(app_version, max_version) > 0:
+                if not app_version_meets_maximum(app_version, max_version, is_dev_build=is_dev_build):
                     return Response(
                         {"error": f"This plugin version requires Dispatcharr {max_version} or older (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,

@@ -271,6 +271,14 @@ def max_app_version_for_manifest_version(manifest_version: int) -> Optional[str]
     return manifest_schema_policy(manifest_version)["max_app_version"]
 
 
+def app_version_meets_minimum(app_version: str, min_version: Optional[str], *, is_dev_build: bool = False) -> bool:
+    return is_dev_build or min_version is None or compare_versions(app_version, min_version) >= 0
+
+
+def app_version_meets_maximum(app_version: str, max_version: Optional[str], *, is_dev_build: bool = False) -> bool:
+    return not is_dev_build and (max_version is None or compare_versions(app_version, max_version) <= 0)
+
+
 def manifest_version_supported(manifest_version: int, app_version: str, *, is_dev_build: bool = False) -> bool:
     """True if `app_version` is within the manifest compatibility bounds.
 
@@ -280,6 +288,6 @@ def manifest_version_supported(manifest_version: int, app_version: str, *, is_de
     min_app_version = min_app_version_for_manifest_version(manifest_version)
     max_app_version = max_app_version_for_manifest_version(manifest_version)
     return (
-        (is_dev_build or min_app_version is None or compare_versions(app_version, min_app_version) >= 0)
-        and (not is_dev_build and (max_app_version is None or compare_versions(app_version, max_app_version) <= 0))
+        app_version_meets_minimum(app_version, min_app_version, is_dev_build=is_dev_build)
+        and app_version_meets_maximum(app_version, max_app_version, is_dev_build=is_dev_build)
     )
