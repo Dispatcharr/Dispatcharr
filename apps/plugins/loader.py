@@ -13,7 +13,7 @@ import threading
 import time
 import types
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from django.db import close_old_connections, connection, transaction
 from django.db.models import Case, DateTimeField, Value, When
@@ -220,6 +220,7 @@ class PluginManager:
         token: int,
     ) -> Dict[str, LoadedPlugin]:
         try:
+            released_leader_keys = set()
             if force_reload:
                 # The old instance owns the service it started. Tear it down
                 # before unloading its module or replacing it in the registry.
@@ -231,6 +232,7 @@ class PluginManager:
                     ]
                 for key in leader_keys:
                     self._release_plugin_leadership(key, previous_registry.get(key))
+                    released_leader_keys.add(key)
 
             configs: Optional[Dict[str, PluginConfig]] = None
             try:
@@ -282,7 +284,8 @@ class PluginManager:
                 removed_keys = (set(previous_packages) | set(previous_paths)) - set(new_packages)
                 for key in removed_keys:
                     # Release synchronously rather than waiting on TTL expiry.
-                    self._release_plugin_leadership(key)
+                    if key not in released_leader_keys:
+                        self._release_plugin_leadership(key)
                     prev_package = previous_packages.get(key)
                     if prev_package:
                         self._unload_package(prev_package)
@@ -473,6 +476,7 @@ class PluginManager:
             path = self.get_plugin_path(cfg.key)
             folder = os.path.basename(path)
             package = self._resolve_package_name(cfg.key)
+            previous = self._registry.get(cfg.key)
             old_tasks = {
                 name: celery_app.tasks[name]
                 for name in self._task_names_from_path(path)
@@ -488,6 +492,8 @@ class PluginManager:
                     cfg.key, path, folder_name=folder, force_reload=True,
                     previous_package=package,
                     storage_key=cfg.slug or cfg.key,
+                    capabilities=previous.capabilities if previous else (),
+                    manifest_schema_version=previous.manifest_schema_version if previous else 0,
                 )
                 if loaded is None:
                     raise ValueError(f"Plugin '{cfg.key}' could not be loaded")
@@ -676,6 +682,8 @@ class PluginManager:
                 force_reload=force_reload,
                 previous_package=previous_package,
                 storage_key=cfg.slug if cfg and cfg.slug else plugin_key,
+                capabilities=manifest_capabilities,
+                manifest_schema_version=manifest_schema_version,
             )
             if not lp:
                 return _make_placeholder(), None, None
@@ -718,6 +726,8 @@ class PluginManager:
         force_reload: bool,
         previous_package: Optional[str],
         storage_key: str,
+        capabilities: Sequence[str] = (),
+        manifest_schema_version: int = 0,
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
         path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
@@ -758,6 +768,8 @@ class PluginManager:
                     plugin_key=key,
                     plugin_path=path,
                     storage_key=storage_key,
+                    capabilities=capabilities,
+                    manifest_schema_version=manifest_schema_version,
                 )
                 if alias_name:
                     self._register_alias_module(f"{alias_name}.plugin", module, path)
@@ -780,6 +792,8 @@ class PluginManager:
                     plugin_key=key,
                     plugin_path=path,
                     storage_key=storage_key,
+                    capabilities=capabilities,
+                    manifest_schema_version=manifest_schema_version,
                 )
                 self._register_alias_module(alias_name, module, path)
                 plugin_cls = getattr(module, "Plugin", None)
@@ -1809,6 +1823,8 @@ class PluginManager:
         plugin_key: str,
         plugin_path: str,
         storage_key: str,
+        capabilities: Sequence[str],
+        manifest_schema_version: int,
     ) -> Any:
         importlib.invalidate_caches()
         spec = importlib.util.spec_from_file_location(
@@ -1822,7 +1838,11 @@ class PluginManager:
         module = importlib.util.module_from_spec(spec)
         module.__builtins__ = plugin_builtins(plugin_key, plugin_path, storage_key)
         sys.modules[module_name] = module
-        with running_as_plugin(plugin_key):
+        with running_as_plugin(
+            plugin_key,
+            capabilities=capabilities,
+            manifest_schema_version=manifest_schema_version,
+        ):
             spec.loader.exec_module(module)
         return module
 
