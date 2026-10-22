@@ -733,3 +733,63 @@ class Plugin:
 - Model: `apps/plugins/models.py`
 - Frontend page: `frontend/src/pages/Plugins.jsx`
 - Sidebar entry: `frontend/src/components/Sidebar.jsx`
+
+---
+
+## Migration Guide: Manifest Version 0 to 1 and 2
+
+Existing plugins without `manifest_version` are version `0`. They remain supported. The current plugins in [Dispatcharr/Plugins](https://github.com/Dispatcharr/Plugins) are version `0`, so maintainers should use this guide before moving a plugin to the newer manifest versions.
+
+This is not process isolation. Plugins still run in the Dispatcharr process and are trusted code. Version `2` adds guards around supported plugin APIs so that a plugin cannot accidentally use an undeclared capability through those APIs.
+
+### Version 0 to 1
+
+Add `manifest_version` and list the capabilities your plugin uses in `plugin.json`:
+
+```json
+{
+  "manifest_version": 1,
+  "capabilities": ["outbound_network"]
+}
+```
+
+Version `1` parses and displays capabilities, asks the administrator to approve them, and otherwise keeps version `0` behavior. Use it as the compatibility step before version `2`.
+
+### Version 1 to 2
+
+Change `manifest_version` to `2` once the capability list is complete:
+
+```json
+{
+  "manifest_version": 2,
+  "capabilities": ["background_tasks", "persistent_service", "outbound_network"]
+}
+```
+
+At version `2`, the following operations are blocked unless the matching capability is declared and approved:
+
+| Capability | Declare it when the plugin... | Without it in version 2 |
+| --- | --- | --- |
+| `background_tasks` | calls `context["dispatch_task"]` or runs long work in a declared async action | `dispatch_task` raises `PermissionError`. An action with `"async": true` adds this capability automatically. |
+| `persistent_service` | uses `on_leader_acquired` and `on_leader_lost` for a long-lived service | Dispatcharr does not run the leader lifecycle hook. Do not start a persistent thread or server in `__init__`; move that work into the leader hooks. |
+| `network_listener` | binds or listens on a socket, such as an HTTP, metrics, or webhook server | `socket.bind()` and `socket.listen()` raise `PermissionError`. |
+| `outbound_network` | calls remote HTTP services or opens outbound sockets | `requests`, `urllib.request`, and `socket.connect()` raise `PermissionError`. |
+| `subprocess` | starts a command or process | `subprocess.Popen`, `run`, `call`, `check_call`, and `check_output` raise `PermissionError`. |
+| `filesystem_write` | writes outside `context["code_dir"]` or `context["data_dir"]` | writes made through `open()` outside those directories raise `PermissionError`. Use `context["data_dir"]` for durable plugin data. |
+| `celery_dispatch` | calls `context["dispatch_internal_task"]` for a first-party Dispatcharr task | the helper raises `PermissionError`. The target task must also be explicitly approved by Dispatcharr. |
+
+The other capabilities are disclosures for the approval dialog and are not currently runtime-enforced:
+
+- `proxy_internals`: direct use of live-stream proxy internals.
+- `user_data`: access to Dispatcharr user account data.
+- `external_dependencies`: the plugin needs third-party Python packages. Declaring this does not install packages. Dependency installation is not supported.
+
+`network_listener` requires a Dispatcharr restart after approval because it affects container-started infrastructure. Other capability changes take effect when the plugin is enabled or reloaded.
+
+### Practical upgrade checklist
+
+1. Start with version `1` and declare every capability the plugin uses. Confirm the approval prompt is accurate.
+2. For a service plugin, move startup and shutdown work out of `__init__` and into `on_leader_acquired` and `on_leader_lost` before moving to version `2`. For example, an exporter that starts an HTTP server needs `persistent_service` and `network_listener`.
+3. Use `context["data_dir"]` for persistent files instead of writing beside the plugin code or to a general temporary path.
+4. Change to version `2`, then test every action and lifecycle hook with only the declared capabilities.
+5. Treat new capabilities in an update as a user-visible permission change. Dispatcharr requires approval before the updated plugin can be enabled.
