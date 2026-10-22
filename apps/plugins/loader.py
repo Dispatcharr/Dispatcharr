@@ -487,6 +487,7 @@ class PluginManager:
                 loaded, package = self._load_plugin(
                     cfg.key, path, folder_name=folder, force_reload=True,
                     previous_package=package,
+                    storage_key=cfg.slug or cfg.key,
                 )
                 if loaded is None:
                     raise ValueError(f"Plugin '{cfg.key}' could not be loaded")
@@ -1192,11 +1193,7 @@ class PluginManager:
             acquired = client.set(lock_key, self.worker_id, nx=True, ex=ttl)
             if acquired:
                 return True
-            current = client.get(lock_key)
-            if current and current == self.worker_id:
-                client.expire(lock_key, ttl)
-                return True
-            return False
+            return self.extend_leadership(plugin_key, ttl)
         except Exception:
             logger.warning("Leader election: acquire failed for '%s'", plugin_key, exc_info=True)
             return False
@@ -1210,17 +1207,23 @@ class PluginManager:
             return True
         try:
             lock_key = self._leader_key(plugin_key)
-            current = client.get(lock_key)
-            if current is None:
-                # Lease expired outright (e.g. this process stalled past the
-                # TTL). Try to reacquire rather than assume we still lead --
-                # if someone else grabbed it first, this correctly reports
-                # loss so on_leader_lost fires.
-                return bool(client.set(lock_key, self.worker_id, nx=True, ex=ttl))
-            if current == self.worker_id:
-                client.expire(lock_key, ttl)
+            renewed = client.eval(
+                """
+                if redis.call('GET', KEYS[1]) == ARGV[1] then
+                    return redis.call('EXPIRE', KEYS[1], ARGV[2])
+                end
+                return 0
+                """,
+                1,
+                lock_key,
+                self.worker_id,
+                ttl,
+            )
+            if renewed:
                 return True
-            return False
+            # The lease may have expired before this tick. NX makes the
+            # reacquisition safe if another worker wins that race.
+            return bool(client.set(lock_key, self.worker_id, nx=True, ex=ttl))
         except Exception:
             logger.warning("Leader election: renew failed for '%s'", plugin_key, exc_info=True)
             return False
@@ -1231,9 +1234,17 @@ class PluginManager:
             return
         try:
             lock_key = self._leader_key(plugin_key)
-            current = client.get(lock_key)
-            if current and current == self.worker_id:
-                client.delete(lock_key)
+            client.eval(
+                """
+                if redis.call('GET', KEYS[1]) == ARGV[1] then
+                    return redis.call('DEL', KEYS[1])
+                end
+                return 0
+                """,
+                1,
+                lock_key,
+                self.worker_id,
+            )
         except Exception:
             logger.warning("Leader election: release failed for '%s'", plugin_key, exc_info=True)
 
