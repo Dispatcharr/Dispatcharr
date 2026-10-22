@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useDisclosure, useMediaQuery } from '@mantine/hooks';
+import { useDisclosure, useElementSize, useMediaQuery } from '@mantine/hooks';
 import {
   ActionIcon,
   AppShellMain,
@@ -115,6 +115,8 @@ function PluginDetailForKey({ routeKey: key }) {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState(null);
+  const { ref: controlPaneRef } = useElementSize();
+  const { ref: topControlsRef, width: topControlsWidth } = useElementSize();
   const [installing, setInstalling] = useState(false);
   const [installConfirmOpen, setInstallConfirmOpen] = useState(false);
   const [pendingInstallParams, setPendingInstallParams] = useState(null);
@@ -278,6 +280,14 @@ function PluginDetailForKey({ routeKey: key }) {
     !!plugin.version &&
     !!selectedVersion &&
     compareVersions(selectedVersion, plugin.version) === 0;
+  const topControlCount = (isManaged ? 1 : 0) + 1 + (versionActionIsUninstall ? 0 : 1);
+  const topControlWidth = topControlsWidth / topControlCount;
+  const checkIconOnly = topControlWidth > 0 && topControlWidth < 82;
+  const checkAbbreviated = !checkIconOnly && topControlWidth > 0 && topControlWidth < 158;
+  const reloadIconOnly = topControlWidth > 0 && topControlWidth < 82;
+  const reloadAbbreviated = !reloadIconOnly && topControlWidth > 0 && topControlWidth < 138;
+  const uninstallIconOnly = topControlWidth > 0 && topControlWidth < 82;
+  const uninstallAbbreviated = !uninstallIconOnly && topControlWidth > 0 && topControlWidth < 154;
 
   const updateField = (id, val) => {
     setSettings((prev) => ({ ...prev, [id]: val }));
@@ -486,7 +496,7 @@ function PluginDetailForKey({ routeKey: key }) {
 
             {/* Dispatcharr-provided controls (not part of the plugin's own
                 Actions list below) all live together in one pane. */}
-            <Paper withBorder radius="sm" p="sm" className="plugin-management-pane">
+            <Paper ref={controlPaneRef} withBorder radius="sm" p="sm" className="plugin-management-pane">
               <Stack gap="sm">
                 <Group justify="space-between" align="center">
                   <Text size="xs" fw={600} c="dimmed" tt="uppercase">
@@ -516,43 +526,52 @@ function PluginDetailForKey({ routeKey: key }) {
                     />
                   </Group>
                 </Group>
-                <Group gap="xs" wrap="wrap" align="center" grow>
+                <Group ref={topControlsRef} gap="xs" wrap="nowrap" align="center" grow style={{ overflow: 'hidden' }}>
                   {isManaged && (
+                    <Tooltip label="Check for Updates" disabled={!checkIconOnly}>
+                      <Button
+                        size="xs"
+                        variant="default"
+                        loading={checkingUpdate}
+                        disabled={checkingUpdate}
+                        leftSection={!checkIconOnly && <RefreshCw size={14} />}
+                        onClick={handleCheckForUpdate}
+                        aria-label="Check for Updates"
+                      >
+                        {checkIconOnly ? <RefreshCw size={14} /> : checkAbbreviated ? 'Check' : 'Check for Updates'}
+                      </Button>
+                    </Tooltip>
+                  )}
+                  <Tooltip label="Reload Plugin" disabled={!reloadIconOnly}>
                     <Button
                       size="xs"
                       variant="default"
-                      loading={checkingUpdate}
-                      disabled={checkingUpdate}
-                      leftSection={<RefreshCw size={14} />}
-                      onClick={handleCheckForUpdate}
+                      loading={reloadingCode}
+                      disabled={reloadingCode || missing}
+                      leftSection={!reloadIconOnly && <RotateCw size={14} />}
+                      onClick={() => setReloadConfirmOpen(true)}
+                      aria-label="Reload Plugin"
                     >
-                      Check for Updates
+                      {reloadIconOnly ? <RotateCw size={14} /> : reloadAbbreviated ? 'Reload' : 'Reload Plugin'}
                     </Button>
-                  )}
-                  <Button
-                    size="xs"
-                    variant="default"
-                    loading={reloadingCode}
-                    disabled={reloadingCode || missing}
-                    leftSection={<RotateCw size={14} />}
-                    onClick={() => setReloadConfirmOpen(true)}
-                  >
-                    Reload Plugin
-                  </Button>
+                  </Tooltip>
                   {/* PluginDetailPanel's own version-action button already IS
                       the uninstall action when the selected version equals
                       the installed one, so don't show a second one in that
                       state. */}
                   {!versionActionIsUninstall && (
-                    <Button
-                      size="xs"
-                      variant="light"
-                      color="red"
-                      leftSection={<Trash2 size={14} />}
-                      onClick={() => setUninstallConfirmOpen(true)}
-                    >
-                      Uninstall
-                    </Button>
+                    <Tooltip label="Uninstall Plugin" disabled={!uninstallIconOnly}>
+                      <Button
+                        size="xs"
+                        variant="light"
+                        color="red"
+                        leftSection={!uninstallIconOnly && <Trash2 size={14} />}
+                        onClick={() => setUninstallConfirmOpen(true)}
+                        aria-label="Uninstall Plugin"
+                      >
+                        {uninstallIconOnly ? <Trash2 size={14} /> : uninstallAbbreviated ? 'Uninstall' : 'Uninstall Plugin'}
+                      </Button>
+                    </Tooltip>
                   )}
                 </Group>
 

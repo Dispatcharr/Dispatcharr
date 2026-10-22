@@ -1,4 +1,5 @@
 import React from 'react';
+import { useElementSize } from '@mantine/hooks';
 import {
   Alert,
   Button,
@@ -105,6 +106,9 @@ const PluginDetailPanel = ({
   repoId,
   slug,
 }) => {
+  const { ref: versionControlsRef, width: versionControlsWidth } = useElementSize();
+  const compactControls = versionControlsWidth > 0 && versionControlsWidth < 360;
+
   if (detailLoading) {
     return (
       <Stack align="center" py="xl">
@@ -391,6 +395,7 @@ const PluginDetailPanel = ({
           return (
             <>
               <Group
+                ref={versionControlsRef}
                 gap="xs"
                 align="flex-end"
                 wrap="nowrap"
@@ -400,11 +405,7 @@ const PluginDetailPanel = ({
                 <Group
                   gap="xs"
                   align="flex-end"
-                  style={
-                    metadataActions
-                      ? { flex: '0 0 calc(50% - 4px)' }
-                      : undefined
-                  }
+                  style={{ flex: '1 1 0', minWidth: 0 }}
                 >
                   <Select
                     label={hideVersionLabel ? undefined : 'Version'}
@@ -413,13 +414,13 @@ const PluginDetailPanel = ({
                     value={selectedVersion}
                     onChange={onVersionChange}
                     data={versionItems}
-                    style={{ maxWidth: 240, flex: 1 }}
+                    style={{ flex: '1 1 0', minWidth: 0, maxWidth: compactVersionDetails ? undefined : 240 }}
                   />
                   {compactVersionDetails && selectedVersionData && (
                     <Popover width={260} position="bottom-start" withArrow shadow="md">
                       <Popover.Target>
-                        <Button size="xs" variant="default" leftSection={<Info size={14} />}>
-                          Details
+                        <Button size="xs" variant="default" leftSection={!compactControls && <Info size={14} />} aria-label="Details">
+                          {compactControls ? <Info size={14} /> : 'Details'}
                         </Button>
                       </Popover.Target>
                       <Popover.Dropdown>{versionTable}</Popover.Dropdown>
@@ -432,11 +433,11 @@ const PluginDetailPanel = ({
                         size="xs"
                         variant={btnProps.variant}
                         color={btnProps.color}
-                        leftSection={btnProps.icon}
+                        leftSection={!compactControls && btnProps.icon}
                         disabled={btnDisabled}
                         onClick={handleInstallClick}
                       >
-                        {btnProps.label}
+                        {compactControls ? btnProps.icon : btnProps.label}
                       </Button>
                     </Tooltip>
                   ) : (
@@ -444,11 +445,11 @@ const PluginDetailPanel = ({
                       size="xs"
                       variant={btnProps.variant}
                       color={btnProps.color}
-                      leftSection={btnProps.icon}
+                      leftSection={!compactControls && btnProps.icon}
                       disabled={btnDisabled}
                       onClick={handleInstallClick}
                     >
-                      {btnProps.label}
+                      {compactControls ? btnProps.icon : btnProps.label}
                     </Button>
                   )}
                   {!selCompatible &&
