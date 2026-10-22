@@ -65,7 +65,17 @@ const categoryPropsChanged = (state) => {
   const original = state.original_custom_properties || {};
   return (
     (current.language ?? null) !== (original.language ?? null) ||
-    (current.quality ?? null) !== (original.quality ?? null)
+    (current.quality ?? null) !== (original.quality ?? null) ||
+    [
+      'audio_languages',
+      'subtitle_languages',
+      'resolution',
+      'video_features',
+    ].some(
+      (key) =>
+        JSON.stringify(current[key] ?? null) !==
+        JSON.stringify(original[key] ?? null)
+    )
   );
 };
 
