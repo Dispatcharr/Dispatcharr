@@ -1,14 +1,10 @@
 import os
-import re
 
 
 def normalize_plugin_key(value: str) -> str:
-    """Return the canonical database key for an installed plugin directory."""
+    """Return the database key used by plugin discovery in development."""
     base = os.path.basename(value or "")
-    base = base.replace(" ", "_").replace("-", "_").lower()
-    base = re.sub(r"[^a-z0-9_]", "_", base)
-    base = base.strip("._ ")
-    return base or "plugin"
+    return base.replace(" ", "_").lower()
 
 
 def plugin_manifest_path(plugins_dir: str, key: str) -> str:
