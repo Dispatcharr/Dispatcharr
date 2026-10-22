@@ -73,7 +73,12 @@ class ConfigHelper:
     @staticmethod
     def max_retries():
         """Get maximum retry attempts"""
-        return ConfigHelper.get('MAX_RETRIES', 3)
+        return Config.get_max_retries()
+
+    @staticmethod
+    def stream_retry_timeout():
+        """Get stream connection retry timeout in seconds when profiles are at max connections."""
+        return Config.get_stream_retry_timeout()
 
     @staticmethod
     def retry_window_seconds():

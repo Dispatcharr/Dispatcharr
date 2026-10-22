@@ -7,6 +7,7 @@ class BaseConfig:
     CHUNK_SIZE = 8192
     CLIENT_POLL_INTERVAL = 0.1
     MAX_RETRIES = 3
+    STREAM_RETRY_TIMEOUT = 3
     RETRY_WINDOW_SECONDS = 1800  # Reset retry counter after this long without a failure
     STABLE_CONNECTION_THRESHOLD = 30  # Seconds of uptime before switch rotation state resets
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
@@ -57,6 +58,8 @@ class BaseConfig:
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
                 "validate_redirect_urls": True,
+                "max_retries": 3,
+                "stream_retry_timeout": 3,
             }
 
         finally:
@@ -172,6 +175,18 @@ class TSConfig(BaseConfig):
         settings = cls.get_proxy_settings()
         return bool(settings.get("validate_redirect_urls", True))
 
+    @classmethod
+    def get_max_retries(cls):
+        """Get maximum retry attempts from database or default"""
+        settings = cls.get_proxy_settings()
+        return settings.get("max_retries", 3)
+
+    @classmethod
+    def get_stream_retry_timeout(cls):
+        """Get stream connection retry timeout from database or default"""
+        settings = cls.get_proxy_settings()
+        return settings.get("stream_retry_timeout", 3)
+
     # Dynamic property access for these settings
     @property
     def CHANNEL_SHUTDOWN_DELAY(self):
@@ -196,3 +211,11 @@ class TSConfig(BaseConfig):
     @property
     def VALIDATE_REDIRECT_URLS(self):
         return self.get_validate_redirect_urls()
+
+    @property
+    def MAX_RETRIES(self):
+        return self.get_max_retries()
+
+    @property
+    def STREAM_RETRY_TIMEOUT(self):
+        return self.get_stream_retry_timeout()

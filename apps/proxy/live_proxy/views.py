@@ -12,6 +12,7 @@ from django.http import (
 )
 from django.views.decorators.csrf import csrf_exempt
 from .server import ProxyServer
+from .config_helper import ConfigHelper
 from .channel_status import ChannelStatus, build_live_channel_stats_data
 from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
@@ -106,7 +107,7 @@ def _obtain_stream_with_retries(
         (stream_url, stream_user_agent, transcode, profile_value, slot_reserved,
          error_reason, resolved_stream_id, attempt, wait_start_time)
     """
-    retry_timeout = 3
+    retry_timeout = ConfigHelper.stream_retry_timeout()
     retry_interval = 0.1
     wait_start_time = time.time()
 
