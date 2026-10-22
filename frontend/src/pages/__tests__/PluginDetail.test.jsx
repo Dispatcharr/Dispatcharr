@@ -12,6 +12,7 @@ vi.mock('@mantine/hooks', async (importOriginal) => {
   return {
     ...actual,
     useMediaQuery: vi.fn(() => false),
+    useElementSize: vi.fn(() => ({ ref: vi.fn(), width: 0 })),
   };
 });
 
