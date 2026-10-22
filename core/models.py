@@ -878,7 +878,6 @@ class CoreSettings(models.Model):
             "log_max_mb": DEFAULT_LOG_MB,
             "log_keep": DEFAULT_LOG_KEEP,
             "log_persist": True,
-            "celery_max_workers": 8,
         })
 
     @classmethod
@@ -886,15 +885,6 @@ class CoreSettings(models.Model):
         """Whether catch-up / timeshift is enabled system-wide (default True)."""
         # Stored as a JSON boolean by System Settings; default on when unset.
         return cls.get_system_settings().get("catchup_enabled", True) is not False
-
-    @classmethod
-    def get_celery_max_workers(cls):
-        """Autoscale ceiling for the default Celery worker (handles core
-        tasks and plugin tasks alike)."""
-        try:
-            return int(cls.get_system_settings().get("celery_max_workers", 8))
-        except (TypeError, ValueError):
-            return 8
 
     @classmethod
     def get_system_time_zone(cls):

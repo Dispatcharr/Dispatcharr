@@ -16,7 +16,6 @@ describe('SystemSettingsFormUtils', () => {
         log_max_mb: 5,
         log_keep: 5,
         log_persist: true,
-        celery_max_workers: 8,
       });
     });
 

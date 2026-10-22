@@ -429,7 +429,7 @@ Event hooks and non-async manual actions always run through Celery too (queued a
 
 **Deployment note:** `async` actions and `dispatch_task` target the `plugins` Celery queue, which is serviced by the same worker that handles everything else (`-Q celery,plugins`) in both the AIO image and the standard split-container `docker-compose.yml`. If you run a custom-mounted `entrypoint.celery.sh` or `uwsgi.ini`, make sure your worker(s) consume the `plugins` queue too, or these dispatch paths will queue work that never runs.
 
-**The default worker's concurrency ceiling is configurable.** The `celery_max_workers` system setting (default 8) controls the `--autoscale` ceiling for the shared worker that handles both core tasks and plugin tasks; see `apps/plugins/management/commands/celery_worker_max.py`. It's read once at container startup, not watched continuously: **changing it requires restarting the Celery/AIO container** to take effect.
+**The default worker's concurrency ceiling is configurable.** The existing `CELERY_MAX_WORKERS` and `CELERY_MIN_WORKERS` environment variables control the shared worker that handles both core tasks and plugin tasks. They are read at container startup, so restart the Celery or AIO container after changing them.
 
 ### Calling Approved Internal Tasks
 

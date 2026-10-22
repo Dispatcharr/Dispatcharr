@@ -429,25 +429,6 @@ fi
 su - "$POSTGRES_USER" -c "cd /app && ${migrate_env}python manage.py migrate --noinput"
 su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
 
-# Default worker's autoscale ceiling, configurable via the
-# celery_max_workers system setting. Computed here (rather than left to
-# uwsgi.ini) since uwsgi.ini's $(VAR) substitution has no inline default.
-# See apps/plugins/management/commands/celery_worker_max.py.
-#
-# `tail -n 1` guards against any stray stdout noise from Django/Celery app
-# initialization ending up embedded in the captured value; falls back to 8
-# if the result still isn't a plain integer.
-CELERY_AUTOSCALE_MAX="$(su - "$POSTGRES_USER" -c "cd /app && python manage.py celery_worker_max" | tail -n 1 | tr -d '[:space:]')"
-case "$CELERY_AUTOSCALE_MAX" in
-    ''|*[!0-9]*)
-        echo "Warning: celery_worker_max produced non-numeric output ('$CELERY_AUTOSCALE_MAX'); defaulting to 8."
-        CELERY_AUTOSCALE_MAX=8
-        ;;
-esac
-export CELERY_AUTOSCALE_MAX
-sed -i "/^CELERY_AUTOSCALE_MAX=/d" /etc/environment
-echo "CELERY_AUTOSCALE_MAX='$CELERY_AUTOSCALE_MAX'" >> /etc/environment
-
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
     echo "🚀 Starting uwsgi in dev mode..."
