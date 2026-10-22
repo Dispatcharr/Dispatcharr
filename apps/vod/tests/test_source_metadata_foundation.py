@@ -13,6 +13,7 @@ from apps.m3u.models import M3UAccount
 from apps.output.views import xc_get_series_info, xc_get_vod_info, xc_get_vod_streams
 from apps.proxy.vod_proxy.views import _get_content_and_relation
 from apps.vod.language_codes import LANGUAGES
+from apps.vod.media_languages import MEDIA_LANGUAGE_OPTIONS
 from apps.vod.metadata import (
     metadata_satisfies,
     normalize_language_code,
@@ -486,10 +487,21 @@ class SourceMetadataTests(TestCase):
             403,
         )
 
-    def test_metadata_options_use_the_full_catalogue(self):
+    def test_metadata_options_use_only_the_curated_media_catalogue(self):
         response = self.client.get("/api/vod/source-metadata-options/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data["languages"]), len(LANGUAGES))
+        choices = response.data["languages"]
+        self.assertEqual(len(choices), 50)
+        self.assertEqual(len({row["value"] for row in choices}), 50)
+        self.assertTrue(
+            {"gmh", "goh", "gem", "afa", "lat"}.isdisjoint(
+                row["value"] for row in choices
+            )
+        )
+        self.assertEqual(choices, sorted(choices, key=lambda row: row["label"]))
+        for row in MEDIA_LANGUAGE_OPTIONS:
+            self.assertEqual(normalize_language_code(row["legacyValue"]), row["value"])
+            self.assertIn({"value": row["value"], "label": row["label"]}, choices)
         self.assertIn("360p", response.data["resolutions"])
         self.assertTrue(
             all(
@@ -499,6 +511,49 @@ class SourceMetadataTests(TestCase):
         )
         self.assertIn(
             {"value": "ger", "label": "German (ger)"}, response.data["languages"]
+        )
+
+    def test_unlisted_saved_language_survives_unrelated_category_edits(self):
+        self.category_relation.metadata_defaults["audio_languages"] = ["gmh"]
+        self.category_relation.save(update_fields=["metadata_defaults"])
+        response = self.client.patch(
+            f"/api/m3u/accounts/{self.account.pk}/group-settings/",
+            {
+                "category_settings": [
+                    {
+                        "id": self.category.pk,
+                        "metadata_defaults": {"resolution": "720p"},
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.category_relation.refresh_from_db()
+        self.assertEqual(
+            self.category_relation.metadata_defaults,
+            {
+                "audio_languages": ["gmh"],
+                "resolution": "720p",
+            },
+        )
+
+    def test_unlisted_saved_source_language_remains_valid(self):
+        self.source.manual_metadata = {"audio_languages": ["gmh"]}
+        self.source.save(update_fields=["manual_metadata"])
+        response = self.client.patch(
+            f"/api/vod/movie-sources/{self.source.pk}/",
+            {"manual_metadata": {"resolution": "720p"}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.source.refresh_from_db()
+        self.assertEqual(
+            self.source.manual_metadata,
+            {
+                "audio_languages": ["gmh"],
+                "resolution": "720p",
+            },
         )
 
 

@@ -65,13 +65,10 @@ class SourceMetadataOptionsView(APIView):
 
     @extend_schema(responses=SourceMetadataOptionsSerializer)
     def get(self, request):
-        from .language_codes import LANGUAGES
+        from .media_languages import MEDIA_LANGUAGE_OPTIONS
         from .metadata import RESOLUTIONS, VIDEO_FEATURES
         return Response(SourceMetadataOptionsSerializer({
-            "languages": sorted([
-                {"value": code, "label": f"{entry['name']} ({code})"}
-                for code, entry in LANGUAGES.items()
-            ], key=lambda entry: entry["label"]),
+            "languages": MEDIA_LANGUAGE_OPTIONS,
             # Keep legacy SD values readable, but offer exact numeric tiers for new defaults.
             "resolutions": [value for value in RESOLUTIONS if value != "SD"],
             "video_features": sorted(VIDEO_FEATURES),
