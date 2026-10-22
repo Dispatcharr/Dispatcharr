@@ -681,7 +681,9 @@ def _xc_live_streams_setup(request, user, category_id):
     def _get_default_group_id():
         nonlocal _default_group_id
         if _default_group_id is None:
-            _default_group_id = ChannelGroup.objects.get_or_create(name="Default Group")[0].id
+            _default_group_id = ChannelGroup.objects.get_or_create_manual(
+                name="Default Group"
+            )[0].id
         return _default_group_id
 
     # Build collision-free integer channel number mapping.

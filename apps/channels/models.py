@@ -40,8 +40,48 @@ def get_total_viewers(channel_id):
         return 0
 
 
+class ChannelGroupManager(models.Manager):
+    def mark_custom(self, group):
+        custom_account = M3UAccount.get_custom_account()
+        return ChannelGroupM3UAccount.objects.get_or_create(
+            channel_group=group,
+            m3u_account=custom_account,
+        )
+
+    def get_or_create_manual(self, defaults=None, **kwargs):
+        group, created = super().get_or_create(defaults=defaults, **kwargs)
+        self.mark_custom(group)
+        return group, created
+
+    def create_manual(self, **kwargs):
+        return self.get_or_create_manual(**kwargs)[0]
+
+    def bulk_create_provider_groups(self, names):
+        names = list(names)
+        self.bulk_create(
+            [
+                self.model(name=name)
+                for name in names
+            ]
+        )
+        return self.filter(name__in=names)
+
+
 class ChannelGroup(models.Model):
     name = models.TextField(unique=True, db_index=True)
+
+    objects = ChannelGroupManager()
+
+    def provider_m3u_accounts(self):
+        return self.m3u_accounts.exclude(m3u_account__locked=True)
+
+    @property
+    def provider_m3u_account_relations(self):
+        return getattr(
+            self,
+            "_provider_m3u_account_relations",
+            self.provider_m3u_accounts(),
+        )
 
     def related_channels(self):
         # local import if needed to avoid cyc. Usually fine in a single file though
@@ -49,17 +89,6 @@ class ChannelGroup(models.Model):
 
     def __str__(self):
         return self.name
-
-    @classmethod
-    def bulk_create_and_fetch(cls, objects):
-        # Perform the bulk create operation
-        cls.objects.bulk_create(objects)
-
-        # Use a unique field to fetch the created objects (assuming 'name' is unique)
-        created_objects = cls.objects.filter(name__in=[obj.name for obj in objects])
-
-        return created_objects
-
 
 class Stream(models.Model):
     """

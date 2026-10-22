@@ -20,6 +20,7 @@ from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
 from apps.epg.models import EPGData
 from django.db import connection, transaction
+from django.db.models.functions import Coalesce
 from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
@@ -291,25 +292,50 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 #
 class ChannelGroupSerializer(serializers.ModelSerializer):
     channel_count = serializers.SerializerMethodField()
+    is_custom = serializers.SerializerMethodField()
     m3u_account_count = serializers.SerializerMethodField()
     m3u_accounts = ChannelGroupM3UAccountSerializer(
         many=True,
-        read_only=True
+        read_only=True,
+        source="provider_m3u_account_relations",
     )
 
     class Meta:
         model = ChannelGroup
-        fields = ["id", "name", "channel_count", "m3u_account_count", "m3u_accounts"]
+        fields = [
+            "id",
+            "name",
+            "channel_count",
+            "is_custom",
+            "m3u_account_count",
+            "m3u_accounts",
+        ]
+
+    def create(self, validated_data):
+        return ChannelGroup.objects.create_manual(**validated_data)
 
     def get_channel_count(self, obj):
         # Use the queryset annotation when available (list path); fall back
-        # to a live query for retrieve/create/update where it isn't set.
+        # to an override-aware live query for retrieve/create/update.
         v = getattr(obj, 'channel_count', None)
-        return v if v is not None else obj.channels.count()
+        if v is not None:
+            return v
+        return Channel.objects.annotate(
+            effective_group_id=Coalesce(
+                'override__channel_group_id',
+                'channel_group_id',
+            )
+        ).filter(effective_group_id=obj.id).count()
+
+    def get_is_custom(self, obj):
+        v = getattr(obj, "is_custom", None)
+        return v if v is not None else obj.m3u_accounts.filter(
+            m3u_account__locked=True
+        ).exists()
 
     def get_m3u_account_count(self, obj):
         v = getattr(obj, 'm3u_account_count', None)
-        return v if v is not None else obj.m3u_accounts.count()
+        return v if v is not None else obj.provider_m3u_accounts().count()
 
 
 class ChannelProfileSerializer(serializers.ModelSerializer):
@@ -645,7 +671,9 @@ class ChannelSerializer(serializers.ModelSerializer):
         # Auto-assign Default Group if no channel_group is specified
         if "channel_group" not in validated_data or validated_data.get("channel_group") is None:
             from apps.channels.models import ChannelGroup
-            default_group, _ = ChannelGroup.objects.get_or_create(name="Default Group")
+            default_group, _ = ChannelGroup.objects.get_or_create_manual(
+                name="Default Group"
+            )
             validated_data["channel_group"] = default_group
 
         # Atomic wrapper keeps the channel insert and its override row

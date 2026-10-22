@@ -35,6 +35,14 @@ const errorNotification = (message, error) => {
   throw error;
 };
 
+const hasChannelGroupChange = (update) =>
+  Object.prototype.hasOwnProperty.call(update, 'channel_group_id') ||
+  update.override === null ||
+  Object.prototype.hasOwnProperty.call(
+    update.override ?? {},
+    'channel_group_id'
+  );
+
 // FormData cannot encode null. Empty string clears hash_key so the account
 // inherits the global M3U Hash Key (same as JSON body sending null).
 const appendPlaylistFormData = (body, values) => {
@@ -187,7 +195,7 @@ export default class API {
         }
       );
 
-      return response;
+      return response ?? true;
     } catch (e) {
       // Setup IP policy blocks are explained inline on SuperuserForm.
       if (e?.status === 403 && e?.body?.setup_allowed === false) {
@@ -205,7 +213,7 @@ export default class API {
         body: { username, password },
       });
 
-      return response;
+      return response ?? true;
     } catch (e) {
       errorNotification('Login failed', e);
     }
@@ -578,7 +586,9 @@ export default class API {
 
   static async getChannelGroups() {
     try {
-      const response = await request(`${host}/api/channels/groups/`);
+      const response = await request(`${host}/api/channels/groups/`, {
+        cache: 'no-store',
+      });
 
       return response;
     } catch (e) {
@@ -622,35 +632,68 @@ export default class API {
       });
 
       if (response.id) {
-        useChannelsStore.getState().updateChannelGroup(response);
+        const { demoted_group: demotedGroup, ...updatedGroup } = response;
+        const processGroup = (group) => ({
+          ...group,
+          hasChannels: group.channel_count > 0,
+          hasM3UAccounts: group.m3u_account_count > 0,
+          canEdit: group.m3u_account_count === 0 || group.is_custom,
+          canDelete:
+            group.channel_count === 0 && group.m3u_account_count === 0,
+        });
+        if (demotedGroup) {
+          useChannelsStore
+            .getState()
+            .updateChannelGroup(processGroup(demotedGroup));
+        }
+        useChannelsStore.getState().updateChannelGroup(processGroup(updatedGroup));
+        if (!demotedGroup) {
+          await useChannelsStore.getState().fetchChannelGroups();
+        }
       }
 
       return response;
     } catch (e) {
       errorNotification('Failed to update channel group', e);
+      throw e;
     }
   }
 
   static async deleteChannelGroup(id) {
     try {
-      await request(`${host}/api/channels/groups/${id}/`, {
+      const response = await request(`${host}/api/channels/groups/${id}/`, {
         method: 'DELETE',
       });
 
-      // Remove from store after successful deletion
+      // DELETE returns 204 with no response body, so remove it directly.
       useChannelsStore.getState().removeChannelGroup(id);
 
-      return true;
+      return response ?? true;
     } catch (e) {
       errorNotification('Failed to delete channel group', e);
       throw e;
     }
   }
 
-  static async cleanupUnusedChannelGroups() {
+  static async unclaimChannelGroup(id) {
+    try {
+      const response = await request(
+        `${host}/api/channels/groups/${id}/unclaim-custom/`,
+        { method: 'POST' }
+      );
+      await useChannelsStore.getState().fetchChannelGroups();
+      return response;
+    } catch (e) {
+      errorNotification('Failed to unclaim channel group', e);
+      throw e;
+    }
+  }
+
+  static async cleanupUnusedChannelGroups(includeCustom = false) {
     try {
       const response = await request(`${host}/api/channels/groups/cleanup/`, {
         method: 'POST',
+        body: { include_custom: includeCustom },
       });
 
       // Refresh channel groups to update the UI
@@ -660,6 +703,23 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to cleanup unused channel groups', e);
       throw e;
+    }
+  }
+
+  static async claimChannelGroupAsCustom(id) {
+    try {
+      const response = await request(
+        `${host}/api/channels/groups/${id}/claim-custom/`,
+        {
+          method: 'POST',
+        }
+      );
+      if (response.id) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
+      return response;
+    } catch (e) {
+      errorNotification('Failed to claim channel group as custom', e);
     }
   }
 
@@ -801,6 +861,9 @@ export default class API {
       );
 
       useChannelsStore.getState().updateChannel(response);
+      if (hasChannelGroupChange(payload)) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
       if (Object.prototype.hasOwnProperty.call(payload, 'streams')) {
         await API.requeryStreams();
       }
@@ -909,6 +972,10 @@ export default class API {
         });
       }
 
+      if (hasChannelGroupChange(values)) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
+
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
@@ -925,6 +992,10 @@ export default class API {
           body: updates,
         }
       );
+
+      if (updates.some(hasChannelGroupChange)) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
 
       return response;
     } catch (e) {
