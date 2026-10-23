@@ -8,6 +8,7 @@ Covers:
   - _stop_dvr_clients() DVR client isolation
   - destroy() stops only the deleted recording's DVR client
   - run_recording stops FFmpeg when destroy() removes the HLS dir mid-recording
+  - missing HLS dir with the row still present does not emit recording_ended twice
 """
 import os
 import shutil
@@ -500,7 +501,7 @@ class RunRecordingDeletedMidRecordingTests(TestCase):
         hls_dir = os.path.join(self.tmp, f".dvr_{self.rec.id}_hls")
         return os.path.join(self.tmp, "show.mkv"), hls_dir, "show.mkv"
 
-    def test_hls_dir_removed_mid_recording_stops_ffmpeg(self):
+    def _run_deleted_mid_recording(self, *, confirm_stream_first):
         from apps.channels.tasks import run_recording as run_rec
 
         procs = []
@@ -510,16 +511,27 @@ class RunRecordingDeletedMidRecordingTests(TestCase):
             return procs[-1]
 
         deleted = []
+        seeded = []
 
         def sleep(_seconds):
-            # The first poll-loop sleep: do what destroy() does
-            if procs and not deleted:
-                hls_dir = Recording.objects.get(id=self.rec.id).custom_properties["_hls_dir"]
-                Recording.objects.filter(id=self.rec.id).delete()
-                shutil.rmtree(hls_dir)
-                deleted.append(hls_dir)
+            # Poll-loop sleeps. Optionally drop a segment first so the stream is
+            # confirmed, then do what destroy() does: delete the row and remove
+            # the HLS directory.
+            if not procs or deleted:
+                return
+            hls_dir = Recording.objects.get(id=self.rec.id).custom_properties["_hls_dir"]
+            if confirm_stream_first and not seeded:
+                os.makedirs(hls_dir, exist_ok=True)
+                with open(os.path.join(hls_dir, "seg_00000.ts"), "wb") as fh:
+                    fh.write(b"\x47" * 188)
+                seeded.append(hls_dir)
+                return
+            Recording.objects.filter(id=self.rec.id).delete()
+            shutil.rmtree(hls_dir)
+            deleted.append(hls_dir)
 
-        with patch("apps.channels.tasks.get_channel_layer", return_value=_async_channel_layer_mock()), \
+        layer = _async_channel_layer_mock()
+        with patch("apps.channels.tasks.get_channel_layer", return_value=layer), \
              patch("apps.channels.tasks._build_output_paths", side_effect=self._output_paths), \
              patch("apps.channels.tasks._resolve_poster_for_program", return_value=(None, None)), \
              patch("apps.channels.tasks.get_dvr_stream_base_url", return_value="http://127.0.0.1:5656"), \
@@ -533,6 +545,9 @@ class RunRecordingDeletedMidRecordingTests(TestCase):
                 self.rec.id, self.channel.id, str(self.rec.start_time), str(self.rec.end_time),
             )
 
+        return procs, deleted, seeded, logs, layer
+
+    def _assert_clean_cancel(self, procs, deleted, logs, layer, *, expect_stream_confirmed):
         self.assertTrue(deleted, "the recording was never deleted mid-recording")
         self.assertEqual(len(procs), 1, "FFmpeg was restarted after the delete")
         self.assertEqual(procs[0].signals[:1], [signal.SIGINT])
@@ -540,3 +555,96 @@ class RunRecordingDeletedMidRecordingTests(TestCase):
         joined = "\n".join(logs.output)
         self.assertIn("HLS directory removed", joined)
         self.assertIn("was cancelled", joined)
+        self.assertNotIn("Finished recording", joined)
+        if expect_stream_confirmed:
+            self.assertIn("stream confirmed", joined)
+        else:
+            self.assertNotIn("stream confirmed", joined)
+        sent_types = [
+            call.args[1].get("data", {}).get("type")
+            for call in layer.group_send.call_args_list
+        ]
+        self.assertIn("recording_started", sent_types)
+        self.assertNotIn("recording_ended", sent_types)
+
+    def test_hls_dir_removed_after_stream_confirmed_stops_ffmpeg(self):
+        procs, deleted, seeded, logs, layer = self._run_deleted_mid_recording(
+            confirm_stream_first=True,
+        )
+        self.assertTrue(seeded, "the stream was never confirmed before the delete")
+        self._assert_clean_cancel(
+            procs, deleted, logs, layer, expect_stream_confirmed=True,
+        )
+
+    def test_hls_dir_removed_before_stream_confirmed_stops_ffmpeg(self):
+        procs, deleted, seeded, logs, layer = self._run_deleted_mid_recording(
+            confirm_stream_first=False,
+        )
+        self.assertFalse(seeded)
+        self._assert_clean_cancel(
+            procs, deleted, logs, layer, expect_stream_confirmed=False,
+        )
+
+    def test_hls_dir_removed_row_still_present_marks_interrupted(self):
+        """If the HLS dir vanishes without destroy(), stop FFmpeg and do not
+        take the zero-byte path that would emit an early recording_ended."""
+        from apps.channels.tasks import run_recording as run_rec
+
+        procs = []
+
+        def popen(*args, **kwargs):
+            procs.append(_FakeFfmpeg())
+            return procs[-1]
+
+        seeded = []
+        removed = []
+
+        def sleep(_seconds):
+            if not procs or removed:
+                return
+            hls_dir = Recording.objects.get(id=self.rec.id).custom_properties["_hls_dir"]
+            if not seeded:
+                os.makedirs(hls_dir, exist_ok=True)
+                with open(os.path.join(hls_dir, "seg_00000.ts"), "wb") as fh:
+                    fh.write(b"\x47" * 188)
+                seeded.append(hls_dir)
+                return
+            shutil.rmtree(hls_dir)
+            removed.append(hls_dir)
+
+        layer = _async_channel_layer_mock()
+        with patch("apps.channels.tasks.get_channel_layer", return_value=layer), \
+             patch("apps.channels.tasks._build_output_paths", side_effect=self._output_paths), \
+             patch("apps.channels.tasks._resolve_poster_for_program", return_value=(None, None)), \
+             patch("apps.channels.tasks.get_dvr_stream_base_url", return_value="http://127.0.0.1:5656"), \
+             patch("apps.channels.tasks.subprocess.Popen", side_effect=popen), \
+             patch("apps.channels.tasks.time.sleep", side_effect=sleep), \
+             patch("core.utils.RedisClient.get_client", return_value=None), \
+             patch("core.utils.log_system_event"), \
+             patch("core.utils.send_websocket_update"), \
+             self.assertLogs("apps.channels.tasks", level="INFO") as logs:
+            run_rec(
+                self.rec.id, self.channel.id, str(self.rec.start_time), str(self.rec.end_time),
+            )
+
+        self.assertTrue(seeded)
+        self.assertTrue(removed)
+        self.assertEqual(len(procs), 1)
+        self.assertEqual(procs[0].signals[:1], [signal.SIGINT])
+        joined = "\n".join(logs.output)
+        self.assertIn("HLS directory removed", joined)
+        self.assertIn("stream confirmed", joined)
+        self.assertNotIn("Finished recording", joined)
+        self.assertNotIn("was cancelled", joined)
+        rec = Recording.objects.get(id=self.rec.id)
+        self.assertEqual((rec.custom_properties or {}).get("status"), "interrupted")
+        self.assertEqual(
+            (rec.custom_properties or {}).get("interrupted_reason"),
+            "hls_directory_removed",
+        )
+        sent_types = [
+            call.args[1].get("data", {}).get("type")
+            for call in layer.group_send.call_args_list
+        ]
+        # Finalize still notifies once; the zero-byte path must not have fired first.
+        self.assertEqual(sent_types.count("recording_ended"), 1)
