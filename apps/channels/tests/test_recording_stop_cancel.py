@@ -223,6 +223,16 @@ class DestroyStopsOnlyOwnDvrClientTests(TestCase):
         })
         self.assertEqual(stopped, {"dvr-own"})
 
+    def test_deleting_stopped_recording_stops_only_its_client(self):
+        """Delete after stop() must still disconnect if stop's teardown lagged."""
+        rec = self._make_rec("stopped")
+        stopped = self._delete(rec, {
+            "dvr-own": f"Dispatcharr-DVR/recording-{rec.id}",
+            "dvr-other": f"Dispatcharr-DVR/recording-{self.other.id}",
+            "viewer": "VLC/3.0.20 LibVLC/3.0.20",
+        })
+        self.assertEqual(stopped, {"dvr-own"})
+
     def test_deleting_completed_recording_stops_no_client(self):
         rec = self._make_rec("completed")
         stopped = self._delete(rec, {

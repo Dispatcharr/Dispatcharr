@@ -4283,10 +4283,11 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 logger.debug(f"Unable to prune empty parents for {path}: {ex}")
 
         def _background_cancel():
-            # Only stop the DVR client when this recording was actively streaming.
-            # Completed/upcoming deletes have no client of their own to tear down;
-            # _stop_dvr_clients already exact-matches by recording id.
-            if rec_status == "recording":
+            # Stop this recording's DVR client when it was streaming or was just
+            # stopped (stop() writes "stopped" before its background teardown
+            # finishes). Completed/upcoming deletes have no client to tear down;
+            # _stop_dvr_clients exact-matches by recording id either way.
+            if rec_status in ("recording", "stopped"):
                 try:
                     stopped = _stop_dvr_clients(channel_uuid, recording_id=recording_id)
                     if stopped:
