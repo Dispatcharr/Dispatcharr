@@ -24,6 +24,11 @@ vi.mock('../../../../hooks/useTablePreferences.jsx', () => ({
 vi.mock('../../../../utils/dateTimeUtils.js', () => ({
   buildTimeZoneOptions: vi.fn(),
   getDefaultTimeZone: vi.fn(),
+  DATE_FORMAT_OPTIONS: [
+    { value: 'mdy', label: 'MM/DD/YYYY' },
+    { value: 'dmy', label: 'DD/MM/YYYY' },
+    { value: 'ymd', label: 'YYYY-MM-DD' },
+  ],
 }));
 
 vi.mock('../../../../utils/notificationUtils.js', () => ({
@@ -216,6 +221,26 @@ describe('UiSettingsForm', () => {
       expect(screen.getByTestId('select-date-format')).toHaveValue('dmy');
     });
 
+    it('offers month-first, day-first and ISO 8601 date formats', () => {
+      setupMocks();
+      render(<UiSettingsForm />);
+      const options = Array.from(
+        screen.getByTestId('select-date-format').querySelectorAll('option')
+      );
+      expect(options.map((o) => o.value)).toEqual(['mdy', 'dmy', 'ymd']);
+      expect(options.map((o) => o.textContent)).toEqual([
+        'MM/DD/YYYY',
+        'DD/MM/YYYY',
+        'YYYY-MM-DD',
+      ]);
+    });
+
+    it('renders Date format select with ISO 8601 value', () => {
+      setupMocks({ dateFormat: 'ymd' });
+      render(<UiSettingsForm />);
+      expect(screen.getByTestId('select-date-format')).toHaveValue('ymd');
+    });
+
     it('renders Time zone select with initial value', () => {
       setupMocks({ timeZone: 'UTC' });
       render(<UiSettingsForm />);
@@ -281,6 +306,15 @@ describe('UiSettingsForm', () => {
         target: { value: 'dmy' },
       });
       expect(setDateFormat).toHaveBeenCalledWith('dmy');
+    });
+
+    it('calls setDateFormat with ymd when ISO 8601 is selected', () => {
+      const { setDateFormat } = setupMocks();
+      render(<UiSettingsForm />);
+      fireEvent.change(screen.getByTestId('select-date-format'), {
+        target: { value: 'ymd' },
+      });
+      expect(setDateFormat).toHaveBeenCalledWith('ymd');
     });
 
     it('does not call setDateFormat when value is empty', () => {
