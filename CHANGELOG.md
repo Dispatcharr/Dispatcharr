@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **XC guides now follow the EPG default days back.** The XC single-channel guide (`get_simple_data_table`) used to treat a Days back of 0 as unset and always listed a catch-up channel's past programmes back its catch-up days (up to 30), and XC XMLTV looked back to the provider's archive depth for users with no Days back stored. Both now use the same window as standard XMLTV: the URL `prev_days`, then the user's Days back (0 means none), then Settings → EPG → Default days back (0 by default). Catch-up tags and `has_archive` are unchanged. To keep past programmes on XC catch-up clients after upgrading, set Default days back (for example 7) and clear Days back on users who should follow it. Users with Days back saved as 0, which includes most users created in the UI, stay on no past programmes until that field is cleared. New users start with the field empty and follow the default.
 - **M3U Group Filter cards update without rebuilding the whole grid.** Live group and VOD category rows keep unchanged state and are memoized, so toggling enable or editing language, quality, or auto-sync on one card no longer re-renders every other card on the tab.
 - **Live proxy stream switches mark a discontinuity in the shared buffer.** On a URL or stream switch, the last complete packets from the old source are flushed to Redis, then the first packet of each PID from the new source gets `discontinuity_indicator` set (the same bit FFmpeg writes with `initial_discontinuity`). MPEG-TS clients receive that bit in the live stream. HLS uses the same mark to cut before the new source and emit `#EXT-X-DISCONTINUITY`.
+- Dependency updates:
+  - `Django` 6.0.8 → 6.0.9 (security patch; see Security section). Still not upgrading to 6.1.x: `django-celery-beat` 2.9.0 still requires `Django<6.1`.
+  - `djangorestframework` 3.18.1 → 3.18.3 (security patch; see Security section)
+  - `gevent` 26.8.0 → 26.9.0
+  - `torch` 2.14.0+cpu → 2.14.1+cpu
+  - `sentence-transformers` 6.0.1 → 6.2.0
+  - Frontend pins: `@swc/core` / `@swc/wasm` 1.13.20 → 1.16.20; `react` / `react-dom` resolutions 19.1.0 → 19.3.1
 
 ### Fixed
 
@@ -71,10 +78,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `channel_profile_id` on the channel list and EPG grid is honored only for a profile the user is assigned to, and `show_disabled` no longer lists channels beyond the user's profiles.
   - A DVR manager (a Standard user with `dvr_access=manage`) can no longer list, play, stop, delete, or schedule recordings, or create recurring rules, on channels they cannot access. Create and update reject inaccessible channel ids, and bulk delete of upcoming recordings only removes recordings they can see. Previously managers could do all of this on any channel id, including admin-only and adult channels.
   - `GET /api/epg/programs/search/` now also respects assigned channel profiles, and each result only lists channels the user can access.
-- Updated frontend npm dependencies to resolve 3 audit vulnerabilities (1 moderate, 2 high):
+- Updated frontend npm dependencies to resolve audit vulnerabilities (3 moderate, 3 high):
   - Updated `brace-expansion` 5.0.9 → 5.0.12, resolving **high** DoS via uncontrolled recursion on nested brace groups ([GHSA-qhr7-859c-m2p7](https://github.com/advisories/GHSA-qhr7-859c-m2p7)) and in `parseCommaParts` ([GHSA-6j4f-fj2g-mc7p](https://github.com/advisories/GHSA-6j4f-fj2g-mc7p)), plus **moderate** quadratic-time expansion of the `{a},b}` rewrite ([GHSA-q2hr-2g5m-vwhr](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr))
   - Updated `js-yaml` 5.2.2 → 5.5.0, resolving **moderate** unbounded CPU for empty merge sources despite `maxTotalMergeKeys` ([GHSA-r3ph-w7gj-g6xm](https://github.com/advisories/GHSA-r3ph-w7gj-g6xm))
   - Updated `source-map-js` 1.2.1 → 1.2.2, resolving **high** event-loop denial of service via indexed source-map section offsets ([GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q))
+  - Updated `vite` 7.3.5 → 7.3.7, resolving **high** `launch-editor` command injection / existence-check bypass on Windows ([GHSA-587h-7wmj-h5pm](https://github.com/advisories/GHSA-587h-7wmj-h5pm), [GHSA-698v-4r3x-3vcv](https://github.com/advisories/GHSA-698v-4r3x-3vcv), [GHSA-r825-w8mm-5pxw](https://github.com/advisories/GHSA-r825-w8mm-5pxw)), plus cross-origin middleware script execution ([GHSA-9jrq-w75r-8gcw](https://github.com/advisories/GHSA-9jrq-w75r-8gcw)) and serving files outside `server.fs.allow` when project paths match system paths ([GHSA-rq7h-c2jc-7f22](https://github.com/advisories/GHSA-rq7h-c2jc-7f22))
+  - Updated `vitest` 4.1.11 → 4.1.12 (`@vitest/mocker`), resolving **moderate** unauthenticated manual mock registration code injection ([GHSA-qxg6-89mg-rqv8](https://github.com/advisories/GHSA-qxg6-89mg-rqv8)) and Windows backslash traversal past the redirect allowlist ([GHSA-xp26-3454-mjgp](https://github.com/advisories/GHSA-xp26-3454-mjgp))
+- Updated `Django` 6.0.8 → 6.0.9, resolving the following CVEs:
+  - **CVE-2026-77050**: Potential denial-of-service in `get_supported_language_variant()` (low).
+  - **CVE-2026-84429**: Potential denial-of-service in HTTP header parsing (moderate).
+  - **CVE-2026-87890**: Potential request forgery via spatial lookup byte values (moderate).
+  - **CVE-2026-87975**: Privilege abuse in model formsets with editable primary keys (moderate).
+  - Follow-up hardening for **CVE-2026-15830** (nested geometry collections).
+- Updated `djangorestframework` 3.18.1 → 3.18.3 (includes 3.18.2 security fixes):
+  - **GHSA-33wh-fxxf-88vv**: Accept header with many large quoted parameters burns ~19s of CPU per request in content negotiation ([CVE-2026-114138](https://www.cve.org/CVERecord?id=CVE-2026-114138)).
+  - **GHSA-3547-9m27-7rxg**: `JSONParser` applies an attacker-named codec to the request stream ([CVE-2026-114136](https://www.cve.org/CVERecord?id=CVE-2026-114136)).
+  - **GHSA-xw6w-gcfp-cf8m**: `TokenProxy.delete()` reports success and revokes nothing ([CVE-2026-114137](https://www.cve.org/CVERecord?id=CVE-2026-114137)).
 
 ## [0.32.0] - 2026-10-07
 
