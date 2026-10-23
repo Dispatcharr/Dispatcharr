@@ -157,6 +157,42 @@ class GroupCleanupTests(TestCase):
         self.assertTrue(self.has_custom_relation(manual_group))
         self.assertFalse(self.has_custom_relation(provider_group))
 
+    def test_migration_recreates_missing_custom_account(self):
+        migration = import_module(
+            "apps.channels.migrations.0040_channelgroup_custom_relation"
+        )
+        M3UAccount.objects.filter(id=self.custom_account.id).delete()
+
+        recreated = migration.ensure_custom_account(django_apps)
+
+        self.assertTrue(recreated.locked)
+        self.assertEqual(recreated.name, "custom")
+        self.assertNotEqual(recreated.id, self.custom_account.id)
+
+    def test_migration_renames_user_account_occupying_custom_name(self):
+        migration = import_module(
+            "apps.channels.migrations.0040_channelgroup_custom_relation"
+        )
+        M3UAccount.objects.filter(id=self.custom_account.id).delete()
+        user_account = M3UAccount.objects.create(
+            name="custom",
+            server_url="http://example.com/user-custom.m3u",
+            locked=False,
+        )
+        M3UAccount.objects.create(
+            name="custom (user)",
+            server_url="http://example.com/taken.m3u",
+        )
+
+        recreated = migration.ensure_custom_account(django_apps)
+
+        user_account.refresh_from_db()
+        self.assertEqual(user_account.name, "custom (user) 2")
+        self.assertFalse(user_account.locked)
+        self.assertEqual(recreated.name, "custom")
+        self.assertTrue(recreated.locked)
+        self.assertNotEqual(recreated.id, user_account.id)
+
     def test_claim_custom_action_marks_provider_group(self):
         user = get_user_model().objects.create_superuser(
             username="claim-admin",
