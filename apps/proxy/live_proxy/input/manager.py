@@ -727,10 +727,12 @@ class StreamManager:
             # Close all connections
             self._close_all_connections()
 
-            # Transition to ERROR so clients stop waiting. Ownership may have
+            # Deliberate stops already coordinate cleanup through stop_channel;
+            # do not recreate its stopping key or mark a clean shutdown as failed.
+            # On failure, transition to ERROR so clients stop waiting. Ownership may have
             # expired during retries, so fall back to a state guard when no
             # owner exists — but never clobber a new owner's active stream.
-            if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+            if not self.stop_requested and getattr(self.buffer, 'redis_client', None):
                 try:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
                     owner_key = RedisKeys.channel_owner(self.channel_id)
