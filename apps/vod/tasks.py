@@ -1242,6 +1242,10 @@ def extract_duration_from_data(movie_data):
     return duration_secs
 
 
+# PostgreSQL integer / Django IntegerField upper bound.
+POSTGRES_INTEGER_MAX = 2147483647
+
+
 def normalize_duration_secs(value):
     """Return non-negative integer seconds that fit a PostgreSQL IntegerField."""
     if isinstance(value, bool):
@@ -1253,7 +1257,7 @@ def normalize_duration_secs(value):
     if isinstance(value, float) and value != seconds:
         return None
     # Bad provider metadata must not abort a whole bulk insert/update.
-    return seconds if 0 <= seconds <= 2147483647 else None
+    return seconds if 0 <= seconds <= POSTGRES_INTEGER_MAX else None
 
 
 def normalize_rating(rating_value):
@@ -1593,7 +1597,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 if air_date != episode.air_date:
                     episode.air_date = air_date
                     updated = True
-                if duration_secs != episode.duration_secs:
+                # Keep an existing duration when the provider sends missing or
+                # invalid data; only apply a successfully normalized value.
+                if duration_secs is not None and duration_secs != episode.duration_secs:
                     episode.duration_secs = duration_secs
                     updated = True
                 if tmdb_id != episode.tmdb_id:

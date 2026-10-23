@@ -8,7 +8,7 @@ from rest_framework.test import APIClient
 
 from apps.m3u.models import M3UAccount
 from apps.vod.models import Episode, M3UEpisodeRelation, M3USeriesRelation, Series
-from apps.vod.tasks import batch_process_episodes
+from apps.vod.tasks import POSTGRES_INTEGER_MAX, batch_process_episodes
 
 
 def episode_data(number, duration):
@@ -52,7 +52,7 @@ class EpisodeDurationTests(TestCase):
 
     def test_invalid_durations_do_not_abort_bulk_create(self):
         durations = [
-            2605442460, '2605442460', 2147483648, -2147483649,
+            2605442460, '2605442460', POSTGRES_INTEGER_MAX + 1, -(POSTGRES_INTEGER_MAX + 2),
             -1, '', 'unknown', '1.5', 1.5, None, True, [], {},
         ]
         self.process([
@@ -76,14 +76,15 @@ class EpisodeDurationTests(TestCase):
             episode_data(3, 1200),
         ])
 
-        self.assertEqual(self.durations(), [None, 3600, 1200])
+        # Invalid duration on episode 1 must not wipe the previous good value.
+        self.assertEqual(self.durations(), [1800, 3600, 1200])
         self.assertEqual(Episode.objects.filter(id__in=original_ids).count(), 2)
         self.assertEqual(
             M3UEpisodeRelation.objects.filter(series_relation=self.relation).count(), 3,
         )
 
     def test_valid_integer_durations_and_database_boundary_are_preserved(self):
-        durations = [0, '0', 1800, 1800.0, '3600', 2147483647, '2147483647']
+        durations = [0, '0', 1800, 1800.0, '3600', POSTGRES_INTEGER_MAX, str(POSTGRES_INTEGER_MAX)]
         self.process([
             episode_data(number, duration)
             for number, duration in enumerate(durations, start=1)
