@@ -61,6 +61,15 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return permissions_for_action(self)
 
+    def _reject_if_locked(self, instance):
+        """Locked accounts (system ``custom``) cannot be changed or deleted."""
+        if instance.locked:
+            return Response(
+                {"error": "Cannot modify or delete a locked M3U account"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
 
@@ -155,6 +164,9 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        locked_response = self._reject_if_locked(instance)
+        if locked_response is not None:
+            return locked_response
         old_vod_enabled = False
         old_hash_fields = hash_key_fields(
             (instance.custom_properties or {}).get("hash_key")
@@ -322,6 +334,9 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         """Handle partial updates with special logic for is_active field"""
         instance = self.get_object()
+        locked_response = self._reject_if_locked(instance)
+        if locked_response is not None:
+            return locked_response
 
         # Check if we're toggling is_active
         if (
@@ -349,8 +364,14 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         survive with their other streams. The legacy
         ``?cleanup_channels`` query parameter is accepted for backward
         compatibility but ignored.
+
+        Locked accounts (the system ``custom`` account) cannot be
+        modified or deleted.
         """
         instance = self.get_object()
+        locked_response = self._reject_if_locked(instance)
+        if locked_response is not None:
+            return locked_response
         from apps.channels.models import Channel
         from apps.proxy.live_proxy.services.channel_service import (
             ChannelService,

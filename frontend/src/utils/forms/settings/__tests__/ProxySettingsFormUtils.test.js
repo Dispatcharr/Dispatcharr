@@ -63,6 +63,8 @@ describe('ProxySettingsFormUtils', () => {
         channel_init_grace_period: 60,
         channel_client_wait_period: 5,
         new_client_behind_seconds: 5,
+        stream_startup_timeout: 8,
+        connection_timeout: 10,
         validate_redirect_urls: true,
       });
     });
@@ -85,6 +87,8 @@ describe('ProxySettingsFormUtils', () => {
       expect(typeof result.channel_init_grace_period).toBe('number');
       expect(typeof result.channel_client_wait_period).toBe('number');
       expect(typeof result.new_client_behind_seconds).toBe('number');
+      expect(typeof result.stream_startup_timeout).toBe('number');
+      expect(typeof result.connection_timeout).toBe('number');
       expect(typeof result.validate_redirect_urls).toBe('boolean');
     });
   });

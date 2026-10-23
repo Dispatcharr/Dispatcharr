@@ -706,9 +706,8 @@ def stream_ts(
                         connection_allocated = True
 
                     # generate_stream_url already resolved the stream. Scoped previews
-                    # carry the M3U profile in the worker id; otherwise read it from
-                    # the assignment (channel_stream is keyed by channel pk, and a
-                    # bare Stream has no channel assignment to look up).
+                    # carry the M3U profile in the worker id; channels read the bare
+                    # assignment keys; default stream previews use :preview.
                     stream_id = resolved_stream_id
                     _stream_key, m3u_profile_id = parse_preview_worker_id(channel_id)
                     if m3u_profile_id is None and proxy_server.redis_client:
@@ -718,9 +717,15 @@ def stream_ts(
                             )
                             if stream_id_bytes:
                                 stream_id = int(stream_id_bytes)
-                        profile_id_bytes = proxy_server.redis_client.get(
-                            f"stream_profile:{stream_id}"
-                        )
+                            profile_id_bytes = proxy_server.redis_client.get(
+                                f"stream_profile:{stream_id}"
+                            )
+                        elif isinstance(channel, Stream) and stream_id is not None:
+                            profile_id_bytes = proxy_server.redis_client.get(
+                                Stream.preview_profile_key(stream_id)
+                            )
+                        else:
+                            profile_id_bytes = None
                         if profile_id_bytes:
                             m3u_profile_id = int(profile_id_bytes)
                     logger.info(

@@ -845,6 +845,8 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "stream_startup_timeout": 8,
+            "connection_timeout": 10,
             "validate_redirect_urls": True,
         })
 

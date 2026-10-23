@@ -241,14 +241,16 @@ export const handleEpgUpdate = async (
 ) => {
   // Auto-synced channels route identity edits into the override row. Sync
   // keeps writing provider values to Channel.* unmodified, so the override
-  // is what actually persists user changes across refreshes. `hidden_from_output`
-  // stays as a direct Channel field even for auto-created channels because
-  // it is a status flag, not a value replacement.
+  // is what actually persists user changes across refreshes. Status and
+  // permission flags stay on the channel row: hidden_from_output, user_level,
+  // and is_adult.
   if (channel.auto_created) {
     const overridePayload = buildOverridePayload(channel, formattedValues);
     const payload = {
       id: channel.id,
       hidden_from_output: formattedValues.hidden_from_output,
+      user_level: formattedValues.user_level,
+      is_adult: formattedValues.is_adult,
     };
     if (overridePayload !== undefined) {
       payload.override = overridePayload;

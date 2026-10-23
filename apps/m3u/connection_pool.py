@@ -261,7 +261,7 @@ def _remember_credential_release_key(
 
 def _release_credential_slot_by_profile_id(
     profile_id: int, redis_client, *, release_profile: bool = False
-) -> None:
+) -> bool:
     """
     Release one credential slot for the profile, and its profile slot if requested.
 
@@ -269,6 +269,9 @@ def _release_credential_slot_by_profile_id(
     every stream sharing the profile can still find it. Concurrent counter changes
     are retried; after RELEASE_MAX_ATTEMPTS conflicts the release is abandoned with
     a warning instead of blocking stream teardown.
+
+    Returns True when the pipeline committed (including a no-op when counters
+    were already zero). Returns False when every attempt hit WatchError.
     """
     release_key = profile_credential_release_key(profile_id)
     profile_key = profile_connections_key(profile_id)
@@ -294,7 +297,7 @@ def _release_credential_slot_by_profile_id(
                 if release_profile and profile_count > 0:
                     pipe.decr(profile_key)
                 pipe.execute()
-                return
+                return True
             except WatchError:
                 continue
 
@@ -304,6 +307,7 @@ def _release_credential_slot_by_profile_id(
         profile_id,
         RELEASE_MAX_ATTEMPTS,
     )
+    return False
 
 
 def _reserve_server_group_slot_for_profile(
@@ -361,8 +365,12 @@ def reserve_profile_slot(
     return True, profile_count, None
 
 
-def release_profile_slot(profile_id: int, redis_client) -> None:
-    """Release profile and shared credential slots after a stream end."""
-    _release_credential_slot_by_profile_id(
+def release_profile_slot(profile_id: int, redis_client) -> bool:
+    """Release profile and shared credential slots after a stream end.
+
+    Returns True when the Redis update committed, False when concurrent
+    updates exhausted the retry budget and the release was abandoned.
+    """
+    return _release_credential_slot_by_profile_id(
         profile_id, redis_client, release_profile=True
     )

@@ -2271,12 +2271,20 @@ class ProxyServer:
 
                     # Get owner
                     owner = metadata.get('owner', '') if 'owner' in metadata else ''
+                    if not owner:
+                        # Initial metadata ({stream_id, temp_init}) is written before
+                        # its owner field, so a channel mid-initialization has no owner
+                        # here. The ownership lock is taken first and is authoritative.
+                        owner = self.get_channel_owner(channel_id) or ''
 
-                    # Check if owner is still alive
+                    # Check if owner is still alive (a worker never treats its own
+                    # in-flight channel as stale, as in check_if_channel_exists)
                     owner_alive = False
                     if owner:
-                        owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
-                        owner_alive = self.redis_client.exists(owner_heartbeat_key)
+                        owner_alive = (
+                            owner == self.worker_id
+                            or self.redis_client.exists(RedisKeys.worker_heartbeat(owner))
+                        )
 
                     # Check client count
                     client_set_key = RedisKeys.clients(channel_id)
@@ -2337,16 +2345,23 @@ class ProxyServer:
         return str(value)
 
     def _release_profile_slot_from_redis_metadata(self, channel_id):
-        """Release M3U profile slot using only Redis metadata for this UUID.
+        """Release an M3U profile slot from Redis metadata when the row is gone.
 
-        Needed when the Channel row was deleted while a stream was still
-        playing (manual delete without stop_stream). Stats stop / client
-        disconnect must still DECR profile_connections.
+        Channel UUIDs delete that channel's assignment keys. Stream preview
+        workers delete only their own preview key, so a channel that is still
+        using the same stream keeps its reservation. Stats stop and client
+        disconnect use this when a channel was deleted mid-playback, and as
+        the fallback after release_stream finds nothing.
         """
         if not self.redis_client:
             return False
 
-        from apps.m3u.connection_pool import release_profile_slot
+        from uuid import UUID
+
+        from apps.channels.models import Stream
+
+        from .slot_release import claim_and_release_profile_slot
+        from .url_utils import parse_preview_worker_id
 
         metadata_key = RedisKeys.channel_metadata(channel_id)
         meta_stream_id = self._redis_field_to_str(
@@ -2373,27 +2388,50 @@ class ProxyServer:
             )
             return False
 
-        if meta_channel_id:
-            self.redis_client.delete(f"channel_stream:{meta_channel_id}")
+        stream_id = None
         if meta_stream_id:
             try:
                 stream_id = int(meta_stream_id)
             except (TypeError, ValueError):
                 stream_id = None
+
+        is_channel_uuid = False
+        try:
+            UUID(str(channel_id))
+            is_channel_uuid = True
+        except (ValueError, TypeError):
+            pass
+
+        if is_channel_uuid:
+            # Channel workers own bare stream_profile / channel_stream keys.
+            if meta_channel_id:
+                self.redis_client.delete(f"channel_stream:{meta_channel_id}")
             if stream_id is not None:
                 self.redis_client.delete(f"stream_profile:{stream_id}")
+        elif stream_id is not None:
+            # Stream preview workers own :preview or :p{id} keys only. Never
+            # delete a live channel's bare stream_profile assignment.
+            _stream_key, scoped_profile_id = parse_preview_worker_id(channel_id)
+            if scoped_profile_id is not None:
+                self.redis_client.delete(
+                    f"stream_profile:{stream_id}:p{scoped_profile_id}"
+                )
+            else:
+                self.redis_client.delete(Stream.preview_profile_key(stream_id))
 
-        self.redis_client.hdel(
+        released = claim_and_release_profile_slot(
+            self.redis_client,
             metadata_key,
-            ChannelMetadataField.STREAM_ID,
-            ChannelMetadataField.M3U_PROFILE,
+            meta_profile_id,
+            profile_id,
+            log_label=f"Channel {channel_id}",
         )
-        release_profile_slot(profile_id, self.redis_client)
-        logger.info(
-            f"Released profile slot {profile_id} for deleted channel {channel_id} "
-            f"via Redis metadata"
-        )
-        return True
+        if released:
+            logger.info(
+                f"Released profile slot {profile_id} for deleted channel {channel_id} "
+                f"via Redis metadata"
+            )
+        return released
 
     def _release_stream_resources(self, channel_id):
         """Release profile slot before wiping live Redis keys.

@@ -601,3 +601,76 @@ class CheckIfChannelExistsOwnerWithoutMetadataTests(SimpleTestCase):
 
         self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
         server._clean_redis_keys.assert_not_called()
+
+
+class CheckOrphanedMetadataMidInitTests(SimpleTestCase):
+    """Initial metadata has no owner field yet; the owner lock decides."""
+
+    OTHER_WORKER = "other-host:2"
+    INITIAL_METADATA = {"stream_id": "233", "temp_init": "1792260823.709"}
+
+    def _server(self, metadata, owner=None, live_workers=(), client_count=0):
+        """Server over a fake Redis holding one channel's metadata and owner lock."""
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+        metadata_key = RedisKeys.channel_metadata(CHANNEL_ID)
+        owner_key = RedisKeys.channel_owner(CHANNEL_ID)
+        heartbeats = {RedisKeys.worker_heartbeat(w) for w in live_workers}
+
+        redis = MagicMock()
+        redis.keys.return_value = [metadata_key]
+        redis.hgetall.return_value = dict(metadata)
+        redis.get.side_effect = lambda key: owner if key == owner_key else None
+        redis.exists.side_effect = lambda key: key in heartbeats
+        redis.scard.return_value = client_count
+        server = make_proxy_server(redis)
+        server._stop_upstream_before_redis_cleanup = MagicMock()
+        server._clean_redis_keys = MagicMock()
+        return server
+
+    def test_initializing_channel_owned_by_live_worker_is_not_cleaned(self):
+        server = self._server(
+            self.INITIAL_METADATA,
+            owner=self.OTHER_WORKER,
+            live_workers=[self.OTHER_WORKER],
+        )
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_not_called()
+        server._stop_upstream_before_redis_cleanup.assert_not_called()
+
+    def test_initializing_channel_owned_by_this_worker_is_not_cleaned(self):
+        # No heartbeat key: the sweeping worker owns the channel it is starting.
+        server = self._server(self.INITIAL_METADATA, owner="test-host:1")
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_not_called()
+        server._stop_upstream_before_redis_cleanup.assert_not_called()
+
+    def test_metadata_without_owner_field_or_lock_is_cleaned(self):
+        server = self._server(self.INITIAL_METADATA)
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)
+
+    def test_metadata_with_lock_of_dead_worker_is_cleaned(self):
+        server = self._server(self.INITIAL_METADATA, owner=self.OTHER_WORKER)
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)
+
+    def test_metadata_owner_field_of_dead_worker_is_still_cleaned(self):
+        # The lock fallback only applies when the metadata has no owner field.
+        server = self._server(
+            {**self.INITIAL_METADATA, "owner": "dead-host:9", "state": "active"},
+            owner=self.OTHER_WORKER,
+            live_workers=[self.OTHER_WORKER],
+        )
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)

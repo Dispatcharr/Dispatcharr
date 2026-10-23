@@ -185,6 +185,58 @@ class StreamFromProviderStatusMappingTests(TestCase):
         )
 
     @patch.object(views, "_open_upstream")
+    def test_content_length_uses_content_range_total(self, mocked_open):
+        redis = _FakeRedis()
+        session_id = "sess-growing"
+        cdn = "http://cdn.example.test/tok/archive.ts"
+        upstream = _fake_upstream(206, body=_make_ts_payload(), url=cdn)
+        upstream.headers["Content-Range"] = "bytes 0-1023/500000000"
+        upstream.headers["Content-Length"] = "1024"
+        mocked_open.return_value = upstream
+        with patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(
+                **{
+                    **self.kwargs,
+                    "redis_client": redis,
+                    "pool_session_id": session_id,
+                    "final_url": cdn,
+                    "range_header": "bytes=0-",
+                },
+            )
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(
+            redis.hget(views._pool_key(session_id), "content_length"),
+            "500000000",
+        )
+
+    @patch.object(views, "_open_upstream")
+    def test_content_length_ignores_unknown_total_chunk_size(self, mocked_open):
+        # ``bytes 0-1023/*`` only describes this chunk. Do not store 1024 as
+        # the archive size over a previously known total.
+        redis = _FakeRedis()
+        session_id = "sess-unknown-total"
+        pool_key = views._pool_key(session_id)
+        redis.hset(pool_key, "content_length", "100000000")
+        cdn = "http://cdn.example.test/tok/archive.ts"
+        upstream = _fake_upstream(206, body=_make_ts_payload(), url=cdn)
+        upstream.headers["Content-Range"] = "bytes 0-1023/*"
+        upstream.headers["Content-Length"] = "1024"
+        mocked_open.return_value = upstream
+        with patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            views._stream_from_provider(
+                **{
+                    **self.kwargs,
+                    "redis_client": redis,
+                    "pool_session_id": session_id,
+                    "final_url": cdn,
+                    "range_header": "bytes=0-",
+                },
+            )
+        self.assertEqual(redis.hget(pool_key, "content_length"), "100000000")
+
+    @patch.object(views, "_open_upstream")
     def test_reuses_cached_final_url_without_portal(self, mocked_open):
         cdn = "http://cdn.example.test/tok/archive.ts"
         mocked_open.return_value = _fake_upstream(
@@ -199,259 +251,6 @@ class StreamFromProviderStatusMappingTests(TestCase):
         mocked_open.assert_called_once()
         self.assertEqual(mocked_open.call_args.args[0], cdn)
         self.assertFalse(mocked_open.call_args.kwargs.get("allow_redirects", True))
-
-    @patch.object(views, "_open_upstream")
-    def test_xc_scrub_rewrite_does_not_byte_map_stats_position(self, mocked_open):
-        # Injected CDN Range is for the provider only; stats must follow the XC
-        # URL timestamp, not archive_offset/programme_duration (false "26:00").
-        cdn = "http://cdn.example.test/timeshift/u/p/60/2026-05-12:17-00/1.ts?token=x"
-        upstream = _fake_upstream(206, body=_make_ts_payload(), url=cdn)
-        upstream.headers["Content-Range"] = "bytes 500000000-999999999/1000000000"
-        upstream.headers["Content-Length"] = "500000000"
-        mocked_open.return_value = upstream
-        kwargs = dict(
-            self.kwargs,
-            final_url=cdn,
-            range_header="bytes=500000000-",
-            rewrite_plain_get=True,
-            presentation_remaining=500000000,
-            presentation_byte_base=500000000,
-            duration_minutes=120,
-        )
-        with patch.object(views, "_register_stats_client") as register_mock, \
-             patch.object(views, "_unregister_stats_client"):
-            response = views._stream_from_provider(**kwargs)
-        self.assertEqual(response.status_code, 200)
-        self.assertIsNone(register_mock.call_args.kwargs.get("range_start"))
-
-    @patch.object(views, "_open_upstream")
-    def test_bytes_zero_scrub_does_not_byte_map_stats_position(self, mocked_open):
-        # bytes=0- injects a CDN offset the same way a headerless scrub does.
-        # Reopening that URL must not park stats at archive_offset/duration.
-        cdn = "http://cdn.example.test/timeshift/u/p/60/2026-05-12:17-00/1.ts?token=x"
-        upstream = _fake_upstream(206, body=_make_ts_payload(), url=cdn)
-        upstream.headers["Content-Range"] = "bytes 500000000-999999999/1000000000"
-        upstream.headers["Content-Length"] = "500000000"
-        mocked_open.return_value = upstream
-        kwargs = dict(
-            self.kwargs,
-            final_url=cdn,
-            range_header="bytes=500000000-",
-            client_range_header="bytes=0-",
-            cdn_only_range=True,
-            rewrite_plain_get=False,
-            relative_presentation_range=True,
-            presentation_remaining=500000000,
-            presentation_byte_base=500000000,
-            duration_minutes=40,
-        )
-        with patch.object(views, "_register_stats_client") as register_mock, \
-             patch.object(views, "_unregister_stats_client"):
-            response = views._stream_from_provider(**kwargs)
-        self.assertEqual(response.status_code, 206)
-        self.assertEqual(response["Content-Range"], "bytes 0-499999999/500000000")
-        self.assertIsNone(register_mock.call_args.kwargs.get("range_start"))
-        self.assertEqual(mocked_open.call_args.args[2], "bytes=500000000-")
-
-    @patch.object(views, "_open_upstream")
-    def test_mapped_client_range_still_moves_stats_playhead(self, mocked_open):
-        cdn = "http://cdn.example.test/tok/archive.ts"
-        upstream = _fake_upstream(206, body=_make_ts_payload(), url=cdn)
-        upstream.headers["Content-Range"] = "bytes 5001000-5001999/9000000"
-        upstream.headers["Content-Length"] = "1000"
-        mocked_open.return_value = upstream
-        kwargs = dict(
-            self.kwargs,
-            final_url=cdn,
-            range_header="bytes=5001000-",
-            client_range_header="bytes=1000-",
-            cdn_only_range=True,
-            relative_presentation_range=True,
-            presentation_remaining=4000000,
-            presentation_byte_base=5000000,
-        )
-        with patch.object(views, "_register_stats_client") as register_mock, \
-             patch.object(views, "_unregister_stats_client"):
-            response = views._stream_from_provider(**kwargs)
-        self.assertEqual(response.status_code, 206)
-        self.assertEqual(register_mock.call_args.kwargs.get("range_start"), 5001000)
-
-    @patch.object(views, "_open_upstream")
-    def test_mapped_client_range_portal_fallback_uses_client_range(self, mocked_open):
-        cdn = "http://cdn.example.test/expired.ts"
-        portal = self.kwargs["candidate_urls"][0]
-        redis = _FakeRedis()
-        session_id = "sess-mapped-portal"
-        pool_key = views._pool_key(session_id)
-        redis.hset(pool_key, mapping={
-            "final_url": cdn,
-            "archive_anchor_ts": "2026-06-08:17-00",
-            "presentation_byte_base": "5000000",
-            "presentation_length": "4000000",
-        })
-        portal_body = _fake_upstream(
-            206, body=_make_ts_payload(), url="http://cdn.example.test/fresh.ts",
-        )
-        portal_body.headers["Content-Range"] = "bytes 1000-1999/4000000"
-        portal_body.headers["Content-Length"] = "1000"
-        mocked_open.side_effect = [
-            _fake_upstream(403, url=cdn),
-            portal_body,
-        ]
-        with patch.object(views, "_register_stats_client") as register_mock, \
-             patch.object(views, "_unregister_stats_client"):
-            response = views._stream_from_provider(
-                **{
-                    **self.kwargs,
-                    "final_url": cdn,
-                    "redis_client": redis,
-                    "pool_session_id": session_id,
-                    "range_header": "bytes=5001000-",
-                    "client_range_header": "bytes=1000-",
-                    "cdn_only_range": True,
-                    "relative_presentation_range": True,
-                    "presentation_remaining": 4000000,
-                    "presentation_byte_base": 5000000,
-                    "timestamp_utc": "2026-06-08:17-13",
-                    "duration_minutes": 17,
-                },
-            )
-        self.assertEqual(response.status_code, 206)
-        self.assertEqual(response["Content-Range"], "bytes 1000-1999/4000000")
-        self.assertEqual(mocked_open.call_args_list[0].args[2], "bytes=5001000-")
-        self.assertEqual(mocked_open.call_args_list[1].args[2], "bytes=1000-")
-        self.assertIsNone(redis.hget(pool_key, "presentation_byte_base"))
-        self.assertEqual(redis.hget(pool_key, "archive_anchor_ts"), "2026-06-08:17-13")
-        self.assertEqual(register_mock.call_args.kwargs.get("range_start"), 1000)
-
-    @patch.object(views, "_open_upstream")
-    def test_scrub_cdn_failure_opens_portal_at_client_range(self, mocked_open):
-        # The portal URL already starts at the requested timestamp. The CDN
-        # scrub offset must not be sent there, and must not stick as the
-        # presentation window or the archive anchor.
-        cdn = "http://cdn.example.test/expired.ts"
-        portal = self.kwargs["candidate_urls"][0]
-        redis = _FakeRedis()
-        session_id = "sess-scrub-portal"
-        pool_key = views._pool_key(session_id)
-        redis.hset(pool_key, mapping={
-            "final_url": cdn,
-            "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "1800",
-            "presentation_byte_base": "500000000",
-            "presentation_length": "500000000",
-            "content_length": "1000000000",
-        })
-        portal_body = _fake_upstream(
-            206, body=_make_ts_payload(), url="http://cdn.example.test/fresh.ts",
-        )
-        portal_body.headers["Content-Range"] = "bytes 0-99/100"
-        portal_body.headers["Content-Length"] = "100"
-        mocked_open.side_effect = [
-            _fake_upstream(403, url=cdn),
-            portal_body,
-        ]
-        with patch.object(views, "_register_stats_client") as register_mock, \
-             patch.object(views, "_unregister_stats_client"):
-            response = views._stream_from_provider(
-                **{
-                    **self.kwargs,
-                    "final_url": cdn,
-                    "redis_client": redis,
-                    "pool_session_id": session_id,
-                    "range_header": "bytes=500000000-",
-                    "client_range_header": "bytes=0-",
-                    "cdn_only_range": True,
-                    "relative_presentation_range": True,
-                    "presentation_remaining": 500000000,
-                    "presentation_byte_base": 500000000,
-                    "timestamp_utc": "2026-06-08:17-13",
-                    "duration_minutes": 30,
-                },
-            )
-        self.assertEqual(response.status_code, 206)
-        self.assertEqual(response["Content-Range"], "bytes 0-99/100")
-        self.assertEqual(response["Content-Length"], "100")
-        self.assertEqual(mocked_open.call_count, 2)
-        self.assertEqual(mocked_open.call_args_list[0].args[0], cdn)
-        self.assertEqual(mocked_open.call_args_list[0].args[2], "bytes=500000000-")
-        self.assertEqual(mocked_open.call_args_list[1].args[0], portal)
-        self.assertEqual(mocked_open.call_args_list[1].args[2], "bytes=0-")
-        self.assertIsNone(redis.hget(pool_key, "presentation_byte_base"))
-        self.assertIsNone(redis.hget(pool_key, "presentation_length"))
-        self.assertEqual(redis.hget(pool_key, "archive_anchor_ts"), "2026-06-08:17-13")
-        self.assertEqual(redis.hget(pool_key, "archive_duration_secs"), "1800")
-        self.assertEqual(register_mock.call_args.kwargs.get("range_start"), 0)
-
-    @patch.object(views, "_open_upstream")
-    def test_headerless_scrub_cdn_failure_opens_portal_without_range(self, mocked_open):
-        cdn = "http://cdn.example.test/expired.ts"
-        portal = self.kwargs["candidate_urls"][0]
-        redis = _FakeRedis()
-        session_id = "sess-headerless-portal"
-        pool_key = views._pool_key(session_id)
-        redis.hset(pool_key, mapping={
-            "final_url": cdn,
-            "presentation_byte_base": "500000000",
-            "presentation_length": "500000000",
-        })
-        portal_resp = _fake_upstream(
-            200, body=_make_ts_payload(), url="http://cdn.example.test/fresh.ts",
-        )
-        portal_resp.headers["Content-Length"] = "2222"
-        mocked_open.side_effect = [
-            _fake_upstream(403, url=cdn),
-            portal_resp,
-        ]
-        with patch.object(views, "_register_stats_client") as register_mock, \
-             patch.object(views, "_unregister_stats_client"):
-            response = views._stream_from_provider(
-                **{
-                    **self.kwargs,
-                    "final_url": cdn,
-                    "redis_client": redis,
-                    "pool_session_id": session_id,
-                    "range_header": "bytes=500000000-",
-                    "client_range_header": None,
-                    "cdn_only_range": True,
-                    "rewrite_plain_get": True,
-                    "presentation_remaining": 500000000,
-                    "presentation_byte_base": 500000000,
-                    "duration_minutes": 30,
-                },
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Length"], "2222")
-        self.assertEqual(mocked_open.call_args_list[1].args[2], None)
-        self.assertEqual(redis.hget(pool_key, "presentation_byte_base"), "0")
-        self.assertEqual(redis.hget(pool_key, "presentation_length"), "2222")
-        self.assertIsNone(register_mock.call_args.kwargs.get("range_start"))
-
-    @patch.object(views, "_open_upstream")
-    def test_scrub_cdn_416_falls_back_to_portal(self, mocked_open):
-        cdn = "http://cdn.example.test/expired.ts"
-        portal = self.kwargs["candidate_urls"][0]
-        rejected = _fake_upstream(416, url=cdn)
-        rejected.headers["Content-Range"] = "bytes */1000"
-        portal_resp = _fake_upstream(
-            200, body=_make_ts_payload(), url="http://cdn.example.test/fresh.ts",
-        )
-        mocked_open.side_effect = [rejected, portal_resp]
-        with patch.object(views, "_register_stats_client"), \
-             patch.object(views, "_unregister_stats_client"):
-            response = views._stream_from_provider(
-                **{
-                    **self.kwargs,
-                    "final_url": cdn,
-                    "range_header": "bytes=500000000-",
-                    "client_range_header": "bytes=0-",
-                    "cdn_only_range": True,
-                },
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(mocked_open.call_count, 2)
-        self.assertEqual(mocked_open.call_args_list[1].args[0], portal)
-        self.assertEqual(mocked_open.call_args_list[1].args[2], "bytes=0-")
 
     @patch.object(views, "_open_upstream")
     def test_cached_client_416_still_passes_through(self, mocked_open):
@@ -2464,16 +2263,16 @@ class TimeshiftSessionReuseTests(TestCase):
             )
         return response, ok, attempt_mock
 
-    def test_session_scrub_reuses_final_url_and_injects_range(self):
+    def test_session_new_start_opens_provider_not_cdn_range(self):
         # Client FF rebuilds /timeshift/.../<new_start>/... with the same
-        # session_id. That must Range-seek the open CDN archive, not portal.
+        # session_id. The provider positions that start; do not guess a byte
+        # offset on the CDN file opened for the previous start.
         _seed_pool_session(self.redis, session_id=self.SESSION)
         cdn = "http://cdn.example/archive.ts?token=ok"
         self.redis.hset(self._pool_key(), mapping={
             "final_url": cdn,
             "content_length": "1800000000",
             "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "3600",
         })
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
@@ -2493,7 +2292,6 @@ class TimeshiftSessionReuseTests(TestCase):
                     "final_url": cdn,
                     "content_length": "1800000000",
                     "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "3600",
                 },
                 profile=profile,
                 channel=self.channel,
@@ -2510,17 +2308,12 @@ class TimeshiftSessionReuseTests(TestCase):
                 debug=False,
             )
         kwargs = attempt_mock.call_args.kwargs
-        self.assertEqual(kwargs.get("final_url"), cdn)
-        self.assertTrue(kwargs.get("rewrite_plain_get"))
-        self.assertTrue(kwargs.get("cdn_only_range"))
-        self.assertIsNone(kwargs.get("client_range_header"))
-        self.assertTrue(kwargs.get("range_header", "").startswith("bytes="))
-        self.assertIsNotNone(kwargs.get("presentation_remaining"))
-        self.assertIsNotNone(kwargs.get("presentation_byte_base"))
-        # Archive CDN state must survive the media_id move.
-        self.assertEqual(self.redis.hget(self._pool_key(), "final_url"), cdn)
+        self.assertIsNone(kwargs.get("final_url"))
+        self.assertIsNone(kwargs.get("range_header"))
+        self.assertEqual(kwargs.get("provider_timestamp"), "2026-06-08:19-30")
+        self.assertIsNone(self.redis.hget(self._pool_key(), "final_url"))
 
-    def test_session_scrub_translates_bytes_zero_restart(self):
+    def test_session_bytes_zero_on_new_start_opens_provider(self):
         """Kodi FFmpegDirect sends bytes=0- with each new timestamp URL."""
         _seed_pool_session(self.redis, session_id=self.SESSION)
         cdn = "http://cdn.example/archive.ts?token=ok"
@@ -2533,17 +2326,12 @@ class TimeshiftSessionReuseTests(TestCase):
             "final_url": cdn,
             "content_length": "1800000000",
             "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "3600",
         }
         self.redis.hset(self._pool_key(), mapping={
             "final_url": cdn,
             "content_length": descriptor["content_length"],
             "archive_anchor_ts": descriptor["archive_anchor_ts"],
-            "archive_duration_secs": descriptor["archive_duration_secs"],
         })
-        expected = views._resolve_session_archive_scrub(
-            descriptor, "2026-06-08:17-30",
-        )
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=206)
@@ -2569,344 +2357,9 @@ class TimeshiftSessionReuseTests(TestCase):
                 debug=False,
             )
         kwargs = attempt_mock.call_args.kwargs
-        self.assertEqual(kwargs.get("final_url"), cdn)
-        self.assertEqual(
-            kwargs.get("range_header"), f"bytes={expected['byte_offset']}-",
-        )
-        self.assertFalse(kwargs.get("rewrite_plain_get"))
-        self.assertTrue(kwargs.get("relative_presentation_range"))
-        self.assertTrue(kwargs.get("cdn_only_range"))
-        self.assertEqual(kwargs.get("client_range_header"), "bytes=0-")
-        self.assertEqual(
-            kwargs.get("presentation_byte_base"), expected["byte_offset"],
-        )
-        self.assertEqual(
-            kwargs.get("presentation_remaining"), expected["remaining"],
-        )
-
-    def test_session_scrub_reuses_opaque_final_url(self):
-        """Opaque CDNs still scrub via Range on the cached URL (no portal hop)."""
-        _seed_pool_session(self.redis, session_id=self.SESSION)
-        opaque = "http://opaque-cdn.example/hash/token/t5/test-stream/serve"
-        self.redis.hset(self._pool_key(), mapping={
-            "final_url": opaque,
-            "content_length": "722718720",
-            "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "2100",
-        })
-        profile = MagicMock(id=31, custom_properties={})
-        account = MagicMock(id=1)
-        ok = MagicMock(status_code=200)
-        with _patch_m3u_account_get(account), \
-             patch.object(views, "_attempt_timeshift_stream",
-                          return_value=ok) as attempt_mock:
-            views._stream_reused_session(
-                self.redis,
-                session_id=self.SESSION,
-                descriptor={
-                    "account_id": "1",
-                    "stream_id": "111",
-                    "media_id": TEST_MEDIA_ID,
-                    "provider_timestamp": "2026-06-08:19-00",
-                    "provider_tz_name": "Europe/Brussels",
-                    "final_url": opaque,
-                    "content_length": "722718720",
-                    "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "2100",
-                },
-                profile=profile,
-                channel=self.channel,
-                media_id="8_2026-06-08-17-11",
-                safe_ts="2026-06-08-17-11",
-                timestamp="2026-06-08:17-11",
-                duration_minutes=35,
-                client_id=self.SESSION,
-                client_ip="1.2.3.4",
-                client_user_agent="test-agent",
-                range_header=None,
-                channel_logo_id=None,
-                user=self.user,
-                debug=False,
-            )
-        kwargs = attempt_mock.call_args.kwargs
-        self.assertEqual(kwargs.get("final_url"), opaque)
-        self.assertTrue(kwargs.get("rewrite_plain_get"))
-        self.assertTrue(str(kwargs.get("range_header") or "").startswith("bytes="))
-
-    def test_session_range_after_scrub_maps_through_presentation_base(self):
-        # After a scrub rewrite, near-EOF probes are relative to the presented
-        # window, not the full CDN file.
-        _seed_pool_session(self.redis, session_id=self.SESSION)
-        cdn = "http://cdn.example/archive.ts?token=ok"
-        base = 314_934_968
-        remaining = 419_913_672
-        self.redis.hset(self._pool_key(), mapping={
-            "final_url": cdn,
-            "content_length": str(base + remaining),
-            "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "3600",
-            "presentation_length": str(remaining),
-            "presentation_byte_base": str(base),
-            "media_id": "8_2026-06-08-17-30",
-        })
-        profile = MagicMock(id=31, custom_properties={})
-        account = MagicMock(id=1)
-        ok = MagicMock(status_code=206)
-        client_range = f"bytes={remaining - 112_800}-"
-        with _patch_m3u_account_get(account), \
-             patch.object(views, "_attempt_timeshift_stream",
-                          return_value=ok) as attempt_mock:
-            views._stream_reused_session(
-                self.redis,
-                session_id=self.SESSION,
-                descriptor={
-                    "account_id": "1",
-                    "stream_id": "111",
-                    "media_id": "8_2026-06-08-17-30",
-                    "provider_timestamp": "2026-06-08:19-30",
-                    "provider_tz_name": "Europe/Brussels",
-                    "final_url": cdn,
-                    "content_length": str(base + remaining),
-                    "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "3600",
-                    "presentation_length": str(remaining),
-                    "presentation_byte_base": str(base),
-                },
-                profile=profile,
-                channel=self.channel,
-                media_id="8_2026-06-08-17-30",
-                safe_ts="2026-06-08-17-30",
-                timestamp="2026-06-08:17-30",
-                duration_minutes=40,
-                client_id=self.SESSION,
-                client_ip="1.2.3.4",
-                client_user_agent="test-agent",
-                range_header=client_range,
-                channel_logo_id=None,
-                user=self.user,
-                debug=False,
-            )
-        kwargs = attempt_mock.call_args.kwargs
-        self.assertEqual(
-            kwargs.get("range_header"),
-            f"bytes={base + remaining - 112_800}-",
-        )
-        self.assertTrue(kwargs.get("relative_presentation_range"))
-        self.assertFalse(kwargs.get("rewrite_plain_get"))
-        self.assertTrue(kwargs.get("cdn_only_range"))
-        self.assertEqual(kwargs.get("client_range_header"), client_range)
-        self.assertEqual(kwargs.get("final_url"), cdn)
-
-    def test_presentation_range_without_archive_size_stays_cdn_only(self):
-        # No archive size, so this is not a timestamp scrub. The mapped Range
-        # is still an offset into the cached file.
-        _seed_pool_session(self.redis, session_id=self.SESSION)
-        cdn = "http://cdn.example/archive.ts?token=ok"
-        base = 1000
-        self.redis.hset(self._pool_key(), mapping={
-            "final_url": cdn,
-            "presentation_length": "5000",
-            "presentation_byte_base": str(base),
-            "media_id": TEST_MEDIA_ID,
-        })
-        profile = MagicMock(id=31, custom_properties={})
-        account = MagicMock(id=1)
-        ok = MagicMock(status_code=206)
-        with _patch_m3u_account_get(account), \
-             patch.object(views, "_attempt_timeshift_stream",
-                          return_value=ok) as attempt_mock:
-            views._stream_reused_session(
-                self.redis,
-                session_id=self.SESSION,
-                descriptor={
-                    "account_id": "1",
-                    "stream_id": "111",
-                    "media_id": TEST_MEDIA_ID,
-                    "provider_timestamp": "2026-06-08:19-00",
-                    "provider_tz_name": "Europe/Brussels",
-                    "final_url": cdn,
-                    "presentation_length": "5000",
-                    "presentation_byte_base": str(base),
-                },
-                profile=profile,
-                channel=self.channel,
-                media_id=TEST_MEDIA_ID,
-                safe_ts="2026-06-08-17-00",
-                timestamp="2026-06-08:17-00",
-                duration_minutes=40,
-                client_id=self.SESSION,
-                client_ip="1.2.3.4",
-                client_user_agent="test-agent",
-                range_header="bytes=250-",
-                channel_logo_id=None,
-                user=self.user,
-                debug=False,
-            )
-        kwargs = attempt_mock.call_args.kwargs
-        self.assertEqual(kwargs.get("range_header"), "bytes=1250-")
-        self.assertTrue(kwargs.get("cdn_only_range"))
-        self.assertEqual(kwargs.get("client_range_header"), "bytes=250-")
-
-    def test_return_to_archive_start_resets_presentation_base(self):
-        """Scrubbing back to the archive open must clear the prior scrub window."""
-        _seed_pool_session(self.redis, session_id=self.SESSION)
-        cdn = "http://cdn.example/archive.ts?token=ok"
-        archive_total = 870_621_184
-        stale_base = 348_248_380
-        self.redis.hset(self._pool_key(), mapping={
-            "final_url": cdn,
-            "content_length": str(archive_total),
-            "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "2100",
-            "presentation_length": str(archive_total - stale_base),
-            "presentation_byte_base": str(stale_base),
-            "media_id": "8_2026-06-08-17-14",
-        })
-        profile = MagicMock(id=31, custom_properties={})
-        account = MagicMock(id=1)
-        ok = MagicMock(status_code=200)
-        with _patch_m3u_account_get(account), \
-             patch.object(views, "_attempt_timeshift_stream",
-                          return_value=ok) as attempt_mock:
-            views._stream_reused_session(
-                self.redis,
-                session_id=self.SESSION,
-                descriptor={
-                    "account_id": "1",
-                    "stream_id": "111",
-                    "media_id": "8_2026-06-08-17-14",
-                    "provider_timestamp": "2026-06-08:19-14",
-                    "provider_tz_name": "Europe/Brussels",
-                    "final_url": cdn,
-                    "content_length": str(archive_total),
-                    "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "2100",
-                    "presentation_length": str(archive_total - stale_base),
-                    "presentation_byte_base": str(stale_base),
-                },
-                profile=profile,
-                channel=self.channel,
-                media_id=TEST_MEDIA_ID,
-                safe_ts="2026-06-08-17-00",
-                timestamp="2026-06-08:17-00",
-                duration_minutes=35,
-                client_id=self.SESSION,
-                client_ip="1.2.3.4",
-                client_user_agent="test-agent",
-                range_header=None,
-                channel_logo_id=None,
-                user=self.user,
-                debug=False,
-            )
-        kwargs = attempt_mock.call_args.kwargs
-        self.assertEqual(kwargs.get("presentation_byte_base"), 0)
-        self.assertEqual(kwargs.get("presentation_remaining"), archive_total)
-        self.assertIsNone(kwargs.get("range_header"))
-        self.assertFalse(kwargs.get("rewrite_plain_get"))
-        self.assertFalse(kwargs.get("relative_presentation_range"))
-
-    def test_return_to_archive_start_range_skips_stale_presentation_map(self):
-        """Ranges after return-to-start are archive-absolute, not scrub-relative."""
-        _seed_pool_session(self.redis, session_id=self.SESSION)
-        cdn = "http://cdn.example/archive.ts?token=ok"
-        archive_total = 870_621_184
-        stale_base = 348_248_380
-        client_range = f"bytes={archive_total - 112_800}-"
-        self.redis.hset(self._pool_key(), mapping={
-            "final_url": cdn,
-            "content_length": str(archive_total),
-            "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "2100",
-            "presentation_length": str(archive_total - stale_base),
-            "presentation_byte_base": str(stale_base),
-            "media_id": TEST_MEDIA_ID,
-        })
-        profile = MagicMock(id=31, custom_properties={})
-        account = MagicMock(id=1)
-        ok = MagicMock(status_code=206)
-        with _patch_m3u_account_get(account), \
-             patch.object(views, "_attempt_timeshift_stream",
-                          return_value=ok) as attempt_mock:
-            views._stream_reused_session(
-                self.redis,
-                session_id=self.SESSION,
-                descriptor={
-                    "account_id": "1",
-                    "stream_id": "111",
-                    "media_id": TEST_MEDIA_ID,
-                    "provider_timestamp": "2026-06-08:19-00",
-                    "provider_tz_name": "Europe/Brussels",
-                    "final_url": cdn,
-                    "content_length": str(archive_total),
-                    "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "2100",
-                    "presentation_length": str(archive_total - stale_base),
-                    "presentation_byte_base": str(stale_base),
-                },
-                profile=profile,
-                channel=self.channel,
-                media_id=TEST_MEDIA_ID,
-                safe_ts="2026-06-08-17-00",
-                timestamp="2026-06-08:17-00",
-                duration_minutes=35,
-                client_id=self.SESSION,
-                client_ip="1.2.3.4",
-                client_user_agent="test-agent",
-                range_header=client_range,
-                channel_logo_id=None,
-                user=self.user,
-                debug=False,
-            )
-        kwargs = attempt_mock.call_args.kwargs
-        self.assertEqual(kwargs.get("range_header"), client_range)
-        self.assertEqual(kwargs.get("presentation_byte_base"), 0)
-        self.assertFalse(kwargs.get("relative_presentation_range"))
-
-    def test_session_scrub_outside_window_forces_portal(self):
-        _seed_pool_session(self.redis, session_id=self.SESSION)
-        stale_cdn = "http://cdn.example/old.ts?token=stale"
-        self.redis.hset(self._pool_key(), mapping={
-            "final_url": stale_cdn,
-            "content_length": "1800000000",
-            "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "1800",  # 30 min window
-        })
-        profile = MagicMock(id=31, custom_properties={})
-        account = MagicMock(id=1)
-        ok = MagicMock(status_code=200)
-        with _patch_m3u_account_get(account), \
-             patch.object(views, "_attempt_timeshift_stream",
-                          return_value=ok) as attempt_mock:
-            views._stream_reused_session(
-                self.redis,
-                session_id=self.SESSION,
-                descriptor={
-                    "account_id": "1",
-                    "stream_id": "111",
-                    "media_id": TEST_MEDIA_ID,
-                    "provider_timestamp": "2026-06-08:19-00",
-                    "provider_tz_name": "Europe/Brussels",
-                    "final_url": stale_cdn,
-                    "content_length": "1800000000",
-                    "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "1800",
-                },
-                profile=profile,
-                channel=self.channel,
-                # 40 minutes after anchor, outside the 30 min archive window.
-                media_id="8_2026-06-08-17-40",
-                safe_ts="2026-06-08-17-40",
-                timestamp="2026-06-08:17-40",
-                duration_minutes=40,
-                client_id=self.SESSION,
-                client_ip="1.2.3.4",
-                client_user_agent="test-agent",
-                range_header=None,
-                channel_logo_id=None,
-                user=self.user,
-                debug=False,
-            )
-        self.assertIsNone(attempt_mock.call_args.kwargs.get("final_url"))
+        self.assertIsNone(kwargs.get("final_url"))
+        self.assertEqual(kwargs.get("range_header"), "bytes=0-")
+        self.assertEqual(kwargs.get("provider_timestamp"), "2026-06-08:19-30")
         self.assertIsNone(self.redis.hget(self._pool_key(), "final_url"))
 
     def test_same_programme_reuse_keeps_final_url(self):
@@ -2916,7 +2369,6 @@ class TimeshiftSessionReuseTests(TestCase):
             "final_url": cdn,
             "content_length": "1000000",
             "archive_anchor_ts": "2026-06-08:17-00",
-            "archive_duration_secs": "3600",
         })
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
@@ -2936,7 +2388,6 @@ class TimeshiftSessionReuseTests(TestCase):
                     "final_url": cdn,
                     "content_length": "1000000",
                     "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "3600",
                 },
                 profile=profile,
                 channel=self.channel,
@@ -2953,7 +2404,6 @@ class TimeshiftSessionReuseTests(TestCase):
                 debug=False,
             )
         self.assertEqual(attempt_mock.call_args.kwargs.get("final_url"), cdn)
-        self.assertFalse(attempt_mock.call_args.kwargs.get("rewrite_plain_get"))
 
     def test_reused_session_serves_requested_timestamp_not_stored_anchor(self):
         # Field bug: rewind to X, play, then FF. Some clients keep the
@@ -2993,12 +2443,13 @@ class TimeshiftSessionReuseTests(TestCase):
     def test_position_move_drops_previous_byte_state(self):
         # content_length / serving_range / final_url describe ONE provider file;
         # carrying them across a seek would feed near-EOF heuristics another
-        # programme's size and hit the wrong CDN token. Same-position keeps them.
+        # programme's size and hit the wrong CDN token. Same-start keeps them.
         _seed_pool_session(self.redis, session_id=self.SESSION)
         self.redis.hset(self._pool_key(), mapping={
             "content_length": "2000000000",
             "serving_range": "start",
             "final_url": "http://cdn.example/old.ts",
+            "archive_anchor_ts": "2026-06-08:17-00",
         })
         self._call_reused_session(
             "2026-06-08:17-30", "8_2026-06-08-17-30",
@@ -3007,22 +2458,51 @@ class TimeshiftSessionReuseTests(TestCase):
         self.assertIsNone(self.redis.hget(self._pool_key(), "serving_range"))
         self.assertIsNone(self.redis.hget(self._pool_key(), "final_url"))
 
-        # Same-position call (media unchanged): byte state survives.
+        # Same start as the open archive: keep the cached CDN file state.
+        cdn = "http://cdn.example/same.ts"
         self.redis.hset(self._pool_key(), mapping={
             "content_length": "1000000",
             "serving_range": "range",
-            "final_url": "http://cdn.example/same.ts",
+            "final_url": cdn,
+            "archive_anchor_ts": "2026-06-08:17-30",
+            "media_id": "8_2026-06-08-17-30",
         })
-        self._call_reused_session(
-            "2026-06-08:17-30", "8_2026-06-08-17-30",
-        )
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=200)
+        with _patch_m3u_account_get(account), \
+             patch.object(views, "_attempt_timeshift_stream", return_value=ok):
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": "8_2026-06-08-17-30",
+                    "provider_timestamp": "2026-06-08:19-30",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": cdn,
+                    "content_length": "1000000",
+                    "archive_anchor_ts": "2026-06-08:17-30",
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id="8_2026-06-08-17-30",
+                safe_ts="2026-06-08-17-30",
+                timestamp="2026-06-08:17-30",
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
         self.assertEqual(
             self.redis.hget(self._pool_key(), "content_length"), "1000000",
         )
-        self.assertEqual(
-            self.redis.hget(self._pool_key(), "final_url"),
-            "http://cdn.example/same.ts",
-        )
+        self.assertEqual(self.redis.hget(self._pool_key(), "final_url"), cdn)
 
     def test_position_update_never_resurrects_vanished_entry(self):
         # If the pool key expired/vanished mid-request, writing to it would
@@ -3491,72 +2971,22 @@ class TimeshiftRangeClassificationTests(TestCase):
             "bytes=1000-2000",
         )
 
-    def test_resolve_session_archive_scrub_maps_ff_offset(self):
-        scrub = views._resolve_session_archive_scrub(
-            {
-                "final_url": "http://cdn/x",
-                "content_length": "1800000000",
-                "archive_anchor_ts": "2026-06-08:17-00",
-                "archive_duration_secs": "3600",
-            },
-            "2026-06-08:17-30",
-        )
-        self.assertEqual(scrub["kind"], "scrub")
-        # 30 minutes into 60 minutes ≈ half file, aligned to 188-byte TS packets.
-        self.assertEqual(scrub["byte_offset"] % 188, 0)
-        self.assertAlmostEqual(scrub["byte_offset"] / 1800000000, 0.5, places=2)
-        self.assertEqual(scrub["remaining"], 1800000000 - scrub["byte_offset"])
-
-    def test_resolve_session_archive_scrub_rejects_outside_window(self):
-        self.assertIsNone(
-            views._resolve_session_archive_scrub(
-                {
-                    "final_url": "http://cdn/x",
-                    "content_length": "1800000000",
-                    "archive_anchor_ts": "2026-06-08:17-00",
-                    "archive_duration_secs": "1800",
-                },
-                "2026-06-08:17-40",
-            )
-        )
-
-    def test_map_client_range_through_presentation(self):
-        self.assertEqual(
-            views._map_client_range_through_presentation(
-                "bytes=419800872-", 314934968,
-            ),
-            "bytes=734735840-",
-        )
-        self.assertEqual(
-            views._map_client_range_through_presentation(
-                "bytes=100-200", 1000,
-            ),
-            "bytes=1100-1200",
-        )
-
-    def test_presentation_relative_content_range(self):
-        self.assertEqual(
-            views._presentation_relative_content_range(
-                "bytes 314934968-734848639/734848640",
-                presentation_byte_base=314934968,
-                presentation_length=419913672,
-            ),
-            "bytes 0-419913671/419913672",
-        )
-
-    def test_near_eof_probe_uses_presentation_length_not_full_archive(self):
-        # After scrub rewrite CL≈420MB; Range near that end must not displace
-        # (XC parallel probe) even though the offset is mid-file on the CDN archive.
+    def test_archive_anchor_differs_on_new_start(self):
+        descriptor = {"archive_anchor_ts": "2026-06-08:17-00"}
         self.assertTrue(
-            views._is_near_eof_probe(
-                "bytes=419800872-", content_length="419913672",
-            )
+            views._archive_anchor_differs(descriptor, "2026-06-08:17-30")
         )
+        self.assertTrue(
+            views._archive_anchor_differs(descriptor, "2026-06-08:16-50")
+        )
+
+    def test_archive_anchor_matches_same_start(self):
+        descriptor = {"archive_anchor_ts": "2026-06-08:17-00"}
         self.assertFalse(
-            views._should_displace_busy_playback(
-                "bytes=419800872-", content_length="419913672",
-            )
+            views._archive_anchor_differs(descriptor, "2026-06-08:17-00")
         )
+        self.assertFalse(views._archive_anchor_differs(descriptor, None))
+        self.assertFalse(views._archive_anchor_differs({}, "2026-06-08:17-30"))
 
     def test_near_eof_probe_uses_cached_content_length(self):
         # 5 MB into a 10 MB file is a scrub, not a tail probe.
@@ -5262,21 +4692,16 @@ class TimeshiftScrubPreemptTests(TestCase):
 
     def test_eof_probe_busy_session_serves_cached_cdn_without_preempt(self):
         """Busy near-EOF duration probes answer from cached CDN, no slot churn."""
-        presentation_base = 500_000_000
-        presentation_length = 615_251_824
-        client_start = 615_139_024
-        cdn_start = presentation_base + client_start
-        body = b"probe-tail"
-        cdn_end = cdn_start + len(body) - 1
         archive_total = 2_527_702_896
+        client_start = archive_total - 112_800
+        body = b"probe-tail"
+        cdn_end = client_start + len(body) - 1
 
         _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
         pool_key = TimeshiftRedisKeys.pool(TEST_SESSION_ID)
         self.redis.hset(pool_key, mapping={
             "final_url": "http://cdn.example.test/archive.ts",
             "content_length": str(archive_total),
-            "presentation_byte_base": str(presentation_base),
-            "presentation_length": str(presentation_length),
             "provider_user_agent": "provider-agent",
             "busy": "1",
         })
@@ -5288,7 +4713,7 @@ class TimeshiftScrubPreemptTests(TestCase):
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
         upstream = _fake_upstream(206, body=body)
         upstream.headers["Content-Range"] = (
-            f"bytes {cdn_start}-{cdn_end}/{archive_total}"
+            f"bytes {client_start}-{cdn_end}/{archive_total}"
         )
         upstream.headers["Content-Length"] = str(len(body))
         upstream.raw.read = MagicMock(side_effect=[body, b""])
@@ -5319,7 +4744,7 @@ class TimeshiftScrubPreemptTests(TestCase):
         self.assertEqual(response.status_code, 206)
         self.assertEqual(
             response["Content-Range"],
-            f"bytes {client_start}-{client_start + len(body) - 1}/{presentation_length}",
+            f"bytes {client_start}-{client_start + len(body) - 1}/{archive_total}",
         )
         self.assertEqual(response["Content-Length"], str(len(body)))
         open_mock.assert_called_once()
@@ -5328,7 +4753,7 @@ class TimeshiftScrubPreemptTests(TestCase):
         self.assertEqual(open_args[1], "provider-agent")
         self.assertEqual(
             open_args[2],
-            f"bytes={cdn_start}-{cdn_start + views._EOF_PROBE_TAIL_BYTES - 1}",
+            f"bytes={client_start}-{client_start + views._EOF_PROBE_TAIL_BYTES - 1}",
         )
         self.assertFalse(open_kwargs.get("allow_redirects", True))
         account_get_mock.assert_not_called()
@@ -5343,74 +4768,6 @@ class TimeshiftScrubPreemptTests(TestCase):
         self.assertEqual(b"".join(response.streaming_content), body)
         upstream.close.assert_called()
 
-    def test_eof_probe_stale_presentation_base_uses_absolute_range(self):
-        """After return-to-start, archive-absolute EOF probes must not remap past EOF."""
-        stale_base = 348_248_380
-        archive_total = 870_621_184
-        client_start = archive_total - 112_800
-        body = b"probe-tail"
-
-        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
-        pool_key = TimeshiftRedisKeys.pool(TEST_SESSION_ID)
-        self.redis.hset(pool_key, mapping={
-            "final_url": "http://cdn.example.test/archive.ts",
-            "content_length": str(archive_total),
-            # Stale scrub window left behind after return-to-start.
-            "presentation_byte_base": str(stale_base),
-            "presentation_length": str(archive_total),
-            "provider_user_agent": "provider-agent",
-            "busy": "1",
-        })
-
-        request = self.factory.get(
-            _proxy_url(TEST_SESSION_ID),
-            HTTP_RANGE=f"bytes={client_start}-",
-        )
-        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
-        upstream = _fake_upstream(206, body=body)
-        upstream.headers["Content-Range"] = (
-            f"bytes {client_start}-{client_start + len(body) - 1}/{archive_total}"
-        )
-        upstream.headers["Content-Length"] = str(len(body))
-        upstream.raw.read = MagicMock(side_effect=[body, b""])
-
-        with patch.object(views, "authorize_xc_client", return_value=(MagicMock(id=5), None)), \
-             patch.object(views, "get_channel_for_user") as channel_lookup, \
-             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "resolve_catchup_duration", return_value=40), \
-             patch.object(views, "check_user_stream_limits", return_value=True), \
-             patch.object(views, "RedisClient") as redis_cls, \
-             patch.object(views, "reserve_profile_slot"), \
-             patch.object(views, "release_profile_slot"), \
-             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
-             patch.object(views, "get_user_active_connections", return_value=[]), \
-             patch.object(views, "_try_reacquire_idle_pool") as reacquire_mock, \
-             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
-             patch.object(views, "_attempt_timeshift_stream") as attempt_mock, \
-             _patch_m3u_account_get() as account_get_mock, \
-             patch.object(views, "_open_upstream", return_value=upstream) as open_mock:
-            redis_cls.get_client.return_value = self.redis
-            channel_lookup.return_value = MagicMock(
-                id=8, name="Test", logo_id=None,
-            )
-            response = views.timeshift_proxy(
-                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
-            )
-
-        self.assertEqual(response.status_code, 206)
-        open_args, _open_kwargs = open_mock.call_args
-        # Must NOT be stale_base + client_start (that is past archive EOF).
-        self.assertEqual(open_args[1], "provider-agent")
-        self.assertEqual(
-            open_args[2],
-            f"bytes={client_start}-{client_start + views._EOF_PROBE_TAIL_BYTES - 1}",
-        )
-        account_get_mock.assert_not_called()
-        reacquire_mock.assert_not_called()
-        preempt_mock.assert_not_called()
-        attempt_mock.assert_not_called()
-        self.assertEqual(b"".join(response.streaming_content), body)
-
     def test_eof_probe_cdn_416_returns_416_not_503(self):
         """Unsatisfiable EOF probes must not fall through to busy-slot 503."""
         archive_total = 870_621_184
@@ -5421,8 +4778,6 @@ class TimeshiftScrubPreemptTests(TestCase):
         self.redis.hset(pool_key, mapping={
             "final_url": "http://cdn.example.test/archive.ts",
             "content_length": str(archive_total),
-            "presentation_byte_base": "0",
-            "presentation_length": str(archive_total),
             "provider_user_agent": "provider-agent",
             "busy": "1",
         })

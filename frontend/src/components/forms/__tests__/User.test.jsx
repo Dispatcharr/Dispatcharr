@@ -1,3 +1,4 @@
+import { Children, cloneElement, isValidElement } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -26,6 +27,12 @@ vi.mock('../../../utils/forms/UserUtils.js', () => ({
   getFormInitialValues: vi.fn(() => ({})),
   getFormValidators: vi.fn(() => ({})),
   userToFormValues: vi.fn(() => ({})),
+}));
+
+vi.mock('../UserAppData', () => ({
+  default: ({ userId }) => (
+    <div data-testid="user-app-data" data-user-id={userId} />
+  ),
 }));
 
 vi.mock('../../../images/logo.png', () => ({
@@ -61,6 +68,7 @@ vi.mock('lucide-react', () => ({
   Key: () => <svg data-testid="icon-key" />,
   QrCode: () => <svg data-testid="icon-qr-code" />,
   RotateCcwKey: () => <svg data-testid="icon-rotate-ccw-key" />,
+  Trash2: () => <svg data-testid="icon-trash" />,
   X: () => <svg data-testid="icon-x" />,
 }));
 
@@ -148,13 +156,36 @@ vi.mock('@mantine/core', () => ({
       <input type="checkbox" />
     </div>
   ),
-  Tabs: ({ children }) => <div>{children}</div>,
-  TabsList: ({ children }) => <div>{children}</div>,
+  Tabs: ({ children, value, onChange }) => (
+    // Forward onChange so App Data tests can select the tab; keep all panels
+    // mounted so existing field assertions still see inactive tabs' content.
+    <div data-testid="tabs" data-value={value}>
+      {Children.map(children, (child) =>
+        isValidElement(child)
+          ? cloneElement(child, { __tabsOnChange: onChange })
+          : child
+      )}
+    </div>
+  ),
+  TabsList: ({ children, __tabsOnChange }) => (
+    <div>
+      {Children.map(children, (child) =>
+        isValidElement(child)
+          ? cloneElement(child, { __tabsOnChange })
+          : child
+      )}
+    </div>
+  ),
   TabsPanel: ({ children, value }) => (
     <div data-testid={`panel-${value}`}>{children}</div>
   ),
-  TabsTab: ({ children, value }) => (
-    <button data-testid={`tab-${value}`}>{children}</button>
+  TabsTab: ({ children, value, __tabsOnChange }) => (
+    <button
+      data-testid={`tab-${value}`}
+      onClick={() => __tabsOnChange?.(value)}
+    >
+      {children}
+    </button>
   ),
   TagsInput: ({ label }) => (
     <div>
@@ -273,6 +304,89 @@ describe('User', () => {
       setupMocks();
       render(<User isOpen={true} onClose={vi.fn()} />);
       expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+
+    it('shows the App Data tab when editing an existing user', () => {
+      setupMocks();
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      expect(screen.getByTestId('tab-app-data')).toBeInTheDocument();
+      // Lazily mounted: not fetched until the tab is selected.
+      expect(screen.queryByTestId('user-app-data')).not.toBeInTheDocument();
+    });
+
+    it('hides the App Data tab when creating a user', () => {
+      setupMocks();
+      render(<User isOpen={true} onClose={vi.fn()} />);
+      expect(screen.queryByTestId('tab-app-data')).not.toBeInTheDocument();
+    });
+
+    it('uses me for App Data when the user edits themselves', () => {
+      const self = makeRegularUser({ id: 5, user_level: 3 });
+      setupMocks({ authUser: self });
+      render(<User isOpen={true} onClose={vi.fn()} user={self} />);
+      fireEvent.click(screen.getByTestId('tab-app-data'));
+      expect(screen.getByTestId('user-app-data')).toHaveAttribute(
+        'data-user-id',
+        'me'
+      );
+    });
+
+    it('keeps the selected tab when the same user is refreshed', () => {
+      // Revoking an API key swaps in a new copy of the current user. That must
+      // not bounce the modal back to the Account tab.
+      const self = makeRegularUser({ id: 5, user_level: 3 });
+      setupMocks({ authUser: self });
+      const { rerender } = render(
+        <User isOpen={true} onClose={vi.fn()} user={self} />
+      );
+      fireEvent.click(screen.getByTestId('tab-app-data'));
+      expect(screen.getByTestId('tabs')).toHaveAttribute(
+        'data-value',
+        'app-data'
+      );
+
+      rerender(
+        <User
+          isOpen={true}
+          onClose={vi.fn()}
+          user={{ ...self, api_key: null }}
+        />
+      );
+      expect(screen.getByTestId('tabs')).toHaveAttribute(
+        'data-value',
+        'app-data'
+      );
+      expect(screen.getByTestId('user-app-data')).toBeInTheDocument();
+    });
+
+    it('returns to the Account tab when the modal is reopened', () => {
+      const self = makeRegularUser({ id: 5, user_level: 3 });
+      setupMocks({ authUser: self });
+      const { rerender } = render(
+        <User isOpen={true} onClose={vi.fn()} user={self} />
+      );
+      fireEvent.click(screen.getByTestId('tab-app-data'));
+
+      rerender(<User isOpen={false} onClose={vi.fn()} user={self} />);
+      rerender(<User isOpen={true} onClose={vi.fn()} user={self} />);
+      expect(screen.getByTestId('tabs')).toHaveAttribute(
+        'data-value',
+        'account'
+      );
+    });
+
+    it('passes numeric userId for App Data when an admin edits another user', () => {
+      setupMocks({ authUser: makeAdminUser() });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser({ id: 2 })} />
+      );
+      fireEvent.click(screen.getByTestId('tab-app-data'));
+      expect(screen.getByTestId('user-app-data')).toHaveAttribute(
+        'data-user-id',
+        '2'
+      );
     });
 
     it('calls onClose when the modal close button is clicked', () => {
