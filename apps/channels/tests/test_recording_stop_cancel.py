@@ -193,17 +193,22 @@ class DestroyStopsOnlyOwnDvrClientTests(TestCase):
         r.hget.side_effect = lambda key, field: next(
             (ua for cid, ua in ua_map.items() if key.endswith(f":{cid}")), None
         )
-        r.scard.return_value = len(ua_map)
         return r
 
     def _delete(self, rec, ua_map):
         """Delete rec, run the deferred teardown inline; return the stopped client IDs."""
         r = self._mock_redis(ua_map)
-        with patch("core.utils.RedisClient") as rc,              patch("apps.proxy.live_proxy.services.channel_service.ChannelService.stop_client") as sc,              patch("apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"),              patch("core.utils.send_websocket_update"),              patch("threading.Thread") as mock_thread:
+        with patch("core.utils.RedisClient") as rc, \
+             patch(
+                 "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_client"
+             ) as sc, \
+             patch("core.utils.send_websocket_update"), \
+             patch("threading.Thread") as mock_thread:
             rc.get_client.return_value = r
             request = self.factory.delete(f"/api/channels/recordings/{rec.id}/")
             force_authenticate(request, user=self.user)
             RecordingViewSet.as_view({"delete": "destroy"})(request, pk=rec.id)
+            mock_thread.assert_called_once()
             with patch("django.db.connection"):
                 mock_thread.call_args.kwargs["target"]()
         return {c.args[1] for c in sc.call_args_list}
