@@ -35,6 +35,9 @@ vi.mock('../../components/modals/ManageReposModal.jsx', () => ({
 vi.mock('../../components/PluginEnableConfirmModal.jsx', () => ({
   default: () => null,
 }));
+vi.mock('../../components/PluginManifestMessages.jsx', () => ({
+  default: () => <div data-testid="plugin-manifest-messages" />,
+}));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../utils/notificationUtils.js', () => ({

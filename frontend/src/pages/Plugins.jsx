@@ -44,6 +44,8 @@ import {
 } from '../components/PluginWarnings.jsx';
 import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import ConfirmationDialog from '../components/ConfirmationDialog.jsx';
+import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
+import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
 const PluginCard = React.lazy(
   () => import('../components/cards/PluginCard.jsx')
 );
@@ -185,6 +187,7 @@ const PluginsList = ({ onRequestDelete, onRequireTrust }) => {
 };
 
 export default function PluginsPage() {
+  usePluginPageScrollbarGutter();
   const plugins = usePluginStore((state) => state.plugins);
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
@@ -443,6 +446,8 @@ export default function PluginsPage() {
           </Button>
         </Group>
       </Group>
+
+      <PluginManifestMessages />
 
       <PluginsList
         onRequestDelete={handleRequestDelete}

@@ -1145,6 +1145,7 @@ def send_websocket_notification(notification):
                 'action_data': notification.action_data,
                 'is_active': notification.is_active,
                 'admin_only': notification.admin_only,
+                'source': notification.source,
                 'created_at': notification.created_at.isoformat() if notification.created_at else None,
             }
         else:

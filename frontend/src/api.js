@@ -2582,6 +2582,22 @@ export default class API {
     }
   }
 
+  static async getPluginManifestMessages() {
+    try {
+      const response = await request(`${host}/api/plugins/repos/messages/`);
+      return response.messages || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin messages', e);
+      return [];
+    }
+  }
+
+  static async dismissPluginManifestMessage(messageId) {
+    return request(`${host}/api/plugins/repos/messages/${messageId}/dismiss/`, {
+      method: 'POST',
+    });
+  }
+
   static async getPluginDetailManifest(repoId, manifestUrl) {
     try {
       const response = await request(

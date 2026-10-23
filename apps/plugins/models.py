@@ -68,3 +68,19 @@ class PluginRepo(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+
+class PluginManifestMessageDismissal(models.Model):
+    """A user's dismissal of an official root-manifest message UUID."""
+
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="dismissed_plugin_messages"
+    )
+    message_id = models.UUIDField()
+    dismissed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "message_id"], name="unique_plugin_message_dismissal"),
+        ]
+        indexes = [models.Index(fields=["user", "message_id"])]
