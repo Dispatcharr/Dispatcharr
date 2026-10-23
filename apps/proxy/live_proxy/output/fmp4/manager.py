@@ -36,6 +36,9 @@ FFMPEG_REMUX_CMD = [
     "-i", "pipe:0",
     "-c", "copy",
     "-map", "0",
+    # -map 0 also maps data PIDs. Cap the interleave window at 100ms so an
+    # empty data stream cannot hold the rest of the buffer for the default 10s.
+    "-max_interleave_delta", "100K",
     "-bsf:a", "aac_adtstoasc",
     "-use_editlist", "0",
     "-flush_packets", "1",

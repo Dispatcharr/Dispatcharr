@@ -1212,34 +1212,67 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         return f"Series batch processing failed: {str(e)}"
 
 
-# Helper functions for year and date extraction
+# Cap for provider duration_secs. Well above normal episodes and features
+# (scripted episodes rarely exceed ~3 hours; cinematic outliers top out around
+# 15 hours) and still rejects junk that would overflow a DB integer.
+MAX_DURATION_SECS = 48 * 60 * 60
+
+
+def normalize_duration_secs(value):
+    """Return positive whole seconds within MAX_DURATION_SECS, else None.
+
+    Zero is missing. Providers send it when they have no runtime.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # Reject non-integral floats (1.5); allow whole values like 1800.0.
+    if isinstance(value, float) and value != seconds:
+        return None
+    if seconds <= 0 or seconds > MAX_DURATION_SECS:
+        return None
+    return seconds
+
 
 def extract_duration_from_data(movie_data):
-    """Extract duration in seconds from movie data"""
-    duration_secs = None
+    """Extract duration in seconds from movie data.
 
-    # Try to extract duration from various possible fields
-    if movie_data.get('duration_secs'):
-        duration_secs = int(movie_data.get('duration_secs'))
-    elif movie_data.get('duration'):
-        # Handle duration that might be in different formats
-        duration_str = str(movie_data.get('duration'))
+    A usable duration_secs wins. Missing, zero, or unusable duration_secs
+    falls through to duration, where a bare number is minutes.
+    """
+    raw_seconds = movie_data.get('duration_secs')
+    if raw_seconds is not None and raw_seconds != '':
+        seconds = normalize_duration_secs(raw_seconds)
+        if seconds is not None:
+            return seconds
+
+    raw_duration = movie_data.get('duration')
+    if raw_duration is None or raw_duration == '':
+        return None
+
+    duration_str = str(raw_duration)
+    try:
         if duration_str.isdigit():
-            duration_secs = int(duration_str) * 60  # Assume minutes if just a number
+            # Assume minutes if just a number. isdigit() accepts some
+            # characters int() rejects, so this stays inside the try.
+            parsed = int(duration_str) * 60
         else:
-            # Try to parse time format like "01:30:00"
-            try:
-                time_parts = duration_str.split(':')
-                if len(time_parts) == 3:
-                    hours, minutes, seconds = map(int, time_parts)
-                    duration_secs = (hours * 3600) + (minutes * 60) + seconds
-                elif len(time_parts) == 2:
-                    minutes, seconds = map(int, time_parts)
-                    duration_secs = minutes * 60 + seconds
-            except (ValueError, AttributeError):
-                pass
+            time_parts = duration_str.split(':')
+            if len(time_parts) == 3:
+                hours, minutes, seconds = map(int, time_parts)
+                parsed = (hours * 3600) + (minutes * 60) + seconds
+            elif len(time_parts) == 2:
+                minutes, seconds = map(int, time_parts)
+                parsed = minutes * 60 + seconds
+            else:
+                return None
+    except (ValueError, TypeError, OverflowError, AttributeError):
+        return None
 
-    return duration_secs
+    return normalize_duration_secs(parsed)
 
 
 def normalize_rating(rating_value):
@@ -1268,6 +1301,8 @@ def normalize_rating(rating_value):
         logger.debug(f"Invalid rating value discarded: {rating_value}")
         return None
 
+
+# Helper functions for year and date extraction
 
 def extract_year(date_string):
     """Extract year from date string"""
@@ -1538,7 +1573,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             description = info.get('plot') or info.get('overview', '') if info else ''
             rating = normalize_rating(info.get('rating')) if info else None
             air_date = extract_date_from_data(info) if info else None
-            duration_secs = info.get('duration_secs') if info else None
+            duration_secs = normalize_duration_secs(
+                info.get('duration_secs') if info else None
+            )
             tmdb_id = info.get('tmdb_id') if info else None
             imdb_id = info.get('imdb_id') if info else None
 
@@ -1579,7 +1616,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 if air_date != episode.air_date:
                     episode.air_date = air_date
                     updated = True
-                if duration_secs != episode.duration_secs:
+                # Keep an existing duration when the provider sends missing or
+                # invalid data; only apply a successfully normalized value.
+                if duration_secs is not None and duration_secs != episode.duration_secs:
                     episode.duration_secs = duration_secs
                     updated = True
                 if tmdb_id != episode.tmdb_id:
@@ -3265,11 +3304,12 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                 if info.get('genre') and info.get('genre') != movie.genre:
                     movie.genre = info.get('genre')
                     updated = True
-                if info.get('duration_secs'):
-                    duration_secs = int(info.get('duration_secs'))
-                    if duration_secs != movie.duration_secs:
-                        movie.duration_secs = duration_secs
-                        updated = True
+                # Keep an existing duration when the provider sends missing or
+                # invalid data, including 0. Only apply a successfully extracted value.
+                duration_secs = extract_duration_from_data(info)
+                if duration_secs is not None and duration_secs != movie.duration_secs:
+                    movie.duration_secs = duration_secs
+                    updated = True
                 # Check for releasedate or release_date
                 release_date_value = info.get('releasedate') or info.get('release_date')
                 if release_date_value:
