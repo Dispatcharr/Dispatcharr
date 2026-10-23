@@ -39,11 +39,15 @@ from .url_utils import (
     release_worker_stream,
 )
 from .utils import get_logger
+from .config_helper import ConfigHelper
 import gevent
 from apps.proxy.utils import check_user_stream_limits
 from .output.hls.session import SESSION_TOKEN_HEADER, mint_hls_session
 
 logger = get_logger()
+
+# Poll interval while a same-worker follower waits for the leader's local resources.
+_LOCAL_SETUP_WAIT_POLL_SECONDS = 0.05
 
 
 def _is_skip_redirect_requested(request, user, client_id):
@@ -258,6 +262,33 @@ def _channel_setup_needed(proxy_server, channel_id):
         return False, state, False
 
     return True, state, False
+
+
+def _local_channel_resources_ready(proxy_server, channel_id):
+    return (
+        channel_id in proxy_server.stream_buffers
+        and channel_id in proxy_server.client_managers
+    )
+
+
+def _wait_for_local_channel_ready(proxy_server, channel_id):
+    """Wait while same-worker setup runs, until its buffers and managers exist.
+
+    A follower that attached because the channel is in `_channels_setting_up` must
+    not call initialize_channel before the URL exists: that path treats a missing
+    URL as failure and tears down the leader's setup (buffers, managers, Redis).
+
+    Returns False when the setup claim ends without local resources or the client
+    wait timeout elapses. Only in-memory state is polled, so waiting adds no Redis
+    traffic; a channel that starts stopping is rejected by the caller's later check.
+    """
+    deadline = time.time() + ConfigHelper.client_wait_timeout()
+    while channel_id in proxy_server._channels_setting_up and time.time() < deadline:
+        if _local_channel_resources_ready(proxy_server, channel_id):
+            return True
+        gevent.sleep(_LOCAL_SETUP_WAIT_POLL_SECONDS)
+    # Also covers the leader publishing resources and clearing its claim in one step.
+    return _local_channel_resources_ready(proxy_server, channel_id)
 
 
 def _drop_pre_registered_client(proxy_server, channel_id, client_id):
@@ -802,12 +833,27 @@ def stream_ts(
                     if owned_for_init:
                         proxy_server.release_ownership(channel_id, signal_stopping=False)
 
-        # Register client - can do this regardless of initialization state
-        # Create local resources if needed
+        # Register client - can do this regardless of initialization state.
+        # Create local resources if needed. A same-worker follower must wait for
+        # the leader's buffers/managers instead of initializing with a missing URL.
         if (
-            channel_id not in proxy_server.stream_buffers
-            or channel_id not in proxy_server.client_managers
+            not _local_channel_resources_ready(proxy_server, channel_id)
+            and channel_id in proxy_server._channels_setting_up
         ):
+            logger.info(
+                f"[{client_id}] Waiting for in-progress setup of channel {channel_id} "
+                f"on this worker before attaching"
+            )
+            if not _wait_for_local_channel_ready(proxy_server, channel_id):
+                logger.warning(
+                    f"[{client_id}] Setup of channel {channel_id} ended without local "
+                    f"resources or timed out"
+                )
+                return JsonResponse(
+                    {"error": "Channel setup failed or timed out"}, status=503
+                )
+
+        if not _local_channel_resources_ready(proxy_server, channel_id):
             logger.debug(
                 f"[{client_id}] Channel {channel_id} exists in Redis but not initialized in this worker - initializing now"
             )

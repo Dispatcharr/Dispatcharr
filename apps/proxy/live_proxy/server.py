@@ -564,6 +564,15 @@ class ProxyServer:
     ):
         """Initialize a channel without redundant active key"""
         try:
+            # Setup on this worker has not written the URL yet. Return before
+            # creating buffers or stopping upstream for that request.
+            if not url and channel_id in self._channels_setting_up:
+                logger.info(
+                    f"No URL yet for channel {channel_id}; setup in progress on "
+                    f"this worker - leaving initialization to the owning request"
+                )
+                return False
+
             if self._channel_unavailable_for_new_clients(channel_id):
                 logger.warning(
                     f"Refusing to initialize channel {channel_id}; "
