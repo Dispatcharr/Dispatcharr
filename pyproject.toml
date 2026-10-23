@@ -7,10 +7,10 @@ requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
     # Stay on 6.0.x until django-celery-beat allows Django 6.1 (currently Django<6.1).
-    "Django==6.0.8",
+    "Django==6.0.9",
     "psycopg[binary]",
     "celery[redis]==5.6.3",
-    "djangorestframework==3.18.1",
+    "djangorestframework==3.18.3",
     "requests==2.34.2",
     "psutil==7.2.2",
     "pillow",
@@ -18,7 +18,7 @@ dependencies = [
     "streamlink",
     "python-vlc",
     "yt-dlp",
-    "gevent==26.8.0",
+    "gevent==26.9.0",
     "django-db-geventpool",
     "daphne",
     "uwsgi",
@@ -29,8 +29,8 @@ dependencies = [
     "regex",
     "tzlocal",
     "pytz",
-    "torch==2.14.0+cpu",
-    "sentence-transformers==6.0.1",
+    "torch==2.14.1+cpu",
+    "sentence-transformers==6.2.0",
     "channels",
     "channels-redis==4.3.0",
     "django-filter",
