@@ -20,6 +20,8 @@ from .api_views import (
     PluginDetailManifestAPIView,
     PluginInstallFromRepoAPIView,
     PluginRepoSettingsAPIView,
+    PluginManifestMessagesAPIView,
+    PluginManifestMessageDismissAPIView,
 )
 
 app_name = "plugins"
@@ -39,6 +41,8 @@ urlpatterns = [
     # Plugin repos (hub / store) - static paths first, then parametric
     path("repos/", PluginRepoListCreateAPIView.as_view(), name="repo-list"),
     path("repos/available/", AvailablePluginsAPIView.as_view(), name="available-plugins"),
+    path("repos/messages/", PluginManifestMessagesAPIView.as_view(), name="manifest-messages"),
+    path("repos/messages/<uuid:message_id>/dismiss/", PluginManifestMessageDismissAPIView.as_view(), name="manifest-message-dismiss"),
     path("repos/plugin-detail/", PluginDetailManifestAPIView.as_view(), name="plugin-detail-manifest"),
     path("repos/install/", PluginInstallFromRepoAPIView.as_view(), name="repo-install"),
     path("repos/settings/", PluginRepoSettingsAPIView.as_view(), name="repo-settings"),

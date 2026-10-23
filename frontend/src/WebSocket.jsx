@@ -952,7 +952,9 @@ export const WebsocketProvider = ({ children }) => {
                   notificationData.priority === 'critical'
                 ) {
                   const color =
-                    notificationData.notification_type === 'version_update'
+                    notificationData.priority === 'critical'
+                      ? 'red'
+                      : notificationData.notification_type === 'version_update'
                       ? 'green'
                       : notificationData.notification_type === 'warning'
                         ? 'orange'

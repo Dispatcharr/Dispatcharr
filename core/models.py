@@ -992,6 +992,7 @@ class SystemNotification(models.Model):
     class Source(models.TextChoices):
         SYSTEM = 'system', 'System Generated'
         DEVELOPER = 'developer', 'Developer Notification'
+        PLUGIN_MANIFEST = 'plugin_manifest', 'Plugin System Notification'
 
     # Unique identifier for the notification (e.g., 'version-0.19.0', 'setting-proxy-buffer')
     # This allows deduplication and targeted dismissals

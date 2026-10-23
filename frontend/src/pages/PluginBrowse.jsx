@@ -21,8 +21,11 @@ import ManageReposModal from '../components/modals/ManageReposModal.jsx';
 import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import { showNotification } from '../utils/notificationUtils.js';
 import { compareVersions } from '../utils/components/pluginUtils.js';
+import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
+import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
 
 export default function PluginBrowsePage() {
+  usePluginPageScrollbarGutter();
   const repos = usePluginStore((s) => s.repos);
   const availablePlugins = usePluginStore((s) => s.availablePlugins);
   const availableLoading = usePluginStore((s) => s.availableLoading);
@@ -278,6 +281,8 @@ export default function PluginBrowsePage() {
             </Button>
           </Group>
         </Group>
+
+        <PluginManifestMessages />
 
         {loading && <Loader />}
 

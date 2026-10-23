@@ -35,6 +35,9 @@ vi.mock('../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
   updateNotification: vi.fn(),
 }));
+vi.mock('../../components/PluginManifestMessages.jsx', () => ({
+  default: () => <div data-testid="plugin-manifest-messages" />,
+}));
 
 vi.mock('@mantine/core', async () => {
   return {

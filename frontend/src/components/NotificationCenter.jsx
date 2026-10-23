@@ -95,12 +95,21 @@ const getTypeColor = (type) => {
   }
 };
 
+const getExternalLinkLabel = (link) => {
+  try {
+    return `Open ${new URL(link).hostname}`;
+  } catch {
+    return 'Open link';
+  }
+};
+
 // Individual notification item component
 const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
   const theme = useMantineTheme();
   const navigate = useNavigate();
   const typeColor = getTypeColor(notification.notification_type);
   const priorityColor = getPriorityColor(notification.priority);
+  const notificationColor = notification.priority === 'critical' ? 'red' : typeColor;
   const isDismissed = notification.is_dismissed;
 
   const handleDismiss = (e) => {
@@ -120,6 +129,8 @@ const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
     } else if (releaseUrl) {
       // External link
       window.open(releaseUrl, '_blank');
+    } else if (notification.action_data?.link) {
+      window.open(notification.action_data.link, '_blank', 'noopener,noreferrer');
     }
 
     if (onAction) {
@@ -157,7 +168,7 @@ const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
         )}
 
       <Group wrap="nowrap" align="flex-start" gap="sm">
-        <ThemeIcon color={typeColor} variant="light" size="md" radius="xl">
+        <ThemeIcon color={notificationColor} variant="light" size="md" radius="xl">
           {getNotificationIcon(notification.notification_type)}
         </ThemeIcon>
         <Box style={{ flex: 1 }}>
@@ -208,6 +219,20 @@ const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
                 onClick={handleAction}
               >
                 {notification.action_data.action_text}
+              </Button>
+            )}
+
+          {notification.source === 'plugin_manifest' &&
+            notification.action_data?.link && (
+              <Button
+                size="xs"
+                variant="light"
+                color={notificationColor}
+                mt="xs"
+                leftSection={<ExternalLink size={12} />}
+                onClick={handleAction}
+              >
+                {getExternalLinkLabel(notification.action_data.link)}
               </Button>
             )}
 

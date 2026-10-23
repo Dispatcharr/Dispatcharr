@@ -512,6 +512,11 @@ def _save_fetched_manifest_to_repo(repo, data, verified):
     repo.name = registry_name
     repo.signature_verified = verified
     repo.save(update_fields=["name", "cached_manifest", "signature_verified", "last_fetched", "last_fetch_status", "updated_at"])
+    try:
+        from .manifest_messages import reconcile_official_messages
+        reconcile_official_messages(repo)
+    except Exception:
+        logger.exception("Could not reconcile official manifest messages")
     return None
 
 
@@ -1358,7 +1363,14 @@ class PluginRepoDetailAPIView(PluginAuthMixin, APIView):
         serializer = PluginRepoSerializer(repo, data=update_data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        if repo.is_official and "enabled" in update_data:
+            try:
+                from .manifest_messages import reconcile_official_messages
+                reconcile_official_messages(repo)
+            except Exception:
+                logger.exception("Could not reconcile official manifest messages")
         return Response(PluginRepoSerializer(repo).data)
+
 
     @extend_schema(
         description="Remove a plugin repository.",
@@ -1378,6 +1390,23 @@ class PluginRepoDetailAPIView(PluginAuthMixin, APIView):
             )
         repo.delete()
         return Response({"success": True})
+
+
+class PluginManifestMessagesAPIView(PluginAuthMixin, APIView):
+    """Return the current user's eligible messages from the trusted official repo."""
+
+    def get(self, request):
+        from .manifest_messages import official_messages_for_user
+        return Response({"messages": official_messages_for_user(request.user)})
+
+
+class PluginManifestMessageDismissAPIView(PluginAuthMixin, APIView):
+    def post(self, request, message_id):
+        from .manifest_messages import dismiss_message
+
+        if not dismiss_message(request.user, message_id):
+            return Response({"error": "Message not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"success": True, "message_id": message_id})
 
 
 class PluginRepoRefreshAPIView(PluginAuthMixin, APIView):
