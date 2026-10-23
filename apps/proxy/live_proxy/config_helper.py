@@ -18,8 +18,13 @@ class ConfigHelper:
     # Commonly used configuration values
     @staticmethod
     def connection_timeout():
-        """Get connection timeout in seconds"""
-        return ConfigHelper.get('CONNECTION_TIMEOUT', 10)
+        """Seconds without data from an active stream before marking it unhealthy."""
+        return Config.get_connection_timeout()
+
+    @staticmethod
+    def stream_startup_timeout():
+        """Seconds without data after a stream connects before trying the next one."""
+        return Config.get_stream_startup_timeout()
 
     @staticmethod
     def client_wait_timeout():
