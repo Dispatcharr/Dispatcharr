@@ -7,7 +7,12 @@ Covers:
   - run_recording race guard before status write
   - _stop_dvr_clients() DVR client isolation
   - destroy() stops only the deleted recording's DVR client
+  - run_recording stops FFmpeg when destroy() removes the HLS dir mid-recording
 """
+import os
+import shutil
+import signal
+import tempfile
 from datetime import timedelta
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -448,3 +453,90 @@ class StopDvrClientsTests(TestCase):
             rc.get_client.return_value = r
             _stop_dvr_clients(str(self.channel.uuid))
         sch.assert_not_called()
+
+
+class _FakeFfmpeg:
+    """A running FFmpeg that only exits when signalled or killed."""
+
+    stderr = None
+
+    def __init__(self, *args, **kwargs):
+        self.returncode = None
+        self.signals = []
+
+    def poll(self):
+        return self.returncode
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+        self.returncode = 255
+
+    def kill(self):
+        self.signals.append("kill")
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class RunRecordingDeletedMidRecordingTests(TestCase):
+    """destroy() deletes the row and removes the HLS dir straight away, before
+    run_recording's 2 s stop poll can see the delete. The task must still stop
+    FFmpeg: left running, FFmpeg reconnects to the channel as a new client."""
+
+    def setUp(self):
+        self.channel = Channel.objects.create(channel_number=95, name="Delete Mid-Recording Channel")
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        now = timezone.now()
+        self.rec = Recording.objects.create(
+            channel=self.channel,
+            start_time=now - timedelta(minutes=1),
+            end_time=now + timedelta(hours=1),
+            custom_properties={},
+        )
+
+    def _output_paths(self, *args, **kwargs):
+        hls_dir = os.path.join(self.tmp, f".dvr_{self.rec.id}_hls")
+        return os.path.join(self.tmp, "show.mkv"), hls_dir, "show.mkv"
+
+    def test_hls_dir_removed_mid_recording_stops_ffmpeg(self):
+        from apps.channels.tasks import run_recording as run_rec
+
+        procs = []
+
+        def popen(*args, **kwargs):
+            procs.append(_FakeFfmpeg())
+            return procs[-1]
+
+        deleted = []
+
+        def sleep(_seconds):
+            # The first poll-loop sleep: do what destroy() does
+            if procs and not deleted:
+                hls_dir = Recording.objects.get(id=self.rec.id).custom_properties["_hls_dir"]
+                Recording.objects.filter(id=self.rec.id).delete()
+                shutil.rmtree(hls_dir)
+                deleted.append(hls_dir)
+
+        with patch("apps.channels.tasks.get_channel_layer", return_value=_async_channel_layer_mock()), \
+             patch("apps.channels.tasks._build_output_paths", side_effect=self._output_paths), \
+             patch("apps.channels.tasks._resolve_poster_for_program", return_value=(None, None)), \
+             patch("apps.channels.tasks.get_dvr_stream_base_url", return_value="http://127.0.0.1:5656"), \
+             patch("apps.channels.tasks.subprocess.Popen", side_effect=popen), \
+             patch("apps.channels.tasks.time.sleep", side_effect=sleep), \
+             patch("core.utils.RedisClient.get_client", return_value=None), \
+             patch("core.utils.log_system_event"), \
+             patch("core.utils.send_websocket_update"), \
+             self.assertLogs("apps.channels.tasks", level="INFO") as logs:
+            run_rec(
+                self.rec.id, self.channel.id, str(self.rec.start_time), str(self.rec.end_time),
+            )
+
+        self.assertTrue(deleted, "the recording was never deleted mid-recording")
+        self.assertEqual(len(procs), 1, "FFmpeg was restarted after the delete")
+        self.assertEqual(procs[0].signals[:1], [signal.SIGINT])
+        self.assertIsNotNone(procs[0].poll(), "FFmpeg was left running")
+        joined = "\n".join(logs.output)
+        self.assertIn("HLS directory removed", joined)
+        self.assertIn("was cancelled", joined)

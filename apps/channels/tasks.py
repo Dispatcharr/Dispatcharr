@@ -2511,10 +2511,27 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                             pass
                         _last_active_lock_refresh = now
 
-                    segs_now = [
-                        f for f in os.listdir(hls_dir)
-                        if f.startswith("seg_") and f.endswith(".ts")
-                    ]
+                    try:
+                        segs_now = [
+                            f for f in os.listdir(hls_dir)
+                            if f.startswith("seg_") and f.endswith(".ts")
+                        ]
+                    except FileNotFoundError:
+                        # destroy() removes the HLS dir right after deleting the
+                        # row, usually before the stop poll below sees the delete.
+                        # Stop FFmpeg here: left running, it reconnects to the
+                        # channel as a new client that nothing will stop.
+                        logger.info(
+                            f"DVR recording {recording_id}: HLS directory removed — stopping FFmpeg"
+                        )
+                        ffmpeg_proc.send_signal(signal.SIGINT)
+                        try:
+                            ffmpeg_proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            ffmpeg_proc.kill()
+                        interrupted = False
+                        _break_reason = "deleted"
+                        break
 
                     if not _attempt_stream_confirmed:
                         if len(segs_now) > _last_seg_count:
