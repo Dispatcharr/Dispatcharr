@@ -797,13 +797,6 @@ class ProxyServer:
                 )
                 self.client_managers[channel_id] = client_manager
 
-            # Start stream manager thread only for the owner
-            self._live_stream_managers[channel_id] = stream_manager
-            thread = threading.Thread(target=stream_manager.run, daemon=True)
-            thread.name = f"stream-{channel_id}"
-            thread.start()
-            logger.info(f"Started stream manager thread for channel {channel_id}")
-
             # If we're the owner, we need to set the channel state rather than starting a grace period immediately
             if self.am_i_owner(channel_id):
                 self.update_channel_state(channel_id, ChannelState.CONNECTING, {
@@ -816,6 +809,14 @@ class ProxyServer:
                 self.redis_client.setex(attempt_key, 60, str(time.time()))
 
                 logger.info(f"Channel {channel_id} in {ChannelState.CONNECTING} state - waiting for buffer to fill")
+
+            # After CONNECTING so a failed thread cannot be overwritten by that write.
+            self._live_stream_managers[channel_id] = stream_manager
+            thread = threading.Thread(target=stream_manager.run, daemon=True)
+            thread.name = f"stream-{channel_id}"
+            thread.start()
+            logger.info(f"Started stream manager thread for channel {channel_id}")
+
             return True
 
         except Exception as e:
@@ -1003,6 +1004,44 @@ class ProxyServer:
     def _shutdown_disconnect_ttl():
         delay = ConfigHelper.channel_shutdown_delay()
         return max(int(delay * 2), 60)
+
+    @staticmethod
+    def _monitor_channel_state(metadata):
+        """
+        State the owner monitor should act on for a channel's metadata hash.
+
+        Only the first metadata write from channel setup (temp_init, no state) reads as
+        initializing. Any other hash without a state, such as one recreated by the
+        registry's last_active write, is an orphan and reads as "unknown".
+        """
+        if not metadata:
+            return "unknown"
+        if 'state' in metadata:
+            return metadata['state']
+        if 'temp_init' in metadata:
+            return ChannelState.INITIALIZING
+        return "unknown"
+
+    @staticmethod
+    def _pre_active_start_time(metadata, connection_attempt_time):
+        """
+        First usable start time for a pre-active channel, or None.
+
+        Prefers the connection_attempt timestamp, then init_time, temp_init and
+        state_changed_at from the metadata hash. Every state write sets
+        state_changed_at, so a hash recreated by a state write still has a start time.
+        """
+        if connection_attempt_time:
+            return connection_attempt_time
+        for key in ('init_time', 'temp_init', 'state_changed_at'):
+            value = (metadata or {}).get(key)
+            if not value:
+                continue
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                continue
+        return None
 
     @staticmethod
     def _pre_active_no_clients_should_stop(connection_ready_time, start_time, now=None):
@@ -1891,8 +1930,7 @@ class ProxyServer:
                             if self.redis_client:
                                 metadata_key = RedisKeys.channel_metadata(channel_id)
                                 metadata = self.redis_client.hgetall(metadata_key)
-                                if metadata and 'state' in metadata:
-                                    channel_state = metadata['state']
+                                channel_state = self._monitor_channel_state(metadata)
 
                             # Check if channel has any clients left
                             total_clients = 0
@@ -1913,8 +1951,7 @@ class ProxyServer:
                             if time.time() % 30 < 1:  # Every ~30 seconds
                                 logger.info(f"Channel {channel_id} has {total_clients} clients, state: {channel_state}")
 
-                            # Pre-active channels: init timeouts and buffer-ready promotion
-                            if channel_state in [ChannelState.INITIALIZING, ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
+                            if channel_state in ChannelState.STARTUP:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
@@ -1942,16 +1979,8 @@ class ProxyServer:
                                             except (ValueError, TypeError):
                                                 pass
 
-                                    # Also get init time as a fallback
-                                    init_time = None
-                                    if metadata and 'init_time' in metadata:
-                                        try:
-                                            init_time = float(metadata['init_time'])
-                                        except (ValueError, TypeError):
-                                            pass
-
                                     # Use whichever timestamp we have (prefer connection_attempt as it's more recent)
-                                    start_time = connection_attempt_time or init_time
+                                    start_time = self._pre_active_start_time(metadata, connection_attempt_time)
 
                                     if start_time:
                                         should_stop, timeout, reason = (
@@ -1982,8 +2011,7 @@ class ProxyServer:
                                     from .services.channel_service import ChannelService
 
                                     ChannelService.promote_channel_when_buffer_ready(channel_id)
-                            # If active and no clients, start normal shutdown procedure
-                            elif channel_state not in [ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS] and total_clients == 0:
+                            elif channel_state not in ChannelState.STARTUP and total_clients == 0:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
