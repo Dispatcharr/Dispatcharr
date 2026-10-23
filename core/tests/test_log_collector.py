@@ -5,6 +5,8 @@ import io
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 from datetime import timezone
@@ -14,7 +16,7 @@ from zoneinfo import ZoneInfo
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import CoreSettings, SYSTEM_SETTINGS_KEY
-from dispatcharr import log_collector
+from dispatcharr import log_collector, log_redaction
 from dispatcharr.log_collector import Collector
 
 
@@ -24,7 +26,9 @@ class ConfTests(SimpleTestCase):
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
 
     def test_conf_round_trip(self):
-        log_collector.write_conf(self.log_dir, False, 17, 7, "Pacific/Auckland")
+        log_collector.write_conf(
+            self.log_dir, False, 17, 7, "Pacific/Auckland", redact=False
+        )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
@@ -33,8 +37,23 @@ class ConfTests(SimpleTestCase):
                 "max_mb": 17,
                 "keep": 7,
                 "time_zone": "Pacific/Auckland",
+                "redact": False,
             },
         )
+
+    def test_only_an_explicit_off_disables_redaction(self):
+        path = log_collector.conf_path(self.log_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        for value, expected in (
+            ("0", False), ("false", False), ("1", True), ("", True), ("off?", True)
+        ):
+            with open(path, "w") as f:
+                f.write(f"redact={value}\n")
+            self.assertIs(
+                log_collector.read_conf(self.log_dir)["redact"], expected, value
+            )
+        os.remove(path)
+        self.assertIs(log_collector.read_conf(self.log_dir)["redact"], True)
 
     def test_write_conf_creates_the_config_subdirectory(self):
         log_collector.write_conf(self.log_dir, True, 10, 5)
@@ -86,6 +105,30 @@ class ConfTests(SimpleTestCase):
     def test_missing_conf_gives_defaults(self):
         self.assertEqual(log_collector.read_conf(self.log_dir), log_collector._DEFAULT_CONF)
 
+
+class RedactionImportTests(SimpleTestCase):
+    def test_redaction_module_needs_no_django(self):
+        """The collector runs with no settings, so its masking must load bare."""
+        script = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('lr', sys.argv[1])\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "assert not [n for n in sys.modules if n.split('.')[0] == 'django'], "
+            "sorted(sys.modules)\n"
+            "print(module.redact_text('GET /live/portaluser/portalpass/1.ts'))\n"
+        )
+        # -I keeps PYTHONPATH and the cwd off sys.path: nothing but the file.
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", script, log_redaction.__file__],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/live/[username]/[password]/1.ts", result.stdout)
+
+
+class CollectorTests(SimpleTestCase):
     def setUp(self):
         self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
@@ -200,6 +243,42 @@ class ConfTests(SimpleTestCase):
         done.join(timeout=5.0)
         self.assertFalse(done.is_alive())
 
+    def test_redaction_off_forwards_and_files_lines_untouched(self):
+        self.collector.conf["redact"] = False
+        self.feed(b"GET /live/joe/s3cret/1.ts\n")
+        self.collector._drain()
+        self.assertIn("GET /live/joe/s3cret/1.ts", self.read_forward())
+        self.assertIn("GET /live/joe/s3cret/1.ts", self.read_log())
+
+    def test_redaction_off_skips_the_safe_cut_search(self):
+        self.collector.conf["redact"] = False
+        line = b"a b " * (log_collector._MAX_LINE_BYTES // 2) + b"\n"
+        with mock.patch.object(log_collector, "_carry_cut", side_effect=AssertionError):
+            self.feed(line)
+        self.assertEqual(self.strip_stamps(self.read_forward()).encode(), line)
+
+    def test_masking_keeps_an_open_chunk_open(self):
+        self.assertEqual(
+            self.collector._filter(b"GET /live/joe/s3cret/1.ts"),
+            b"GET /live/[username]/[password]/1.ts",
+        )
+
+    def test_masking_keeps_undecodable_bytes(self):
+        self.assertEqual(
+            self.collector._filter(b"\xff GET /live/joe/s3cret/1.ts \xfe"),
+            b"\xff GET /live/[username]/[password]/1.ts \xfe",
+        )
+
+    def test_a_masking_failure_keeps_the_line_and_says_so_once(self):
+        with mock.patch.object(
+            log_collector, "redact_text", side_effect=ValueError
+        ), mock.patch.object(log_collector.sys, "stderr", new_callable=io.StringIO) as err:
+            self.feed(b"GET /live/joe/s3cret/1.ts\n", b"second line\n")
+        forward = self.read_forward()
+        self.assertIn("GET /live/joe/s3cret/1.ts", forward)
+        self.assertIn("second line", forward)
+        self.assertEqual(err.getvalue().count("masking failed (ValueError)"), 1)
+
     def test_both_sinks_get_the_same_bytes(self):
         self.feed(b"one line\n")
         self.collector._drain()
@@ -239,6 +318,45 @@ class ConfTests(SimpleTestCase):
         self.assertEqual(len(re.findall(r"\d{4}-\d{2}-\d{2} ", forward)), 1)
         self.assertIn("x" * 200, forward)
 
+    def straddle(self, secret_line, offset):
+        # Pads so the read boundary falls *offset* bytes into secret_line.
+        size = log_collector._MAX_LINE_BYTES - offset
+        pad = (b"w " * (size // 2 + 1))[-size:]
+        self.feed(pad + secret_line + b" and the rest\n")
+        return self.strip_stamps(self.read_forward())
+
+    def test_a_credential_across_a_read_boundary_is_masked_whole(self):
+        for offset in range(1, 30):
+            with self.subTest(offset=offset):
+                self.setUp()
+                out = self.straddle(b"password=s3cretvalue", offset)
+                self.assertIn("password=[password] and the rest", out)
+                self.assertNotIn("s3cret", out)
+                self.assertNotIn("value", out)
+
+    def test_failure_prose_across_a_read_boundary_is_masked_whole(self):
+        out = self.straddle(b"connection to prov.example.com timed out", 20)
+        self.assertIn("connection to [host] timed out", out)
+        self.assertNotIn("prov.example.com", out)
+
+    def test_an_oversize_line_crosses_the_boundary_byte_for_byte(self):
+        line = b"a b&c,d;e " * (log_collector._MAX_LINE_BYTES // 5) + b"\n"
+        self.feed(line)
+        self.assertEqual(self.strip_stamps(self.read_forward()).encode(), line)
+
+    def test_a_final_oversize_line_without_a_newline_arrives_byte_for_byte(self):
+        # The carried tail is flushed at EOF, with no newline to end the read.
+        line = b"a b&c " * (log_collector._MAX_LINE_BYTES // 5)
+        self.feed(line)
+        self.assertEqual(self.strip_stamps(self.read_forward()).encode(), line)
+
+    def test_a_secret_dense_with_separators_cannot_force_a_blind_cut(self):
+        record = b'{"password": "' + b"a b " * 75 + b'"} '
+        self.feed(record * (3 * log_collector._MAX_LINE_BYTES // len(record)) + b"\n")
+        out = self.read_forward()
+        self.assertNotIn('"password": "a b', out)
+        self.assertIn('"password": "[password]"', out)
+
     def test_oversize_record_is_capped_in_the_file_and_whole_on_stdout(self):
         # The file rotates so it takes the cap; docker logs has to stay complete.
         big = b"2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + b"y" * 60000
@@ -250,6 +368,14 @@ class ConfTests(SimpleTestCase):
         forwarded = self.read_forward()
         self.assertGreater(len(forwarded), 60000)
         self.assertNotIn("truncated this record at", forwarded)
+
+    def test_a_record_masked_under_the_cap_is_filed_whole(self):
+        record = b"x" * 16300 + b" password=" + b"A" * 200
+        self.feed(record + b"\n")
+        self.collector._drain()
+        filed = self.read_log()
+        self.assertIn("password=[password]", filed)
+        self.assertNotIn("truncated this record at", filed)
 
     def test_the_cap_never_cuts_through_a_codepoint(self):
         # The tail is served as charset=utf-8, so a cut mid-sequence malforms the file.
@@ -532,7 +658,12 @@ class ApplySettingsTests(SimpleTestCase):
     def test_settings_round_trip_to_conf(self):
         log_collector.apply_settings(
             self.log_dir,
-            {"log_persist": False, "log_max_mb": 15, "log_keep": 3},
+            {
+                "log_persist": False,
+                "log_max_mb": 15,
+                "log_keep": 3,
+                "log_redact": False,
+            },
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
@@ -542,6 +673,7 @@ class ApplySettingsTests(SimpleTestCase):
                 "max_mb": 15,
                 "keep": 3,
                 "time_zone": "UTC",
+                "redact": False,
             },
         )
 
@@ -550,6 +682,19 @@ class ApplySettingsTests(SimpleTestCase):
         with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_ENV": "modular"}):
             log_collector.apply_settings(self.log_dir, {"log_persist": False})
         self.assertFalse(log_collector.read_conf(self.log_dir)["persist"])
+
+    def test_a_missing_redact_setting_keeps_masking_on(self):
+        # Settings saved before the switch existed carry no log_redact key.
+        log_collector.write_conf(self.log_dir, True, 10, 5, redact=False)
+        log_collector.apply_settings(self.log_dir, {"log_persist": False})
+        self.assertIs(log_collector.read_conf(self.log_dir)["redact"], True)
+
+    def test_a_failed_conf_write_is_logged(self):
+        with mock.patch.object(
+            log_collector.os, "replace", side_effect=OSError("read-only")
+        ), self.assertLogs("dispatcharr.log_collector", "WARNING") as logs:
+            log_collector.apply_settings(self.log_dir, {"log_redact": True})
+        self.assertIn("Could not write log collector settings", logs.output[0])
 
     def test_collector_running_needs_a_live_collector_process(self):
         self.assertFalse(log_collector.collector_running(self.log_dir))
@@ -581,7 +726,12 @@ class ReceiverTests(TestCase):
             key=SYSTEM_SETTINGS_KEY, defaults={"value": {}}
         )
         with override_settings(LOG_FILE_DIR=log_dir):
-            inst.value = {"log_persist": False, "log_max_mb": 20, "log_keep": 4}
+            inst.value = {
+                "log_persist": False,
+                "log_max_mb": 20,
+                "log_keep": 4,
+                "log_redact": False,
+            }
             inst.save()
         conf = log_collector.read_conf(log_dir)
         self.assertEqual(
@@ -591,6 +741,7 @@ class ReceiverTests(TestCase):
                 "max_mb": 20,
                 "keep": 4,
                 "time_zone": "UTC",
+                "redact": False,
             },
         )
 

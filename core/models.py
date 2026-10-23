@@ -876,6 +876,7 @@ class CoreSettings(models.Model):
             "log_max_mb": DEFAULT_LOG_MB,
             "log_keep": DEFAULT_LOG_KEEP,
             "log_persist": True,
+            "log_redact": True,
         })
 
     @classmethod
