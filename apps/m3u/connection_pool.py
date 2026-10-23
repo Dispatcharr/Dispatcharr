@@ -14,6 +14,7 @@ import hashlib
 import logging
 import re
 from typing import Literal, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 from redis.exceptions import WatchError
 
@@ -27,9 +28,23 @@ SERVER_GROUP_CONNECTIONS_KEY = "server_group_connections:{group_id}:{fingerprint
 
 RELEASE_MAX_ATTEMPTS = 10
 
+# Typed Xtream paths: /live|movie|series/<user>/<pass>/...
 _XC_URL_CREDENTIALS_RE = re.compile(
     r"/(?:live|movie|series)/([^/]+)/([^/]+)/",
     re.IGNORECASE,
+)
+
+# First path segment values that are XC API/path roots, not usernames.
+_XC_SHORT_FORM_RESERVED_FIRST_SEGMENTS = frozenset(
+    {
+        "live",
+        "movie",
+        "series",
+        "timeshift",
+        "player_api.php",
+        "panel_api.php",
+        "xmltv.php",
+    }
 )
 
 
@@ -58,8 +73,8 @@ def compute_credential_fingerprint(username: str, password: str) -> Optional[str
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def extract_credentials_from_stream_url(url: str) -> Tuple[Optional[str], Optional[str]]:
-    """Parse username/password embedded in an Xtream-style stream URL."""
+def extract_typed_xc_credentials(url: str) -> Tuple[Optional[str], Optional[str]]:
+    """Parse credentials from /live|movie|series/<user>/<pass>/ paths."""
     if not url:
         return None, None
     match = _XC_URL_CREDENTIALS_RE.search(url)
@@ -68,8 +83,34 @@ def extract_credentials_from_stream_url(url: str) -> Tuple[Optional[str], Option
     return match.group(1), match.group(2)
 
 
-def _fingerprint_from_profile_stream_url(profile) -> Optional[str]:
-    """STD/M3U: fingerprint from a sample stream URL after profile rewrite."""
+def extract_short_form_xc_credentials(url: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Parse credentials from short-form stream URLs: /<user>/<pass>/<id>.
+
+    Requires exactly three non-empty path segments. The stream id may be numeric
+    or not, and may include a media extension. Empty segments (trailing slash or
+    "//") are rejected rather than collapsed. Reserved first segments are also
+    rejected so incomplete typed paths are not treated as logins.
+    """
+    if not url:
+        return None, None
+
+    path = urlparse(url).path or ""
+    if not path.startswith("/"):
+        return None, None
+
+    segments = path[1:].split("/")
+    if len(segments) != 3 or not all(segments):
+        return None, None
+
+    username, password, _stream_part = (unquote(part) for part in segments)
+    if username.lower() in _XC_SHORT_FORM_RESERVED_FIRST_SEGMENTS:
+        return None, None
+    return username, password
+
+
+def _transformed_sample_stream_url(profile) -> Optional[str]:
+    """Return one profile-rewritten stream URL for credential fingerprinting."""
     from apps.channels.models import Stream
 
     sample_url = (
@@ -84,18 +125,14 @@ def _fingerprint_from_profile_stream_url(profile) -> Optional[str]:
     try:
         from apps.proxy.live_proxy.url_utils import transform_url
 
-        transformed = transform_url(
+        return transform_url(
             sample_url,
             profile.search_pattern or "",
             profile.replace_pattern or "",
         )
-        if not transformed:
-            return None
-        url_user, url_pass = extract_credentials_from_stream_url(transformed)
-        return compute_credential_fingerprint(url_user or "", url_pass or "")
     except Exception as exc:
         logger.debug(
-            "Could not derive profile %s fingerprint from stream URL: %s",
+            "Could not transform sample stream URL for profile %s: %s",
             profile.pk,
             exc,
         )
@@ -103,7 +140,18 @@ def _fingerprint_from_profile_stream_url(profile) -> Optional[str]:
 
 
 def get_profile_credential_fingerprint(profile) -> Optional[str]:
-    """Fingerprint for credentials this profile uses at playback time."""
+    """Fingerprint for credentials this profile uses at playback time.
+
+    Resolution order (after XC account credential transforms):
+    1. Typed Xtream path credentials in a sample stream URL
+    2. Account username/password
+    3. Short-form Xtream path credentials in a sample stream URL
+
+    Account credentials are preferred over short-form URL parsing so CDN-style
+    three-segment paths cannot override an explicit login and break ServerGroup
+    pairing with XC accounts. Short-form remains available for STD M3U accounts
+    whose only login is embedded in /user/pass/id URLs.
+    """
     m3u_account = profile.m3u_account
 
     if m3u_account.account_type == "XC":
@@ -127,14 +175,25 @@ def get_profile_credential_fingerprint(profile) -> Optional[str]:
             if profile.search_pattern and profile.replace_pattern:
                 return None
 
-    fingerprint = _fingerprint_from_profile_stream_url(profile)
-    if fingerprint:
-        return fingerprint
+    transformed = _transformed_sample_stream_url(profile)
+    if transformed:
+        url_user, url_pass = extract_typed_xc_credentials(transformed)
+        fingerprint = compute_credential_fingerprint(url_user or "", url_pass or "")
+        if fingerprint:
+            return fingerprint
 
-    return compute_credential_fingerprint(
+    fingerprint = compute_credential_fingerprint(
         m3u_account.username or "",
         m3u_account.password or "",
     )
+    if fingerprint:
+        return fingerprint
+
+    if transformed:
+        url_user, url_pass = extract_short_form_xc_credentials(transformed)
+        return compute_credential_fingerprint(url_user or "", url_pass or "")
+
+    return None
 
 
 def get_enforced_server_group_for_profile(profile):
