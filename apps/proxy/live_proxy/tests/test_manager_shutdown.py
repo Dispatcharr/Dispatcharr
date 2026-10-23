@@ -50,6 +50,17 @@ class StreamManagerShutdownTests(TestCase):
         self.db_connection.close.assert_called_once_with()
         self.assertNotIn(self.manager.channel_id, self.server._live_stream_managers)
 
+    def assert_failure_published(self):
+        self.assertFalse(self.manager.stop_requested)
+        self.assertEqual(self.manager.retry_count, 1)
+        self.assertEqual(
+            self.redis.hset.call_args.kwargs['mapping'][ChannelMetadataField.STATE],
+            ChannelState.ERROR,
+        )
+        self.redis.setex.assert_called_once_with(
+            RedisKeys.channel_stopping(self.manager.channel_id), 60, 'true',
+        )
+
     def test_stop_cleans_up_without_writing_error_or_stopping_key(self):
         timer = Mock()
         self.manager._buffer_check_timers.append(timer)
@@ -78,20 +89,12 @@ class StreamManagerShutdownTests(TestCase):
 
     def test_exhausted_retries_still_publish_failure_for_owner(self):
         self.manager.run()
-
-        self.assertFalse(self.manager.stop_requested)
-        self.assertEqual(self.manager.retry_count, 1)
-        self.assertEqual(
-            self.redis.hset.call_args.kwargs['mapping'][ChannelMetadataField.STATE],
-            ChannelState.ERROR,
-        )
-        self.redis.setex.assert_called_once_with(
-            RedisKeys.channel_stopping(self.manager.channel_id), 60, 'true',
-        )
+        self.assert_failure_published()
 
     def test_exhausted_retries_still_publish_failure_after_ownership_expires(self):
         self.redis.get.return_value = None
-        self.test_exhausted_retries_still_publish_failure_for_owner()
+        self.manager.run()
+        self.assert_failure_published()
 
     def test_failure_does_not_overwrite_a_new_owner(self):
         self.redis.get.return_value = b'new-worker'
