@@ -83,8 +83,11 @@ class StreamManager:
         # User agent for connection
         self.user_agent = user_agent or Config.DEFAULT_USER_AGENT
 
-        # Stream health monitoring
+        # Stream health monitoring. True until this connection delivers a chunk.
         self.last_data_time = time.time()
+        self._connection_awaiting_data = True
+        # Set when a startup switch finds no other stream to move to.
+        self._startup_failover_exhausted = False
         self.healthy = True
         self.health_check_interval = ConfigHelper.get('HEALTH_CHECK_INTERVAL', 5)
         self.chunk_size = ConfigHelper.chunk_size()
@@ -495,6 +498,9 @@ class StreamManager:
                     else:
                         logger.error(f"Health-requested stream switch failed for channel {self.channel_id}")
                         self._clear_connection_failure_history()
+                        # Nowhere to switch to. Stop using the short startup clock for
+                        # this URL so a slow first byte is not cut off every few seconds.
+                        self._startup_failover_exhausted = True
                         # Continue with normal flow
 
                 # Check stream type before connecting
@@ -950,6 +956,8 @@ class StreamManager:
             # Set flag that transcoding process is active
             self.transcode_process_active = True
 
+            # Every open, including a same-URL reconnect, gets its own startup clock.
+            self._arm_startup_no_data_clock()
             self.connected = True
 
             # Set connection start time for stability tracking
@@ -1361,6 +1369,7 @@ class StreamManager:
             # Wrap the file descriptor in a file object (same as transcode stdout)
             import os
             self.socket = os.fdopen(pipe_fd, 'rb', buffering=0)
+            self._arm_startup_no_data_clock()
             self.connected = True
             self.healthy = True
 
@@ -1415,6 +1424,9 @@ class StreamManager:
                    and not self.needs_stream_switch and not self.needs_reconnect):
                 if self.fetch_chunk():
                     self.last_data_time = time.time()
+                    if self._connection_is_awaiting_data():
+                        self._connection_awaiting_data = False
+                        self._startup_failover_exhausted = False
                 else:
                     # fetch_chunk() returned False - could be timeout, no data, or error
                     if not self.running:
@@ -1585,6 +1597,8 @@ class StreamManager:
             old_url = self.url
             self.url = new_url
             self.connected = False
+            # A new URL is a new place to try, so the short startup clock applies again.
+            self._startup_failover_exhausted = False
 
             # Reset bitrate EMA on every URL change so stale data never carries over
             self._smoothed_output_bitrate = None
@@ -1653,11 +1667,90 @@ class StreamManager:
         """Check if connection retry is allowed"""
         return self.retry_count < self.max_retries
 
+    def _connection_is_awaiting_data(self):
+        return getattr(self, '_connection_awaiting_data', True)
+
+    def _startup_switch_enabled(self):
+        """True while this connection is silent and another stream may still be tried.
+
+        Once a startup switch finds nowhere to go, the short startup clock is
+        off until a new URL is selected or this URL sends data.
+        """
+        return (
+            self._connection_is_awaiting_data()
+            and not getattr(self, '_startup_failover_exhausted', False)
+        )
+
+    def _arm_startup_no_data_clock(self):
+        """Start the per-connection no-data clock.
+
+        Used for a new URL and for a same-URL reconnect. A reconnect that
+        stays silent switches at stream_startup_timeout instead of waiting
+        out the health-action cooldown.
+        """
+        self.last_data_time = time.time()
+        self._connection_awaiting_data = True
+        self.healthy = True
+        self.needs_stream_switch = False
+
+    def _startup_no_data_switch_due(self, now=None):
+        """True when this connection has sent nothing past stream_startup_timeout."""
+        if not self.connected or self.url_switching or not self._startup_switch_enabled():
+            return False
+        now = time.time() if now is None else now
+        return (now - self.last_data_time) > ConfigHelper.stream_startup_timeout()
+
+    def _request_startup_stream_switch(self, now=None):
+        """Ask the main loop to try the next stream. One request per attempt."""
+        if self.needs_stream_switch or self.url_switching or not self.running:
+            return False
+        now = time.time() if now is None else now
+        timeout = ConfigHelper.stream_startup_timeout()
+        silent_for = now - self.last_data_time
+        if self.healthy:
+            logger.warning(
+                f"Stream unhealthy for channel {self.channel_id} - no data for "
+                f"{silent_for:.1f}s (stream startup timeout {timeout}s)"
+            )
+            self.healthy = False
+        logger.info(
+            f"Requesting stream switch for channel {self.channel_id} "
+            f"after {silent_for:.1f}s with no startup data"
+        )
+        self.needs_stream_switch = True
+        self.last_health_action_time = now
+        return True
+
     def _health_inactivity_threshold(self):
-        """How long without data before marking the stream unhealthy."""
-        if self.connected and getattr(self.buffer, 'index', 0) == 0:
+        """How long without data before marking the stream unhealthy.
+
+        A connection that has not sent data yet uses stream_startup_timeout and
+        requests a switch as soon as that elapses. After this connection has
+        sent data, connection_timeout applies and the multi-check debounce
+        still gates recovery. If no other stream is left to try, an empty
+        channel buffer waits the full channel_init_grace_period instead.
+        """
+        if not self.connected:
+            return ConfigHelper.connection_timeout()
+        if self._startup_switch_enabled():
+            return ConfigHelper.stream_startup_timeout()
+        if self._connection_is_awaiting_data() and getattr(self.buffer, 'index', 0) == 0:
             return ConfigHelper.channel_init_grace_period()
-        return getattr(Config, 'CONNECTION_TIMEOUT', 10)
+        return ConfigHelper.connection_timeout()
+
+    def _health_poll_interval(self, now):
+        """Wake at the startup deadline instead of waiting out a full health tick."""
+        if (
+            self.connected
+            and self._startup_switch_enabled()
+            and not self.needs_stream_switch
+            and not self.url_switching
+        ):
+            remaining = (self.last_data_time + ConfigHelper.stream_startup_timeout()) - now
+            if remaining > 0:
+                return min(self.health_check_interval, remaining)
+            return 0.05
+        return self.health_check_interval
 
     def _monitor_health(self):
         """Monitor stream health and set flags for the main loop to handle recovery"""
@@ -1669,9 +1762,15 @@ class StreamManager:
             try:
                 now = time.time()
                 inactivity_duration = now - self.last_data_time
+                awaiting_startup = self.connected and self._startup_switch_enabled()
                 timeout_threshold = self._health_inactivity_threshold()
 
-                if inactivity_duration > timeout_threshold and self.connected:
+                # No bytes yet: switch at stream_startup_timeout. Do not wait
+                # for the mid-stream 3-check debounce.
+                if awaiting_startup and inactivity_duration > timeout_threshold:
+                    self._request_startup_stream_switch(now)
+                    consecutive_unhealthy_checks = 0
+                elif inactivity_duration > timeout_threshold and self.connected:
                     if self.healthy:
                         logger.warning(f"Stream unhealthy for channel {self.channel_id} - no data for {inactivity_duration:.1f}s")
                         self.healthy = False
@@ -1715,7 +1814,7 @@ class StreamManager:
             except Exception as e:
                 logger.error(f"Error in health monitor: {e}")
 
-            gevent.sleep(self.health_check_interval)
+            gevent.sleep(self._health_poll_interval(time.time()))
 
     def _attempt_reconnect(self):
         """Attempt to reconnect to the current stream"""
@@ -1911,8 +2010,19 @@ class StreamManager:
             return False
 
         try:
-            # Set timeout for chunk reads
-            chunk_timeout = ConfigHelper.chunk_timeout()  # Use centralized timeout configuration
+            # Set timeout for chunk reads. Until this connection sends data,
+            # wake at stream_startup_timeout so the read loop can switch
+            # without sitting through a full chunk timeout past the deadline.
+            chunk_timeout = ConfigHelper.chunk_timeout()
+            if self._startup_switch_enabled() and not self.needs_stream_switch:
+                if self._startup_no_data_switch_due():
+                    self._request_startup_stream_switch()
+                    return False
+                remaining = (
+                    self.last_data_time + ConfigHelper.stream_startup_timeout()
+                ) - time.time()
+                if remaining > 0:
+                    chunk_timeout = min(chunk_timeout, remaining)
 
             try:
                 # Handle different socket types with timeout
