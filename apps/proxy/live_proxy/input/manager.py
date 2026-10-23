@@ -367,6 +367,8 @@ class StreamManager:
             return False
 
         if not current_owner:
+            # Owner key can be briefly missing during setup; keep the upstream
+            # for any PRE_ACTIVE state so init is not aborted mid-flight.
             if client_count == 0 and state not in ChannelState.PRE_ACTIVE:
                 logger.warning(
                     f"Channel {self.channel_id} has no owner and no clients - stopping upstream"
@@ -374,11 +376,11 @@ class StreamManager:
                 return False
             return True
 
-        # A pre-active channel with no viewers is stopped by the disconnect handler and
-        # the monitor's startup timeout, not by this audit.
+        # Only skip the disconnect timer during startup. BUFFERING is mid-stream,
+        # so it uses the same timer as ACTIVE.
         if (
             client_count == 0
-            and state not in ChannelState.PRE_ACTIVE
+            and state not in ChannelState.STARTUP
             and self._disconnect_shutdown_ready(disconnect_value)
         ):
             logger.info(

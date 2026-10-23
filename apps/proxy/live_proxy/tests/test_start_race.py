@@ -1,11 +1,11 @@
 """Start-race guards for a brand-new channel.
 
 A new channel writes its first metadata (temp_init, no state), then the owner monitor
-and the stream manager's ownership audit run while the channel is still pre-active and
+and the stream manager's ownership audit run while the channel is still starting and
 has no viewers. These tests pin the four guards that keep that window from stopping the
 upstream and leaving the channel stuck in connecting:
 
-- the ownership audit does not stop a pre-active channel on the disconnect timer
+- the ownership audit does not stop a startup-state channel on the disconnect timer
 - the owner monitor treats a state-less metadata hash as initializing
 - the ownership failure log names the check instead of claiming ownership was lost
 - CONNECTING is written before the stream manager thread can write ERROR
@@ -58,8 +58,8 @@ def _make_manager(owner, clients, state, disconnect_value="1000.0"):
     return sm
 
 
-class OwnershipAuditPreActiveTests(SimpleTestCase):
-    """The owner branch must not stop a pre-active channel on the disconnect timer."""
+class OwnershipAuditStartupTests(SimpleTestCase):
+    """The owner branch must not stop a startup-state channel on the disconnect timer."""
 
     def _audit(self, **kwargs):
         sm = _make_manager(**kwargs)
@@ -69,15 +69,15 @@ class OwnershipAuditPreActiveTests(SimpleTestCase):
         ):
             return sm._evaluate_ownership_from_redis(sm.buffer.redis_client)
 
-    def test_pre_active_states_with_no_clients_keep_upstream(self):
-        for state in (
-            ChannelState.INITIALIZING,
-            ChannelState.CONNECTING,
-            ChannelState.WAITING_FOR_CLIENTS,
-            ChannelState.BUFFERING,
-        ):
+    def test_startup_states_with_no_clients_keep_upstream(self):
+        for state in ChannelState.STARTUP:
             with self.subTest(state=state):
                 self.assertTrue(self._audit(owner=WORKER, clients=0, state=state))
+
+    def test_buffering_with_no_clients_stops_on_disconnect_timer(self):
+        self.assertFalse(
+            self._audit(owner=WORKER, clients=0, state=ChannelState.BUFFERING)
+        )
 
     def test_active_channel_with_no_clients_still_stops_on_disconnect_timer(self):
         self.assertFalse(

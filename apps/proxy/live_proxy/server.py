@@ -810,7 +810,7 @@ class ProxyServer:
 
                 logger.info(f"Channel {channel_id} in {ChannelState.CONNECTING} state - waiting for buffer to fill")
 
-            # Start stream manager thread only for the owner
+            # After CONNECTING so a failed thread cannot be overwritten by that write.
             self._live_stream_managers[channel_id] = stream_manager
             thread = threading.Thread(target=stream_manager.run, daemon=True)
             thread.name = f"stream-{channel_id}"
@@ -1951,8 +1951,7 @@ class ProxyServer:
                             if time.time() % 30 < 1:  # Every ~30 seconds
                                 logger.info(f"Channel {channel_id} has {total_clients} clients, state: {channel_state}")
 
-                            # Pre-active channels: init timeouts and buffer-ready promotion
-                            if channel_state in [ChannelState.INITIALIZING, ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
+                            if channel_state in ChannelState.STARTUP:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
@@ -2012,8 +2011,7 @@ class ProxyServer:
                                     from .services.channel_service import ChannelService
 
                                     ChannelService.promote_channel_when_buffer_ready(channel_id)
-                            # If active and no clients, start normal shutdown procedure
-                            elif channel_state not in [ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS] and total_clients == 0:
+                            elif channel_state not in ChannelState.STARTUP and total_clients == 0:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
