@@ -291,13 +291,16 @@ class HLSOutputManager:
                             )
                             idle_demand_checks = 0
 
-                chunks, new_index = self.ts_buffer.get_optimized_client_data(local_index)
+                # The read starts past any switch mark ahead of local_index; the cut below
+                # then fires on the mark's chunk.
+                batch = self.ts_buffer.read_client_batch(local_index)
+                chunks, local_index = batch.chunks, batch.start_index
 
                 if chunks:
                     # Chunks are local_index+1 .. local_index+len(chunks) when
                     # nothing has expired (same assumption as the buffer reader).
                     # Advance by what we actually feed so a discontinuity cut
-                    # lands on the real boundary, not a padded new_index.
+                    # lands on the real boundary, not a padded batch.next_index.
                     end_index = local_index + len(chunks)
                     disc_at = set(
                         self.ts_buffer.discontinuities_in_range(

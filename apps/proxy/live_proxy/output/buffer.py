@@ -15,6 +15,7 @@ import gevent.event
 from ..redis_keys import RedisKeys
 from ..config_helper import ConfigHelper
 from ..utils import get_logger
+from ..input.buffer import SwitchMarks, record_switch_mark
 
 logger = get_logger()
 
@@ -22,10 +23,12 @@ logger = get_logger()
 class OutputStreamBuffer:
     """Format-parameterized Redis chunk store for a channel's output."""
 
-    def __init__(self, channel_id, redis_client=None, fmt='fmp4'):
+    def __init__(self, channel_id, redis_client=None, fmt='fmp4', discontinuities_key=''):
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.fmt = fmt
+        self.discontinuities_key = discontinuities_key
+        self.switch_marks = SwitchMarks(self)
         self.lock = threading.Lock()
         self.index = 0
 
@@ -97,13 +100,29 @@ class OutputStreamBuffer:
             logger.error(f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error putting chunk: {e}")
             return False
 
+    def record_output_discontinuity(self):
+        """Record a switch mark at the next index written; see StreamBuffer.record_output_discontinuity."""
+        try:
+            with self.lock:
+                record_switch_mark(
+                    self.redis_client, self.discontinuities_key, self.index + 1, self.chunk_ttl
+                )
+        except Exception as e:
+            logger.error(
+                f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                f"Error recording switch mark: {e}"
+            )
+
     def get_chunks(self, start_index=None):
-        """Retrieve chunks from start_index up to current head. Returns (chunks, new_index)."""
+        """Retrieve chunks from start_index up to current head. Returns (chunks, new_index).
+
+        If a switch mark lies ahead of start_index, the read starts at the mark.
+        """
         try:
             if not self.redis_client:
                 return [], self.index
 
-            current_index = self.redis_client.get(self.buffer_index_key)
+            current_index, mark = self.switch_marks.read()
             if not current_index:
                 return [], self.index
 
@@ -111,6 +130,12 @@ class OutputStreamBuffer:
 
             if start_index is None:
                 start_index = max(0, current_index - 5)
+            if mark is not None and mark - 1 > start_index:
+                logger.info(
+                    f"[OutputBuffer:{self.fmt}:{self.channel_id}] Source switch: "
+                    f"read jumps from index {start_index} to {mark - 1}"
+                )
+                start_index = mark - 1
 
             if start_index >= current_index:
                 return [], current_index
@@ -207,6 +232,8 @@ class OutputStreamBuffer:
                 self.redis_client.delete(self.chunk_timestamps_key)
             except Exception:
                 pass
+            if self.discontinuities_key:
+                self.redis_client.delete(self.discontinuities_key)
         except Exception as e:
             logger.error(
                 f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error during Redis cleanup: {e}"
