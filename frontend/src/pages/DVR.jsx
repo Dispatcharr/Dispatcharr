@@ -324,12 +324,9 @@ const DVRPage = () => {
             </Badge>
           </Group>
           <SimpleGrid
-            cols={3}
+            type="container"
+            cols={{ base: 1, '36rem': 2, '62rem': 3, '88rem': 4, '112rem': 5 }}
             spacing="md"
-            breakpoints={[
-              { maxWidth: '62rem', cols: 2 },
-              { maxWidth: '36rem', cols: 1 },
-            ]}
           >
             {
               <RecordingList
@@ -360,12 +357,9 @@ const DVRPage = () => {
             </Badge>
           </Group>
           <SimpleGrid
-            cols={3}
+            type="container"
+            cols={{ base: 1, '36rem': 2, '62rem': 3, '88rem': 4, '112rem': 5 }}
             spacing="md"
-            breakpoints={[
-              { maxWidth: '62rem', cols: 2 },
-              { maxWidth: '36rem', cols: 1 },
-            ]}
           >
             {
               <RecordingList
@@ -396,12 +390,9 @@ const DVRPage = () => {
             </Badge>
           </Group>
           <SimpleGrid
-            cols={3}
+            type="container"
+            cols={{ base: 1, '36rem': 2, '62rem': 3, '88rem': 4, '112rem': 5 }}
             spacing="md"
-            breakpoints={[
-              { maxWidth: '62rem', cols: 2 },
-              { maxWidth: '36rem', cols: 1 },
-            ]}
           >
             {
               <RecordingList
