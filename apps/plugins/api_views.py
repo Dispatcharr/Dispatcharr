@@ -26,40 +26,41 @@ from core.http_security import get_with_validated_redirects
 from core.image_proxy import IgnoreClientContentNegotiation
 from core.utils import build_absolute_uri_with_port
 from dispatcharr.utils import network_access_allowed
+from core.utils import safe_upload_path
 
+from .capabilities import (
+    app_version_meets_maximum,
+    app_version_meets_minimum,
+    compute_effective_capabilities,
+    describe_capabilities,
+)
 from .loader import PluginManager
+from .keys import normalize_plugin_key
 from .models import PluginConfig, PluginRepo
 from .serializers import PluginRepoSerializer
+from .version_utils import compare_versions, get_plugin_status
 
 logger = logging.getLogger(__name__)
-
-
-def _compare_versions(a, b):
-    """Compare two semver-like version strings.
-    Returns negative if a < b, 0 if equal, positive if a > b.
-
-    If either version is a prerelease (any dot-segment contains non-digit
-    characters), numeric ordering is meaningless. Falls back to exact string
-    equality: 0 if identical, 1 otherwise.
-    """
-    if not a or not b:
-        return 0
-    na = a.lstrip("v")
-    nb = b.lstrip("v")
-    if any(not p.isdigit() for p in na.split(".")) or any(not p.isdigit() for p in nb.split(".")):
-        return 0 if na == nb else 1
-    pa = [int(x) for x in na.split(".")]
-    pb = [int(x) for x in nb.split(".")]
-    for i in range(max(len(pa), len(pb))):
-        diff = (pa[i] if i < len(pa) else 0) - (pb[i] if i < len(pb) else 0)
-        if diff != 0:
-            return diff
-    return 0
 
 
 MAX_PLUGIN_IMPORT_FILES = getattr(settings, "DISPATCHARR_PLUGIN_IMPORT_MAX_FILES", 2000)
 MAX_PLUGIN_IMPORT_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_IMPORT_MAX_BYTES", 200 * 1024 * 1024)
 MAX_PLUGIN_IMPORT_FILE_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_IMPORT_MAX_FILE_BYTES", 200 * 1024 * 1024)
+
+# Plugin "file" settings field uploads: deliberately far below the plugin-zip-import
+# ceilings above, since this is meant for small config/cert/image files, not binaries.
+# A plugin's own declared `max_size` can only lower these, never raise them.
+PLUGIN_FILE_UPLOAD_ALLOWED_EXTENSIONS = getattr(
+    settings,
+    "DISPATCHARR_PLUGIN_FILE_UPLOAD_ALLOWED_EXTENSIONS",
+    {
+        ".ini", ".json", ".csv", ".txt", ".yaml", ".yml", ".xml", ".conf", ".cfg",
+        ".pem", ".crt", ".key",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    },
+)
+PLUGIN_FILE_UPLOAD_DEFAULT_MAX_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_FILE_UPLOAD_DEFAULT_MAX_BYTES", 2 * 1024 * 1024)
+PLUGIN_FILE_UPLOAD_HARD_MAX_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_FILE_UPLOAD_HARD_MAX_BYTES", 10 * 1024 * 1024)
 
 
 def _parse_bool(value):
@@ -77,10 +78,9 @@ def _parse_bool(value):
 
 
 def _sanitize_plugin_key(value: str) -> str:
-    base = os.path.basename(value or "")
-    base = base.replace(" ", "_").replace("-", "_").lower()
-    base = re.sub(r"[^a-z0-9_]", "_", base)
-    base = base.strip("._ ")
+    base = normalize_plugin_key(value)
+    base = re.sub(r"[^a-z0-9_-]", "_", base)
+    base = base.strip("._-")
     return base or "plugin"
 
 
@@ -119,6 +119,39 @@ def _plugin_mutation_lock(plugins_dir: str):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def _effective_capabilities_from_zip(zip_file):
+    """Read the candidate plugin manifest without modifying the installed plugin."""
+    try:
+        with zipfile.ZipFile(zip_file) as zf:
+            candidates = []
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                normalized = os.path.normpath(member.filename)
+                if normalized.startswith("..") or os.path.isabs(normalized):
+                    continue
+                basename = os.path.basename(normalized)
+                if basename in ("plugin.py", "__init__.py"):
+                    directory = os.path.dirname(normalized)
+                    depth = len(directory.split(os.sep)) if directory else 0
+                    candidates.append((0 if basename == "plugin.py" else 1, depth, directory))
+            if not candidates:
+                return []
+
+            candidates.sort()
+            directory = candidates[0][2]
+            manifest_name = os.path.join(directory, "plugin.json") if directory else "plugin.json"
+            try:
+                manifest = json.loads(zf.read(manifest_name))
+            except (KeyError, json.JSONDecodeError, UnicodeDecodeError):
+                return []
+            return compute_effective_capabilities(manifest) if isinstance(manifest, dict) else []
+    except zipfile.BadZipFile:
+        return []
+    finally:
+        zip_file.seek(0)
+
+
 def _absolutize_logo_url(request, url: str | None) -> str | None:
     if not url or not request:
         return url
@@ -153,6 +186,23 @@ class PluginReloadAPIView(PluginAuthMixin, APIView):
         pm.stop_all_plugins(reason="reload")
         pm.discover_plugins(force_reload=True)
         return Response({"success": True, "count": len(pm._registry)})
+
+
+class PluginSingleReloadAPIView(PluginAuthMixin, APIView):
+    """Reload one plugin's Python code without stopping or re-importing any others."""
+
+    @extend_schema(
+        description="Reload a single plugin's Python code in isolation. Other workers reload it on their next plugin use.",
+        request=None,
+        responses={200: inline_serializer(name="PluginSingleReloadResponse", fields={"success": serializers.BooleanField()})},
+    )
+    def post(self, request, key):
+        key = normalize_plugin_key(key)
+        pm = PluginManager.get()
+        ok = pm.reload_plugin(key)
+        if not ok:
+            return Response({"success": False, "error": "Plugin not found or already reloading"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"success": True})
 
 
 def _install_plugin_from_zip(
@@ -338,6 +388,10 @@ def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerele
         dash_key = plugin_key.replace("_", "-")
         if dash_key != plugin_key:
             existing_cfg = PluginConfig.objects.filter(key=dash_key).first()
+    if not existing_cfg:
+        underscore_key = plugin_key.replace("-", "_")
+        if underscore_key != plugin_key:
+            existing_cfg = PluginConfig.objects.filter(key=underscore_key).first()
 
     result = _install_plugin_from_zip(
         tmp_file,
@@ -458,6 +512,11 @@ def _save_fetched_manifest_to_repo(repo, data, verified):
     repo.name = registry_name
     repo.signature_verified = verified
     repo.save(update_fields=["name", "cached_manifest", "signature_verified", "last_fetched", "last_fetch_status", "updated_at"])
+    try:
+        from .manifest_messages import reconcile_official_messages
+        reconcile_official_messages(repo)
+    except Exception:
+        logger.exception("Could not reconcile official manifest messages")
     return None
 
 
@@ -578,6 +637,8 @@ class PluginImportAPIView(PluginAuthMixin, APIView):
                 "ever_enabled": getattr(cfg, "ever_enabled", False) if cfg else False,
                 "fields": [],
                 "actions": [],
+                "capabilities": [],
+                "manifest_version": 0,
                 "trusted": bool(cfg and (cfg.ever_enabled or cfg.enabled)),
                 "loaded": False,
                 "missing": False,
@@ -601,8 +662,99 @@ class PluginSettingsAPIView(PluginAuthMixin, APIView):
             return Response({"success": False, "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
+    """Handles uploads for a plugin's 'file' settings field.
+
+    Writes only under <plugins_dir>/<key>/uploads/<field_id>/, never into the
+    plugin's own root, so a request can never overwrite plugin.py/plugin.json/
+    __init__.py. field_id must name a field the plugin itself declared with
+    type "file"; an arbitrary/undeclared field_id is rejected before it is
+    ever used as a path segment.
+    """
+
+    @extend_schema(
+        description="Upload a file for a plugin's 'file' settings field. field_id must name a field the plugin declared with type \"file\".",
+        request=inline_serializer(name="PluginFieldUploadRequest", fields={"file": serializers.FileField()}),
+        responses={
+            200: inline_serializer(name="PluginFieldUploadResponse", fields={
+                "success": serializers.BooleanField(),
+                "path": serializers.CharField(),
+            }),
+            400: inline_serializer(name="PluginFieldUploadError", fields={
+                "success": serializers.BooleanField(),
+                "error": serializers.CharField(),
+            }),
+            404: inline_serializer(name="PluginFieldUploadNotFound", fields={
+                "success": serializers.BooleanField(),
+                "error": serializers.CharField(),
+            }),
+        },
+    )
+    def post(self, request, key, field_id):
+        pm = PluginManager.get()
+        lp = pm.get_plugin(key)
+        if not lp:
+            return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        field_def = next(
+            (f for f in (lp.fields or []) if f.get("id") == field_id and f.get("type") == "file"),
+            None,
+        )
+        if not field_def:
+            return Response(
+                {"success": False, "error": f"Plugin '{key}' has no file field '{field_id}'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"success": False, "error": "Missing 'file'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = os.path.splitext(upload.name)[1].lower()
+        if ext not in PLUGIN_FILE_UPLOAD_ALLOWED_EXTENSIONS:
+            return Response(
+                {"success": False, "error": f"File type '{ext}' is not allowed"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        max_size = min(
+            field_def.get("max_size") or PLUGIN_FILE_UPLOAD_DEFAULT_MAX_BYTES,
+            PLUGIN_FILE_UPLOAD_HARD_MAX_BYTES,
+        )
+        if upload.size > max_size:
+            return Response(
+                {"success": False, "error": f"File is too large (max {max_size} bytes)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        safe_field_id = _sanitize_plugin_key(field_id)
+        dest_dir = os.path.join(pm.plugins_dir, key, "uploads", safe_field_id)
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            for existing in os.listdir(dest_dir):
+                existing_path = os.path.join(dest_dir, existing)
+                if os.path.isfile(existing_path):
+                    os.remove(existing_path)
+
+            dest_path = safe_upload_path(upload.name, dest_dir)
+        except (ValueError, OSError) as e:
+            return Response({"success": False, "error": f"Invalid upload: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with open(dest_path, "wb+") as destination:
+            for chunk in upload.chunks():
+                destination.write(chunk)
+
+        return Response({"success": True, "path": dest_path})
+
+
+# Bounded by real reverse-proxy/uWSGI timeouts, not a design choice
+# things expected to run longer than this must be marked "async" instead.
+PLUGIN_RUN_SYNC_TIMEOUT = int(os.environ.get("DISPATCHARR_PLUGIN_RUN_SYNC_TIMEOUT_SECONDS", 55))
+
+
 class PluginRunAPIView(PluginAuthMixin, APIView):
     def post(self, request, key):
+        key = normalize_plugin_key(key)
         pm = PluginManager.get()
         action = request.data.get("action")
         params = request.data.get("params", {})
@@ -617,18 +769,71 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        pm.discover_plugins(sync_db=False, use_cache=True)
+        lp = pm.get_plugin(key)
+        action_def = next(
+            (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action), {}
+        ) if lp else {}
+        is_async_action = bool(action_def.get("async"))
+
+        if is_async_action:
+            return self._dispatch_async(key, action, params, action_def.get("label", action))
+
+        return self._run_via_worker(key, action, params)
+
+    def _error_response(self, exc):
+        if isinstance(exc, PermissionError):
+            return Response({"success": False, "error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        logger.exception("Plugin action failed")
+        return Response({"success": False, "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _response_for_result(self, result):
+        # A plugin can self-dispatch via context['dispatch_task'] and return
+        # this shape; normalize it to the same contract _dispatch_async uses.
+        if isinstance(result, dict) and result.get("status") == "started" and result.get("task_id"):
+            return Response({"success": True, "status": "started", "task_id": result["task_id"]})
+        return Response({"success": True, "result": result})
+
+    def _dispatch_async(self, key, action, params, action_label):
+        from .tasks import run_plugin_action_task
+        from .task_history import record_task_started
+        async_result = run_plugin_action_task.apply_async(args=[key, action, params], queue="plugins")
+        record_task_started(key, async_result.id, action, action_label)
+        return Response({"success": True, "status": "started", "task_id": async_result.id})
+
+    def _run_via_worker(self, key, action, params):
+        from celery.exceptions import TimeoutError as CeleryTimeoutError
+        from .tasks import run_plugin_action_task
+
+        async_result = run_plugin_action_task.apply_async(args=[key, action, params], queue="plugins")
         try:
-            result = pm.run_action(key, action, params)
-            return Response({"success": True, "result": result})
-        except PermissionError as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            # interval=1: Celery's 0.5s default poll would otherwise hit the
+            # result backend ~100+ times over the full timeout window.
+            result = async_result.get(timeout=PLUGIN_RUN_SYNC_TIMEOUT, interval=1)
+        except CeleryTimeoutError:
+            # Task keeps running on the worker; this just stops waiting.
+            return Response(
+                {
+                    "success": False,
+                    "error": "Plugin action timed out waiting for a response; it may still be running.",
+                    "task_id": async_result.id,
+                },
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
         except Exception as e:
-            logger.exception("Plugin action failed")
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return self._error_response(e)
+        return self._response_for_result(result)
+
+
+class PluginTaskHistoryAPIView(PluginAuthMixin, APIView):
+    def get(self, request, key):
+        from .task_history import get_task_history
+        return Response({"tasks": get_task_history(key)})
 
 
 class PluginEnabledAPIView(PluginAuthMixin, APIView):
     def post(self, request, key):
+        key = normalize_plugin_key(key)
         enabled_raw = request.data.get("enabled")
         if enabled_raw is None:
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
@@ -637,10 +842,30 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
             return Response({"success": False, "error": "Invalid 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             pm = PluginManager.get()
+            if enabled:
+                pm.discover_plugins(sync_db=False, use_cache=True)
+            lp = pm.get_plugin(key)
+            effective = list(lp.capabilities or []) if lp else []
+            acknowledged = request.data.get("acknowledge_capabilities", [])
+            if not isinstance(acknowledged, list):
+                acknowledged = []
+            acknowledged = {capability for capability in acknowledged if isinstance(capability, str)}
             pm.refresh_task_ownership()
             try:
                 with transaction.atomic():
                     cfg = PluginConfig.objects.select_for_update().get(key=key)
+                    unacknowledged = sorted(
+                        set(effective) - set(cfg.acknowledged_capabilities or [])
+                    )
+                    if enabled and unacknowledged and not set(unacknowledged).issubset(acknowledged):
+                        return Response(
+                            {
+                                "success": False,
+                                "error_code": "capability_confirmation_required",
+                                "capabilities": describe_capabilities(unacknowledged),
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
                     stopping = cfg.enabled and not enabled
                     if stopping:
                         pm.suspend_schedules(cfg)
@@ -656,7 +881,13 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
                     # Mark that this plugin has been enabled at least once
                     if cfg.enabled and not cfg.ever_enabled:
                         cfg.ever_enabled = True
-                    cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+                    if enabled and unacknowledged:
+                        cfg.acknowledged_capabilities = sorted(
+                            set(cfg.acknowledged_capabilities or []) | set(unacknowledged)
+                        )
+                    cfg.save(update_fields=[
+                        "enabled", "ever_enabled", "acknowledged_capabilities", "updated_at",
+                    ])
                     if enabled:
                         pm.restore_schedules(cfg)
             except PluginConfig.DoesNotExist:
@@ -712,11 +943,14 @@ class PluginLogoAPIView(APIView):
 
 class PluginDeleteAPIView(PluginAuthMixin, APIView):
     def delete(self, request, key):
+        key = normalize_plugin_key(key)
         pm = PluginManager.get()
         with _plugin_mutation_lock(pm.plugins_dir):
             pm.refresh_task_ownership()
             plugins_dir = pm.plugins_dir
-            target_dir = pm.get_plugin_path(key)
+            lp = pm.get_plugin(key)
+            plugin_path = getattr(lp, "path", None)
+            target_dir = plugin_path if isinstance(plugin_path, str) and plugin_path else pm.get_plugin_path(key)
             # Safety: ensure path inside plugins_dir
             abs_plugins = os.path.abspath(plugins_dir) + os.sep
             abs_target = os.path.abspath(target_dir)
@@ -1129,7 +1363,14 @@ class PluginRepoDetailAPIView(PluginAuthMixin, APIView):
         serializer = PluginRepoSerializer(repo, data=update_data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        if repo.is_official and "enabled" in update_data:
+            try:
+                from .manifest_messages import reconcile_official_messages
+                reconcile_official_messages(repo)
+            except Exception:
+                logger.exception("Could not reconcile official manifest messages")
         return Response(PluginRepoSerializer(repo).data)
+
 
     @extend_schema(
         description="Remove a plugin repository.",
@@ -1149,6 +1390,23 @@ class PluginRepoDetailAPIView(PluginAuthMixin, APIView):
             )
         repo.delete()
         return Response({"success": True})
+
+
+class PluginManifestMessagesAPIView(PluginAuthMixin, APIView):
+    """Return the current user's eligible messages from the trusted official repo."""
+
+    def get(self, request):
+        from .manifest_messages import official_messages_for_user
+        return Response({"messages": official_messages_for_user(request.user)})
+
+
+class PluginManifestMessageDismissAPIView(PluginAuthMixin, APIView):
+    def post(self, request, message_id):
+        from .manifest_messages import dismiss_message
+
+        if not dismiss_message(request.user, message_id):
+            return Response({"error": "Message not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"success": True, "message_id": message_id})
 
 
 class PluginRepoRefreshAPIView(PluginAuthMixin, APIView):
@@ -1179,6 +1437,81 @@ class PluginRepoRefreshAPIView(PluginAuthMixin, APIView):
         _unmanage_dropped_slugs(repo, data)
         _invalidate_plugin_detail_cache(repo.id, data)
         return Response(PluginRepoSerializer(repo).data)
+
+
+class PluginRepoRefreshSinglePluginAPIView(PluginAuthMixin, APIView):
+    """Check-for-updates for one plugin, scoped to a single repo entry.
+
+    The repo's manifest is one JSON blob covering every plugin it lists, so
+    there's no way to fetch just one plugin's summary data (latest_version,
+    deprecated) without re-fetching that whole blob, so this always does a
+    live, uncached HTTP fetch of the repo manifest (same as the bulk
+    refresh), but unlike the bulk "Refresh all repos" action it: only touches
+    one repo (not every enabled repo), never triggers a full Python plugin
+    reload, and only evaluates/creates an update notification for the one
+    requested plugin rather than sweeping every managed plugin.
+    """
+
+    @extend_schema(
+        description="Refresh one plugin's update-available status by re-fetching its repo's manifest (always a live fetch, never cached).",
+        request=None,
+        responses={200: inline_serializer(name="PluginRepoRefreshSingleResponse", fields={
+            "success": serializers.BooleanField(),
+            "install_status": serializers.CharField(),
+            "latest_version": serializers.CharField(allow_blank=True),
+        }), 404: inline_serializer(name="PluginRepoRefreshSingleNotFound", fields={"error": serializers.CharField()})},
+    )
+    def post(self, request, pk, slug):
+        try:
+            repo = PluginRepo.objects.get(pk=pk)
+        except PluginRepo.DoesNotExist:
+            return Response({"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            key_text = repo.public_key if not repo.is_official else None
+            data, verified = _fetch_manifest(repo.url, public_key_text=key_text)
+        except Exception:
+            logger.exception("Manifest fetch failed for %s", repo.url)
+            return Response(
+                {"error": "Failed to fetch manifest. Check the URL and try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        err = _save_fetched_manifest_to_repo(repo, data, verified)
+        if err:
+            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+        _unmanage_dropped_slugs(repo, data)
+        _invalidate_plugin_detail_cache(repo.id, data)
+
+        manifest = data.get("manifest", data)
+        plugin_data = next(
+            (p for p in manifest.get("plugins", []) if p.get("slug") == slug),
+            None,
+        )
+        if not plugin_data:
+            return Response({"error": f"Plugin '{slug}' not found in repo manifest"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            cfg = PluginConfig.objects.get(slug=slug, source_repo_id=repo.id)
+        except PluginConfig.DoesNotExist:
+            cfg = None
+
+        latest_version = plugin_data.get("latest_version", "")
+        install_status = get_plugin_status(
+            cfg.version if cfg else None,
+            latest_version,
+            is_prerelease=bool(cfg and cfg.installed_version_is_prerelease),
+            is_managed=bool(cfg and cfg.source_repo_id),
+        )
+
+        if cfg:
+            from .tasks import evaluate_plugin_update_notification
+            evaluate_plugin_update_notification(cfg.key, cfg.name, cfg.version, latest_version, install_status)
+
+        return Response({
+            "success": True,
+            "install_status": install_status,
+            "latest_version": latest_version,
+        })
 
 
 class AvailablePluginsAPIView(PluginAuthMixin, APIView):
@@ -1257,13 +1590,16 @@ class AvailablePluginsAPIView(PluginAuthMixin, APIView):
                     is_installed = True
                     installed_version = managed["version"]
                     latest = plugin_data.get("latest_version")
-                    if managed["source_repo_id"] == repo.id:
-                        if installed_version and latest and installed_version != latest and not managed.get("is_prerelease"):
-                            install_status = "update_available"
-                        else:
-                            install_status = "installed"
-                    else:
-                        install_status = "different_repo"
+                    has_repo_match = managed["source_repo_id"] == repo.id
+                    install_status = get_plugin_status(
+                        installed_version,
+                        latest,
+                        is_prerelease=managed.get("is_prerelease", False),
+                        is_managed=True,
+                        has_repo_match=has_repo_match,
+                    )
+                    if install_status in ("up_to_date", "prerelease"):
+                        install_status = "installed"
                 elif key_match:
                     is_installed = True
                     installed_version = installed_by_key.get(sanitized_slug) or installed_by_key.get(
@@ -1388,6 +1724,10 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             "sha256": serializers.CharField(required=False, allow_blank=True),
             "min_dispatcharr_version": serializers.CharField(required=False, allow_blank=True),
             "max_dispatcharr_version": serializers.CharField(required=False, allow_blank=True),
+            "acknowledge_capabilities": serializers.ListField(
+                child=serializers.CharField(), required=False
+            ),
+            "deny_capabilities": serializers.BooleanField(required=False),
         }),
         responses={
             200: inline_serializer(name="PluginInstallFromRepoResponse", fields={"success": serializers.BooleanField(), "plugin": serializers.DictField()}),
@@ -1418,14 +1758,15 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
         min_version = request.data.get("min_dispatcharr_version")
         max_version = request.data.get("max_dispatcharr_version")
         if min_version or max_version:
-            from version import __version__ as app_version
+            from version import __timestamp__, __version__ as app_version
             try:
-                if min_version and _compare_versions(app_version, min_version) < 0:
+                is_dev_build = __timestamp__ is not None
+                if not app_version_meets_minimum(app_version, min_version, is_dev_build=is_dev_build):
                     return Response(
                         {"error": f"This plugin version requires Dispatcharr {min_version} or newer (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                if max_version and _compare_versions(app_version, max_version) > 0:
+                if not app_version_meets_maximum(app_version, max_version, is_dev_build=is_dev_build):
                     return Response(
                         {"error": f"This plugin version requires Dispatcharr {max_version} or older (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,
@@ -1434,15 +1775,12 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                 logger.warning("Failed to parse version constraints: min=%s, max=%s", min_version, max_version)
 
         pm = PluginManager.get()
-        existing_config = PluginConfig.objects.filter(
-            source_repo=repo, slug=slug
-        ).exists()
+        existing_config = PluginConfig.objects.filter(source_repo=repo, slug=slug).exists()
         with _plugin_mutation_lock(pm.plugins_dir):
+            existing_cfg = PluginConfig.objects.filter(source_repo=repo, slug=slug).first()
             # Download and apply as one operation so a completed delete cannot be
             # followed by an update that recreates its managed configuration.
-            if existing_config and not PluginConfig.objects.filter(
-                source_repo=repo, slug=slug
-            ).exists():
+            if existing_config and existing_cfg is None:
                 return Response(
                     {"error": "Plugin was deleted while its update was pending"},
                     status=status.HTTP_404_NOT_FOUND,
@@ -1456,8 +1794,8 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                     allow_loopback=False,
                 )
                 resp.raise_for_status()
-            except ValueError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             except Exception:
                 logger.exception("Failed to download plugin from %s", download_url)
                 return Response(
@@ -1475,38 +1813,72 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                             continue
                         total += len(chunk)
                         if total > MAX_PLUGIN_IMPORT_BYTES:
-                            return Response(
-                                {"error": "Download is too large"},
-                                status=status.HTTP_400_BAD_REQUEST,
-                            )
+                            return Response({"error": "Download is too large"}, status=status.HTTP_400_BAD_REQUEST)
                         if hasher is not None:
                             hasher.update(chunk)
                         tmp_file.write(chunk)
 
-                    if expected_sha256:
-                        actual_sha256 = hasher.hexdigest()
-                        if actual_sha256 != expected_sha256:
-                            logger.warning(
-                                "SHA256 mismatch for plugin '%s' from %s: expected %s, got %s",
-                                slug, download_url, expected_sha256, actual_sha256,
-                            )
-                            return Response(
-                                {
-                                    "error": "SHA256 integrity check failed - download discarded. The file may be corrupted or tampered with."
-                                },
-                                status=status.HTTP_400_BAD_REQUEST,
-                            )
+                    if expected_sha256 and hasher.hexdigest() != expected_sha256:
+                        logger.warning("SHA256 mismatch for plugin '%s' from %s", slug, download_url)
+                        return Response(
+                            {"error": "SHA256 integrity check failed - download discarded. The file may be corrupted or tampered with."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                    effective_capabilities = _effective_capabilities_from_zip(tmp_file)
+                    unacknowledged_capabilities = (
+                        sorted(set(effective_capabilities) - set(existing_cfg.acknowledged_capabilities or []))
+                        if existing_cfg and existing_cfg.enabled
+                        else []
+                    )
+                    acknowledged_capabilities = request.data.get("acknowledge_capabilities", [])
+                    if not isinstance(acknowledged_capabilities, list):
+                        acknowledged_capabilities = []
+                    acknowledged_capabilities = {
+                        capability for capability in acknowledged_capabilities if isinstance(capability, str)
+                    }
+
+                    if unacknowledged_capabilities and _parse_bool(request.data.get("deny_capabilities")) is True:
+                        try:
+                            pm.stop_plugin(existing_cfg.key, reason="capability_update_denied")
+                        except Exception:
+                            logger.exception("Failed to stop plugin '%s' after capability update denial", existing_cfg.key)
+                        existing_cfg.enabled = False
+                        existing_cfg.acknowledged_capabilities = []
+                        existing_cfg.save(update_fields=["enabled", "acknowledged_capabilities", "updated_at"])
+                        pm.discover_plugins(force_reload=True)
+                        return Response({
+                            "success": False,
+                            "capability_confirmation_denied": True,
+                            "plugin": next(
+                                (plugin for plugin in pm.list_plugins() if plugin.get("key") == existing_cfg.key),
+                                {"key": existing_cfg.key, "enabled": False, "acknowledged_capabilities": []},
+                            ),
+                        })
+
+                    if unacknowledged_capabilities and not set(unacknowledged_capabilities).issubset(acknowledged_capabilities):
+                        return Response(
+                            {
+                                "success": False,
+                                "error_code": "capability_confirmation_required",
+                                "capabilities": describe_capabilities(unacknowledged_capabilities),
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
 
                     tmp_file.flush()
                     tmp_file.seek(0)
-                    return _finish_managed_plugin_install(
-                        pm,
-                        tmp_file,
-                        repo,
-                        slug,
-                        version,
-                        bool(request.data.get("prerelease", False)),
+                    response = _finish_managed_plugin_install(
+                        pm, tmp_file, repo, slug, version, bool(request.data.get("prerelease", False))
                     )
+                    if response.status_code < 300 and unacknowledged_capabilities:
+                        cfg = PluginConfig.objects.filter(source_repo=repo, slug=slug).first()
+                        if cfg:
+                            cfg.acknowledged_capabilities = sorted(
+                                set(cfg.acknowledged_capabilities or []) | set(unacknowledged_capabilities)
+                            )
+                            cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
+                    return response
             finally:
                 resp.close()
 

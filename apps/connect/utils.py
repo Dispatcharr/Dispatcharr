@@ -127,7 +127,25 @@ def trigger_event(event_name, payload):
             action_id,
         )
         try:
-            pm.run_action(key, action_id, params)
+            # Fire-and-forget; nothing consumes the result either way.
+            from apps.plugins.tasks import run_plugin_action_task
+            from apps.plugins.task_history import record_task_started
+
+            async_result = run_plugin_action_task.apply_async(
+                args=[key, action_id, params], queue="plugins"
+            )
+            plugin = pm.get_plugin(key)
+            action = next(
+                (
+                    candidate
+                    for candidate in (plugin.actions if plugin else [])
+                    if isinstance(candidate, dict) and candidate.get("id") == action_id
+                ),
+                {},
+            )
+            record_task_started(
+                key, async_result.id, action_id, action.get("label", action_id)
+            )
         except Exception:
             logger.exception(
                 "Plugin action failed for event '%s' on plugin id=%s action=%s",

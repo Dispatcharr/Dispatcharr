@@ -30,8 +30,8 @@ WORKDIR /app
 COPY . /app
 # Copy nginx configuration
 COPY ./docker/nginx.conf /etc/nginx/sites-enabled/default
-# Fix line endings and make entrypoint scripts executable
-RUN for f in /app/docker/entrypoint*.sh; do \
+# Fix line endings and make entrypoint/guard scripts executable
+RUN for f in /app/docker/entrypoint*.sh /app/docker/plugins-worker-guard.sh; do \
     if [ -f "$f" ]; then \
     sed -i 's/\r$//' "$f" && chmod +x "$f"; \
     fi; \

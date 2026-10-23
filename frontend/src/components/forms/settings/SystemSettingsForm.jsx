@@ -22,7 +22,6 @@ import { getSystemSettingsFormInitialValues } from '../../../utils/forms/setting
 import { REGION_CHOICES } from '../../../constants.js';
 
 const SYSTEM_GROUP = 'system_settings';
-
 const SystemSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
   const isModular =
@@ -51,13 +50,11 @@ const SystemSettingsForm = React.memo(({ active }) => {
 
   const onSubmit = async () => {
     setSaved(false);
-
     const changedSettings = getChangedGroupSettings(
       form.getValues(),
       settings,
       SYSTEM_GROUP
     );
-
     try {
       await runSave(async () => {
         await saveGroupSettings(settings, SYSTEM_GROUP, changedSettings);

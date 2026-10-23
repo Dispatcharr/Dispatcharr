@@ -9,6 +9,7 @@ import gzip, zipfile
 import lzma
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
+from apps.plugins.internal_tasks import plugin_callable_task
 from django.conf import settings
 from django.db import models, transaction
 from .models import CUSTOM_M3U_ACCOUNT_NAME, M3UAccount
@@ -3501,6 +3502,7 @@ def refresh_account_info(profile_id):
 
         release_task_lock("refresh_account_info", profile_id)
         return error_msg
+@plugin_callable_task
 @shared_task(time_limit=3600, soft_time_limit=3500)
 def refresh_single_m3u_account(account_id):
     """Splits M3U processing into chunks and dispatches them as parallel tasks."""

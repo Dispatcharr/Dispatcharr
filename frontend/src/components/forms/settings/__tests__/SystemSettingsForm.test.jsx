@@ -182,7 +182,7 @@ describe('SystemSettingsForm', () => {
     it('renders the NumberInput for max_system_events', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toBeInTheDocument();
+      expect(screen.getAllByTestId('number-input')[0]).toBeInTheDocument();
     });
 
     it('renders the NumberInput label', () => {
@@ -279,7 +279,7 @@ describe('SystemSettingsForm', () => {
     it('renders NumberInput with value from form values', () => {
       setupMocks({ settings: makeSettings({ max_system_events: 250 }) });
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toHaveValue(250);
+      expect(screen.getAllByTestId('number-input')[0]).toHaveValue(250);
     });
 
     it('falls back to 100 when max_system_events is 0/falsy', () => {
@@ -311,7 +311,7 @@ describe('SystemSettingsForm', () => {
       vi.mocked(saveGroupSettings).mockResolvedValue(undefined);
 
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toHaveValue(100);
+      expect(screen.getAllByTestId('number-input')[0]).toHaveValue(100);
     });
   });
 
@@ -381,7 +381,7 @@ describe('SystemSettingsForm', () => {
     it('calls form.setFieldValue when NumberInput changes', () => {
       const { formMock } = setupMocks();
       render(<SystemSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('number-input'), {
+      fireEvent.change(screen.getAllByTestId('number-input')[0], {
         target: { value: '200' },
       });
       expect(formMock.setFieldValue).toHaveBeenCalledWith(

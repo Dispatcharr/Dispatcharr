@@ -16,10 +16,10 @@ import {
 import {
   AlertTriangle,
   Ban,
+  CalendarClock,
   Check,
   Download,
   FlaskConical,
-  Info,
   RefreshCw,
   RotateCcw,
   ShieldAlert,
@@ -32,9 +32,15 @@ import {
   PluginSecurityWarning,
   PluginSupportDisclaimer,
 } from '../PluginWarnings.jsx';
+import ConfirmationDialog from '../ConfirmationDialog.jsx';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { usePluginStore } from '../../store/plugins';
+import { usePluginStore, needsCapabilityAck } from '../../store/plugins';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
+import {
+  PluginLinks,
+  PluginMetadata,
+  SignatureIndicator,
+} from '../PluginHeader.jsx';
 import {
   buildCompatibilityTooltip,
   compareVersions,
@@ -46,6 +52,7 @@ import {
   getPluginDetailManifest,
   setPluginEnabled,
 } from '../../utils/pages/PluginsUtils.js';
+import './AvailablePluginCard.css';
 
 const RepoBadge = ({ isOfficial, repoName, signatureVerified }) => {
   if (isOfficial) {
@@ -116,9 +123,9 @@ const StatusBadge = ({
   status,
   deprecated,
   isPrerelease,
-  isLatestDowngrade,
   installedSourceRepoName,
 }) => {
+  const isLatestDowngrade = status === 'downgrade_available';
   if (status === 'installed') {
     const baseLabel = isPrerelease ? 'Prerelease' : 'Installed';
     if (!deprecated) {
@@ -126,7 +133,7 @@ const StatusBadge = ({
         <Badge
           size="xs"
           variant="light"
-          color={isPrerelease ? 'violet' : 'green'}
+          color={isPrerelease ? 'gray' : 'green'}
           leftSection={
             isPrerelease ? <FlaskConical size={8} /> : <Check size={8} />
           }
@@ -150,7 +157,7 @@ const StatusBadge = ({
       </Tooltip>
     );
   }
-  if (status === 'update_available') {
+  if (status === 'update_available' || status === 'downgrade_available') {
     const baseLabel = isLatestDowngrade
       ? 'Newer Installed'
       : 'Update Available';
@@ -222,10 +229,67 @@ const StatusBadge = ({
   return null;
 };
 
+const AvailablePluginCardHeader = ({
+  plugin,
+  signatureVerified = plugin.signature_verified,
+}) => (
+  <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
+    <Group
+      gap="sm"
+      align="center"
+      wrap="nowrap"
+      style={{ minWidth: 0, flex: 1 }}
+    >
+      <Avatar
+        src={plugin.icon_url}
+        radius="sm"
+        size={48}
+        alt={`${plugin.name} logo`}
+        imageProps={{ draggable: false }}
+      >
+        {plugin.name?.[0]?.toUpperCase()}
+      </Avatar>
+      <Box style={{ minWidth: 0, flex: 1 }}>
+        <Group gap={4} align="baseline" wrap="nowrap">
+          <Text fw={600} lineClamp={1} style={{ minWidth: 0 }}>
+            {plugin.name}
+          </Text>
+          {plugin.latest_version && (
+            <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+              v{plugin.latest_version}
+            </Text>
+          )}
+        </Group>
+        <Group gap={6} align="center" wrap="nowrap">
+          <PluginMetadata
+            plugin={plugin}
+            license={plugin.license}
+            authorClassName="available-plugin-card__author"
+            licenseClassName="available-plugin-card__license"
+            separatorClassName="available-plugin-card__license-separator"
+          />
+          <StatusBadge
+            status={plugin.install_status}
+            deprecated={plugin.deprecated}
+            isPrerelease={plugin.installed_version_is_prerelease}
+            installedSourceRepoName={plugin.installed_source_repo_name}
+          />
+        </Group>
+      </Box>
+    </Group>
+    <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
+      <RepoBadge
+        isOfficial={plugin.is_official_repo}
+        repoName={plugin.repo_name}
+        signatureVerified={signatureVerified}
+      />
+    </Stack>
+  </Group>
+);
+
 const AvailablePluginCard = ({
   plugin,
   appVersion,
-  multiRepo = false,
   autoOpenDetail = false,
   onDetailClose,
   onInstalled,
@@ -250,6 +314,7 @@ const AvailablePluginCard = ({
   const [installAction, setInstallAction] = useState(null); // 'installed' | 'updated' | 'downgraded'
   const [pendingInstall, setPendingInstall] = useState(null);
   const [installedKey, setInstalledKey] = useState(null);
+  const [installedPlugin, setInstalledPlugin] = useState(null);
   const [enableNow, setEnableNow] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [pluginIsDisabled, setPluginIsDisabled] = useState(false);
@@ -263,11 +328,9 @@ const AvailablePluginCard = ({
   const { pathname } = useLocation();
   const onMyPlugins = pathname === '/plugins';
 
-  const isLatestDowngrade =
-    plugin.install_status === 'update_available' &&
-    plugin.latest_version &&
-    plugin.installed_version &&
-    compareVersions(plugin.latest_version, plugin.installed_version) < 0;
+  const isLatestDowngrade = plugin.install_status === 'downgrade_available';
+  const hasDownloadCount =
+    Number.isFinite(plugin.download_count) && plugin.download_count >= 0;
 
   const doInstall = (params) => {
     if (plugin.deprecated) {
@@ -304,11 +367,32 @@ const AvailablePluginCard = ({
     const result = await installPlugin(params);
     setInstalling(false);
     setPendingInstall(null);
+    if (result?.error_code === 'capability_confirmation_required') {
+      const confirmationPlugin = {
+        key: plugin.key || params.slug,
+        name: plugin.name,
+        capabilities: result.capabilities || [],
+      };
+      const confirmed = await usePluginStore
+        .getState()
+        .requestEnableConfirmation(confirmationPlugin, 'update');
+      if (confirmed) {
+        await executeInstall({
+          ...params,
+          acknowledge_capabilities: (result.capabilities || []).map((capability) => capability.id),
+        });
+      } else {
+        await installPlugin({ ...params, deny_capabilities: true });
+        usePluginStore.getState().invalidatePlugins?.();
+      }
+      return;
+    }
     if (result?.success) {
       setInstallAction(
         wasDowngrade ? 'downgraded' : wasInstalled ? 'updated' : 'installed'
       );
       setInstalledKey(result.plugin?.key || params.slug);
+      setInstalledPlugin(result.plugin || null);
       setPluginIsDisabled(result.plugin?.enabled === false);
       setEnableNow(false);
       setRestartPromptOpen(true);
@@ -320,11 +404,22 @@ const AvailablePluginCard = ({
 
   const handleDismissRestart = async (andNavigate = false) => {
     if (enableNow && installedKey) {
-      setEnabling(true);
-      try {
-        await setPluginEnabled(installedKey, true);
-      } finally {
-        setEnabling(false);
+      const proceed =
+        !needsCapabilityAck(installedPlugin) ||
+        (await usePluginStore
+          .getState()
+          .requestEnableConfirmation(installedPlugin || { key: installedKey }));
+      if (proceed) {
+        setEnabling(true);
+        try {
+          await setPluginEnabled(
+            installedKey,
+            true,
+            (installedPlugin?.capabilities || []).map((capability) => capability.id)
+          );
+        } finally {
+          setEnabling(false);
+        }
       }
     }
     setRestartPromptOpen(false);
@@ -353,7 +448,7 @@ const AvailablePluginCard = ({
     setDetailOpen(true);
     if (detailLoading) return;
     if (!plugin.manifest_url) {
-      // No per-plugin manifest — synthesize from top-level repo entry (latest only)
+      // No per-plugin manifest: synthesize from the top-level repo entry (latest only)
       setDetail({
         manifest: {
           description: plugin.description,
@@ -369,6 +464,7 @@ const AvailablePluginCard = ({
                   max_dispatcharr_version: plugin.max_dispatcharr_version,
                   build_timestamp: plugin.last_updated,
                   size: plugin.latest_size,
+                  changelog: plugin.latest_changelog,
                 },
               ]
             : [],
@@ -409,71 +505,25 @@ const AvailablePluginCard = ({
     min_dispatcharr_version: plugin.min_dispatcharr_version,
     max_dispatcharr_version: plugin.max_dispatcharr_version,
   };
+  const hasModalActionLinks = Boolean(
+    detail?.manifest?.repo_url || detail?.manifest?.discord_thread
+  );
 
   return (
     <Card
+      className="available-plugin-card"
       shadow="sm"
       radius="md"
       withBorder
       style={{
         display: 'flex',
         flexDirection: 'column',
-        minHeight: 220,
+        minHeight: 200,
+        paddingTop: 12,
         backgroundColor: '#27272A',
-        ...(multiRepo && plugin.is_official_repo
-          ? { borderColor: '#0e6459' }
-          : {}),
       }}
     >
-      <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
-        <Group
-          gap="sm"
-          align="flex-start"
-          wrap="nowrap"
-          style={{ minWidth: 0, flex: 1 }}
-        >
-          <Avatar
-            src={plugin.icon_url}
-            radius="sm"
-            size={48}
-            alt={`${plugin.name} logo`}
-            imageProps={{ draggable: false }}
-          >
-            {plugin.name?.[0]?.toUpperCase()}
-          </Avatar>
-          <Box style={{ minWidth: 0, flex: 1 }}>
-            <Text fw={600} lineClamp={1}>
-              {plugin.name}
-            </Text>
-            <Group gap={6} align="center" wrap="nowrap">
-              {plugin.author && (
-                <Text
-                  size="xs"
-                  c="dimmed"
-                  truncate
-                  style={{ minWidth: 0, maxWidth: '100%' }}
-                >
-                  {plugin.author}
-                </Text>
-              )}
-              <StatusBadge
-                status={plugin.install_status}
-                deprecated={plugin.deprecated}
-                isPrerelease={plugin.installed_version_is_prerelease}
-                isLatestDowngrade={isLatestDowngrade}
-                installedSourceRepoName={plugin.installed_source_repo_name}
-              />
-            </Group>
-          </Box>
-        </Group>
-        <Group gap={4} wrap="nowrap" style={{ flexShrink: 0 }}>
-          <RepoBadge
-            isOfficial={plugin.is_official_repo}
-            repoName={plugin.repo_name}
-            signatureVerified={plugin.signature_verified}
-          />
-        </Group>
-      </Group>
+      <AvailablePluginCardHeader plugin={plugin} />
 
       <Box
         style={{
@@ -485,53 +535,10 @@ const AvailablePluginCard = ({
         }}
       >
         <div style={{ overflow: 'hidden' }}>
-          <Text size="sm" c="dimmed" lineClamp={3} mb={0}>
+          <Text size="sm" c="dimmed" lineClamp={4} mb={0}>
             {plugin.description}
           </Text>
         </div>
-
-        <Stack gap={2} mt="auto" pt={4} style={{ flexShrink: 0 }}>
-          <Group gap="xs" wrap="wrap">
-            {plugin.latest_version && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>LATEST</span>v
-                {plugin.latest_version}
-              </Badge>
-            )}
-            {plugin.license && (
-              <Badge
-                size="xs"
-                variant="default"
-                component="a"
-                href={`https://spdx.org/licenses/${encodeURIComponent(plugin.license)}.html`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ cursor: 'pointer' }}
-              >
-                <span style={{ opacity: 0.5, marginRight: 4 }}>LICENSE</span>
-                {plugin.license}
-              </Badge>
-            )}
-            {plugin.min_dispatcharr_version && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>MIN</span>
-                {plugin.min_dispatcharr_version}
-              </Badge>
-            )}
-            {plugin.max_dispatcharr_version && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>MAX</span>
-                {plugin.max_dispatcharr_version}
-              </Badge>
-            )}
-            {plugin.last_updated && (
-              <Badge size="xs" variant="default">
-                <span style={{ opacity: 0.5, marginRight: 4 }}>UPDATED</span>
-                {new Date(plugin.last_updated).toLocaleDateString()}
-              </Badge>
-            )}
-          </Group>
-        </Stack>
       </Box>
 
       <Group justify="space-between" mt="sm" align="center" wrap="nowrap">
@@ -561,12 +568,57 @@ const AvailablePluginCard = ({
               </Tooltip>
             );
           })()}
-        {meetsVersion && <span />}
+        {meetsVersion && (plugin.last_updated || hasDownloadCount) && (
+          <Group
+            gap={4}
+            align="center"
+            wrap="nowrap"
+          >
+            {plugin.last_updated && (
+              <Group
+                className="available-plugin-card__updated"
+                gap={4}
+                align="center"
+                wrap="nowrap"
+              >
+                <CalendarClock
+                  size={12}
+                  color="var(--mantine-color-dimmed)"
+                />
+                <Text size="xs" c="dimmed">
+                  {new Date(plugin.last_updated).toLocaleDateString()}
+                </Text>
+              </Group>
+            )}
+            {hasDownloadCount && plugin.last_updated && (
+              <Text
+                className="available-plugin-card__action-separator"
+                size="xs"
+                c="dimmed"
+              >
+                •
+              </Text>
+            )}
+            {hasDownloadCount && (
+              <Group
+                className="available-plugin-card__downloads"
+                gap={3}
+                align="center"
+                wrap="nowrap"
+              >
+                <Download size={12} color="var(--mantine-color-dimmed)" />
+                <Text size="xs" c="dimmed">
+                  {plugin.download_count.toLocaleString()}
+                </Text>
+              </Group>
+            )}
+          </Group>
+        )}
+        {meetsVersion && !plugin.last_updated && !hasDownloadCount && <span />}
         <Group gap="xs" wrap="nowrap">
           <Button
             size="xs"
             variant="default"
-            leftSection={<Info size={14} />}
             onClick={handleMoreInfo}
           >
             More Info
@@ -620,7 +672,8 @@ const AvailablePluginCard = ({
               Uninstall
             </Button>
           )}
-          {plugin.install_status === 'update_available' && (
+          {(plugin.install_status === 'update_available' ||
+            plugin.install_status === 'downgrade_available') && (
             <SizedInstallButton
               size="xs"
               variant="filled"
@@ -674,24 +727,39 @@ const AvailablePluginCard = ({
           onDetailClose?.();
         }}
         title={
-          <Group gap="xs" align="center">
+          <Group gap="sm" align="center" wrap="nowrap" style={{ minWidth: 0 }}>
             <Avatar
               src={plugin.icon_url}
               radius="sm"
-              size={28}
+              size={48}
               alt={`${plugin.name} logo`}
               imageProps={{ draggable: false }}
             >
               {plugin.name?.[0]?.toUpperCase()}
             </Avatar>
-            <Text fw={600}>{plugin.name}</Text>
-            <RepoBadge
-              isOfficial={plugin.is_official_repo}
-              repoName={plugin.repo_name}
-              signatureVerified={
-                detail?.signature_verified ?? plugin.signature_verified
-              }
-            />
+            <Box style={{ minWidth: 0, flex: 1 }}>
+              <Group gap={4} align="baseline" wrap="nowrap">
+                <Text fw={600} lineClamp={1} style={{ minWidth: 0 }}>
+                  {plugin.name}
+                </Text>
+                {plugin.latest_version && (
+                  <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+                    v{plugin.latest_version}
+                  </Text>
+                )}
+                <SignatureIndicator
+                  signatureVerified={
+                    detail?.signature_verified ?? plugin.signature_verified
+                  }
+                />
+              </Group>
+              <PluginMetadata
+                plugin={{ author: detail?.manifest?.author ?? plugin.author }}
+                license={detail?.manifest?.license ?? plugin.license}
+                sourceRepoName={plugin.repo_name}
+                trailing={<PluginLinks helpUrl={detail?.manifest?.help_url} compact />}
+              />
+            </Box>
           </Group>
         }
         size="lg"
@@ -714,67 +782,58 @@ const AvailablePluginCard = ({
           installedSourceRepoName={plugin.installed_source_repo_name}
           repoId={plugin.repo_id}
           slug={plugin.slug}
+          hideMetadata
+          metadataActions={hasModalActionLinks ? (
+            <PluginLinks
+              repoUrl={detail?.manifest?.repo_url}
+              discordThread={detail?.manifest?.discord_thread}
+              compact
+              asButtons
+            />
+          ) : null}
         />
       </Modal>
 
-      {/* Deprecation warning modal */}
-      <Modal
+      <ConfirmationDialog
         opened={deprecationWarnOpen}
         onClose={() => {
           setDeprecationWarnOpen(false);
           setPendingDeprecatedInstall(null);
         }}
+        onConfirm={confirmDeprecatedInstall}
         zIndex={300}
+        size="sm"
         title={
           <Group gap="xs" align="center">
             <Ban size={18} color="var(--mantine-color-red-6)" />
             <Text fw={600}>Deprecated Plugin</Text>
           </Group>
         }
-        size="sm"
-      >
-        <Stack gap="md">
-          <Text size="sm">
-            <b>{plugin.name}</b> has been marked as <b>deprecated</b> by its
-            maintainer.
-          </Text>
-          <Text size="sm" c="dimmed">
-            Deprecated plugins may no longer receive updates or fixes, and could
-            stop working with future versions of Dispatcharr. It is recommended
-            to look for an alternative.
-          </Text>
-          <PluginSecurityWarning>
-            Plugins run server-side code with full access to your Dispatcharr
-            instance and its data. Only install plugins from developers you
-            trust. Malicious plugins could read or modify data, call internal
-            APIs, or perform unwanted actions.
-          </PluginSecurityWarning>
-          <PluginSupportDisclaimer />
-          <Text size="sm" fw={500}>
-            Do you still want to proceed?
-          </Text>
-          <Group justify="flex-end" gap="xs">
-            <Button
-              size="xs"
-              variant="default"
-              onClick={() => {
-                setDeprecationWarnOpen(false);
-                setPendingDeprecatedInstall(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              leftSection={<Ban size={14} />}
-              onClick={confirmDeprecatedInstall}
-            >
-              Install Anyway
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        confirmLabel="Install Anyway"
+        message={
+          <Stack gap="md">
+            <Text size="sm">
+              <b>{plugin.name}</b> has been marked as <b>deprecated</b> by its
+              maintainer.
+            </Text>
+            <Text size="sm" c="dimmed">
+              Deprecated plugins may no longer receive updates or fixes, and
+              could stop working with future versions of Dispatcharr. It is
+              recommended to look for an alternative.
+            </Text>
+            <PluginSecurityWarning>
+              Plugins run server-side code with full access to your
+              Dispatcharr instance and its data. Only install plugins from
+              developers you trust. Malicious plugins could read or modify
+              data, call internal APIs, or perform unwanted actions.
+            </PluginSecurityWarning>
+            <PluginSupportDisclaimer />
+            <Text size="sm" fw={500}>
+              Do you still want to proceed?
+            </Text>
+          </Stack>
+        }
+      />
 
       {/* Unified install confirmation modal */}
       {(() => {
@@ -794,15 +853,17 @@ const AvailablePluginCard = ({
               ? 'orange'
               : isBadSig
                 ? 'red'
-                : undefined;
+                : 'blue';
         return (
-          <Modal
+          <ConfirmationDialog
             opened={confirmOpen}
             onClose={() => {
               setConfirmOpen(false);
               setPendingInstall(null);
             }}
+            onConfirm={confirmAndInstall}
             zIndex={300}
+            size="sm"
             title={
               <Group gap="xs" align="center">
                 {isBadSig ? (
@@ -818,124 +879,95 @@ const AvailablePluginCard = ({
                 <Text fw={600}>Confirm {actionLabel}</Text>
               </Group>
             }
-            size="sm"
-          >
-            <Stack gap="md">
-              <Text size="sm">
-                You are about to {actionLabel.toLowerCase()}{' '}
-                <b>{plugin.name}</b>{' '}
-                {isUpdate || isDowngrade ? (
-                  <>
-                    from <b>v{plugin.installed_version}</b> to{' '}
-                    <b>v{pendingInstall?.version}</b>
-                  </>
-                ) : (
-                  <>
-                    <b>v{pendingInstall?.version}</b>
-                  </>
-                )}
-                {plugin.repo_name ? (
-                  <>
-                    {' '}
-                    from <b>{plugin.repo_name}</b>
-                  </>
-                ) : (
-                  ''
-                )}
-                .
-              </Text>
-              <PluginSecurityWarning>
-                Plugins run server-side code with full access to your
-                Dispatcharr instance and its data. Only install plugins from
-                developers you trust. Malicious plugins could read or modify
-                data, call internal APIs, or perform unwanted actions.
-              </PluginSecurityWarning>
-              <PluginSupportDisclaimer />
-              {isDowngrade && (
-                <PluginDowngradeWarning>
-                  Downgrading may cause issues with saved settings or data.
-                </PluginDowngradeWarning>
-              )}
-              {isBadSig && (
+            confirmLabel={actionLabel}
+            confirmColor={btnColor}
+            message={
+              <Stack gap="md">
+                <Text size="sm">
+                  You are about to {actionLabel.toLowerCase()}{' '}
+                  <b>{plugin.name}</b>{' '}
+                  {isUpdate || isDowngrade ? (
+                    <>
+                      from <b>v{plugin.installed_version}</b> to{' '}
+                      <b>v{pendingInstall?.version}</b>
+                    </>
+                  ) : (
+                    <>
+                      <b>v{pendingInstall?.version}</b>
+                    </>
+                  )}
+                  {plugin.repo_name ? (
+                    <>
+                      {' '}
+                      from <b>{plugin.repo_name}</b>
+                    </>
+                  ) : (
+                    ''
+                  )}
+                  .
+                </Text>
                 <PluginSecurityWarning>
-                  This repository has an invalid or unverified signature.
-                  Installing plugins from unverified sources may be risky.
+                  Plugins run server-side code with full access to your
+                  Dispatcharr instance and its data. Only install plugins from
+                  developers you trust. Malicious plugins could read or modify
+                  data, call internal APIs, or perform unwanted actions.
                 </PluginSecurityWarning>
-              )}
-              {plugin.install_status === 'unmanaged' && (
-                <PluginInfoNote>
-                  This plugin was installed manually. Installing from this repo
-                  will bring it under repo management and enable future update
-                  checks.
-                </PluginInfoNote>
-              )}
-              {plugin.install_status === 'different_repo' && (
-                <PluginInfoNote>
-                  This plugin is currently managed by{' '}
-                  <b>{plugin.installed_source_repo_name || 'another repo'}</b>.
-                  Installing will transfer management to this repo.
-                </PluginInfoNote>
-              )}
-              <Text size="sm" fw={500}>
-                Are you sure you want to proceed?
-              </Text>
-              <Group justify="flex-end" gap="xs">
-                <Button
-                  size="xs"
-                  variant="default"
-                  onClick={() => {
-                    setConfirmOpen(false);
-                    setPendingInstall(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button size="xs" color={btnColor} onClick={confirmAndInstall}>
-                  {actionLabel}
-                </Button>
-              </Group>
-            </Stack>
-          </Modal>
+                <PluginSupportDisclaimer />
+                {isDowngrade && (
+                  <PluginDowngradeWarning>
+                    Downgrading may cause issues with saved settings or data.
+                  </PluginDowngradeWarning>
+                )}
+                {isBadSig && (
+                  <PluginSecurityWarning>
+                    This repository has an invalid or unverified signature.
+                    Installing plugins from unverified sources may be risky.
+                  </PluginSecurityWarning>
+                )}
+                {plugin.install_status === 'unmanaged' && (
+                  <PluginInfoNote>
+                    This plugin was installed manually. Installing from this
+                    repo will bring it under repo management and enable
+                    future update checks.
+                  </PluginInfoNote>
+                )}
+                {plugin.install_status === 'different_repo' && (
+                  <PluginInfoNote>
+                    This plugin is currently managed by{' '}
+                    <b>{plugin.installed_source_repo_name || 'another repo'}</b>.
+                    Installing will transfer management to this repo.
+                  </PluginInfoNote>
+                )}
+                <Text size="sm" fw={500}>
+                  Are you sure you want to proceed?
+                </Text>
+              </Stack>
+            }
+          />
         );
       })()}
 
-      {/* Uninstall confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={uninstallConfirmOpen}
         onClose={() => setUninstallConfirmOpen(false)}
+        onConfirm={handleUninstall}
         zIndex={300}
+        size="sm"
         title={
           <Group gap="xs" align="center">
             <Trash2 size={18} color="var(--mantine-color-red-6)" />
             <Text fw={600}>Uninstall Plugin</Text>
           </Group>
         }
-        size="sm"
-      >
-        <Stack gap="md">
+        confirmLabel="Uninstall"
+        loading={uninstalling}
+        message={
           <Text size="sm">
-            Are you sure you want to uninstall <b>{plugin.name}</b>? This will
-            remove the plugin files and all associated settings.
+            Are you sure you want to uninstall <b>{plugin.name}</b>? This
+            will remove the plugin files and all associated settings.
           </Text>
-          <Group justify="flex-end" gap="xs">
-            <Button
-              size="xs"
-              variant="default"
-              onClick={() => setUninstallConfirmOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              loading={uninstalling}
-              onClick={handleUninstall}
-            >
-              Uninstall
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        }
+      />
 
       {/* Post-uninstall notice */}
       <Modal

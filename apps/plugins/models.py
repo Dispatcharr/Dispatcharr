@@ -11,6 +11,11 @@ class PluginConfig(models.Model):
     enabled = models.BooleanField(default=False)
     # Tracks whether this plugin has ever been enabled at least once
     ever_enabled = models.BooleanField(default=False)
+    # Capability ids the user has acknowledged (via the enable confirmation
+    # dialog) for this plugin. Compared against the plugin's current
+    # effective capabilities to decide whether to re-prompt after an update
+    # adds a new one; ever_enabled alone can't tell them apart.
+    acknowledged_capabilities = models.JSONField(default=list, blank=True)
     settings = models.JSONField(default=dict, blank=True)
     # Historical Celery task names retained for cleanup after an upgrade.
     owned_tasks = models.JSONField(default=list, blank=True)
@@ -63,3 +68,19 @@ class PluginRepo(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+
+class PluginManifestMessageDismissal(models.Model):
+    """A user's dismissal of an official root-manifest message UUID."""
+
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="dismissed_plugin_messages"
+    )
+    message_id = models.UUIDField()
+    dismissed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "message_id"], name="unique_plugin_message_dismissal"),
+        ]
+        indexes = [models.Index(fields=["user", "message_id"])]
