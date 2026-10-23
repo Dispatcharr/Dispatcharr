@@ -12,7 +12,7 @@ from django.test import TransactionTestCase
 
 from apps.m3u.models import M3UAccount
 from apps.vod.models import M3UVODCategoryRelation, VODCategory
-from apps.vod.tasks import refresh_categories, refresh_vod_content
+from apps.vod.tasks import refresh_categories, _refresh_vod_content_impl
 
 USER_AGENT_PATCH = patch(
     "apps.m3u.models.M3UAccount.get_user_agent_string",
@@ -41,6 +41,29 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
             enabled=True,
         )
         return account, category, relation
+
+    @patch("apps.m3u.tasks.send_m3u_update")
+    @patch("apps.vod.tasks.cleanup_orphaned_vod_content")
+    @patch("apps.vod.tasks.XtreamCodesClient")
+    def test_queued_refresh_rechecks_disabled_vod_without_changing_data(
+        self, client, cleanup, notify,
+    ):
+        account, _category, relation = self._setup_xc_account_with_movie_category()
+        M3UAccount.objects.filter(pk=account.pk).update(
+            custom_properties={"enable_vod": False}
+        )
+
+        result = _refresh_vod_content_impl(account.id)
+
+        self.assertEqual(result, "VOD refresh skipped: VOD scanning is disabled")
+        client.assert_not_called()
+        cleanup.assert_not_called()
+        notify.assert_not_called()
+        self.assertTrue(
+            M3UVODCategoryRelation.objects.filter(pk=relation.pk, enabled=True).exists()
+        )
+        account.refresh_from_db()
+        self.assertEqual(account.custom_properties, {"enable_vod": False})
 
     def test_empty_movie_categories_with_existing_relations_aborts(self):
         account, _category, _relation = self._setup_xc_account_with_movie_category()
@@ -89,7 +112,7 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
 
         with patch("apps.vod.tasks.XtreamCodesClient") as mock_client_cls:
             mock_client_cls.return_value.__enter__.return_value = mock_client
-            result = refresh_vod_content(account.id)
+            result = _refresh_vod_content_impl(account.id)
 
         self.assertIn("aborting VOD refresh to preserve existing category selections", result)
         mock_refresh_movies.assert_not_called()
@@ -115,6 +138,8 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
         mock_batch_create,
     ):
         account, category, relation = self._setup_xc_account_with_movie_category()
+        mock_refresh_movies.return_value = 1
+        mock_refresh_series.return_value = 0
         mock_client = MagicMock()
         mock_client.get_vod_categories.return_value = [
             {"category_id": "1", "category_name": "NETFLIX MOVIES"},
@@ -127,12 +152,15 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
 
         with patch("apps.vod.tasks.XtreamCodesClient") as mock_client_cls:
             mock_client_cls.return_value.__enter__.return_value = mock_client
-            result = refresh_vod_content(account.id)
+            result = _refresh_vod_content_impl(account.id)
 
         self.assertIn("completed", result)
         mock_refresh_movies.assert_called_once()
         mock_refresh_series.assert_called_once()
         mock_cleanup.assert_called_once()
+        account.refresh_from_db()
+        self.assertEqual(account.custom_properties["vod_catalog_counts"]["movies"]["provider_total"], 1)
+        self.assertIn("vod_seconds", account.custom_properties["refresh_timings"])
         self.assertTrue(
             M3UVODCategoryRelation.objects.filter(pk=relation.pk, enabled=True).exists()
         )

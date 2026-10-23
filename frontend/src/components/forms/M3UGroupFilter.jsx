@@ -22,7 +22,12 @@ import {
 } from '../../utils/forms/M3uGroupFilterUtils.js';
 import { detectGroupReservationOverlaps } from '../../utils/forms/GroupSyncUtils';
 
-const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
+const M3UGroupFilter = ({
+  playlist = null,
+  isOpen,
+  onClose,
+  isInitialSetup = false,
+}) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
 
@@ -64,6 +69,12 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   }, [isOpen, playlist, fetchCategories]);
 
   const submit = async () => {
+    const refreshIncludesVod =
+      playlist.account_type === 'XC' &&
+      playlist.enable_vod &&
+      playlist.is_active !== false &&
+      (isInitialSetup || playlist.vod_refresh_after_live !== false);
+
     // Advisory only: overlapping ranges are sometimes intentional (for
     // example, two providers carrying the same category that should
     // merge into one shared number range). The form already shows a
@@ -90,20 +101,22 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
           auto_enable_new_groups_live: autoEnableNewGroupsLive,
           auto_enable_new_groups_vod: autoEnableNewGroupsVod,
           auto_enable_new_groups_series: autoEnableNewGroupsSeries,
-        }
+        },
+        isInitialSetup
       );
 
       showNotification({
         title: 'Group Settings Updated',
-        message: 'Settings saved. Starting M3U refresh to apply changes...',
+        message: 'Settings saved. The provider refresh has been requested.',
         color: 'green',
         autoClose: 3000,
       });
 
       showNotification({
-        title: 'M3U Refresh Started',
-        message:
-          'The M3U account is being refreshed. Channel sync will occur automatically after parsing completes.',
+        title: 'Live TV Refresh Started',
+        message: refreshIncludesVod
+          ? 'Live TV is refreshing now. VOD will be queued in the background after Live TV completes; its progress is shown separately.'
+          : 'The saved Live TV settings are being applied. Channel sync runs after parsing completes.',
         color: 'blue',
         autoClose: 5000,
       });
