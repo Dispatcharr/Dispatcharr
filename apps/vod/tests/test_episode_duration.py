@@ -53,7 +53,7 @@ class EpisodeDurationTests(TestCase):
     def test_invalid_durations_do_not_abort_bulk_create(self):
         durations = [
             2605442460, '2605442460', MAX_DURATION_SECS + 1, -(MAX_DURATION_SECS + 1),
-            -1, '', 'unknown', '1.5', 1.5, None, True, [], {},
+            -1, 0, '0', '', 'unknown', '1.5', 1.5, None, True, [], {},
         ]
         self.process([
             episode_data(number, duration)
@@ -84,7 +84,7 @@ class EpisodeDurationTests(TestCase):
         )
 
     def test_valid_integer_durations_and_max_boundary_are_preserved(self):
-        durations = [0, '0', 1800, 1800.0, '3600', MAX_DURATION_SECS, str(MAX_DURATION_SECS)]
+        durations = [1800, 1800.0, '3600', MAX_DURATION_SECS, str(MAX_DURATION_SECS)]
         self.process([
             episode_data(number, duration)
             for number, duration in enumerate(durations, start=1)
