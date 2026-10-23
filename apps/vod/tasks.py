@@ -1242,6 +1242,28 @@ def extract_duration_from_data(movie_data):
     return duration_secs
 
 
+# Cap for provider duration_secs. Well above normal episodes and features
+# (scripted episodes rarely exceed ~3 hours; cinematic outliers top out around
+# 15 hours) and still rejects junk that would overflow a DB integer.
+MAX_DURATION_SECS = 48 * 60 * 60
+
+
+def normalize_duration_secs(value):
+    """Return non-negative whole seconds within MAX_DURATION_SECS, else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # Reject non-integral floats (1.5); allow whole values like 1800.0.
+    if isinstance(value, float) and value != seconds:
+        return None
+    if seconds < 0 or seconds > MAX_DURATION_SECS:
+        return None
+    return seconds
+
+
 def normalize_rating(rating_value):
     """Normalize rating value by converting commas to decimals and validating as float"""
     if not rating_value:
@@ -1538,7 +1560,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             description = info.get('plot') or info.get('overview', '') if info else ''
             rating = normalize_rating(info.get('rating')) if info else None
             air_date = extract_date_from_data(info) if info else None
-            duration_secs = info.get('duration_secs') if info else None
+            duration_secs = normalize_duration_secs(
+                info.get('duration_secs') if info else None
+            )
             tmdb_id = info.get('tmdb_id') if info else None
             imdb_id = info.get('imdb_id') if info else None
 
@@ -1579,7 +1603,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 if air_date != episode.air_date:
                     episode.air_date = air_date
                     updated = True
-                if duration_secs != episode.duration_secs:
+                # Keep an existing duration when the provider sends missing or
+                # invalid data; only apply a successfully normalized value.
+                if duration_secs is not None and duration_secs != episode.duration_secs:
                     episode.duration_secs = duration_secs
                     updated = True
                 if tmdb_id != episode.tmdb_id:
