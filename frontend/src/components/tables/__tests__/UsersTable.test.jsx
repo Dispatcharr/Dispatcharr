@@ -464,11 +464,27 @@ describe('UsersTable', () => {
       );
     });
 
-    it('copies the XC server URL', () => {
-      const utils = renderActions(makeUser());
+    it('copies XC details with server, username, and password', () => {
+      const utils = renderActions(
+        makeUser({
+          username: 'janedoe',
+          custom_properties: { xc_password: 'secret123' },
+        })
+      );
       openMenu(utils);
-      fireEvent.click(getItem(utils, 'XC Server'));
-      expect(copyToClipboard).toHaveBeenCalledWith(origin, expect.any(Object));
+      fireEvent.click(getItem(utils, 'XC Details'));
+      expect(copyToClipboard).toHaveBeenCalledWith(
+        [
+          `Server: ${origin}`,
+          'Username: janedoe',
+          'Password: secret123',
+        ].join('\n'),
+        {
+          successTitle: 'XC Details Copied!',
+          successMessage:
+            'Server, username, and XC password have been copied to your clipboard.',
+        }
+      );
     });
 
     it('does not mount the menu until the icon is clicked', () => {
@@ -483,7 +499,7 @@ describe('UsersTable', () => {
       openMenu(utils);
       expect(
         utils.getAllByTestId('menu-item').map((el) => el.textContent)
-      ).toEqual(['M3U', 'EPG', 'XC Server']);
+      ).toEqual(['M3U', 'EPG', 'XC Details']);
     });
   });
 

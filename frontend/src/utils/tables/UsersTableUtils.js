@@ -1,4 +1,5 @@
 import { USER_LEVEL_LABELS } from '../../constants';
+import { getPublicBaseUrl } from '../networkUtils';
 
 // Shared by the Name cell, sort, and search so they cannot disagree on what
 // "name" means (there is no backing model field).
@@ -67,10 +68,7 @@ export const buildUserXcUrls = (user, envMode) => {
   const xcPassword = user.custom_properties?.xc_password;
   if (!xcPassword) return null;
 
-  const server =
-    envMode == 'dev'
-      ? `${window.location.protocol}//${window.location.hostname}:5656`
-      : `${window.location.protocol}//${window.location.host}`;
+  const server = getPublicBaseUrl(envMode);
   const credentials = new URLSearchParams({
     username: user.username,
     password: xcPassword,
@@ -80,5 +78,11 @@ export const buildUserXcUrls = (user, envMode) => {
     server,
     m3u: `${server}/get.php?${credentials}`,
     epg: `${server}/xmltv.php?${credentials}`,
+    // Multi-line blob for XC clients that take server + username + password.
+    details: [
+      `Server: ${server}`,
+      `Username: ${user.username}`,
+      `Password: ${xcPassword}`,
+    ].join('\n'),
   };
 };

@@ -471,6 +471,29 @@ describe('ChannelUtils', () => {
       ).rejects.toThrow('EPG error');
     });
 
+    it('writes user_level and is_adult on auto-created channels', async () => {
+      const channel = makeChannel({
+        auto_created: true,
+        epg_data_id: 'epg-1',
+        user_level: 0,
+        is_adult: false,
+      });
+      const formatted = makeFormattedValues({
+        epg_data_id: 'epg-1',
+        user_level: '10',
+        is_adult: true,
+        hidden_from_output: false,
+      });
+      await handleEpgUpdate(channel, formatted, formatted, makeChannelStreams());
+      const callArg = API.updateChannel.mock.calls[0][0];
+      expect(callArg.user_level).toBe('10');
+      expect(callArg.is_adult).toBe(true);
+      expect(callArg.hidden_from_output).toBe(false);
+      expect(callArg.override?.user_level).toBeUndefined();
+      expect(callArg.override?.is_adult).toBeUndefined();
+      expect(API.setChannelEPG).not.toHaveBeenCalled();
+    });
+
     it('propagates API.updateChannel rejection', async () => {
       API.updateChannel.mockRejectedValue(new Error('Update error'));
       const channel = makeChannel({ epg_data_id: 'epg-1' });
