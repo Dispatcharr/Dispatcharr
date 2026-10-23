@@ -4627,3 +4627,11 @@ def set_channels_tvg_ids_from_epg(self, channel_ids):
             'error': str(e)
         })
         raise
+
+
+@shared_task
+def send_channels_updated_event():
+    """Send the coalesced ``channels_updated`` event (see apps.channels.change_events)."""
+    from apps.channels.change_events import send_pending_changes
+
+    return send_pending_changes()
