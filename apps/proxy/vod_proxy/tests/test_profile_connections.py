@@ -1112,7 +1112,8 @@ class TestIdleMatchAcrossDifferentProfile(TestCase):
         mgr = self._make_manager(redis)
 
         content = MagicMock()
-        content.uuid = "uuid-mismatch"
+        content.uuid = "abc-123"
+        content._vod_selection_key = ""
         content.name = "Movie"
         request = MagicMock()
         request.META = {}
@@ -1197,7 +1198,8 @@ class TestIdleMatchAcrossDifferentProfile(TestCase):
         mgr = self._make_manager(redis)
 
         content = MagicMock()
-        content.uuid = "uuid-deleted-profile"
+        content.uuid = "abc-123"
+        content._vod_selection_key = ""
         content.name = "Movie"
         request = MagicMock()
         request.META = {}
@@ -1278,7 +1280,8 @@ class TestIdleMatchAcrossDifferentProfile(TestCase):
         mgr = self._make_manager(redis)
 
         content = MagicMock()
-        content.uuid = "uuid-storm"
+        content.uuid = "abc-123"
+        content._vod_selection_key = ""
         content.name = "Movie"
         request = MagicMock()
         request.META = {}
@@ -1797,7 +1800,8 @@ class ResponseCloseBeforeBodyTests(TestCase):
         from apps.proxy.vod_proxy.tests.test_vod_lock_contention import _seed_session
 
         content = MagicMock()
-        content.uuid = "uuid-close-before-body"
+        content.uuid = "abc-123"
+        content._vod_selection_key = ""
         content.name = "Movie"
         request = MagicMock()
         request.META = {}

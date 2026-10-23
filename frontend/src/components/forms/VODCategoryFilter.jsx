@@ -1,4 +1,4 @@
-import React, { memo, startTransition, useCallback, useEffect, useState } from 'react';
+import React, { memo, useCallback, useEffect, useState } from 'react';
 import {
   TextInput,
   Button,
@@ -10,50 +10,47 @@ import {
   Box,
   Checkbox,
   SegmentedControl,
-  Select,
+  ActionIcon,
+  Tooltip,
+  Modal,
 } from '@mantine/core';
-import { CircleCheck, CircleX } from 'lucide-react';
+import { CircleCheck, CircleX, Settings } from 'lucide-react';
 import useVODStore from '../../store/useVODStore';
+import MEDIA_LANGUAGE_OPTIONS from '../../../../apps/vod/media_languages.json';
+import VODCategoryMetadataEditor from './VODCategoryMetadataEditor';
 
-export const VOD_CATEGORY_QUALITIES = ['4K', '1080p', '720p', '480p', 'SD'];
-
-// Common ISO 639-1 codes for IPTV VOD catalogs.
-export const VOD_CATEGORY_LANGUAGES = [
-  { value: 'en', label: 'English (en)' },
-  { value: 'es', label: 'Spanish (es)' },
-  { value: 'fr', label: 'French (fr)' },
-  { value: 'de', label: 'German (de)' },
-  { value: 'it', label: 'Italian (it)' },
-  { value: 'pt', label: 'Portuguese (pt)' },
-  { value: 'nl', label: 'Dutch (nl)' },
-  { value: 'pl', label: 'Polish (pl)' },
-  { value: 'ru', label: 'Russian (ru)' },
-  { value: 'ar', label: 'Arabic (ar)' },
-  { value: 'tr', label: 'Turkish (tr)' },
-  { value: 'ja', label: 'Japanese (ja)' },
-  { value: 'ko', label: 'Korean (ko)' },
-  { value: 'zh', label: 'Chinese (zh)' },
-  { value: 'hi', label: 'Hindi (hi)' },
-  { value: 'sv', label: 'Swedish (sv)' },
-  { value: 'no', label: 'Norwegian (no)' },
-  { value: 'da', label: 'Danish (da)' },
-  { value: 'fi', label: 'Finnish (fi)' },
-  { value: 'cs', label: 'Czech (cs)' },
-  { value: 'el', label: 'Greek (el)' },
-  { value: 'he', label: 'Hebrew (he)' },
-  { value: 'hu', label: 'Hungarian (hu)' },
-  { value: 'ro', label: 'Romanian (ro)' },
-  { value: 'uk', label: 'Ukrainian (uk)' },
-  { value: 'th', label: 'Thai (th)' },
-  { value: 'vi', label: 'Vietnamese (vi)' },
-  { value: 'id', label: 'Indonesian (id)' },
-  { value: 'ms', label: 'Malay (ms)' },
+const VOD_CATEGORY_QUALITIES = [
+  '4320p',
+  '2160p',
+  '1440p',
+  '1080p',
+  '720p',
+  '576p',
+  '480p',
+  '360p',
 ];
 
-const QUALITY_OPTIONS = VOD_CATEGORY_QUALITIES.map((q) => ({
-  value: q,
-  label: q,
-}));
+const categoryMetadata = (category) => {
+  const props = category.custom_properties || {};
+  return {
+    audio_languages:
+      props.audio_languages ??
+      (props.language
+        ? [
+            MEDIA_LANGUAGE_OPTIONS.find(
+              (option) => option.legacyValue === props.language
+            )?.value || props.language,
+          ]
+        : []),
+    subtitle_languages: props.subtitle_languages || [],
+    resolution: Object.hasOwn(props, 'resolution')
+      ? props.resolution || ''
+      : { '4K': '2160p', FHD: '1080p', HD: '720p' }[props.quality] ||
+        props.quality ||
+        '',
+    video_features: props.video_features || [],
+  };
+};
 
 const parseCustomProperties = (raw) => {
   if (!raw) return {};
@@ -67,9 +64,21 @@ const parseCustomProperties = (raw) => {
 const CategoryCard = memo(function CategoryCard({
   category,
   onToggle,
-  onCustomPropertyChange,
+  onEdit,
 }) {
-  const props = category.custom_properties || {};
+  const metadata = categoryMetadata(category);
+  const summary = [
+    metadata.audio_languages.length &&
+      `DUB: ${metadata.audio_languages.join(', ').toUpperCase()}`,
+    metadata.subtitle_languages.length &&
+      `SUB: ${metadata.subtitle_languages.join(', ').toUpperCase()}`,
+    metadata.resolution,
+    metadata.video_features
+      .map((feature) => feature.replace(/^custom:/, '').toUpperCase())
+      .join(', '),
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <Stack
@@ -81,48 +90,55 @@ const CategoryCard = memo(function CategoryCard({
         backgroundColor: category.enabled ? '#2A2A2E' : '#1E1E22',
       }}
     >
-      <Button
-        color={category.enabled ? 'green' : 'gray'}
-        variant="filled"
-        onClick={() => onToggle(category.id)}
-        radius="md"
-        size="xs"
-        leftSection={
-          category.enabled ? <CircleCheck size={14} /> : <CircleX size={14} />
-        }
-        fullWidth
-      >
-        <Text size="xs" truncate>
-          {category.name}
-        </Text>
-      </Button>
-      <Group grow gap="xs" wrap="nowrap">
-        <Select
+      <Group gap={4} wrap="nowrap">
+        <Button
+          type="button"
+          color={category.enabled ? 'green' : 'gray'}
+          variant="filled"
+          onClick={() => onToggle(category.id)}
+          radius="md"
           size="xs"
-          aria-label="Language"
-          placeholder="Language"
-          data={VOD_CATEGORY_LANGUAGES}
-          value={props.language || null}
-          onChange={(value) =>
-            onCustomPropertyChange(category.id, 'language', value)
+          leftSection={
+            category.enabled ? <CircleCheck size={14} /> : <CircleX size={14} />
           }
-          searchable
-          clearable
-          allowDeselect
-        />
-        <Select
-          size="xs"
-          aria-label="Quality"
-          placeholder="Quality"
-          data={QUALITY_OPTIONS}
-          value={props.quality || null}
-          onChange={(value) =>
-            onCustomPropertyChange(category.id, 'quality', value)
+          style={{ flex: 1, minWidth: 0 }}
+          aria-pressed={category.enabled}
+        >
+          <Text size="xs" truncate>
+            {category.name}
+          </Text>
+        </Button>
+        <Tooltip
+          label={
+            category.enabled
+              ? summary
+                ? 'Edit category defaults (configured)'
+                : 'Edit category defaults'
+              : 'Enable category to edit defaults'
           }
-          clearable
-          allowDeselect
-        />
+          withArrow
+        >
+          <Box component="span" style={{ display: 'inline-flex' }}>
+            <ActionIcon
+              type="button"
+              variant={summary ? 'light' : 'subtle'}
+              color={summary ? 'blue' : 'gray'}
+              disabled={!category.enabled}
+              aria-label={`Edit defaults for ${category.name}`}
+              onClick={() => category.enabled && onEdit(category)}
+            >
+              <Settings size={16} />
+            </ActionIcon>
+          </Box>
+        </Tooltip>
       </Group>
+      {summary && (
+        <Tooltip label={summary} withArrow>
+          <Text size="xs" c="blue" truncate>
+            {summary}
+          </Text>
+        </Tooltip>
+      )}
     </Stack>
   );
 });
@@ -138,7 +154,7 @@ const VODCategoryFilter = ({
   const categories = useVODStore((s) => s.categories);
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-
+  const [editingCategory, setEditingCategory] = useState(null);
   useEffect(() => {
     if (Object.keys(categories).length === 0) {
       return;
@@ -156,7 +172,9 @@ const VODCategoryFilter = ({
             (acc) => acc.m3u_account == playlist.id
           );
           if (!match) return null;
-          const custom_properties = parseCustomProperties(match.custom_properties);
+          const custom_properties = parseCustomProperties(
+            match.custom_properties
+          );
           return {
             ...cat,
             enabled: match.enabled || false,
@@ -180,28 +198,24 @@ const VODCategoryFilter = ({
     [setCategoryStates]
   );
 
-  const updateCustomProperty = useCallback(
-    (id, key, value) => {
-      const nextValue = value === '' || value == null ? null : value;
-      // Keep the Select close/selection responsive; list paint can wait a frame.
-      startTransition(() => {
-        setCategoryStates((prev) =>
-          prev.map((state) => {
-            if (state.id !== id) return state;
-            return {
-              ...state,
+  const applyMetadata = (metadata) => {
+    setCategoryStates((current) =>
+      current.map((category) =>
+        category.id === editingCategory.id
+          ? {
+              ...category,
               custom_properties: {
-                ...(state.custom_properties || {}),
-                // null clears the key on the API merge path
-                [key]: nextValue,
+                ...(category.custom_properties || {}),
+                ...metadata,
+                // null resets resolution on the existing API merge path.
+                resolution: metadata.resolution || null,
               },
-            };
-          })
-        );
-      });
-    },
-    [setCategoryStates]
-  );
+            }
+          : category
+      )
+    );
+    setEditingCategory(null);
+  };
 
   const isVisible = useCallback(
     (category) => {
@@ -288,11 +302,31 @@ const VODCategoryFilter = ({
               key={category.id}
               category={category}
               onToggle={toggleEnabled}
-              onCustomPropertyChange={updateCustomProperty}
+              onEdit={setEditingCategory}
             />
           ))}
         </SimpleGrid>
       </Box>
+      <Modal
+        stackId={`vod-category-defaults-${type}`}
+        opened={Boolean(editingCategory)}
+        onClose={() => setEditingCategory(null)}
+        title={`Category defaults · ${editingCategory?.name || ''}`}
+        closeButtonProps={{ 'aria-label': 'Close category defaults' }}
+        size="md"
+      >
+        {editingCategory && (
+          <VODCategoryMetadataEditor
+            key={editingCategory.id}
+            value={categoryMetadata(editingCategory)}
+            languages={MEDIA_LANGUAGE_OPTIONS}
+            resolutions={VOD_CATEGORY_QUALITIES}
+            pickerStackId={`vod-category-metadata-${type}`}
+            onApply={applyMetadata}
+            onClose={() => setEditingCategory(null)}
+          />
+        )}
+      </Modal>
     </Stack>
   );
 };
