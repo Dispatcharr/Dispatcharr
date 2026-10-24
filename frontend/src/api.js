@@ -1599,14 +1599,26 @@ export default class API {
     }
   }
 
-  static async refreshPlaylist(id) {
+  static async refreshPlaylist(id, includeVod) {
     try {
-      const response = await request(`${host}/api/m3u/refresh/${id}/`, {
+      const url = `${host}/api/m3u/refresh/${id}/`;
+      const refreshUrl = includeVod === true ? `${url}?include_vod=true` : url;
+      const response = await request(refreshUrl, {
         method: 'POST',
       });
       return response;
     } catch (e) {
       errorNotification('Failed to refresh M3U account', e);
+    }
+  }
+  static async refreshLivePlaylist(id) {
+    try {
+      return await request(`${host}/api/m3u/refresh/${id}/?include_vod=false`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to refresh Live TV', e);
+      throw e;
     }
   }
   static async refreshAllPlaylist() {
@@ -1631,6 +1643,7 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to refresh VOD content', e);
+      throw e;
     }
   }
 

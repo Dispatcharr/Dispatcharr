@@ -7,6 +7,7 @@ from django.db.models.functions import Coalesce, Lower
 from apps.m3u.models import M3UAccount
 from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
+from core.utils import TaskLockRenewer, acquire_task_lock, release_task_lock, ensure_custom_properties_dict
 from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
@@ -125,8 +126,23 @@ def lookup_by_name_year(model, name_year_keys):
     }
 
 
-@shared_task
-def refresh_vod_content(account_id):
+@shared_task(bind=True, max_retries=120, default_retry_delay=30)
+def refresh_vod_content(self, account_id):
+    """Serialize VOD and Live imports for the same account."""
+    lock_name = "refresh_single_m3u_account"
+    if not acquire_task_lock(lock_name, account_id):
+        raise self.retry(countdown=30)
+
+    lock_renewer = TaskLockRenewer(lock_name, account_id)
+    lock_renewer.start()
+    try:
+        return _refresh_vod_content_impl(account_id)
+    finally:
+        lock_renewer.stop()
+        release_task_lock(lock_name, account_id)
+
+
+def _refresh_vod_content_impl(account_id):
     """Refresh VOD content for an M3U account with batch processing for improved performance"""
     # Import here to avoid circular import
     from apps.m3u.tasks import send_m3u_update
@@ -137,6 +153,10 @@ def refresh_vod_content(account_id):
         if account.account_type != M3UAccount.Types.XC:
             logger.warning(f"VOD refresh called for non-XC account {account_id}")
             return "VOD refresh only available for XtreamCodes accounts"
+
+        if not ensure_custom_properties_dict(account.custom_properties).get("enable_vod", False):
+            logger.info(f"Skipping queued VOD refresh for account {account_id}: VOD scanning is disabled")
+            return "VOD refresh skipped: VOD scanning is disabled"
 
         logger.info(f"Starting batch VOD refresh for account {account.name}")
         start_time = timezone.now()
@@ -171,20 +191,47 @@ def refresh_vod_content(account_id):
             }
 
             # Refresh movies with batch processing (pass scan start time)
-            refresh_movies(client, account, movie_categories, relations, scan_start_time=start_time)
+            movie_provider_total = refresh_movies(
+                client, account, movie_categories, relations, scan_start_time=start_time
+            )
 
             # Refresh series with batch processing (pass scan start time)
-            refresh_series(client, account, series_categories, relations, scan_start_time=start_time)
-
-        end_time = timezone.now()
-        duration = (end_time - start_time).total_seconds()
-        completion = f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
-        logger.info(completion)
+            series_provider_total = refresh_series(
+                client, account, series_categories, relations, scan_start_time=start_time
+            )
 
         # Cleanup orphaned VOD content after refresh (scoped to this account only)
         logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
         cleanup_result = cleanup_orphaned_vod_content(account_id=account_id, scan_start_time=start_time)
         logger.info(f"VOD cleanup completed: {cleanup_result}")
+        selected_movies = M3UMovieRelation.objects.filter(
+            m3u_account_id=account_id, last_seen__gte=start_time
+        ).count()
+        selected_series = M3USeriesRelation.objects.filter(
+            m3u_account_id=account_id, last_seen__gte=start_time
+        ).count()
+        end_time = timezone.now()
+        duration = (end_time - start_time).total_seconds()
+        completion = f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
+        logger.info(completion)
+
+        from apps.m3u.refresh_metrics import record_refresh_metrics
+        record_refresh_metrics(
+            account_id,
+            "vod",
+            {
+                "movies": {
+                    "provider_total": movie_provider_total,
+                    "selected_total": selected_movies,
+                },
+                "series": {
+                    "provider_total": series_provider_total,
+                    "selected_total": selected_series,
+                },
+            },
+            duration,
+            end_time,
+        )
 
         # Send completion notification
         send_m3u_update(account_id, "vod_refresh", 100, status="success",
@@ -310,6 +357,7 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 
     del all_movies_data
     logger.info(f"Completed processing all {total_movies} movies in {total_chunks} chunks")
+    return total_movies
 
 
 def refresh_series(client, account, categories_by_provider, relations, scan_start_time=None):
@@ -365,6 +413,7 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
 
     del all_series_data
     logger.info(f"Completed processing all {total_series} series in {total_chunks} chunks")
+    return total_series
 
 
 def batch_create_categories(categories_data, category_type, account):

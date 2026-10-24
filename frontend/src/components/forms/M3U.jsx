@@ -5,20 +5,20 @@ import useServerGroupsStore from '../../store/serverGroups';
 import usePlaylistsStore from '../../store/playlists';
 import M3UProfiles from './M3UProfiles';
 import {
-  Box,
   Button,
   Divider,
   FileInput,
   Flex,
-  Group,
   LoadingOverlay,
   Modal,
   MultiSelect,
   NumberInput,
   PasswordInput,
   Select,
+  SimpleGrid,
   Stack,
   Switch,
+  Text,
   TextInput,
 } from '@mantine/core';
 import M3UGroupFilter from './M3UGroupFilter';
@@ -42,6 +42,7 @@ import {
 import { M3U_HASH_KEY_OPTIONS } from '../../utils/m3uHashKey.js';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
 import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
+import classes from './M3U.module.css';
 
 const M3U = ({
   m3uAccount = null,
@@ -60,8 +61,13 @@ const M3U = ({
   const [expDate, setExpDate] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
+  const [initialGroupSetup, setInitialGroupSetup] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
+  const [vodScheduleType, setVodScheduleType] = useState('interval');
+  const [vodEnabled, setVodEnabled] = useState(false);
+  const [vodRefreshAfterLive, setVodRefreshAfterLive] = useState(true);
+  const [accountType, setAccountType] = useState('XC');
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
   const [hasHashKeyOverride, setHasHashKeyOverride] = useState(false);
   const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
@@ -90,6 +96,9 @@ const M3U = ({
       max_streams: 0,
       refresh_interval: 24,
       cron_expression: '',
+      vod_refresh_interval: 0,
+      vod_cron_expression: '',
+      vod_refresh_after_live: true,
       account_type: 'XC',
       create_epg: false,
       username: '',
@@ -108,7 +117,9 @@ const M3U = ({
 
   useEffect(() => {
     if (m3uAccount) {
+      setInitialGroupSetup(false);
       setPlaylist(m3uAccount);
+      setAccountType(m3uAccount.account_type);
       form.setValues({
         name: m3uAccount.name,
         server_url: m3uAccount.server_url,
@@ -120,6 +131,9 @@ const M3U = ({
         is_active: m3uAccount.is_active,
         refresh_interval: m3uAccount.refresh_interval,
         cron_expression: m3uAccount.cron_expression || '',
+        vod_refresh_interval: m3uAccount.vod_refresh_interval ?? 0,
+        vod_cron_expression: m3uAccount.vod_cron_expression || '',
+        vod_refresh_after_live: m3uAccount.vod_refresh_after_live !== false,
         account_type: m3uAccount.account_type,
         username: m3uAccount.username ?? '',
         password: '',
@@ -151,10 +165,20 @@ const M3U = ({
           ? 'cron'
           : 'interval'
       );
+      setVodScheduleType(
+        m3uAccount.vod_cron_expression?.trim() ? 'cron' : 'interval'
+      );
+      setVodEnabled(Boolean(m3uAccount.enable_vod));
+      setVodRefreshAfterLive(m3uAccount.vod_refresh_after_live !== false);
     } else {
+      setInitialGroupSetup(false);
       setPlaylist(null);
+      setAccountType('XC');
       form.reset();
       setScheduleType('interval');
+      setVodScheduleType('interval');
+      setVodEnabled(false);
+      setVodRefreshAfterLive(true);
       setExpDate(null);
       setHasHashKeyOverride(false);
     }
@@ -199,6 +223,7 @@ const M3U = ({
     }
 
     setPlaylist(updatedPlaylist);
+    setInitialGroupSetup(true);
     setGroupFilterModalOpen(true);
   };
 
@@ -222,6 +247,7 @@ const M3U = ({
     form.reset();
     setFile(null);
     setPlaylist(null);
+    setInitialGroupSetup(false);
     onClose();
   };
 
@@ -231,6 +257,7 @@ const M3U = ({
     form.reset();
     setFile(null);
     setPlaylist(null);
+    setInitialGroupSetup(false);
     onClose();
   };
 
@@ -252,7 +279,7 @@ const M3U = ({
     <Modal.Stack>
       <Modal
         stackId="m3u-account"
-        size={960}
+        size={accountType === 'XC' ? 1280 : 960}
         opened={isOpen}
         onClose={close}
         title="M3U Account"
@@ -265,8 +292,19 @@ const M3U = ({
         <LoadingOverlay visible={form.submitting} overlayBlur={2} />
 
         <form onSubmit={form.onSubmit(onSubmit)}>
-          <Group align="flex-start" gap="md" wrap="nowrap">
-            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
+          <SimpleGrid
+            cols={{ base: 1, sm: 2, md: accountType === 'XC' ? 4 : 3 }}
+            spacing="xl"
+            verticalSpacing="xl"
+          >
+            <Stack
+              gap="xs"
+              style={{ minWidth: 0 }}
+              role="group"
+              aria-label="Account settings"
+              className={classes.column}
+            >
+              <Text fw={600}>Account</Text>
               <TextInput
                 id="name"
                 name="name"
@@ -299,9 +337,13 @@ const M3U = ({
                 ]}
                 key={form.key('account_type')}
                 {...form.getInputProps('account_type')}
+                onChange={(value) => {
+                  form.setFieldValue('account_type', value);
+                  setAccountType(value);
+                }}
               />
 
-              {form.getValues().account_type == 'XC' && (
+              {accountType === 'XC' && (
                 <>
                   <TextInput
                     id="username"
@@ -320,7 +362,7 @@ const M3U = ({
                 </>
               )}
 
-              {form.getValues().account_type != 'XC' && (
+              {accountType !== 'XC' && (
                 <>
                   <FileInput
                     id="file"
@@ -350,9 +392,14 @@ const M3U = ({
               )}
             </Stack>
 
-            <Divider size="sm" orientation="vertical" />
-
-            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
+            <Stack
+              gap="xs"
+              style={{ minWidth: 0 }}
+              role="group"
+              aria-label="Connection settings"
+              className={classes.column}
+            >
+              <Text fw={600}>Connection</Text>
               <NumberInput
                 id="max_streams"
                 name="max_streams"
@@ -431,9 +478,14 @@ const M3U = ({
               />
             </Stack>
 
-            <Divider size="sm" orientation="vertical" />
-
-            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
+            <Stack
+              gap="xs"
+              style={{ minWidth: 0 }}
+              role="group"
+              aria-label="Live TV settings"
+              className={classes.column}
+            >
+              <Text fw={600}>Live TV</Text>
               <ScheduleInput
                 scheduleType={scheduleType}
                 onScheduleTypeChange={setScheduleType}
@@ -445,10 +497,10 @@ const M3U = ({
                 onCronChange={(expr) =>
                   form.setFieldValue('cron_expression', expr)
                 }
-                intervalLabel="Refresh Interval (hours)"
+                intervalLabel="Live TV refresh interval (hours)"
                 intervalDescription={
                   <>
-                    How often to automatically refresh M3U data
+                    How often to automatically refresh Live TV data
                     <br />
                     (0 to disable automatic refreshes)
                   </>
@@ -461,49 +513,81 @@ const M3U = ({
                 description="Streams not seen for this many days will be removed"
                 {...form.getInputProps('stale_stream_days')}
               />
-
-              {form.getValues().account_type == 'XC' && (
-                <Box>
-                  <NumberInput
-                    min={0}
-                    max={999}
-                    label="VOD Priority"
-                    description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
-                    {...form.getInputProps('priority')}
-                    key={form.key('priority')}
-                  />
-
-                  <Group justify="space-between">
-                    <Box>Enable VOD Scanning</Box>
-                    <Switch
-                      id="enable_vod"
-                      name="enable_vod"
-                      description="Scan and import VOD content (movies/series) from this Xtream account"
-                      key={form.key('enable_vod')}
-                      {...form.getInputProps('enable_vod', {
-                        type: 'checkbox',
-                      })}
-                    />
-                  </Group>
-
-                  {!m3uAccount && (
-                    <Group justify="space-between">
-                      <Box>Create EPG</Box>
-                      <Switch
-                        id="create_epg"
-                        name="create_epg"
-                        description="Automatically create matching EPG source for this Xtream account"
-                        key={form.key('create_epg')}
-                        {...form.getInputProps('create_epg', {
-                          type: 'checkbox',
-                        })}
-                      />
-                    </Group>
-                  )}
-                </Box>
+              {accountType === 'XC' && !m3uAccount && (
+                <Switch
+                  id="create_epg"
+                  name="create_epg"
+                  label="Create EPG"
+                  description="Automatically create matching EPG source for this Xtream account"
+                  key={form.key('create_epg')}
+                  {...form.getInputProps('create_epg', { type: 'checkbox' })}
+                />
               )}
             </Stack>
-          </Group>
+
+            {accountType === 'XC' && (
+              <Stack
+                gap="xs"
+                style={{ minWidth: 0 }}
+                role="group"
+                aria-label="VOD settings"
+                className={classes.column}
+              >
+                <Text fw={600}>VOD</Text>
+                <Switch
+                  id="enable_vod"
+                  name="enable_vod"
+                  label="Enable VOD Scanning"
+                  description="Scan and import VOD content (movies/series) from this Xtream account"
+                  checked={vodEnabled}
+                  onChange={(event) => {
+                    const enabled = event.currentTarget.checked;
+                    setVodEnabled(enabled);
+                    form.setFieldValue('enable_vod', enabled);
+                  }}
+                />
+                <NumberInput
+                  min={0}
+                  max={999}
+                  label="VOD Priority"
+                  description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
+                  {...form.getInputProps('priority')}
+                  key={form.key('priority')}
+                />
+
+                {vodEnabled && (
+                  <Stack gap="xs" mt="sm">
+                    <Switch
+                      label="Separate VOD refresh schedule"
+                      description="Otherwise VOD refreshes after a successful scheduled Live TV refresh."
+                      checked={!vodRefreshAfterLive}
+                      onChange={(event) => {
+                        const afterLive = !event.currentTarget.checked;
+                        setVodRefreshAfterLive(afterLive);
+                        form.setFieldValue('vod_refresh_after_live', afterLive);
+                      }}
+                    />
+                    {!vodRefreshAfterLive && (
+                      <ScheduleInput
+                        scheduleType={vodScheduleType}
+                        onScheduleTypeChange={setVodScheduleType}
+                        intervalValue={form.getValues().vod_refresh_interval}
+                        onIntervalChange={(value) =>
+                          form.setFieldValue('vod_refresh_interval', value)
+                        }
+                        cronValue={form.getValues().vod_cron_expression}
+                        onCronChange={(value) =>
+                          form.setFieldValue('vod_cron_expression', value)
+                        }
+                        intervalLabel="VOD refresh interval (hours)"
+                        intervalDescription="Use 0 to disable automatic VOD refreshes."
+                      />
+                    )}
+                  </Stack>
+                )}
+              </Stack>
+            )}
+          </SimpleGrid>
 
           <Divider my="md" />
 
@@ -584,6 +668,7 @@ const M3U = ({
           <M3UGroupFilter
             isOpen={groupFilterModalOpen}
             playlist={playlist}
+            isInitialSetup={initialGroupSetup}
             onClose={closeGroupFilter}
           />
           <M3UFilters
