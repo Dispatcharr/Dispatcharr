@@ -11,8 +11,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
 from django.conf import settings
 from django.db import models, transaction
-from .models import M3UAccount
-from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
+from .models import CUSTOM_M3U_ACCOUNT_NAME, M3UAccount
+from apps.channels.models import (
+    Stream,
+    ChannelGroup,
+    ChannelGroupM3UAccount,
+)
 from django.utils import timezone
 import time
 import json
@@ -179,10 +183,10 @@ _EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
 def _open_m3u_text_source(source_path):
     """Open an on-disk M3U (or .m3u.gz / .m3u.xz) file for line-by-line parsing."""
     if source_path.endswith(".gz"):
-        return gzip.open(source_path, "rt", encoding="utf-8")
+        return gzip.open(source_path, "rt", encoding="utf-8", errors="ignore")
     if source_path.endswith(".xz"):
-        return lzma.open(source_path, "rt", encoding="utf-8")
-    return open(source_path, "r", encoding="utf-8")
+        return lzma.open(source_path, "rt", encoding="utf-8", errors="ignore")
+    return open(source_path, "r", encoding="utf-8", errors="ignore")
 
 
 def fetch_m3u_lines(account, use_cache=False):
@@ -546,7 +550,7 @@ def fetch_m3u_lines(account, use_cache=False):
                         if name.endswith(".m3u"):
                             with zip_file.open(name) as f:
                                 return [
-                                    line.decode("utf-8") for line in f.readlines()
+                                    line.decode("utf-8", errors="ignore") for line in f.readlines()
                                 ], True
 
                     error_msg = (
@@ -776,11 +780,16 @@ def process_groups(account, groups, scan_start_time=None):
             groups_to_create.append(ChannelGroup(name=group_name))
 
     # Create new groups and fetch them back with IDs
-    newly_created_group_objs = []
     if groups_to_create:
         logger.info(f"Creating {len(groups_to_create)} new groups for account {account.id}")
-        newly_created_group_objs = list(ChannelGroup.bulk_create_and_fetch(groups_to_create))
+        newly_created_group_objs = list(
+            ChannelGroup.objects.bulk_create_provider_groups(
+                group.name for group in groups_to_create
+            )
+        )
         logger.debug(f"Successfully created {len(newly_created_group_objs)} new groups")
+    else:
+        newly_created_group_objs = []
 
     # Combine all groups
     all_group_objs = existing_group_objs + newly_created_group_objs
@@ -872,6 +881,9 @@ def cleanup_stale_group_relationships(account, scan_start_time):
     Remove group relationships that haven't been seen since the stale retention period.
     This follows the same logic as stream cleanup for consistency.
     """
+    if account.locked and account.name == CUSTOM_M3U_ACCOUNT_NAME:
+        return 0
+
     # Calculate cutoff date for stale group relationships
     stale_cutoff = scan_start_time - timezone.timedelta(days=account.stale_stream_days)
     logger.info(
@@ -909,16 +921,22 @@ def cleanup_stale_group_relationships(account, scan_start_time):
             # Check if this group has any direct channels (not through M3U accounts)
             has_direct_channels = group.related_channels().exists()
 
-            # If no relationships and no direct channels, it's safe to delete
             if not remaining_m3u_relationships and not has_direct_channels:
                 orphaned_group_ids.append(group.id)
                 logger.debug(f"Group '{group.name}' has no remaining associations and will be deleted")
 
         # Delete truly orphaned groups
         if orphaned_group_ids:
-            deleted_groups = list(ChannelGroup.objects.filter(id__in=orphaned_group_ids).values_list('name', flat=True))
-            ChannelGroup.objects.filter(id__in=orphaned_group_ids).delete()
-            logger.info(f"Deleted {len(orphaned_group_ids)} orphaned groups that had no remaining associations: {deleted_groups}")
+            orphaned_groups = ChannelGroup.objects.filter(
+                id__in=orphaned_group_ids,
+                m3u_accounts__isnull=True,
+                channels__isnull=True,
+            )
+            deleted_groups = list(orphaned_groups.values_list('name', flat=True))
+            orphaned_groups.delete()
+            logger.info(
+                f"Deleted {len(deleted_groups)} orphaned groups that had no remaining associations: {deleted_groups}"
+            )
     else:
         logger.debug(f"No stale group relationships found for account {account.id}")
 

@@ -564,6 +564,15 @@ class ProxyServer:
     ):
         """Initialize a channel without redundant active key"""
         try:
+            # Setup on this worker has not written the URL yet. Return before
+            # creating buffers or stopping upstream for that request.
+            if not url and channel_id in self._channels_setting_up:
+                logger.info(
+                    f"No URL yet for channel {channel_id}; setup in progress on "
+                    f"this worker - leaving initialization to the owning request"
+                )
+                return False
+
             if self._channel_unavailable_for_new_clients(channel_id):
                 logger.warning(
                     f"Refusing to initialize channel {channel_id}; "
@@ -797,13 +806,6 @@ class ProxyServer:
                 )
                 self.client_managers[channel_id] = client_manager
 
-            # Start stream manager thread only for the owner
-            self._live_stream_managers[channel_id] = stream_manager
-            thread = threading.Thread(target=stream_manager.run, daemon=True)
-            thread.name = f"stream-{channel_id}"
-            thread.start()
-            logger.info(f"Started stream manager thread for channel {channel_id}")
-
             # If we're the owner, we need to set the channel state rather than starting a grace period immediately
             if self.am_i_owner(channel_id):
                 self.update_channel_state(channel_id, ChannelState.CONNECTING, {
@@ -816,6 +818,14 @@ class ProxyServer:
                 self.redis_client.setex(attempt_key, 60, str(time.time()))
 
                 logger.info(f"Channel {channel_id} in {ChannelState.CONNECTING} state - waiting for buffer to fill")
+
+            # After CONNECTING so a failed thread cannot be overwritten by that write.
+            self._live_stream_managers[channel_id] = stream_manager
+            thread = threading.Thread(target=stream_manager.run, daemon=True)
+            thread.name = f"stream-{channel_id}"
+            thread.start()
+            logger.info(f"Started stream manager thread for channel {channel_id}")
+
             return True
 
         except Exception as e:
@@ -1003,6 +1013,44 @@ class ProxyServer:
     def _shutdown_disconnect_ttl():
         delay = ConfigHelper.channel_shutdown_delay()
         return max(int(delay * 2), 60)
+
+    @staticmethod
+    def _monitor_channel_state(metadata):
+        """
+        State the owner monitor should act on for a channel's metadata hash.
+
+        Only the first metadata write from channel setup (temp_init, no state) reads as
+        initializing. Any other hash without a state, such as one recreated by the
+        registry's last_active write, is an orphan and reads as "unknown".
+        """
+        if not metadata:
+            return "unknown"
+        if 'state' in metadata:
+            return metadata['state']
+        if 'temp_init' in metadata:
+            return ChannelState.INITIALIZING
+        return "unknown"
+
+    @staticmethod
+    def _pre_active_start_time(metadata, connection_attempt_time):
+        """
+        First usable start time for a pre-active channel, or None.
+
+        Prefers the connection_attempt timestamp, then init_time, temp_init and
+        state_changed_at from the metadata hash. Every state write sets
+        state_changed_at, so a hash recreated by a state write still has a start time.
+        """
+        if connection_attempt_time:
+            return connection_attempt_time
+        for key in ('init_time', 'temp_init', 'state_changed_at'):
+            value = (metadata or {}).get(key)
+            if not value:
+                continue
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                continue
+        return None
 
     @staticmethod
     def _pre_active_no_clients_should_stop(connection_ready_time, start_time, now=None):
@@ -1891,8 +1939,7 @@ class ProxyServer:
                             if self.redis_client:
                                 metadata_key = RedisKeys.channel_metadata(channel_id)
                                 metadata = self.redis_client.hgetall(metadata_key)
-                                if metadata and 'state' in metadata:
-                                    channel_state = metadata['state']
+                                channel_state = self._monitor_channel_state(metadata)
 
                             # Check if channel has any clients left
                             total_clients = 0
@@ -1913,8 +1960,7 @@ class ProxyServer:
                             if time.time() % 30 < 1:  # Every ~30 seconds
                                 logger.info(f"Channel {channel_id} has {total_clients} clients, state: {channel_state}")
 
-                            # Pre-active channels: init timeouts and buffer-ready promotion
-                            if channel_state in [ChannelState.INITIALIZING, ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
+                            if channel_state in ChannelState.STARTUP:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
@@ -1942,16 +1988,8 @@ class ProxyServer:
                                             except (ValueError, TypeError):
                                                 pass
 
-                                    # Also get init time as a fallback
-                                    init_time = None
-                                    if metadata and 'init_time' in metadata:
-                                        try:
-                                            init_time = float(metadata['init_time'])
-                                        except (ValueError, TypeError):
-                                            pass
-
                                     # Use whichever timestamp we have (prefer connection_attempt as it's more recent)
-                                    start_time = connection_attempt_time or init_time
+                                    start_time = self._pre_active_start_time(metadata, connection_attempt_time)
 
                                     if start_time:
                                         should_stop, timeout, reason = (
@@ -1982,8 +2020,7 @@ class ProxyServer:
                                     from .services.channel_service import ChannelService
 
                                     ChannelService.promote_channel_when_buffer_ready(channel_id)
-                            # If active and no clients, start normal shutdown procedure
-                            elif channel_state not in [ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS] and total_clients == 0:
+                            elif channel_state not in ChannelState.STARTUP and total_clients == 0:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
@@ -2241,12 +2278,20 @@ class ProxyServer:
 
                     # Get owner
                     owner = metadata.get('owner', '') if 'owner' in metadata else ''
+                    if not owner:
+                        # Initial metadata ({stream_id, temp_init}) is written before
+                        # its owner field, so a channel mid-initialization has no owner
+                        # here. The ownership lock is taken first and is authoritative.
+                        owner = self.get_channel_owner(channel_id) or ''
 
-                    # Check if owner is still alive
+                    # Check if owner is still alive (a worker never treats its own
+                    # in-flight channel as stale, as in check_if_channel_exists)
                     owner_alive = False
                     if owner:
-                        owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
-                        owner_alive = self.redis_client.exists(owner_heartbeat_key)
+                        owner_alive = (
+                            owner == self.worker_id
+                            or self.redis_client.exists(RedisKeys.worker_heartbeat(owner))
+                        )
 
                     # Check client count
                     client_set_key = RedisKeys.clients(channel_id)
@@ -2307,16 +2352,23 @@ class ProxyServer:
         return str(value)
 
     def _release_profile_slot_from_redis_metadata(self, channel_id):
-        """Release M3U profile slot using only Redis metadata for this UUID.
+        """Release an M3U profile slot from Redis metadata when the row is gone.
 
-        Needed when the Channel row was deleted while a stream was still
-        playing (manual delete without stop_stream). Stats stop / client
-        disconnect must still DECR profile_connections.
+        Channel UUIDs delete that channel's assignment keys. Stream preview
+        workers delete only their own preview key, so a channel that is still
+        using the same stream keeps its reservation. Stats stop and client
+        disconnect use this when a channel was deleted mid-playback, and as
+        the fallback after release_stream finds nothing.
         """
         if not self.redis_client:
             return False
 
-        from apps.m3u.connection_pool import release_profile_slot
+        from uuid import UUID
+
+        from apps.channels.models import Stream
+
+        from .slot_release import claim_and_release_profile_slot
+        from .url_utils import parse_preview_worker_id
 
         metadata_key = RedisKeys.channel_metadata(channel_id)
         meta_stream_id = self._redis_field_to_str(
@@ -2343,27 +2395,50 @@ class ProxyServer:
             )
             return False
 
-        if meta_channel_id:
-            self.redis_client.delete(f"channel_stream:{meta_channel_id}")
+        stream_id = None
         if meta_stream_id:
             try:
                 stream_id = int(meta_stream_id)
             except (TypeError, ValueError):
                 stream_id = None
+
+        is_channel_uuid = False
+        try:
+            UUID(str(channel_id))
+            is_channel_uuid = True
+        except (ValueError, TypeError):
+            pass
+
+        if is_channel_uuid:
+            # Channel workers own bare stream_profile / channel_stream keys.
+            if meta_channel_id:
+                self.redis_client.delete(f"channel_stream:{meta_channel_id}")
             if stream_id is not None:
                 self.redis_client.delete(f"stream_profile:{stream_id}")
+        elif stream_id is not None:
+            # Stream preview workers own :preview or :p{id} keys only. Never
+            # delete a live channel's bare stream_profile assignment.
+            _stream_key, scoped_profile_id = parse_preview_worker_id(channel_id)
+            if scoped_profile_id is not None:
+                self.redis_client.delete(
+                    f"stream_profile:{stream_id}:p{scoped_profile_id}"
+                )
+            else:
+                self.redis_client.delete(Stream.preview_profile_key(stream_id))
 
-        self.redis_client.hdel(
+        released = claim_and_release_profile_slot(
+            self.redis_client,
             metadata_key,
-            ChannelMetadataField.STREAM_ID,
-            ChannelMetadataField.M3U_PROFILE,
+            meta_profile_id,
+            profile_id,
+            log_label=f"Channel {channel_id}",
         )
-        release_profile_slot(profile_id, self.redis_client)
-        logger.info(
-            f"Released profile slot {profile_id} for deleted channel {channel_id} "
-            f"via Redis metadata"
-        )
-        return True
+        if released:
+            logger.info(
+                f"Released profile slot {profile_id} for deleted channel {channel_id} "
+                f"via Redis metadata"
+            )
+        return released
 
     def _release_stream_resources(self, channel_id):
         """Release profile slot before wiping live Redis keys.

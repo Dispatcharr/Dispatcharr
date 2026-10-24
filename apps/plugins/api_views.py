@@ -2,11 +2,15 @@ import hashlib
 import logging
 import json
 import re
+import errno
+import contextlib
+import fcntl
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, serializers
 from drf_spectacular.utils import extend_schema, inline_serializer
 from django.core.cache import cache
+from django.db import transaction
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 from django.http import FileResponse
@@ -80,6 +84,41 @@ def _sanitize_plugin_key(value: str) -> str:
     return base or "plugin"
 
 
+def _create_plugin_import_dir(plugins_dir):
+    staging_dir = os.path.join(plugins_dir, ".staging")
+    try:
+        os.makedirs(staging_dir, exist_ok=True)
+        return tempfile.mkdtemp(prefix="plugin_import_", dir=staging_dir)
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EPERM):
+            raise
+        logger.warning(
+            "Cannot use plugin staging directory %s; falling back to the system temporary directory",
+            staging_dir,
+        )
+        return tempfile.mkdtemp(prefix="plugin_import_")
+
+
+@contextlib.contextmanager
+def _plugin_mutation_lock(plugins_dir: str):
+    """Cooperatively serialize managed repository filesystem changes."""
+    os.makedirs(plugins_dir, exist_ok=True)
+    lock_path = os.path.join(plugins_dir, ".plugin-mutation.lock")
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                from gevent import sleep
+
+                sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _absolutize_logo_url(request, url: str | None) -> str | None:
     if not url or not request:
         return url
@@ -143,7 +182,7 @@ def _install_plugin_from_zip(
     except zipfile.BadZipFile:
         return {"success": False, "error": "Invalid zip file"}
 
-    tmp_root = tempfile.mkdtemp(prefix="plugin_import_")
+    tmp_root = _create_plugin_import_dir(plugins_dir)
     try:
         file_members = [m for m in zf.infolist() if not m.is_dir()]
         if not file_members:
@@ -282,6 +321,120 @@ def _install_plugin_from_zip(
         return {"success": True, "plugin_key": plugin_key}
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerelease):
+    """Apply a downloaded managed release while holding the mutation lock."""
+    managed_configs = list(
+        PluginConfig.objects.filter(source_repo=repo, slug=slug).order_by("id")
+    )
+    existing_cfg = managed_configs[0] if managed_configs else None
+    plugin_key = _sanitize_plugin_key(slug)
+    if len(plugin_key) > 128:
+        plugin_key = plugin_key[:128]
+    if not existing_cfg:
+        existing_cfg = PluginConfig.objects.filter(key=plugin_key).first()
+    if not existing_cfg:
+        dash_key = plugin_key.replace("_", "-")
+        if dash_key != plugin_key:
+            existing_cfg = PluginConfig.objects.filter(key=dash_key).first()
+
+    result = _install_plugin_from_zip(
+        tmp_file,
+        pm.plugins_dir,
+        file_name=f"{slug}.zip",
+        allow_overwrite_key=existing_cfg.key if existing_cfg else None,
+        install_key=existing_cfg.key if managed_configs else None,
+    )
+    if not result["success"]:
+        return Response(
+            {"success": False, "error": result["error"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    actual_key = result["plugin_key"]
+    if len(managed_configs) > 1:
+        try:
+            with transaction.atomic():
+                configs = list(PluginConfig.objects.select_for_update().filter(
+                    pk__in=[cfg.pk for cfg in managed_configs],
+                    source_repo=repo, slug=slug,
+                ).order_by("pk"))
+                retained = next(cfg for cfg in configs if cfg.pk == existing_cfg.pk)
+                owned_tasks = set(retained.owned_tasks or [])
+                suspended = set(retained.suspended_schedules or [])
+                for stale_cfg in configs:
+                    if stale_cfg.pk == retained.pk:
+                        continue
+                    if not retained.enabled:
+                        pm.suspend_schedules(stale_cfg)
+                    stale_dir = os.path.join(pm.plugins_dir, stale_cfg.key)
+                    try:
+                        shutil.rmtree(stale_dir)
+                    except FileNotFoundError:
+                        pass
+                    owned_tasks.update(stale_cfg.owned_tasks or [])
+                    suspended.update(stale_cfg.suspended_schedules or [])
+                    stale_cfg.delete()
+                    transaction.on_commit(
+                        lambda path=stale_dir: pm._unregister_tasks_from_path(path)
+                    )
+                retained.owned_tasks = sorted(owned_tasks)
+                retained.suspended_schedules = sorted(suspended)
+                retained.save(update_fields=[
+                    "owned_tasks", "suspended_schedules", "updated_at",
+                ])
+                if not retained.enabled:
+                    pm.suspend_schedules(retained)
+        except Exception as e:
+            logger.exception("Failed to consolidate managed plugin '%s'", slug)
+            return Response(
+                {"success": False, "error": f"Failed to remove stale plugin: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    is_deprecated = False
+    manifest_data = repo.cached_manifest or {}
+    manifest_inner = manifest_data.get("manifest", manifest_data)
+    for repo_plugin in manifest_inner.get("plugins", []):
+        if repo_plugin.get("slug") == slug:
+            is_deprecated = bool(repo_plugin.get("deprecated", False))
+            break
+
+    cfg, created = PluginConfig.objects.get_or_create(
+        key=actual_key,
+        defaults={
+            "name": slug,
+            "version": version,
+            "slug": slug,
+            "source_repo": repo,
+            "installed_version_is_prerelease": is_prerelease,
+            "deprecated": is_deprecated,
+        },
+    )
+    if not created:
+        cfg.version = version
+        cfg.slug = slug
+        cfg.source_repo = repo
+        cfg.installed_version_is_prerelease = is_prerelease
+        cfg.deprecated = is_deprecated
+        cfg.save(update_fields=["version", "slug", "source_repo", "installed_version_is_prerelease", "deprecated", "updated_at"])
+
+    pm.discover_plugins(force_reload=True)
+    try:
+        plugin_entry = next(
+            (plugin for plugin in pm.list_plugins() if plugin.get("key") == actual_key),
+            None,
+        )
+    except Exception:
+        plugin_entry = None
+    return Response(
+        {
+            "success": True,
+            "plugin": plugin_entry or {"key": actual_key, "slug": slug, "version": version},
+        },
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
 
 
 def _save_fetched_manifest_to_repo(repo, data, verified):
@@ -483,18 +636,37 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
         if enabled is None:
             return Response({"success": False, "error": "Invalid 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            cfg = PluginConfig.objects.get(key=key)
             pm = PluginManager.get()
-            if not enabled and cfg.enabled:
-                try:
-                    pm.stop_plugin(key, reason="disable")
-                except Exception:
-                    logger.exception("Failed to stop plugin '%s' on disable", key)
-            cfg.enabled = enabled
-            # Mark that this plugin has been enabled at least once
-            if cfg.enabled and not cfg.ever_enabled:
-                cfg.ever_enabled = True
-            cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+            pm.refresh_task_ownership()
+            try:
+                with transaction.atomic():
+                    cfg = PluginConfig.objects.select_for_update().get(key=key)
+                    stopping = cfg.enabled and not enabled
+                    if stopping:
+                        pm.suspend_schedules(cfg)
+                        # stop() is not transactional; running it under the row lock keeps a
+                        # newer enable from being stopped by this older disable.
+                        try:
+                            pm.stop_plugin(key, reason="disable")
+                        except Exception:
+                            logger.exception("Failed to stop plugin '%s' on disable", key)
+                        # stop() can create a matching schedule in this transaction.
+                        pm.suspend_schedules(cfg)
+                    cfg.enabled = enabled
+                    # Mark that this plugin has been enabled at least once
+                    if cfg.enabled and not cfg.ever_enabled:
+                        cfg.ever_enabled = True
+                    cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+                    if enabled:
+                        pm.restore_schedules(cfg)
+            except PluginConfig.DoesNotExist:
+                raise
+            except Exception as e:
+                logger.exception("Failed to change enabled state of plugin '%s'", key)
+                return Response(
+                    {"success": False, "error": f"Failed to change plugin enabled state: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
             pm.discover_plugins(force_reload=True)
             plugin_entry = None
             try:
@@ -541,34 +713,41 @@ class PluginLogoAPIView(APIView):
 class PluginDeleteAPIView(PluginAuthMixin, APIView):
     def delete(self, request, key):
         pm = PluginManager.get()
-        try:
-            pm.stop_plugin(key, reason="delete")
-        except Exception:
-            logger.exception("Failed to stop plugin '%s' before delete", key)
-        plugins_dir = pm.plugins_dir
-        target_dir = os.path.join(plugins_dir, key)
-        # Safety: ensure path inside plugins_dir
-        abs_plugins = os.path.abspath(plugins_dir) + os.sep
-        abs_target = os.path.abspath(target_dir)
-        if not abs_target.startswith(abs_plugins):
-            return Response({"success": False, "error": "Invalid plugin path"}, status=status.HTTP_400_BAD_REQUEST)
+        with _plugin_mutation_lock(pm.plugins_dir):
+            pm.refresh_task_ownership()
+            plugins_dir = pm.plugins_dir
+            target_dir = pm.get_plugin_path(key)
+            # Safety: ensure path inside plugins_dir
+            abs_plugins = os.path.abspath(plugins_dir) + os.sep
+            abs_target = os.path.abspath(target_dir)
+            if not abs_target.startswith(abs_plugins):
+                return Response({"success": False, "error": "Invalid plugin path"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Remove files
-        if os.path.isdir(target_dir):
             try:
-                shutil.rmtree(target_dir)
+                with transaction.atomic():
+                    cfg = PluginConfig.objects.select_for_update().filter(key=key).first()
+                    try:
+                        pm.stop_plugin(key, reason="delete")
+                    except Exception:
+                        logger.exception("Failed to stop plugin '%s' before delete", key)
+                    # Keep ownership and schedules if file removal fails. If a later
+                    # DB operation fails, that retained ownership lets deletion retry
+                    # even though the plugin files have already been removed.
+                    if os.path.isdir(target_dir):
+                        shutil.rmtree(target_dir)
+                    pm.delete_plugin_periodic_tasks(key, path=target_dir)
+                    if cfg is not None:
+                        cfg.delete()
             except Exception as e:
-                return Response({"success": False, "error": f"Failed to delete plugin files: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                logger.exception("Failed to delete plugin '%s'", key)
+                return Response(
+                    {"success": False, "error": f"Failed to delete plugin: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
-        # Remove DB record
-        try:
-            PluginConfig.objects.filter(key=key).delete()
-        except Exception:
-            pass
-
-        # Reload registry
-        pm.discover_plugins(force_reload=True)
-        return Response({"success": True})
+            # Reload registry
+            pm.discover_plugins(force_reload=True)
+            return Response({"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -1235,25 +1414,6 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                 {"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND
             )
 
-        # Prefer the persisted managed-install relationship. The registry slug
-        # is not necessarily the directory key produced by the release ZIP.
-        plugin_key = _sanitize_plugin_key(slug)
-        if len(plugin_key) > 128:
-            plugin_key = plugin_key[:128]
-
-        managed_configs = list(
-            PluginConfig.objects.filter(source_repo=repo, slug=slug).order_by("id")
-        )
-        existing_cfg = managed_configs[0] if managed_configs else None
-        # Preserve the legacy key lookups for installs that predate managed
-        # repository metadata or use a normalized key as their registry slug.
-        if not existing_cfg:
-            existing_cfg = PluginConfig.objects.filter(key=plugin_key).first()
-        if not existing_cfg:
-            dash_key = plugin_key.replace("_", "-")
-            if dash_key != plugin_key:
-                existing_cfg = PluginConfig.objects.filter(key=dash_key).first()
-
         # Version compatibility check against the running Dispatcharr version
         min_version = request.data.get("min_dispatcharr_version")
         max_version = request.data.get("max_dispatcharr_version")
@@ -1273,150 +1433,82 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             except (ValueError, TypeError):
                 logger.warning("Failed to parse version constraints: min=%s, max=%s", min_version, max_version)
 
-        # Download the zip (validate every redirect hop)
-        try:
-            resp = get_with_validated_redirects(
-                download_url,
-                timeout=60,
-                stream=True,
-                allow_private=False,
-                allow_loopback=False,
-            )
-            resp.raise_for_status()
-        except ValueError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            logger.exception("Failed to download plugin from %s", download_url)
-            return Response(
-                {"error": "Failed to download plugin. Check the URL and try again."},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        # SHA256 integrity check (streamed)
-        expected_sha256 = request.data.get("sha256", "").lower().strip()
-        hasher = hashlib.sha256() if expected_sha256 else None
-
-        # Stream the response to a temporary file to avoid buffering in memory
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".zip") as tmp_file:
-                total = 0
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if not chunk:
-                        continue
-                    total += len(chunk)
-                    if total > MAX_PLUGIN_IMPORT_BYTES:
-                        return Response(
-                            {"error": "Download is too large"},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    if hasher is not None:
-                        hasher.update(chunk)
-                    tmp_file.write(chunk)
-
-                if expected_sha256:
-                    actual_sha256 = hasher.hexdigest()
-                    if actual_sha256 != expected_sha256:
-                        logger.warning(
-                            "SHA256 mismatch for plugin '%s' from %s: expected %s, got %s",
-                            slug, download_url, expected_sha256, actual_sha256,
-                        )
-                        return Response(
-                            {
-                                "error": "SHA256 integrity check failed - download discarded. The file may be corrupted or tampered with."
-                            },
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-
-                # Delegate to shared install logic (allow overwrite for managed updates)
-                tmp_file.flush()
-                tmp_file.seek(0)
-                pm = PluginManager.get()
-                result = _install_plugin_from_zip(
-                    tmp_file,
-                    pm.plugins_dir,
-                    file_name=f"{slug}.zip",
-                    allow_overwrite_key=existing_cfg.key if existing_cfg else None,
-                    install_key=existing_cfg.key if managed_configs else None,
-                )
-        finally:
-            resp.close()
-        if not result["success"]:
-            return Response(
-                {"success": False, "error": result["error"]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        actual_key = result["plugin_key"]
-
-        stale_configs = [
-            cfg for cfg in managed_configs if cfg.pk != existing_cfg.pk
-        ] if managed_configs else []
-        for stale_cfg in stale_configs:
-            stale_dir = os.path.join(pm.plugins_dir, stale_cfg.key)
-            try:
-                shutil.rmtree(stale_dir)
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                logger.exception("Failed to remove stale plugin directory %s", stale_dir)
+        pm = PluginManager.get()
+        existing_config = PluginConfig.objects.filter(
+            source_repo=repo, slug=slug
+        ).exists()
+        with _plugin_mutation_lock(pm.plugins_dir):
+            # Download and apply as one operation so a completed delete cannot be
+            # followed by an update that recreates its managed configuration.
+            if existing_config and not PluginConfig.objects.filter(
+                source_repo=repo, slug=slug
+            ).exists():
                 return Response(
-                    {"success": False, "error": f"Failed to remove stale plugin: {e}"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    {"error": "Plugin was deleted while its update was pending"},
+                    status=status.HTTP_404_NOT_FOUND,
                 )
-        if stale_configs:
-            PluginConfig.objects.filter(pk__in=[cfg.pk for cfg in stale_configs]).delete()
+            try:
+                resp = get_with_validated_redirects(
+                    download_url,
+                    timeout=60,
+                    stream=True,
+                    allow_private=False,
+                    allow_loopback=False,
+                )
+                resp.raise_for_status()
+            except ValueError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                logger.exception("Failed to download plugin from %s", download_url)
+                return Response(
+                    {"error": "Failed to download plugin. Check the URL and try again."},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
 
-        # Create/update PluginConfig with managed fields
-        # Use defaults for creation only; explicitly update fields on existing records
-        # to preserve settings, enabled, and ever_enabled
-        is_prerelease = bool(request.data.get("prerelease", False))
+            expected_sha256 = request.data.get("sha256", "").lower().strip()
+            hasher = hashlib.sha256() if expected_sha256 else None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".zip") as tmp_file:
+                    total = 0
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > MAX_PLUGIN_IMPORT_BYTES:
+                            return Response(
+                                {"error": "Download is too large"},
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+                        if hasher is not None:
+                            hasher.update(chunk)
+                        tmp_file.write(chunk)
 
-        # Determine deprecated status from the repo's cached manifest
-        is_deprecated = False
-        manifest_data = repo.cached_manifest or {}
-        manifest_inner = manifest_data.get("manifest", manifest_data)
-        for rp in manifest_inner.get("plugins", []):
-            if rp.get("slug") == slug:
-                is_deprecated = bool(rp.get("deprecated", False))
-                break
+                    if expected_sha256:
+                        actual_sha256 = hasher.hexdigest()
+                        if actual_sha256 != expected_sha256:
+                            logger.warning(
+                                "SHA256 mismatch for plugin '%s' from %s: expected %s, got %s",
+                                slug, download_url, expected_sha256, actual_sha256,
+                            )
+                            return Response(
+                                {
+                                    "error": "SHA256 integrity check failed - download discarded. The file may be corrupted or tampered with."
+                                },
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
 
-        cfg, created = PluginConfig.objects.get_or_create(
-            key=actual_key,
-            defaults={
-                "name": slug,
-                "version": version,
-                "slug": slug,
-                "source_repo": repo,
-                "installed_version_is_prerelease": is_prerelease,
-                "deprecated": is_deprecated,
-            },
-        )
-        if not created:
-            cfg.version = version
-            cfg.slug = slug
-            cfg.source_repo = repo
-            cfg.installed_version_is_prerelease = is_prerelease
-            cfg.deprecated = is_deprecated
-            cfg.save(update_fields=["version", "slug", "source_repo", "installed_version_is_prerelease", "deprecated", "updated_at"])
-
-        # Reload discovery
-        pm.discover_plugins(force_reload=True)
-        plugin_entry = None
-        try:
-            plugin_entry = next(
-                (p for p in pm.list_plugins() if p.get("key") == actual_key),
-                None,
-            )
-        except Exception:
-            plugin_entry = None
-
-        return Response(
-            {
-                "success": True,
-                "plugin": plugin_entry or {"key": actual_key, "slug": slug, "version": version},
-            },
-            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
-        )
+                    tmp_file.flush()
+                    tmp_file.seek(0)
+                    return _finish_managed_plugin_install(
+                        pm,
+                        tmp_file,
+                        repo,
+                        slug,
+                        version,
+                        bool(request.data.get("prerelease", False)),
+                    )
+            finally:
+                resp.close()
 
 
 class PluginRepoSettingsAPIView(PluginAuthMixin, APIView):

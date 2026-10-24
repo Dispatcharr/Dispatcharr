@@ -4,14 +4,17 @@ import UserForm from '../forms/User';
 import useUsersStore from '../../store/users';
 import useChannelsStore from '../../store/channels';
 import useAuthStore from '../../store/auth';
+import useSettingsStore from '../../store/settings';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
 import {
   SquarePlus,
   SquareMinus,
   SquarePen,
+  Copy,
   Eye,
   EyeOff,
+  Link as LinkIcon,
   Search,
   X,
 } from 'lucide-react';
@@ -25,6 +28,11 @@ import {
   Group,
   useMantineTheme,
   LoadingOverlay,
+  Menu,
+  MenuDropdown,
+  MenuItem,
+  MenuLabel,
+  MenuTarget,
   Stack,
   Badge,
   TextInput,
@@ -34,12 +42,13 @@ import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
-import { useDebounce } from '../../utils';
+import { copyToClipboard, useDebounce } from '../../utils';
 import {
   makeHeaderCellRenderer,
   makeSortingChangeHandler,
 } from './tableSortingUtils';
 import {
+  buildUserXcUrls,
   getFilteredUsers,
   getSortedUsers,
   getUserFullName,
@@ -89,6 +98,85 @@ const XCPasswordCell = ({ getValue }) => {
   );
 };
 
+const UserLinksMenu = ({ user, iconSize }) => {
+  const [menuOpened, setMenuOpened] = useState(false);
+  const env_mode = useSettingsStore((s) => s.environment.env_mode);
+
+  const urls = buildUserXcUrls(user, env_mode);
+  if (!urls) {
+    return (
+      <ActionIcon
+        aria-label="Copy XC URLs"
+        size={iconSize}
+        variant="transparent"
+        color="gray"
+        disabled
+      >
+        <LinkIcon size="18" />
+      </ActionIcon>
+    );
+  }
+
+  const items = [
+    {
+      label: 'M3U',
+      value: urls.m3u,
+      successTitle: 'M3U URL Copied!',
+      successMessage: 'The M3U URL has been copied to your clipboard.',
+    },
+    {
+      label: 'EPG',
+      value: urls.epg,
+      successTitle: 'EPG URL Copied!',
+      successMessage: 'The EPG URL has been copied to your clipboard.',
+    },
+    {
+      label: 'XC Details',
+      value: urls.details,
+      successTitle: 'XC Details Copied!',
+      successMessage:
+        'Server, username, and XC password have been copied to your clipboard.',
+    },
+  ];
+
+  const copyItem = async ({ value, successTitle, successMessage }) => {
+    await copyToClipboard(value, { successTitle, successMessage });
+  };
+
+  return menuOpened ? (
+    <Menu opened onChange={setMenuOpened} position="bottom-end">
+      <MenuTarget>
+        <ActionIcon size={iconSize} variant="transparent" color="gray">
+          <LinkIcon size="18" />
+        </ActionIcon>
+      </MenuTarget>
+
+      <MenuDropdown>
+        <MenuLabel>Xtream URLs</MenuLabel>
+        {items.map((item) => (
+          <MenuItem
+            key={item.label}
+            leftSection={<Copy size="14" />}
+            onClick={() => copyItem(item)}
+          >
+            <Text size="xs">{item.label}</Text>
+          </MenuItem>
+        ))}
+      </MenuDropdown>
+    </Menu>
+  ) : (
+    <ActionIcon
+      aria-label="Copy XC URLs"
+      size={iconSize}
+      variant="transparent"
+      color="gray"
+      onClick={() => setMenuOpened(true)}
+    >
+      <LinkIcon size="18" />
+    </ActionIcon>
+  );
+};
+
 const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
   const [tableSize, _] = useBrowserStorage('table-size', 'default');
   const authUser = useAuthStore((s) => s.user);
@@ -128,6 +216,8 @@ const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
       >
         <SquareMinus size="18" />
       </ActionIcon>
+
+      <UserLinksMenu user={row.original} iconSize={iconSize} />
     </Group>
   );
 };
@@ -339,7 +429,7 @@ const UsersTable = () => {
       },
       {
         id: 'actions',
-        size: 65,
+        size: 90,
         header: 'Actions',
         enableSorting: false,
         enableResizing: false,
@@ -353,7 +443,14 @@ const UsersTable = () => {
         ),
       },
     ],
-    [theme, editUser, handleDeleteUser, fullDateFormat, fullDateTimeFormat]
+    [
+      theme,
+      editUser,
+      handleDeleteUser,
+      fullDateFormat,
+      fullDateTimeFormat,
+      profileIdToName,
+    ]
   );
 
   const closeUserForm = () => {

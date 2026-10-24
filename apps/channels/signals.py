@@ -6,7 +6,7 @@ from django.dispatch import receiver
 from django.utils.timezone import now, is_aware, make_aware
 from celery.result import AsyncResult
 from django_celery_beat.models import ClockedSchedule, PeriodicTask
-from .models import Channel, Stream, ChannelStream, ChannelProfile, ChannelProfileMembership, ChannelOverride, Recording
+from .models import Channel, ChannelGroup, Stream, ChannelStream, ChannelProfile, ChannelProfileMembership, ChannelOverride, Recording
 from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
 import json
@@ -195,6 +195,19 @@ def refresh_epg_programs(sender, instance, created, **kwargs):
         logger.info(f"New channel {instance.id} ({instance.name}) created with EPG data, refreshing program data")
         _invalidate_epg_output_cache()
         _queue_epg_program_refresh(instance.epg_data)
+
+
+@receiver(post_save, sender=Channel)
+def mark_manual_channel_group_as_custom(sender, instance, **kwargs):
+    if instance.auto_created or not instance.channel_group_id:
+        return
+
+    try:
+        ChannelGroup.objects.mark_custom(instance.channel_group)
+    except M3UAccount.DoesNotExist:
+        # The locked account is created by a data migration and can be absent
+        # from isolated test fixtures.
+        return
 
 
 @receiver(pre_save, sender=ChannelOverride)

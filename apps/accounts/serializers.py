@@ -182,3 +182,42 @@ class ProxyLoginResponseSerializer(serializers.Serializer):
 
     access = serializers.CharField()
     refresh = serializers.CharField()
+
+
+class AppDataLimitsSerializer(serializers.Serializer):
+    max_value_bytes = serializers.IntegerField()
+    max_total_bytes = serializers.IntegerField()
+    max_apps = serializers.IntegerField()
+    max_depth = serializers.IntegerField()
+    key_min_length = serializers.IntegerField()
+    key_max_length = serializers.IntegerField()
+
+
+class AppDataAppSummarySerializer(serializers.Serializer):
+    key = serializers.CharField(
+        help_text="App namespace (8 to 64 chars: [A-Za-z0-9][A-Za-z0-9._-]*)"
+    )
+    bytes = serializers.IntegerField(
+        help_text="Compact UTF-8 JSON size of that app's stored object"
+    )
+
+
+class AppDataListResponseSerializer(serializers.Serializer):
+    """GET .../app-data/ list payload (keys and sizes only, never values)."""
+
+    limits = AppDataLimitsSerializer()
+    total_bytes = serializers.IntegerField()
+    apps = AppDataAppSummarySerializer(many=True)
+
+
+class AppDataDetailErrorSerializer(serializers.Serializer):
+    detail = serializers.CharField(
+        help_text="Human-readable error message"
+    )
+    code = serializers.CharField(
+        help_text=(
+            "Stable machine-readable identifier, for example "
+            "key_invalid, key_not_found, value_too_large, "
+            "total_too_large, max_apps, forbidden, user_not_found"
+        )
+    )
