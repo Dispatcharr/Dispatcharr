@@ -2,9 +2,15 @@
 # Stage 1: builder
 # Installs the Python toolchain + compilers, creates the virtual environment and
 # builds the legacy (CPU-baseline=none) NumPy wheel. None of these compilers end
-# up in the final image — only the artifacts below are copied forward.
+# up in the final image, only the artifacts below are copied forward.
+#
+# Base image: ghcr.io/dispatcharr/ffmpeg:latest (Ubuntu 26.04 + redistributable
+# FFmpeg, GPL v3, no nonfree, NVENC API 13.0). Built from github.com/Dispatcharr/FFmpeg.
+# latest moves only when that image is published, and the NVENC series stays 13.0
+# until the pin in that repository changes.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:version-8.1.2-cli AS builder
+ARG FFMPEG_IMAGE=ghcr.io/dispatcharr/ffmpeg:latest
+FROM ${FFMPEG_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
@@ -14,7 +20,8 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
 # --- Install Python 3.13 and build dependencies ---
-# Note: Hardware acceleration (VA-API, VDPAU, NVENC) already included in base ffmpeg image
+# Hardware acceleration (VA-API, NVENC) is provided by the ffmpeg base image;
+# NVIDIA driver libs are injected at runtime by the NVIDIA container toolkit.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates software-properties-common gnupg2 curl wget \
     && add-apt-repository ppa:deadsnakes/ppa \
@@ -50,24 +57,19 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
     uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
 
 # Build Comskip from upstream master (newer than distro packages). Links against
-# distro libav (same libraries the old universe package used), not linuxserver ffmpeg.
+# distro libav, not the Dispatcharr FFmpeg shared libs in /usr/local.
 #
 # Latest GitHub release is still V0.83, which does not compile here: gcc 15
-# rejects void OutputFrame(); (fixed on master) and FFmpeg 8 removed
+# rejects void OutputFrame(); (fixed on master) and FFmpeg 8+ removed
 # AVCodecContext.ticks_per_frame (not in any tag yet). When they tag a
-# release that builds on Ubuntu 26.04, switch the tarball to
+# release that builds cleanly, switch the tarball to
 #   https://github.com/erikkaashoek/Comskip/archive/refs/tags/${TAG}.tar.gz
 # and delete the ticks_per_frame sed below if that tree already compiles.
 #
-# Distro libav (via libavformat-dev) is required: linuxserver ships libav
-# statically inside ffmpeg, with no shared libavcodec to link comskip against.
-# PKG_CONFIG_LIBDIR selects distro headers. -rpath-link is the link-time search
-# path for pangocairo's fontconfig. gcc's default --enable-new-dtags turns
-# -rpath into DT_RUNPATH, which is searched after LD_LIBRARY_PATH and is not
-# inherited by libpangoft2. linuxserver sets LD_LIBRARY_PATH=/usr/local/lib, so
-# the older /usr/local fontconfig wins and FcConfigSetDefaultSubstitute is
-# missing. --disable-new-dtags writes DT_RPATH, which is searched first and
-# inherited by transitive deps. ffmpeg is a separate process and is unchanged.
+# Distro libav (via libavformat-dev) keeps Comskip on Ubuntu's SONAMEs so it
+# does not pick up FFmpeg 9's libav* from /usr/local. PKG_CONFIG_LIBDIR
+# selects distro headers. DT_RPATH (--disable-new-dtags) prefers distro libs
+# at runtime. ffmpeg remains a separate process and is unchanged.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     autoconf automake libtool pkg-config \
     libargtable2-dev libavformat-dev libswscale-dev \
@@ -95,7 +97,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # Same ffmpeg base, but installs only the runtime system libraries (no compilers)
 # and copies the prebuilt virtual environment + NumPy wheel from the builder.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:version-8.1.2-cli AS final
+ARG FFMPEG_IMAGE=ghcr.io/dispatcharr/ffmpeg:latest
+FROM ${FFMPEG_IMAGE} AS final
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
@@ -106,9 +109,10 @@ ENV UV_LINK_MODE=copy
 
 # --- Install runtime system dependencies (no build toolchain) ---
 # python3.13 + libpython3.13 back the copied venv; libpcre2-8-0 backs uWSGI;
-# libopenblas0 backs the legacy NumPy wheel; libargtable2-0 is for comskip;
-# ca-certificates/gnupg2/curl/wget and software-properties-common are kept
-# for TLS and the AIO runtime apt step.
+# libopenblas0 backs the legacy NumPy wheel; libargtable2-0 and distro libav*
+# are for comskip. SONAMEs are Ubuntu 26.04 (resolute).
+# ca-certificates/gnupg2/curl/wget and software-properties-common
+# are kept for TLS and the AIO runtime apt step.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates software-properties-common gnupg2 curl wget \
     && add-apt-repository ppa:deadsnakes/ppa \
@@ -117,6 +121,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
     libpcre2-8-0 libopenblas0 procps pciutils \
     nginx libargtable2-0 \
+    libavformat62 libavcodec62 libavutil60 libswscale9 \
     vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
