@@ -128,19 +128,27 @@ def is_eligible(message, now=None):
 
 
 def official_messages_for_user(user):
-    repo = PluginRepo.objects.filter(is_official=True, enabled=True).first()
-    if not repo or repo.signature_verified is not True:
-        return []
-    messages = [message for message in validated_messages(repo.cached_manifest) if is_eligible(message)]
+    messages = []
+    for repo in PluginRepo.objects.filter(is_official=True, enabled=True):
+        if repo.signature_verified is not True:
+            continue
+        manifest = (repo.cached_manifest or {}).get("manifest", repo.cached_manifest or {})
+        source_repo = manifest.get("registry_name") or repo.name
+        messages.extend(
+            {
+                **message,
+                "source_repo": source_repo,
+            }
+            for message in validated_messages(repo.cached_manifest)
+            if is_eligible(message)
+        )
     dismissed = set(PluginManifestMessageDismissal.objects.filter(
         user=user, message_id__in=[message["id"] for message in messages]
     ).values_list("message_id", flat=True))
-    manifest = (repo.cached_manifest or {}).get("manifest", repo.cached_manifest or {})
-    source_repo = manifest.get("registry_name") or repo.name
     return [
         {
             **{key: value for key, value in message.items() if key in {"id", "severity", "title", "body", "link"}},
-            "source_repo": source_repo,
+            "source_repo": message["source_repo"],
         }
         for message in messages if uuid.UUID(message["id"]) not in dismissed
     ]

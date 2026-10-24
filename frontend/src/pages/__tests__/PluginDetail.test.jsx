@@ -239,7 +239,7 @@ describe('PluginDetail', () => {
     // resolve a selectedVersion, so it should default to showing the
     // standalone button rather than silently hiding the only uninstall path.
     render(<PluginDetail />);
-    expect(screen.getByText('Uninstall')).toBeInTheDocument();
+    expect(screen.getByText('Uninstall Plugin')).toBeInTheDocument();
   });
 
   it('hides the standalone Uninstall button once the selected version matches the installed one', async () => {
@@ -277,7 +277,7 @@ describe('PluginDetail', () => {
       })
     );
     render(<PluginDetail />);
-    expect(screen.getByText('Uninstall')).toBeInTheDocument();
+    expect(screen.getByText('Uninstall Plugin')).toBeInTheDocument();
   });
 
   it('reloads plugin code when Reload Plugin is confirmed', async () => {

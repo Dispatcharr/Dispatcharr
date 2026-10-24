@@ -542,10 +542,10 @@ describe('AvailablePluginCard', () => {
     });
   });
 
-  // ── RepoBadge ──────────────────────────────────────────────────────────────
+  // ── Repository metadata ────────────────────────────────────────────────────
 
-  describe('RepoBadge', () => {
-    it('shows "Official Repo" badge when is_official_repo is true', () => {
+  describe('repository metadata', () => {
+    it('shows the repository name inline when is_official_repo is true', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -553,10 +553,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Official Repo')).toBeInTheDocument();
+      expect(screen.getByText('Test Repo')).toBeInTheDocument();
     });
 
-    it('shows community repo name badge when is_official_repo is false', () => {
+    it('shows the community repo name inline when is_official_repo is false', () => {
       setupMocks();
       render(
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
@@ -596,10 +596,10 @@ describe('AvailablePluginCard', () => {
     });
   });
 
-  // ── StatusBadge ────────────────────────────────────────────────────────────
+  // ── Install status indicator ───────────────────────────────────────────────
 
-  describe('StatusBadge', () => {
-    it('shows Installed badge for installed plugin', () => {
+  describe('InstallStatusIndicator', () => {
+    it('shows an installed indicator for an installed plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -607,10 +607,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Installed')).toBeInTheDocument();
+      expect(screen.getByLabelText('Installed')).toBeInTheDocument();
     });
 
-    it('shows prerelease Installed badge when installed_version_is_prerelease', () => {
+    it('shows a prerelease indicator when installed_version_is_prerelease', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -621,10 +621,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Prerelease')).toBeInTheDocument();
+      expect(screen.getByLabelText('Prerelease installed')).toBeInTheDocument();
     });
 
-    it('shows Update Available badge for update_available plugin', () => {
+    it('shows an update indicator for an update_available plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -635,10 +635,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Update Available')).toBeInTheDocument();
+      expect(screen.getByLabelText('Update available')).toBeInTheDocument();
     });
 
-    it('shows Deprecated badge for not-installed deprecated plugin', () => {
+    it('shows a deprecation indicator for a not-installed deprecated plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -649,10 +649,12 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Deprecated')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('This plugin has been marked as deprecated by its maintainer')
+      ).toBeInTheDocument();
     });
 
-    it('shows Installed badge for unmanaged plugin', () => {
+    it('shows an unmanaged install indicator for an unmanaged plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -660,7 +662,9 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Installed')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Installed manually, installing from this repo will take over management')
+      ).toBeInTheDocument();
     });
   });
 

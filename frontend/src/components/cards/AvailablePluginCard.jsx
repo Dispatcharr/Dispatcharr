@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   Avatar,
-  Badge,
   Box,
   Button,
   Card,
@@ -23,7 +22,6 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldAlert,
-  ShieldCheck,
   Trash2,
 } from 'lucide-react';
 import {
@@ -54,179 +52,59 @@ import {
 } from '../../utils/pages/PluginsUtils.js';
 import './AvailablePluginCard.css';
 
-const RepoBadge = ({ isOfficial, repoName, signatureVerified }) => {
-  if (isOfficial) {
-    const badge = (
-      <Badge
-        size="xs"
-        variant="filled"
-        style={{
-          backgroundColor:
-            signatureVerified === false
-              ? 'var(--mantine-color-red-9)'
-              : '#14917E',
-        }}
-        leftSection={
-          signatureVerified != null ? (
-            signatureVerified ? (
-              <ShieldCheck size={10} />
-            ) : (
-              <ShieldAlert size={10} />
-            )
-          ) : undefined
-        }
-      >
-        Official Repo
-      </Badge>
-    );
-    return signatureVerified != null ? (
-      <Tooltip
-        label={signatureVerified ? 'Verified Signature' : 'Invalid Signature'}
-      >
-        {badge}
-      </Tooltip>
-    ) : (
-      badge
-    );
-  }
-  if (!repoName) return null;
-  const badge = (
-    <Badge
-      size="xs"
-      variant="filled"
-      color={signatureVerified === false ? 'red.9' : 'gray'}
-      leftSection={
-        signatureVerified != null ? (
-          signatureVerified ? (
-            <ShieldCheck size={10} />
-          ) : (
-            <ShieldAlert size={10} />
-          )
-        ) : undefined
-      }
-    >
-      {repoName}
-    </Badge>
-  );
-  return signatureVerified != null ? (
-    <Tooltip
-      label={signatureVerified ? 'Verified Signature' : 'Invalid Signature'}
-    >
-      {badge}
-    </Tooltip>
-  ) : (
-    badge
-  );
-};
-
-const StatusBadge = ({
+const InstallStatusIndicator = ({
   status,
   deprecated,
   isPrerelease,
   installedSourceRepoName,
 }) => {
   const isLatestDowngrade = status === 'downgrade_available';
+  let Icon = null;
+  let color;
+  let label;
+
   if (status === 'installed') {
-    const baseLabel = isPrerelease ? 'Prerelease' : 'Installed';
-    if (!deprecated) {
-      return (
-        <Badge
-          size="xs"
-          variant="light"
-          color={isPrerelease ? 'gray' : 'green'}
-          leftSection={
-            isPrerelease ? <FlaskConical size={8} /> : <Check size={8} />
-          }
-        >
-          {baseLabel}
-        </Badge>
-      );
-    }
-    return (
-      <Tooltip
-        label={`${isPrerelease ? 'Prerelease installed' : 'Installed'}, but this plugin has been deprecated by its maintainer`}
-      >
-        <Badge
-          size="xs"
-          variant="light"
-          color={isPrerelease ? 'red' : 'orange'}
-          leftSection={<Ban size={8} />}
-        >
-          {baseLabel} · Deprecated
-        </Badge>
-      </Tooltip>
-    );
+    Icon = deprecated ? Ban : isPrerelease ? FlaskConical : Check;
+    color = deprecated
+      ? 'var(--mantine-color-orange-6)'
+      : isPrerelease
+        ? 'var(--mantine-color-gray-5)'
+        : 'var(--mantine-color-green-6)';
+    label = deprecated
+      ? `${isPrerelease ? 'Prerelease installed' : 'Installed'}, but this plugin has been deprecated by its maintainer`
+      : isPrerelease ? 'Prerelease installed' : 'Installed';
+  } else if (status === 'update_available' || status === 'downgrade_available') {
+    Icon = deprecated ? Ban : isLatestDowngrade ? AlertTriangle : RefreshCw;
+    color = deprecated
+      ? 'var(--mantine-color-red-6)'
+      : isLatestDowngrade
+        ? 'var(--mantine-color-orange-6)'
+        : 'var(--mantine-color-yellow-6)';
+    label = deprecated
+      ? 'Update available, but this plugin has been deprecated by its maintainer'
+      : isLatestDowngrade ? 'Newer version installed' : 'Update available';
+  } else if (status === 'unmanaged' || status === 'different_repo') {
+    Icon = deprecated ? Ban : Check;
+    color = deprecated ? 'var(--mantine-color-red-6)' : 'var(--mantine-color-orange-6)';
+    label = status === 'unmanaged'
+      ? deprecated
+        ? 'Installed manually (deprecated), installing from this repo will take over management'
+        : 'Installed manually, installing from this repo will take over management'
+      : `Managed by ${installedSourceRepoName || 'another repo'}${deprecated ? ' (deprecated)' : ''}`;
+  } else if (deprecated) {
+    Icon = Ban;
+    color = 'var(--mantine-color-red-6)';
+    label = 'This plugin has been marked as deprecated by its maintainer';
   }
-  if (status === 'update_available' || status === 'downgrade_available') {
-    const baseLabel = isLatestDowngrade
-      ? 'Newer Installed'
-      : 'Update Available';
-    if (!deprecated) {
-      return (
-        <Badge
-          size="xs"
-          variant="light"
-          color={isLatestDowngrade ? 'orange' : 'yellow'}
-          leftSection={
-            isLatestDowngrade ? (
-              <AlertTriangle size={8} />
-            ) : (
-              <RefreshCw size={8} />
-            )
-          }
-        >
-          {baseLabel}
-        </Badge>
-      );
-    }
-    return (
-      <Tooltip label="Update available, but this plugin has been deprecated by its maintainer">
-        <Badge
-          size="xs"
-          variant="light"
-          color="red"
-          leftSection={<Ban size={8} />}
-        >
-          {baseLabel} · Deprecated
-        </Badge>
-      </Tooltip>
-    );
-  }
-  if (status === 'unmanaged' || status === 'different_repo') {
-    const tooltip =
-      status === 'unmanaged'
-        ? deprecated
-          ? 'Installed manually (deprecated) - installing from this repo will take over management'
-          : 'Installed manually - installing from this repo will take over management'
-        : `Managed by ${installedSourceRepoName || 'another repo'}${deprecated ? ' (deprecated)' : ''}`;
-    return (
-      <Tooltip label={tooltip}>
-        <Badge
-          size="xs"
-          variant="light"
-          color={deprecated ? 'red' : 'orange'}
-          leftSection={deprecated ? <Ban size={8} /> : <Check size={8} />}
-        >
-          {deprecated ? 'Installed · Deprecated' : 'Installed'}
-        </Badge>
-      </Tooltip>
-    );
-  }
-  if (deprecated) {
-    return (
-      <Tooltip label="This plugin has been marked as deprecated by its maintainer">
-        <Badge
-          size="xs"
-          variant="light"
-          color="red"
-          leftSection={<Ban size={8} />}
-        >
-          Deprecated
-        </Badge>
-      </Tooltip>
-    );
-  }
-  return null;
+
+  if (!Icon) return null;
+  return (
+    <Tooltip label={label}>
+      <span aria-label={label} style={{ display: 'flex', flexShrink: 0 }}>
+        <Icon size={12} color={color} />
+      </span>
+    </Tooltip>
+  );
 };
 
 const AvailablePluginCardHeader = ({
@@ -259,31 +137,28 @@ const AvailablePluginCardHeader = ({
               v{plugin.latest_version}
             </Text>
           )}
+          <SignatureIndicator signatureVerified={signatureVerified} />
         </Group>
         <Group gap={6} align="center" wrap="nowrap">
           <PluginMetadata
             plugin={plugin}
             license={plugin.license}
+            sourceRepoName={plugin.repo_name}
+            trailing={
+              <InstallStatusIndicator
+                status={plugin.install_status}
+                deprecated={plugin.deprecated}
+                isPrerelease={plugin.installed_version_is_prerelease}
+                installedSourceRepoName={plugin.installed_source_repo_name}
+              />
+            }
             authorClassName="available-plugin-card__author"
             licenseClassName="available-plugin-card__license"
             separatorClassName="available-plugin-card__license-separator"
           />
-          <StatusBadge
-            status={plugin.install_status}
-            deprecated={plugin.deprecated}
-            isPrerelease={plugin.installed_version_is_prerelease}
-            installedSourceRepoName={plugin.installed_source_repo_name}
-          />
         </Group>
       </Box>
     </Group>
-    <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
-      <RepoBadge
-        isOfficial={plugin.is_official_repo}
-        repoName={plugin.repo_name}
-        signatureVerified={signatureVerified}
-      />
-    </Stack>
   </Group>
 );
 

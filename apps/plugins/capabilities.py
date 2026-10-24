@@ -276,7 +276,9 @@ def app_version_meets_minimum(app_version: str, min_version: Optional[str], *, i
 
 
 def app_version_meets_maximum(app_version: str, max_version: Optional[str], *, is_dev_build: bool = False) -> bool:
-    return not is_dev_build and (max_version is None or compare_versions(app_version, max_version) <= 0)
+    return max_version is None or (
+        not is_dev_build and compare_versions(app_version, max_version) <= 0
+    )
 
 
 def manifest_version_supported(manifest_version: int, app_version: str, *, is_dev_build: bool = False) -> bool:

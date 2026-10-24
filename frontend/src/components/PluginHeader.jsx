@@ -18,7 +18,7 @@ export const PluginMetadata = ({
   signatureVerified,
   trailing,
 }) => {
-  if (!plugin.author && !sourceRepoName && !license) return null;
+  if (!plugin.author && !sourceRepoName && !license && !trailing) return null;
   return (
     <Group
       className={className}
@@ -248,6 +248,7 @@ const PluginHeader = ({
   version = plugin.version,
   sourceRepoName,
   license,
+  metadataTrailing,
   centered = false,
   hideLinks = false,
 }) => {
@@ -272,7 +273,7 @@ const PluginHeader = ({
         <Box mt="xs">
           <TitleWithSignature plugin={plugin} onClick={onClick} signatureVerified={signatureVerified} version={version} />
         </Box>
-        <PluginMetadata plugin={plugin} onClick={onClick} justify="center" sourceRepoName={sourceRepoName} license={license} />
+        <PluginMetadata plugin={plugin} onClick={onClick} justify="center" sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
         {!hideLinks && (
           <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} justify="center" />
         )}
@@ -291,7 +292,7 @@ const PluginHeader = ({
           lineClamp={1}
           version={version}
         />
-        <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} />
+        <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
         {!hideLinks && (
           <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} />
         )}

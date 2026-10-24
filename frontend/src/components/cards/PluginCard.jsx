@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ActionIcon,
-  Badge,
   Button,
   Card,
   Group,
@@ -17,6 +16,39 @@ import { needsCapabilityAck } from '../../store/plugins.jsx';
 
 // Stable fallback reference: an inline `[]` here causes an infinite render loop under zustand v5.
 const EMPTY_PINNED_PLUGINS = [];
+
+const InstallStatusIndicator = ({ plugin }) => {
+  let Icon = null;
+  let color;
+  let label;
+
+  if (plugin.is_managed && plugin.installed_version_is_prerelease) {
+    Icon = plugin.deprecated ? Ban : FlaskConical;
+    color = plugin.deprecated ? 'var(--mantine-color-red-6)' : 'var(--mantine-color-gray-5)';
+    label = plugin.deprecated
+      ? 'Prerelease installed (deprecated)'
+      : 'Prerelease installed';
+  } else if (plugin.update_available) {
+    Icon = plugin.deprecated ? Ban : RefreshCw;
+    color = plugin.deprecated ? 'var(--mantine-color-red-6)' : 'var(--mantine-color-yellow-6)';
+    label = plugin.deprecated
+      ? `Update available: v${plugin.latest_version} (deprecated)`
+      : `Update available: v${plugin.latest_version}`;
+  } else if (plugin.is_managed) {
+    Icon = plugin.deprecated ? Ban : Check;
+    color = plugin.deprecated ? 'var(--mantine-color-orange-6)' : 'var(--mantine-color-green-6)';
+    label = plugin.deprecated ? 'Installed (deprecated)' : 'Installed and up to date';
+  }
+
+  if (!Icon) return null;
+  return (
+    <Tooltip label={label}>
+      <span aria-label={label} style={{ display: 'flex', flexShrink: 0 }}>
+        <Icon size={12} color={color} />
+      </span>
+    </Tooltip>
+  );
+};
 
 const PluginCard = ({
   plugin,
@@ -88,70 +120,9 @@ const PluginCard = ({
           onClick={openDetail}
           hideLinks
           sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
+          metadataTrailing={<InstallStatusIndicator plugin={plugin} />}
         />
         <Group gap={6} wrap="nowrap" align="center" style={{ flexShrink: 0 }}>
-          {plugin.is_managed && plugin.installed_version_is_prerelease ? (
-            <Tooltip
-              label={
-                plugin.deprecated
-                  ? 'Prerelease installed (deprecated), click for details'
-                  : 'Prerelease installed, click for details'
-              }
-            >
-              <Badge
-                size="xs"
-                variant="light"
-                color={plugin.deprecated ? 'red' : 'gray'}
-                leftSection={plugin.deprecated ? <Ban size={8} /> : <FlaskConical size={8} />}
-                style={{ cursor: 'pointer' }}
-                onClick={openDetail}
-              >
-                {plugin.deprecated ? 'Prerelease · Deprecated' : 'Prerelease'}
-              </Badge>
-            </Tooltip>
-          ) : plugin.update_available ? (
-            <Tooltip
-              label={
-                plugin.deprecated
-                  ? `Update available: v${plugin.latest_version} (deprecated)`
-                  : `Update available: v${plugin.latest_version}`
-              }
-            >
-              <Badge
-                size="xs"
-                variant="light"
-                color={plugin.deprecated ? 'red' : 'yellow'}
-                leftSection={plugin.deprecated ? <Ban size={8} /> : <RefreshCw size={8} />}
-                style={{ cursor: 'pointer' }}
-                onClick={openDetail}
-              >
-                {plugin.deprecated ? 'Update · Deprecated' : 'Update'}
-              </Badge>
-            </Tooltip>
-          ) : plugin.is_managed ? (
-            plugin.deprecated ? (
-              <Tooltip label="Installed (deprecated), click for details">
-                <Badge
-                  size="xs"
-                  variant="light"
-                  color="orange"
-                  leftSection={<Ban size={8} />}
-                  style={{ cursor: 'pointer' }}
-                  onClick={openDetail}
-                >
-                  Deprecated
-                </Badge>
-              </Tooltip>
-            ) : (
-              <Badge size="xs" variant="light" color="green" leftSection={<Check size={8} />}>
-                Up to Date
-              </Badge>
-            )
-          ) : (
-            <Badge size="xs" variant="light" color="gray">
-              Unmanaged
-            </Badge>
-          )}
           <Tooltip label={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}>
             <ActionIcon
               variant="subtle"
