@@ -466,12 +466,135 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
         return super().destroy(request, *args, **kwargs)
 
 
+class M3URefreshScheduleSerializer(serializers.Serializer):
+    enabled = serializers.BooleanField()
+    last_run_at = serializers.DateTimeField(allow_null=True)
+    next_run_at = serializers.DateTimeField(allow_null=True)
+
+
+class M3UCategorySelectionCountSerializer(serializers.Serializer):
+    selected = serializers.IntegerField(min_value=0)
+    total = serializers.IntegerField(min_value=0)
+
+
+class M3UCategorySelectionCountsSerializer(serializers.Serializer):
+    live = M3UCategorySelectionCountSerializer()
+    movie = M3UCategorySelectionCountSerializer()
+    series = M3UCategorySelectionCountSerializer()
+
+
+class M3USetupActionSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(
+        choices=(
+            "create_epg", "skip_epg", "retry_categories", "complete",
+            "back_to_epg", "back_to_content", "back_to_account",
+            "continue_content", "continue_epg", "continue_categories",
+            "confirm_categories",
+        )
+    )
+
+
+class M3UConnectionCheckSerializer(serializers.Serializer):
+    account_id = serializers.PrimaryKeyRelatedField(
+        queryset=M3UAccount.objects.all(), required=False, write_only=True,
+    )
+    account_type = serializers.ChoiceField(choices=M3UAccount.Types.choices)
+    server_url = serializers.CharField(
+        max_length=1000, validators=[validate_flexible_url],
+    )
+    username = serializers.CharField(
+        max_length=255, required=False, allow_blank=True,
+    )
+    password = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, trim_whitespace=False,
+        write_only=True,
+    )
+    user_agent = serializers.PrimaryKeyRelatedField(
+        queryset=UserAgent.objects.all(), required=False, allow_null=True,
+    )
+
+    def validate_server_url(self, value):
+        from urllib.parse import urlsplit
+
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError()
+            parsed.port
+        except ValueError as exc:
+            raise serializers.ValidationError(
+                "Enter a complete HTTP or HTTPS URL."
+            ) from exc
+        return value
+
+    def validate(self, attrs):
+        from core.xtream_codes import normalize_server_url
+
+        account = attrs.pop("account_id", None)
+        if attrs["account_type"] == "XC":
+            if not attrs.get("username"):
+                raise serializers.ValidationError({
+                    "username": "Enter the provider username.",
+                })
+            # Never send a stored secret to a caller-supplied different server.
+            # A changed destination requires the password to be entered again.
+            if (
+                not attrs.get("password")
+                and account
+                and account.account_type == "XC"
+                and normalize_server_url(attrs["server_url"])
+                == normalize_server_url(account.server_url)
+            ):
+                attrs["password"] = account.password
+        agent = attrs.pop("user_agent", None)
+        attrs["user_agent_string"] = (
+            agent.user_agent if agent and agent.user_agent
+            else M3UAccount().get_user_agent_string()
+        )
+        return attrs
+
+
+class M3UConnectionCheckResultSerializer(serializers.Serializer):
+    success = serializers.BooleanField()
+    code = serializers.CharField()
+    message = serializers.CharField()
+    http_status = serializers.IntegerField(required=False)
+
+
+class M3UMatchingEPGSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    is_active = serializers.BooleanField()
+    status = serializers.CharField()
+    source_type = serializers.CharField()
+    updated_at = serializers.DateTimeField(allow_null=True)
+
+
+class M3UAccountEPGSerializer(M3UMatchingEPGSerializer):
+    epg_data_count = serializers.IntegerField(
+        source="epgs.count", read_only=True, min_value=0,
+    )
+
+
+class M3UMatchingEPGResponseSerializer(serializers.Serializer):
+    source = M3UAccountEPGSerializer(allow_null=True)
+    can_create = serializers.BooleanField()
+    other_sources = M3UMatchingEPGSerializer(many=True)
+
+
 class M3UAccountSerializer(serializers.ModelSerializer):
     """Serializer for M3U Account"""
 
     filters = serializers.SerializerMethodField()
+    group_rule_counts = serializers.SerializerMethodField()
+    start_setup = serializers.BooleanField(write_only=True, required=False)
+    setup_step = serializers.CharField(read_only=True)
+    setup_categories_reviewed = serializers.SerializerMethodField()
     earliest_expiration = serializers.SerializerMethodField()
     all_expirations = serializers.SerializerMethodField()
+    live_refresh_schedule = serializers.SerializerMethodField()
+    vod_refresh_schedule = serializers.SerializerMethodField()
+    category_selection_counts = serializers.SerializerMethodField()
     exp_date = serializers.DateTimeField(
         required=False, allow_null=True, write_only=True,
         help_text="Expiration date for the default profile (write-through)",
@@ -539,15 +662,19 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "filters",
+            "group_rule_counts",
             "user_agent",
             "profiles",
             "locked",
             "channel_groups",
+            "category_selection_counts",
             "refresh_interval",
             "cron_expression",
             "vod_refresh_interval",
             "vod_cron_expression",
             "vod_refresh_after_live",
+            "live_refresh_schedule",
+            "vod_refresh_schedule",
             "custom_properties",
             "account_type",
             "username",
@@ -556,6 +683,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "priority",
             "hash_key",
             "status",
+            "start_setup",
+            "setup_step",
+            "setup_categories_reviewed",
             "last_message",
             "enable_vod",
             "auto_enable_new_groups_live",
@@ -572,6 +702,23 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 "write_only": True,
             },
         }
+
+    def validate(self, attrs):
+        if self.instance is not None:
+            attrs.pop("start_setup", None)
+            return attrs
+        if not attrs.get("start_setup"):
+            return attrs
+        errors = {}
+        if attrs.get("account_type", M3UAccount.Types.STADNARD) == "XC":
+            for field in ("server_url", "username", "password"):
+                if not attrs.get(field):
+                    errors[field] = "Required for a new Xtream Codes account."
+        elif not attrs.get("server_url") and not attrs.get("file_path"):
+            errors["server_url"] = "Enter a playlist URL or upload a file."
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
     def to_representation(self, instance):
         # When the list() view pre-aggregates stream counts for all accounts
@@ -692,15 +839,16 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         # so unrelated keys persist. The dedicated preference fields below
         # overwrite their corresponding keys; clients should set those via
         # the typed top-level fields rather than the custom_properties
-        # payload. Drop hash_key from the incoming blob so a raw write cannot
-        # bypass validation or the lock gate on the typed field.
+        # payload. Raw properties cannot bypass hash-key validation or mark
+        # the guided category selection as reviewed.
         incoming_custom = {}
         if "custom_properties" in validated_data:
             incoming_custom = validated_data["custom_properties"] or {}
             if not isinstance(incoming_custom, dict):
                 incoming_custom = ensure_custom_properties_dict(incoming_custom)
             incoming_custom = {
-                k: v for k, v in incoming_custom.items() if k != "hash_key"
+                k: v for k, v in incoming_custom.items()
+                if k not in {"hash_key", "setup_categories_reviewed"}
             }
         existing_custom = instance.custom_properties or {}
         if not isinstance(existing_custom, dict):
@@ -732,21 +880,24 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         channel_group_data = validated_data.pop("channel_group", [])
 
         # First, update the M3UAccount itself
+        previous_account_type = instance.account_type
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+        instance.update_setup_step_for_account_type(previous_account_type)
         instance.save()
 
         # Prepare a list of memberships to update
         memberships_to_update = []
         for group_data in channel_group_data:
             group = group_data.get("channel_group")
-            enabled = group_data.get("enabled")
 
             try:
                 membership = ChannelGroupM3UAccount.objects.get(
                     m3u_account=instance, channel_group=group
                 )
-                membership.enabled = enabled
+                selection = category_selection_state(group_data, membership)
+                membership.enabled = selection["enabled"]
+                membership.ignored = selection["ignored"]
                 memberships_to_update.append(membership)
             except ChannelGroupM3UAccount.DoesNotExist:
                 continue
@@ -754,7 +905,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         # Perform the bulk update
         if memberships_to_update:
             ChannelGroupM3UAccount.objects.bulk_update(
-                memberships_to_update, ["enabled"]
+                memberships_to_update, ["enabled", "ignored"]
             )
 
         # Write exp_date through to the default profile.
@@ -774,6 +925,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         return instance
 
     def create(self, validated_data):
+        start_setup = validated_data.pop("start_setup", False)
         # Pop exp_date — it's written to the default profile after creation
         exp_date = validated_data.pop("exp_date", None)
 
@@ -788,12 +940,15 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", True)
         hash_key = validated_data.pop("hash_key", None)
 
-        # Parse existing custom_properties or create new. Drop hash_key from
-        # the incoming blob so only the typed field can set the override.
+        # Only the typed hash-key field and the setup action may write their
+        # reserved properties.
         custom_props = validated_data.get("custom_properties") or {}
         if not isinstance(custom_props, dict):
             custom_props = ensure_custom_properties_dict(custom_props)
-        custom_props = {k: v for k, v in custom_props.items() if k != "hash_key"}
+        custom_props = {
+            k: v for k, v in custom_props.items()
+            if k not in {"hash_key", "setup_categories_reviewed"}
+        }
 
         # Set preferences (default to True for auto_enable_new_groups)
         custom_props["enable_vod"] = enable_vod
@@ -809,6 +964,12 @@ class M3UAccountSerializer(serializers.ModelSerializer):
 
         # Build instance manually so we can attach transient attr before save triggers signal
         instance = M3UAccount(**validated_data)
+        if start_setup:
+            instance.setup_step = (
+                M3UAccount.SetupStep.EPG
+                if instance.account_type == M3UAccount.Types.XC
+                else M3UAccount.SetupStep.CATEGORIES
+            )
         instance._cron_expression = cron_expr
         instance._vod_cron_expression = vod_cron_expr
         instance.save()
@@ -825,8 +986,34 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     def get_filters(self, obj):
         # Sort over the prefetch cache; .order_by() would fire one SELECT
         # per account (viewset prefetches "filters").
-        filters = sorted(obj.filters.all(), key=lambda f: f.order)
+        filters = sorted(obj.filters.all(), key=lambda f: (f.order, f.id))
         return M3UFilterSerializer(filters, many=True).data
+
+    def get_group_rule_counts(self, obj) -> dict[str, int]:
+        counts = {scope: 0 for scope in ("live", "movie", "series")}
+        for rule in obj.group_rules.all():
+            if rule.enabled and rule.action in ("enable", "disable", "ignore"):
+                counts[rule.scope] += 1
+        return counts
+
+    @extend_schema_field(M3UCategorySelectionCountsSerializer)
+    def get_category_selection_counts(self, obj):
+        counts = self.context.get("vod_category_selection_counts")
+        return obj.get_category_selection_counts(
+            vod_counts=counts.get(obj.pk, {}) if counts is not None else None
+        )
+
+    @extend_schema_field(serializers.BooleanField)
+    def get_setup_categories_reviewed(self, obj):
+        return bool((obj.custom_properties or {}).get("setup_categories_reviewed"))
+
+    @extend_schema_field(M3URefreshScheduleSerializer)
+    def get_live_refresh_schedule(self, obj):
+        return M3URefreshScheduleSerializer(obj.get_refresh_schedule()).data
+
+    @extend_schema_field(M3URefreshScheduleSerializer)
+    def get_vod_refresh_schedule(self, obj):
+        return M3URefreshScheduleSerializer(obj.get_refresh_schedule(vod=True)).data
 
     def get_earliest_expiration(self, obj):
         """Return the soonest exp_date across all active profiles for this account."""

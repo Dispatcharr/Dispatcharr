@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import usePlaylistsStore from '../../store/playlists';
 import M3UForm from '../forms/M3U';
+import M3USetup from '../forms/M3USetup.jsx';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
-import { TableHelper } from '../../helpers';
 import {
-  useMantineTheme,
   Paper,
   Button,
   Flex,
@@ -18,17 +17,23 @@ import {
   MenuDropdown,
   MenuItem,
   MenuTarget,
+  Badge,
+  Group,
+  ScrollArea,
+  SimpleGrid,
+  Stack,
 } from '@mantine/core';
 import {
-  SquareMinus,
+  Trash2,
   SquarePen,
-  RefreshCcw,
+  RefreshCw,
   Film,
   RotateCcw,
   SquarePlus,
   Filter,
   Square,
   SquareCheck,
+  ArrowRight,
 } from 'lucide-react';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import {
@@ -39,24 +44,22 @@ import {
 } from '../../utils/dateTimeUtils.js';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
-import { CustomTable, useTable } from './CustomTable';
 import {
   deletePlaylist,
   getExpirationInfo,
   getExpirationTooltip,
   getPlaylistAutoCreatedChannelsCount,
-  getSortedPlaylists,
   getStatusColor,
-  getStatusContent,
   formatStatusText,
   refreshLivePlaylist,
   refreshVODContent,
   updatePlaylist,
 } from '../../utils/tables/M3UsTableUtils.js';
-import {
-  makeHeaderCellRenderer,
-  makeSortingChangeHandler,
-} from './tableSortingUtils.jsx';
+import tableClasses from './M3UsTable.module.css';
+import { SensitiveValue } from '../SensitiveFields.jsx';
+import SourceStatus from '../SourceStatus.jsx';
+import { isTrialProfile } from '../../utils/forms/M3uProfilesUtils.js';
+import { getM3UStreamLabel } from '../../utils/forms/M3uSetupUtils.js';
 
 const ALL_ACCOUNT_TYPES = ['STD', 'XC'];
 
@@ -75,7 +78,7 @@ const formatRefreshDuration = (seconds) => {
 };
 
 const refreshKinds = (account) => {
-  const kinds = [['live', 'Live TV']];
+  const kinds = [['live', getM3UStreamLabel(account.account_type)]];
   if (
     account.account_type === 'XC' &&
     (account.enable_vod !== false ||
@@ -86,80 +89,120 @@ const refreshKinds = (account) => {
   return kinds;
 };
 
-const StatusRow = ({ label, value }) => (
-  <Flex justify="space-between" align="center">
-    <Text size="xs" fw={500}>
-      {label}
-      {value ? ':' : ''}
-    </Text>
-    {value && <Text size="xs">{value}</Text>}
-  </Flex>
-);
-
-const StatusBox = ({ children }) => (
-  <Box>
-    <Flex direction="column" gap={2}>
-      {children}
-    </Flex>
-  </Box>
-);
+const AccountStatus = ({ account, progress }) => {
+  const refreshError =
+    account.is_active && progress?.status === 'error' ? progress.error : null;
+  const status = refreshError ? 'error' : account.status;
+  const autoSync = account.custom_properties?.live_auto_sync_result;
+  const warning =
+    autoSync?.status === 'error'
+      ? `Auto-sync failed: ${autoSync.error || 'Unknown error'}`
+      : autoSync?.channels_failed > 0
+        ? `Auto-sync: ${autoSync.channels_failed} channel(s) failed`
+        : account.last_message?.match(
+            /Auto-sync error: .+|Auto-sync: .*\b\d+ failed\./
+          )?.[0];
+  return (
+    <SourceStatus
+      label={formatStatusText(status)}
+      color={getStatusColor(status)}
+      messages={[
+        refreshError ||
+          (['error', 'pending_setup'].includes(status)
+            ? account.last_message
+            : null),
+        warning,
+      ]}
+      messageColor={status === 'error' ? 'red' : 'yellow'}
+    />
+  );
+};
 
 const RowActions = ({
-  tableSize,
   editPlaylist,
   handleDeletePlaylist,
   row,
   handleRefreshPlaylist,
   handleRefreshVOD,
 }) => {
-  const iconSize =
-    tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
-
   return (
-    <>
-      <ActionIcon
-        variant="transparent"
-        size={iconSize}
-        color="yellow.5"
-        onClick={() => {
-          editPlaylist(row.original);
-        }}
-      >
-        <SquarePen size={tableSize === 'compact' ? 16 : 18} />
-      </ActionIcon>
-      <ActionIcon
-        variant="transparent"
-        size={iconSize}
-        color="red.9"
-        onClick={() => handleDeletePlaylist(row.original.id)}
-      >
-        <SquareMinus size={tableSize === 'compact' ? 16 : 18} />
-      </ActionIcon>
-      <Tooltip label="Refresh Live TV">
-        <ActionIcon
-          variant="transparent"
-          size={iconSize}
-          color="blue.5"
-          onClick={() => handleRefreshPlaylist(row.original.id)}
-          disabled={!row.original.is_active}
-        >
-          <RefreshCcw size={tableSize === 'compact' ? 16 : 18} />
-        </ActionIcon>
-      </Tooltip>
-      {row.original.account_type === 'XC' && (
-        <Tooltip label="Refresh VOD">
-          <ActionIcon
-            variant="transparent"
-            size={iconSize}
-            color="blue.5"
-            onClick={() => handleRefreshVOD(row.original.id)}
-            disabled={!row.original.is_active || !row.original.enable_vod}
+    <Paper
+      className={tableClasses.controls}
+      withBorder
+      px={6}
+      py={4}
+      radius="md"
+      role="group"
+      aria-label={`Actions for ${row.original.name}`}
+    >
+      <Flex gap={4} align="center" wrap="nowrap">
+        {row.original.setup_step ? (
+          <Button
+            size="compact-sm"
+            leftSection={<ArrowRight size={16} />}
+            aria-label={`Continue setup for ${row.original.name}`}
+            onClick={() => editPlaylist(row.original)}
           >
-            <Film size={tableSize === 'compact' ? 16 : 18} />
+            Continue setup
+          </Button>
+        ) : (
+          <>
+            <Tooltip
+              label={`Refresh ${getM3UStreamLabel(row.original.account_type)}`}
+            >
+              <ActionIcon
+                aria-label={`Refresh ${getM3UStreamLabel(row.original.account_type)} for ${row.original.name}`}
+                variant="subtle"
+                size="md"
+                color="blue.5"
+                onClick={() => handleRefreshPlaylist(row.original.id)}
+                disabled={!row.original.is_active}
+              >
+                <RefreshCw size={17} />
+              </ActionIcon>
+            </Tooltip>
+            {row.original.account_type === 'XC' && (
+              <Tooltip label="Refresh VOD">
+                <ActionIcon
+                  aria-label={`Refresh VOD for ${row.original.name}`}
+                  variant="subtle"
+                  size="md"
+                  color="blue.5"
+                  onClick={() => handleRefreshVOD(row.original.id)}
+                  disabled={!row.original.is_active || !row.original.enable_vod}
+                >
+                  <Film size={17} />
+                </ActionIcon>
+              </Tooltip>
+            )}
+            <Tooltip label="Edit account">
+              <ActionIcon
+                aria-label={`Edit ${row.original.name}`}
+                variant="subtle"
+                size="md"
+                color="yellow"
+                onClick={() => {
+                  editPlaylist(row.original);
+                }}
+              >
+                <SquarePen size={17} />
+              </ActionIcon>
+            </Tooltip>
+          </>
+        )}
+        <Tooltip label="Delete account">
+          <ActionIcon
+            aria-label={`Delete ${row.original.name}`}
+            variant="subtle"
+            size="md"
+            color="red"
+            onClick={() => handleDeletePlaylist(row.original.id)}
+          >
+            <Trash2 size={17} />
           </ActionIcon>
         </Tooltip>
-      )}
-    </>
+      </Flex>
+    </Paper>
   );
 };
 
@@ -167,6 +210,7 @@ const M3UTable = () => {
   const [playlist, setPlaylist] = useState(null);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
   const [playlistCreated, setPlaylistCreated] = useState(false);
+  const [setupAccount, setSetupAccount] = useState(null);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [playlistToDelete, setPlaylistToDelete] = useState(null);
@@ -176,8 +220,6 @@ const M3UTable = () => {
     count: 0,
     sample_names: [],
   });
-  const [data, setData] = useState([]);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
   const [deleting, setDeleting] = useState(false);
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
 
@@ -204,8 +246,6 @@ const M3UTable = () => {
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
-  const theme = useMantineTheme();
-  const [tableSize] = useBrowserStorage('table-size', 'default');
   const [typeFilter, setTypeFilter] = useBrowserStorage(
     'm3u-table-type-filter',
     ALL_ACCOUNT_TYPES,
@@ -213,75 +253,11 @@ const M3UTable = () => {
   );
   const { fullDateFormat, fullDateTimeFormat } = useDateTimeFormat();
 
-  const generateStatusString = (data) => {
-    if (data.progress == 100) {
-      return 'Idle';
-    }
-
-    const content = getStatusContent(data);
-
-    switch (content.type) {
-      case 'initializing':
-        return (
-          <StatusBox>
-            <StatusRow label="Initializing refresh..." />
-          </StatusBox>
-        );
-      case 'downloading':
-        return (
-          <StatusBox>
-            <StatusRow label="Downloading" value={`${content.progress}%`} />
-            <StatusRow label="Speed" value={content.speed} />
-            <StatusRow label="Time left" value={content.timeRemaining} />
-          </StatusBox>
-        );
-      case 'groups':
-        return (
-          <StatusBox>
-            <StatusRow
-              label="Processing groups"
-              value={`${content.progress}%`}
-            />
-            {content.elapsedTime && (
-              <StatusRow label="Elapsed" value={content.elapsedTime} />
-            )}
-            {content.groupsProcessed && (
-              <StatusRow label="Groups" value={content.groupsProcessed} />
-            )}
-          </StatusBox>
-        );
-      case 'parsing':
-        return (
-          <StatusBox>
-            <StatusRow label="Parsing" value={`${content.progress}%`} />
-            {content.elapsedTime && (
-              <StatusRow label="Elapsed" value={content.elapsedTime} />
-            )}
-            {content.timeRemaining && (
-              <StatusRow label="Remaining" value={content.timeRemaining} />
-            )}
-            {content.streamsProcessed && (
-              <StatusRow label="Streams" value={content.streamsProcessed} />
-            )}
-          </StatusBox>
-        );
-      case 'error':
-        return (
-          <StatusBox>
-            <Text size="xs" fw={500} color="red">
-              Error:
-            </Text>
-            <Text size="xs" color="red" style={{ lineHeight: 1.3 }}>
-              {content.error || 'Unknown error occurred'}
-            </Text>
-          </StatusBox>
-        );
-      default:
-        return content.label;
-    }
-  };
-
   const editPlaylist = async (playlist = null) => {
+    if (playlist?.setup_step) {
+      setSetupAccount(playlist);
+      return;
+    }
     setPlaylist(playlist);
     setPlaylistModalOpen(true);
   };
@@ -323,7 +299,7 @@ const M3UTable = () => {
       await refreshVODContent(id);
     } catch {
       setRefreshProgress(id, {
-        action: 'error',
+        action: 'vod_refresh',
         progress: 0,
         account: id,
         type: 'm3u_refresh',
@@ -372,7 +348,6 @@ const M3UTable = () => {
   };
 
   const executeDeletePlaylist = async (id) => {
-    setIsLoading(true);
     setDeleting(true);
     try {
       await deletePlaylist(id);
@@ -380,13 +355,12 @@ const M3UTable = () => {
       console.error('Error deleting playlist:', error);
     } finally {
       setDeleting(false);
-      setIsLoading(false);
       setConfirmDeleteOpen(false);
       setAutoChannelsInfo({ count: 0, sample_names: [] });
     }
   };
 
-  const toggleActive = async (playlist) => {
+  const toggleActive = useCallback(async (playlist) => {
     try {
       // Send only the is_active field to trigger our special handling
       await updatePlaylist(
@@ -399,16 +373,14 @@ const M3UTable = () => {
     } catch (error) {
       console.error('Error toggling active state:', error);
     }
-  };
+  }, []);
 
-  const columns = useMemo(
+  const details = useMemo(
     () => [
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 300,
-        sortable: true,
-        cell: ({ cell, row }) => {
+        cell: ({ row }) => {
           const custom = row.original.custom_properties || {};
           const live = custom.live_catalog_counts;
           const vod = custom.vod_catalog_counts || {};
@@ -419,19 +391,13 @@ const M3UTable = () => {
                   ['Movies', vod.movies],
                   ['Series', vod.series],
                 ]
-              : [['Live TV', live]];
+              : [[getM3UStreamLabel(row.original.account_type), live]];
           return (
             <Box>
-              <Text size="sm">{cell.getValue()}</Text>
               <Tooltip label="Provider entries / imported entries from the last successful refresh">
                 <Box style={{ cursor: 'help' }}>
                   {summaries.map(([label, counts]) => (
-                    <Text
-                      key={label}
-                      size="xs"
-                      c="dimmed"
-                      style={{ whiteSpace: 'nowrap' }}
-                    >
+                    <Text key={label} size="xs" c="dimmed">
                       {label}:{' '}
                       {counts
                         ? `${counts.provider_total} / ${counts.selected_total}`
@@ -445,218 +411,92 @@ const M3UTable = () => {
         },
       },
       {
-        header: 'Type',
-        accessorKey: 'account_type',
-        sortable: true,
-        size: 100,
-        cell: ({ cell }) => {
-          const value = cell.getValue();
-          return value === 'XC' ? 'XC' : 'M3U';
-        },
-      },
-      {
         header: 'URL / File',
         accessorKey: 'server_url',
-        size: 250,
         cell: ({ cell, row }) => {
           const value = cell.getValue() || row.original.file_path || '';
           return (
-            <Tooltip label={value} disabled={!value}>
-              <div
-                style={{
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  maxWidth: '100%',
-                }}
-              >
-                {value}
-              </div>
-            </Tooltip>
+            <SensitiveValue
+              withTooltip
+              sensitive={!!row.original.server_url}
+              size="sm"
+              c="dimmed"
+              mt={4}
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                maxWidth: '100%',
+              }}
+            >
+              {value}
+            </SensitiveValue>
           );
         },
       },
       {
-        header: 'Status',
-        accessorKey: 'status',
-        size: 100,
-        cell: ({ cell }) => {
-          const value = cell.getValue();
-          if (!value) return null;
-
-          // Match EPG table styling with Text component - always use xs size
-          return (
-            <Text size="xs" c={getStatusColor(value)}>
-              {formatStatusText(value)}
-            </Text>
-          );
-        },
-      },
-      {
-        header: 'Refresh details',
+        header: 'Last refresh',
         accessorKey: 'last_message',
-        grow: true,
-        minSize: 350,
-        cell: ({ cell, row }) => {
-          const value = cell
-            .getValue()
-            ?.replace(
-              /^Processing completed in [\d.]+ seconds\.\s*/,
-              'Live TV refresh completed. '
-            );
+        cell: ({ row }) => {
           const data = row.original;
           const timings = data.custom_properties?.refresh_timings || {};
-          const autoSync = data.custom_properties?.live_auto_sync_result;
-          const autoSyncWarning = autoSync
-            ? autoSync.status === 'error'
-              ? `Auto-sync failed: ${autoSync.error || 'Unknown error'}`
-              : autoSync.channels_failed > 0
-                ? `Auto-sync: ${autoSync.channels_failed} channel(s) failed`
-                : null
-            : value?.match(
-                /Auto-sync error: .+|Auto-sync: .*\b\d+ failed\./
-              )?.[0];
-          const hasRefreshSummary =
-            Object.keys(timings).length > 0 || data.enable_vod;
-          const durationLine =
-            hasRefreshSummary || autoSyncWarning ? (
-              <Box>
-                {hasRefreshSummary && (
-                  <Tooltip label="Duration of the last successful Live TV and VOD refresh; — means no duration has been recorded yet">
-                    <Box>
-                      {refreshKinds(data).map(([kind, label]) => (
-                        <Text
-                          key={kind}
-                          size="xs"
-                          c="dimmed"
-                          style={{ whiteSpace: 'nowrap' }}
-                        >
-                          {label}:{' '}
-                          {formatRefreshDuration(timings[`${kind}_seconds`])}
-                        </Text>
-                      ))}
-                    </Box>
-                  </Tooltip>
-                )}
-                {autoSyncWarning && (
-                  <Tooltip label={autoSyncWarning} multiline width={300}>
-                    <Text size="xs" c="yellow" lineClamp={2}>
-                      {autoSyncWarning}
-                    </Text>
-                  </Tooltip>
-                )}
-              </Box>
-            ) : null;
-
-          // Get account id to check for refresh progress
-          const accountId = data.id;
-          const progressData = refreshProgress[accountId];
-
-          // If we have active progress data for this account, show that instead
-          if (progressData && progressData.progress < 100) {
-            return (
-              <Box
-                style={{
-                  // Use full height of the cell with proper spacing
-                  height: '100%',
-                  width: '100%',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'flex-start',
-                  // Add some padding to give content room to breathe
-                  padding: '4px 0',
-                }}
-              >
-                {generateStatusString(progressData)}
-                {durationLine}
-              </Box>
-            );
-          }
-
-          // No progress data, display normal status message
-          if (!value) return durationLine;
-
-          // Show error message with red styling for errors
-          if (data.status === 'error') {
-            return (
-              <Box>
-                <Tooltip label={value} multiline width={300}>
-                  <Text
-                    c="dimmed"
-                    size="xs"
-                    lineClamp={2}
-                    style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
-                  >
-                    {value}
-                  </Text>
-                </Tooltip>
-                {durationLine}
-              </Box>
-            );
-          }
-
-          if (data.status === 'success') {
-            if (durationLine) return durationLine;
-            return (
-              <Box>
-                <Tooltip label={value} multiline width={300}>
-                  <Text
-                    c="dimmed"
-                    size="xs"
-                    style={{
-                      color: theme.colors.green[6],
-                      lineHeight: 1.3,
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {value}
-                  </Text>
-                </Tooltip>
-                {durationLine}
-              </Box>
-            );
-          }
-
-          // For all other status values, just use dimmed text
           return (
-            <Box>
-              <Tooltip label={value} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ lineHeight: 1.1 }}
-                >
-                  {value}
-                </Text>
-              </Tooltip>
-              {durationLine}
-            </Box>
+            <Stack gap={4}>
+              {refreshKinds(data).map(([kind, label]) => {
+                const latest = refreshProgress[data.id];
+                const progress =
+                  latest &&
+                  (latest.action === 'vod_refresh' ? 'vod' : 'live') === kind
+                    ? latest
+                    : null;
+                const running =
+                  progress &&
+                  !(
+                    progress.progress === 100 &&
+                    ['parsing', 'processing_groups', 'vod_refresh'].includes(
+                      progress.action
+                    )
+                  ) &&
+                  progress.status !== 'error';
+                const completedAt =
+                  timings[`${kind}_completed_at`] ||
+                  (kind === 'live' ? data.updated_at : null);
+                return (
+                  <Text key={kind} size="xs" c={running ? 'blue' : 'dimmed'}>
+                    {running ? (
+                      `Refreshing ${label}…`
+                    ) : (
+                      <>
+                        {label}:{' '}
+                        {completedAt
+                          ? format(completedAt, fullDateTimeFormat)
+                          : 'Never'}
+                        {timings[`${kind}_seconds`] != null &&
+                          ` · ${formatRefreshDuration(timings[`${kind}_seconds`])}`}
+                      </>
+                    )}
+                  </Text>
+                );
+              })}
+            </Stack>
           );
         },
       },
       {
         header: 'Max Streams',
         id: 'max_streams',
-        accessorFn: (row) => {
-          const activeProfiles = (row.profiles || []).filter(
-            (p) => p.is_active
-          );
-          if (activeProfiles.length === 0) return row.max_streams;
-          if (activeProfiles.some((p) => p.max_streams === 0)) return Infinity;
-          return activeProfiles.reduce((sum, p) => sum + p.max_streams, 0);
-        },
-        sortable: true,
-        size: 125,
         cell: ({ row }) => {
           const profiles = row.original.profiles || [];
           const activeProfiles = profiles.filter((p) => p.is_active);
 
           if (activeProfiles.length <= 1) {
-            const val = row.original.max_streams;
-            return <Text size="xs">{val === 0 ? '∞' : val}</Text>;
+            const val =
+              activeProfiles[0]?.max_streams ?? row.original.max_streams;
+            return (
+              <Badge variant="light" color="gray" radius="xl">
+                {val === 0 ? '∞' : val}
+              </Badge>
+            );
           }
 
           const hasUnlimited = activeProfiles.some((p) => p.max_streams === 0);
@@ -678,15 +518,9 @@ const M3UTable = () => {
               width={220}
               style={{ whiteSpace: 'pre-line' }}
             >
-              <Text
-                size="xs"
-                style={{
-                  cursor: 'default',
-                  textDecoration: 'underline dotted',
-                }}
-              >
+              <Badge variant="light" color="gray" radius="xl">
                 {hasUnlimited ? '∞' : total}
-              </Text>
+              </Badge>
             </Tooltip>
           );
         },
@@ -694,22 +528,31 @@ const M3UTable = () => {
       {
         header: 'Expiration',
         accessorKey: 'earliest_expiration',
-        sortable: true,
-        size: 110,
         cell: ({ cell, row }) => {
           const data = row.original;
 
           const earliest = cell.getValue();
-          if (!earliest) {
-            return null;
-          }
+          if (!earliest)
+            return (
+              <Badge variant="light" color="gray" radius="xl">
+                —
+              </Badge>
+            );
 
           const now = getNow();
           const daysLeft = diff(earliest, now, 'day');
-          const { color, label } = getExpirationInfo(daysLeft, earliest, fullDateFormat);
+          const { color, label } = getExpirationInfo(
+            daysLeft,
+            earliest,
+            fullDateFormat
+          );
 
           const allExpirations = data.all_expirations || [];
-          const tooltipContent = getExpirationTooltip(allExpirations, fullDateTimeFormat, label);
+          const tooltipContent = getExpirationTooltip(
+            allExpirations,
+            fullDateTimeFormat,
+            label
+          );
 
           return (
             <Tooltip
@@ -718,81 +561,53 @@ const M3UTable = () => {
               width={300}
               style={{ whiteSpace: 'pre-line' }}
             >
-              <Text size="xs" c={color} fw={daysLeft <= 7 ? 600 : 400}>
+              <Badge variant="light" color={color || 'gray'} radius="xl">
                 {label}
-              </Text>
+              </Badge>
             </Tooltip>
           );
         },
       },
       {
-        header: 'Last refresh',
-        accessorKey: 'updated_at',
-        size: 230,
-        cell: ({ cell, row }) => {
-          const data = row.original;
-          const timings = data.custom_properties?.refresh_timings || {};
-          return (
-            <Box>
-              {refreshKinds(data).map(([kind, label]) => {
-                const completedAt =
-                  timings[`${kind}_completed_at`] ||
-                  (kind === 'live' ? cell.getValue() : null);
-                return (
-                  <Text key={kind} size="xs" style={{ whiteSpace: 'nowrap' }}>
-                    {label}:{' '}
-                    {completedAt
-                      ? format(completedAt, fullDateTimeFormat)
-                      : 'Never'}
-                  </Text>
-                );
-              })}
-            </Box>
-          );
-        },
-      },
-      {
-        header: 'Active',
+        header: 'Enabled',
         accessorKey: 'is_active',
-        size: 50,
         cell: ({ cell, row }) => {
           return (
-            <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-              <Switch
-                size="xs"
-                checked={cell.getValue()}
-                onChange={() => toggleActive(row.original)}
-              />
-            </Box>
+            <Tooltip
+              label="Enable or disable this M3U account"
+              withArrow
+              events={{ hover: true, focus: true, touch: true }}
+            >
+              <Paper
+                className={tableClasses.controls}
+                withBorder
+                px={6}
+                py={4}
+                radius="md"
+                role="group"
+                aria-label={`Enabled state for ${row.original.name}`}
+              >
+                <Switch
+                  size="sm"
+                  aria-label={`Enable ${row.original.name}`}
+                  checked={cell.getValue()}
+                  onChange={() => toggleActive(row.original)}
+                />
+              </Paper>
+            </Tooltip>
           );
         },
-      },
-      {
-        id: 'actions',
-        header: 'Actions',
-        size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [
-      handleRefreshPlaylist,
-      editPlaylist,
-      handleDeletePlaylist,
-      toggleActive,
-      fullDateFormat,
-      fullDateTimeFormat,
-      refreshProgress,
-    ]
+    [toggleActive, fullDateFormat, fullDateTimeFormat, refreshProgress]
   );
-
-  //optionally access the underlying virtualizer instance
-  const rowVirtualizerInstanceRef = useRef(null);
-
-  const [_isLoading, setIsLoading] = useState(true);
 
   const closeModal = (newPlaylist = null) => {
     if (newPlaylist) {
-      setPlaylistCreated(true);
-      setPlaylist(newPlaylist);
+      setPlaylistModalOpen(false);
+      setPlaylist(null);
+      setPlaylistCreated(false);
+      setSetupAccount(newPlaylist);
     } else {
       setPlaylistModalOpen(false);
       setPlaylist(null);
@@ -800,19 +615,8 @@ const M3UTable = () => {
     }
   };
 
-  useEffect(() => {
-    //scroll to the top of the table when the sorting changes
-    try {
-      rowVirtualizerInstanceRef.current?.scrollToIndex?.(0);
-    } catch (error) {
-      console.error(error);
-    }
-  }, [sorting]);
-
   // Listen for edit playlist requests from notifications
   useEffect(() => {
-    setData(processedData);
-
     if (editPlaylistId) {
       const playlistToEdit = playlists.find((p) => p.id === editPlaylistId);
       if (playlistToEdit) {
@@ -823,36 +627,12 @@ const M3UTable = () => {
     }
   }, [editPlaylistId, processedData, playlists, setEditPlaylistId]);
 
-  const onSortingChange = makeSortingChangeHandler(sorting, setSorting, (col, desc) =>
-    setData(getSortedPlaylists(playlists, col, desc))
-  );
-
-  const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
-
-  const renderBodyCell = ({ cell, row }) => {
-    switch (cell.column.id) {
-      case 'actions':
-        return (
-          <RowActions
-            tableSize={tableSize}
-            editPlaylist={editPlaylist}
-            handleDeletePlaylist={handleDeletePlaylist}
-            row={row}
-            handleRefreshPlaylist={handleRefreshPlaylist}
-            handleRefreshVOD={handleRefreshVOD}
-          />
-        );
-    }
-  };
-
-  // Mirrors the Type column's own STD-vs-XC display logic so the filter labels
-  // and the rendered values can't drift apart.
   const filteredData = useMemo(
     () =>
-      data.filter((p) =>
-        typeFilter.includes(p.account_type === 'XC' ? 'XC' : 'STD')
+      processedData.filter((account) =>
+        typeFilter.includes(account.account_type === 'XC' ? 'XC' : 'STD')
       ),
-    [data, typeFilter]
+    [processedData, typeFilter]
   );
 
   const isTypeFiltered = typeFilter.length !== ALL_ACCOUNT_TYPES.length;
@@ -865,60 +645,24 @@ const M3UTable = () => {
     );
   };
 
-  const table = useTable({
-    columns,
-    // Sort data before passing to table: active first, then by name
-    data: filteredData,
-    allRowIds: filteredData.map((playlist) => playlist.id),
-    enablePagination: false,
-    enableRowVirtualization: true,
-    enableRowSelection: false,
-    renderTopToolbar: false,
-    sorting,
-    manualSorting: true,
-    rowVirtualizerInstanceRef, //optional
-    rowVirtualizerOptions: { overscan: 5 }, //optionally customize the row virtualizer
-    bodyCellRenderFns: {
-      actions: renderBodyCell,
-    },
-    headerCellRenderFns: {
-      name: renderHeaderCell,
-      account_type: renderHeaderCell,
-      server_url: renderHeaderCell,
-      max_streams: renderHeaderCell,
-      status: renderHeaderCell,
-      last_message: renderHeaderCell,
-      updated_at: renderHeaderCell,
-      earliest_expiration: renderHeaderCell,
-      is_active: renderHeaderCell,
-      actions: renderHeaderCell,
-    },
-    mantineTableProps: {
-      ...TableHelper.defaultProperties.mantineTableProps,
-      className: `table-size-${tableSize}`,
-    },
-    // Add custom cell styles to match CustomTable's sizing
-    tableCellProps: () => {
-      return {
-        fontSize:
-          tableSize === 'compact'
-            ? 'var(--mantine-font-size-xs)'
-            : 'var(--mantine-font-size-sm)',
-        padding: tableSize === 'compact' ? '2px 8px' : '4px 10px',
-      };
-    },
-    // Additional text styling to match ChannelsTable
-    tableBodyProps: () => ({
-      fontSize:
-        tableSize === 'compact'
-          ? 'var(--mantine-font-size-xs)'
-          : 'var(--mantine-font-size-sm)',
-    }),
-  });
+  const renderDetail = (account, id) => {
+    const detail = details.find(
+      (column) => (column.id || column.accessorKey) === id
+    );
+    return detail.cell({
+      cell: { getValue: () => account[detail.accessorKey] },
+      row: { original: account },
+    });
+  };
 
   return (
     <Box
-      style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        height: '100%',
+      }}
     >
       <Flex
         style={{
@@ -929,6 +673,7 @@ const M3UTable = () => {
           flexShrink: 0,
         }}
         gap={15}
+        wrap="wrap"
       >
         <Text
           h={24}
@@ -948,6 +693,7 @@ const M3UTable = () => {
           <Menu shadow="md" width={200} closeOnItemClick={false}>
             <MenuTarget>
               <Button
+                aria-label="Filter account types"
                 size="xs"
                 variant={isTypeFiltered ? 'filled' : 'default'}
                 color={isTypeFiltered ? 'blue' : undefined}
@@ -1017,51 +763,130 @@ const M3UTable = () => {
         </Flex>
       </Flex>
 
-      <Paper
-        style={{
-          bgcolor: theme.palette.background.paper,
-          borderRadius: 2,
-        }}
-      >
-        {/* Top toolbar with Remove, Assign, Auto-match, and Add buttons */}
-        <Box
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            padding: 0,
-          }}
-        ></Box>
-      </Paper>
-
-      <Box
-        style={{
-          // Fill whatever space the page layout gives this table and scroll
-          // internally, instead of sizing to content and pushing the page taller.
-          flex: '1 1 auto',
-          minHeight: 0,
-          overflowX: 'auto',
-          overflowY: 'auto',
-          border: 'solid 1px rgb(68,68,68)',
-          borderRadius: 'var(--mantine-radius-default)',
-        }}
-      >
+      <ScrollArea style={{ flex: 1, minHeight: 0 }} type="auto">
         {filteredData.length === 0 ? (
           <Text size="xl" c="dimmed" ta="center" py="xl">
-            {data.length === 0
+            {processedData.length === 0
               ? 'No M3U accounts yet.'
               : 'No M3U accounts match this filter.'}
           </Text>
         ) : (
-          <CustomTable table={table} />
+          <Stack gap="md">
+            {filteredData.map((account) => (
+              <Paper
+                key={account.id}
+                component="article"
+                aria-label={`M3U account ${account.name}`}
+                className={tableClasses.card}
+                withBorder
+                p="md"
+                radius="md"
+                style={
+                  account.is_active
+                    ? undefined
+                    : { opacity: 0.65, filter: 'grayscale(0.75)' }
+                }
+              >
+                <Stack gap="sm">
+                  <Group justify="space-between" align="flex-start">
+                    <Box style={{ minWidth: 0, flex: '1 1 200px' }}>
+                      <Group gap="xs">
+                        <Tooltip
+                          label={account.name}
+                          multiline
+                          className={tableClasses.detailTooltip}
+                        >
+                          <Text
+                            fw={700}
+                            size="lg"
+                            truncate
+                            className={tableClasses.name}
+                          >
+                            {account.name}
+                          </Text>
+                        </Tooltip>
+                        <Badge variant="light">
+                          {account.account_type === 'XC' ? 'XC' : 'M3U'}
+                        </Badge>
+                        {account.account_type === 'XC' &&
+                          isTrialProfile(
+                            account.profiles?.find(
+                              (profile) => profile.is_default
+                            )
+                          ) && (
+                            <Badge variant="light" color="orange">
+                              Trial
+                            </Badge>
+                          )}
+                        <AccountStatus
+                          account={account}
+                          progress={refreshProgress[account.id]}
+                        />
+                      </Group>
+                      {renderDetail(account, 'server_url')}
+                    </Box>
+                    <Group gap="xs" align="stretch" wrap="nowrap">
+                      {renderDetail(account, 'is_active')}
+                      <RowActions
+                        editPlaylist={editPlaylist}
+                        handleDeletePlaylist={handleDeletePlaylist}
+                        row={{ original: account }}
+                        handleRefreshPlaylist={handleRefreshPlaylist}
+                        handleRefreshVOD={handleRefreshVOD}
+                      />
+                    </Group>
+                  </Group>
+                  <SimpleGrid cols={{ base: 1, xs: 2, lg: 4 }} spacing="md">
+                    <Box>
+                      <Text size="xs" fw={600} mb={4}>
+                        Provider / imported entries
+                      </Text>
+                      {renderDetail(account, 'name')}
+                    </Box>
+                    {['last_message', 'max_streams', 'earliest_expiration'].map(
+                      (id) => (
+                        <Box
+                          key={id}
+                          style={{
+                            minWidth: 0,
+                            textAlign:
+                              id === 'last_message' ? undefined : 'center',
+                          }}
+                        >
+                          <Text size="xs" fw={600} mb={4}>
+                            {
+                              details.find(
+                                (column) =>
+                                  (column.id || column.accessorKey) === id
+                              ).header
+                            }
+                          </Text>
+                          {renderDetail(account, id)}
+                        </Box>
+                      )
+                    )}
+                  </SimpleGrid>
+                </Stack>
+              </Paper>
+            ))}
+          </Stack>
         )}
-      </Box>
+      </ScrollArea>
 
       <M3UForm
         m3uAccount={playlist}
         isOpen={playlistModalOpen}
         onClose={closeModal}
+        onSaved={(account) => closeModal(account.setup_step ? account : null)}
         playlistCreated={playlistCreated}
       />
+      {setupAccount && (
+        <M3USetup
+          key={setupAccount.id}
+          account={setupAccount}
+          onClose={() => setSetupAccount(null)}
+        />
+      )}
 
       <ServerGroupsManagerModal
         isOpen={serverGroupsManagerOpen}
@@ -1093,7 +918,7 @@ This action cannot be undone.`}
                   style={{
                     background: 'rgba(234,179,8,0.08)',
                     border: '1px solid rgba(234,179,8,0.3)',
-                    borderRadius: 4,
+                    borderRadius: 'var(--mantine-radius-default)',
                     padding: 10,
                     marginTop: 6,
                   }}
@@ -1109,7 +934,7 @@ This action cannot be undone.`}
                   style={{
                     background: 'rgba(234,179,8,0.08)',
                     border: '1px solid rgba(234,179,8,0.3)',
-                    borderRadius: 4,
+                    borderRadius: 'var(--mantine-radius-default)',
                     padding: 10,
                     marginTop: 6,
                   }}

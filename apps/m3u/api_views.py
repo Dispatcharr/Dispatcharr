@@ -36,6 +36,10 @@ from .serializers import (
     M3UFilterSerializer,
     ServerGroupSerializer,
     M3UAccountProfileSerializer,
+    M3USetupActionSerializer,
+    M3UMatchingEPGResponseSerializer,
+    M3UConnectionCheckSerializer,
+    M3UConnectionCheckResultSerializer,
 )
 
 from .tasks import refresh_single_m3u_account, refresh_m3u_accounts, refresh_account_info
@@ -73,6 +77,80 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return None
+
+    @extend_schema(
+        request=M3UConnectionCheckSerializer,
+        responses={200: M3UConnectionCheckResultSerializer},
+        description=(
+            "Check unsaved M3U/Xtream connection details from the server without "
+            "saving an account, importing content or refreshing account metadata. "
+            "An account ID allows reuse of its password only for the unchanged "
+            "Xtream server URL. Internal network targets are not probed."
+        ),
+    )
+    @action(
+        detail=False, methods=["post"], url_path="check-connection",
+        permission_classes=[IsAdmin],
+    )
+    def check_connection(self, request):
+        from .connection_check import check_account_connection
+
+        serializer = M3UConnectionCheckSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = check_account_connection(serializer.validated_data)
+        return Response(M3UConnectionCheckResultSerializer(result).data)
+
+    @extend_schema(
+        request=M3USetupActionSerializer,
+        responses={200: M3UAccountSerializer},
+        description="Navigate or continue an unfinished guided M3U setup without creating another account.",
+    )
+    @action(
+        detail=True, methods=["post"], url_path="setup",
+        permission_classes=[IsAdmin],
+    )
+    def advance_setup(self, request, pk=None):
+        from .account_setup import advance_account_setup
+
+        account = self.get_object()
+        serializer = M3USetupActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        account = advance_account_setup(
+            account.id, serializer.validated_data["action"]
+        )
+        return Response(self.get_serializer(account).data)
+
+    @extend_schema(
+        methods=["GET"],
+        responses={200: M3UMatchingEPGResponseSerializer},
+        description="Find the matching XMLTV source and list other configured EPG sources without returning URLs or credentials.",
+    )
+    @extend_schema(
+        methods=["POST"], request=None,
+        responses={200: M3UMatchingEPGResponseSerializer},
+        description="Create a matching XMLTV source after setup, or reuse the existing one.",
+    )
+    @action(
+        detail=True, methods=["get", "post"], url_path="epg",
+        permission_classes=[IsAdmin],
+    )
+    def matching_epg(self, request, pk=None):
+        from .account_setup import (
+            can_create_account_epg, create_account_epg, get_matching_epg,
+            get_other_epg_sources,
+        )
+
+        account = self.get_object()
+        source = (
+            create_account_epg(account.id)
+            if request.method == "POST"
+            else get_matching_epg(account)
+        )
+        return Response(M3UMatchingEPGResponseSerializer({
+            "source": source,
+            "can_create": source is None and can_create_account_epg(account),
+            "other_sources": get_other_epg_sources(source),
+        }).data)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -156,6 +234,25 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             'type': 'playlist_created',
             'playlist_id': account_id
         })
+
+        if response.data.get("setup_step"):
+            from rest_framework.exceptions import APIException
+            from .account_setup import queue_setup_categories
+
+            # The account already exists. Discovery failure must not invite
+            # another Create request; its persisted setup can be retried.
+            M3UAccount.objects.filter(pk=account_id).update(
+                status=M3UAccount.Status.FETCHING,
+                last_message="Loading provider categories for setup.",
+            )
+            try:
+                queue_setup_categories(account_id)
+            except APIException:
+                pass
+            response.data = self.get_serializer(
+                self.get_queryset().get(pk=account_id)
+            ).data
+            return response
 
         if account_type == M3UAccount.Types.XC:
             refresh_m3u_groups(account_id)
@@ -252,13 +349,16 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 if "user_agent" in request.data and request.data["user_agent"] == "null":
                     request.data["user_agent"] = None
 
-                # Handle server_url appropriately
-                if "server_url" in request.data and not request.data["server_url"]:
-                    request.data.pop("server_url")
+                # Keep an explicit empty URL so a switch to file input clears
+                # the old remote source instead of continuing to fetch it.
 
                 request.data._mutable = False  # Make the request data immutable again
 
-                if instance.file_path and os.path.exists(instance.file_path):
+                if (
+                    instance.file_path
+                    and instance.file_path != file_path
+                    and os.path.exists(instance.file_path)
+                ):
                     os.remove(instance.file_path)
 
             # Now call super().update() to update the instance
@@ -289,6 +389,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
         if (
             instance.account_type == M3UAccount.Types.XC
+            and not instance.setup_step
             and not old_vod_enabled
             and new_vod_enabled
         ):
@@ -562,6 +663,14 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         """Trigger VOD content refresh for XtreamCodes accounts"""
         account = self.get_object()
 
+        if account.setup_step:
+            return Response(
+                {"detail": (
+                    "Continue setup and finish selecting categories before refreshing."
+                )},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         if account.account_type != M3UAccount.Types.XC:
             return Response(
                 {"error": "VOD refresh is only available for XtreamCodes accounts"},
@@ -833,6 +942,13 @@ class RefreshSingleM3UAPIView(APIView):
         ],
     )
     def post(self, request, account_id, format=None):
+        if M3UAccount.objects.filter(pk=account_id).exclude(setup_step="").exists():
+            return Response(
+                {"detail": (
+                    "Continue setup and finish selecting categories before refreshing."
+                )},
+                status=status.HTTP_409_CONFLICT,
+            )
         include_vod = request.query_params.get("include_vod")
         if include_vod is not None:
             normalized = str(include_vod).strip().lower()

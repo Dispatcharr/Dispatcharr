@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import useEPGsStore from '../../store/epgs';
 import EPGForm from '../forms/EPG';
 import DummyEPGForm from '../forms/DummyEPG';
 import {
   ActionIcon,
+  Badge,
+  Group,
+  ScrollArea,
   Box,
   Button,
   Flex,
@@ -18,16 +21,15 @@ import {
   Switch,
   Text,
   Tooltip,
-  useMantineTheme,
 } from '@mantine/core';
 import {
   ChevronDown,
   Filter,
-  RefreshCcw,
+  RefreshCw,
   RotateCcw,
   Square,
   SquareCheck,
-  SquareMinus,
+  Trash2,
   SquarePen,
   SquarePlus,
 } from 'lucide-react';
@@ -35,21 +37,18 @@ import { format, useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
-import { CustomTable, useTable } from './CustomTable';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
   deleteEpg,
   formatStatusText,
   getProgressInfo,
   getProgressLabel,
-  getSortedEpgs,
   refreshEpg,
   updateEpg,
 } from '../../utils/tables/EPGsTableUtils.js';
-import {
-  makeHeaderCellRenderer,
-  makeSortingChangeHandler,
-} from './tableSortingUtils.jsx';
+import cardClasses from './M3UsTable.module.css';
+import { SensitiveValue, ScreenshotText } from '../SensitiveFields.jsx';
+import SourceStatus from '../SourceStatus.jsx';
 
 // Helper function to get status text color
 const getStatusColor = (status) => {
@@ -69,42 +68,54 @@ const getStatusColor = (status) => {
   }
 };
 
-const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
-  const iconSize =
-    tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
-  const isDummyEPG = row.original.source_type === 'dummy';
-
+const RowActions = ({ row, editEPG, deleteEPG, refreshEPG }) => {
+  const epg = row.original;
   return (
-    <>
-      <ActionIcon
-        variant="transparent"
-        size={iconSize} // Use standardized icon size
-        color="yellow.5" // Red color for delete actions
-        onClick={() => editEPG(row.original)}
-      >
-        <SquarePen size={tableSize === 'compact' ? 16 : 18} />{' '}
-        {/* Small icon size */}
-      </ActionIcon>
-      <ActionIcon
-        variant="transparent"
-        size={iconSize} // Use standardized icon size
-        color="red.9" // Red color for delete actions
-        onClick={() => deleteEPG(row.original.id)}
-      >
-        <SquareMinus size={tableSize === 'compact' ? 16 : 18} />{' '}
-        {/* Small icon size */}
-      </ActionIcon>
-      <ActionIcon
-        variant="transparent"
-        size={iconSize} // Use standardized icon size
-        color="blue.5" // Red color for delete actions
-        onClick={() => refreshEPG(row.original.id)}
-        disabled={!row.original.is_active || isDummyEPG}
-      >
-        <RefreshCcw size={tableSize === 'compact' ? 16 : 18} />{' '}
-        {/* Small icon size */}
-      </ActionIcon>
-    </>
+    <Paper
+      className={cardClasses.controls}
+      withBorder
+      px={6}
+      py={4}
+      radius="md"
+      role="group"
+      aria-label={`Actions for ${epg.name}`}
+    >
+      <Group gap={4} wrap="nowrap">
+        <Tooltip label="Refresh EPG">
+          <ActionIcon
+            variant="subtle"
+            size="md"
+            aria-label={`Refresh ${epg.name}`}
+            onClick={() => refreshEPG(epg.id)}
+            disabled={!epg.is_active || epg.source_type === 'dummy'}
+          >
+            <RefreshCw size={17} />
+          </ActionIcon>
+        </Tooltip>
+        <Tooltip label="Edit EPG">
+          <ActionIcon
+            variant="subtle"
+            size="md"
+            aria-label={`Edit ${epg.name}`}
+            color="yellow"
+            onClick={() => editEPG(epg)}
+          >
+            <SquarePen size={17} />
+          </ActionIcon>
+        </Tooltip>
+        <Tooltip label="Delete EPG">
+          <ActionIcon
+            variant="subtle"
+            size="md"
+            color="red"
+            aria-label={`Delete ${epg.name}`}
+            onClick={() => deleteEPG(epg.id)}
+          >
+            <Trash2 size={17} />
+          </ActionIcon>
+        </Tooltip>
+      </Group>
+    </Paper>
   );
 };
 
@@ -113,7 +124,6 @@ const EPGStatusCell = ({ epg }) => {
   // This component re-renders whenever its source's progress changes,
   // independent of the parent table's render cycle.
   const progress = useEPGsStore((s) => s.refreshProgress[epg.id]);
-  const theme = useMantineTheme();
 
   const isDummyEPG = epg.source_type === 'dummy';
   if (isDummyEPG) return null;
@@ -121,6 +131,7 @@ const EPGStatusCell = ({ epg }) => {
   // Show progress bar if an active fetch is in progress
   if (
     progress &&
+    progress.status !== 'error' &&
     (progress.progress < 100 ||
       progress.status === 'in_progress' ||
       (progress.action === 'parsing_channels' && epg.status === 'parsing'))
@@ -131,7 +142,7 @@ const EPGStatusCell = ({ epg }) => {
     const additionalInfo = getProgressInfo(progress);
 
     return (
-      <Stack spacing={2}>
+      <Stack gap={2}>
         <Text size="xs">
           {label}: {parseInt(progress.progress)}%
         </Text>
@@ -146,60 +157,36 @@ const EPGStatusCell = ({ epg }) => {
           </Text>
         )}
         {additionalInfo && (
-          <Text size="xs" c="dimmed" lineClamp={1}>
-            {additionalInfo}
-          </Text>
+          <Tooltip
+            label={<ScreenshotText>{additionalInfo}</ScreenshotText>}
+            multiline
+            className={cardClasses.detailTooltip}
+          >
+            <Text size="xs" c="dimmed" truncate>
+              <ScreenshotText>{additionalInfo}</ScreenshotText>
+            </Text>
+          </Tooltip>
         )}
       </Stack>
     );
   }
 
-  // Show error message
-  if (epg.status === 'error' && epg.last_message) {
-    return (
-      <Tooltip label={epg.last_message} multiline width={300}>
-        <Text
-          c="dimmed"
-          size="xs"
-          lineClamp={2}
-          style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
-        >
-          {epg.last_message}
-        </Text>
-      </Tooltip>
-    );
-  }
-
-  // Show success message
-  if (epg.status === 'success') {
-    const successMessage =
-      epg.last_message || 'EPG data refreshed successfully';
-    return (
-      <Tooltip label={successMessage} multiline width={300}>
-        <Text
-          c="dimmed"
-          size="xs"
-          lineClamp={2}
-          style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
-        >
-          {successMessage}
-        </Text>
-      </Tooltip>
-    );
-  }
-
-  // Show idle message
-  if (epg.status === 'idle' && epg.last_message) {
-    return (
-      <Tooltip label={epg.last_message} multiline width={300}>
-        <Text c="dimmed" size="xs" lineClamp={2} style={{ lineHeight: 1.3 }}>
-          {epg.last_message}
-        </Text>
-      </Tooltip>
-    );
-  }
-
   return null;
+};
+
+const epgMessage = (epg) => {
+  if (epg.source_type === 'dummy') return null;
+  // Missing configuration is already described below the source name.
+  if (
+    epg.source_type === 'xmltv' &&
+    !epg.url &&
+    !epg.file_path &&
+    epg.last_message === 'No URL provided and no valid local file exists'
+  )
+    return null;
+  if (epg.status === 'success')
+    return epg.last_message || 'EPG data refreshed successfully';
+  return ['error', 'idle'].includes(epg.status) ? epg.last_message : null;
 };
 
 const ALL_SOURCE_TYPES = ['xmltv', 'schedules_direct', 'dummy'];
@@ -218,9 +205,7 @@ const EPGsTable = () => {
 
   const epgs = useEPGsStore((s) => s.epgs);
 
-  const theme = useMantineTheme();
   const { fullDateTimeFormat } = useDateTimeFormat();
-  const [tableSize] = useBrowserStorage('table-size', 'default');
   const [typeFilter, setTypeFilter] = useBrowserStorage(
     'epg-table-type-filter',
     ALL_SOURCE_TYPES,
@@ -229,7 +214,7 @@ const EPGsTable = () => {
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
-  const toggleActive = async (epg) => {
+  const toggleActive = useCallback(async (epg) => {
     try {
       // Validate that epg is a valid object with an id
       if (!epg || typeof epg !== 'object' || !epg.id) {
@@ -248,7 +233,7 @@ const EPGsTable = () => {
     } catch (error) {
       console.error('Error toggling active state:', error);
     }
-  };
+  }, []);
 
   const columns = useMemo(
     //column definitions...
@@ -279,35 +264,38 @@ const EPGsTable = () => {
         cell: ({ cell, row }) => {
           const sourceType = row.original.source_type;
           let value = '';
-          let tooltip = '';
 
           if (sourceType === 'schedules_direct') {
-            // Never expose credentials — show username only
+            // Passwords are never displayed; screenshot mode also masks the username.
             const username = row.original.username || '';
             value = username ? `User: ${username}` : '(credentials set)';
-            tooltip = value;
           } else {
             value =
               cell.getValue() ||
-              row.original.password ||
               row.original.file_path ||
-              '';
-            tooltip = value;
+              (sourceType === 'xmltv' ? 'No URL or local file configured' : '');
           }
 
           return (
-            <Tooltip label={tooltip} disabled={!tooltip}>
-              <div
-                style={{
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  maxWidth: '100%',
-                }}
-              >
-                {value}
-              </div>
-            </Tooltip>
+            <SensitiveValue
+              withTooltip
+              sensitive={
+                sourceType === 'schedules_direct'
+                  ? !!row.original.username
+                  : !!row.original.url
+              }
+              size="sm"
+              c="dimmed"
+              mt={4}
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                maxWidth: '100%',
+              }}
+            >
+              {value}
+            </SensitiveValue>
           );
         },
       },
@@ -345,10 +333,18 @@ const EPGsTable = () => {
         cell: ({ cell }) => {
           const value = cell.getValue();
           if (!value) {
-            return <Text size="xs">Never</Text>;
+            return (
+              <Text size="xs" c="dimmed">
+                Never
+              </Text>
+            );
           }
           const formatted = format(value, fullDateTimeFormat);
-          return <Text size="xs">{formatted}</Text>;
+          return (
+            <Text size="xs" c="dimmed">
+              {formatted}
+            </Text>
+          );
         },
       },
       {
@@ -362,27 +358,39 @@ const EPGsTable = () => {
         cell: ({ row, cell }) => {
           const isDummyEPG = row.original.source_type === 'dummy';
           return (
-            <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-              <Switch
-                size="xs"
-                checked={cell.getValue()}
-                onChange={() => toggleActive(row.original)}
-                disabled={isDummyEPG}
-              />
-            </Box>
+            <Tooltip
+              label={
+                isDummyEPG
+                  ? 'Dummy EPG sources are always enabled'
+                  : 'Enable or disable this EPG source'
+              }
+              withArrow
+              events={{ hover: true, focus: true, touch: true }}
+            >
+              <Paper
+                className={cardClasses.controls}
+                withBorder
+                px={6}
+                py={4}
+                radius="md"
+                role="group"
+                aria-label={`Enabled state for ${row.original.name}`}
+              >
+                <Switch
+                  size="sm"
+                  aria-label={`Enable ${row.original.name}`}
+                  checked={cell.getValue()}
+                  onChange={() => toggleActive(row.original)}
+                  disabled={isDummyEPG}
+                />
+              </Paper>
+            </Tooltip>
           );
         },
       },
-      {
-        id: 'actions',
-        header: 'Actions',
-        size: tableSize == 'compact' ? 75 : 100,
-      },
     ],
-    [fullDateTimeFormat]
+    [fullDateTimeFormat, toggleActive]
   );
-
-  const [sorting, setSorting] = useState([]);
 
   const editEPG = async (epg = null) => {
     const freshEpg = epg?.id ? epgs[epg.id] || epg : epg;
@@ -473,27 +481,6 @@ const EPGsTable = () => {
     );
   }, [epgs]);
 
-  const renderBodyCell = ({ cell, row }) => {
-    switch (cell.column.id) {
-      case 'actions':
-        return (
-          <RowActions
-            tableSize={tableSize}
-            row={row}
-            editEPG={editEPG}
-            deleteEPG={deleteEPG}
-            refreshEPG={handleRefreshEPG}
-          />
-        );
-    }
-  };
-
-  const onSortingChange = makeSortingChangeHandler(sorting, setSorting, (col, desc) =>
-    setData(getSortedEpgs(epgs, col, desc))
-  );
-
-  const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
-
   const filteredData = useMemo(
     () => data.filter((e) => typeFilter.includes(e.source_type)),
     [data, typeFilter]
@@ -509,43 +496,22 @@ const EPGsTable = () => {
     );
   };
 
-  const table = useTable({
-    columns,
-    data: filteredData,
-    allRowIds: filteredData.map((epg) => epg.id),
-    enablePagination: false,
-    enableRowSelection: false,
-    renderTopToolbar: false,
-    manualSorting: true,
-    bodyCellRenderFns: {
-      actions: renderBodyCell,
-    },
-    headerCellRenderFns: {
-      name: renderHeaderCell,
-      source_type: renderHeaderCell,
-      url: renderHeaderCell,
-      status: renderHeaderCell,
-      last_message: renderHeaderCell,
-      updated_at: renderHeaderCell,
-      is_active: renderHeaderCell,
-      actions: renderHeaderCell,
-    },
-    // Add custom cell styles to match CustomTable's sizing
-    tableCellProps: ({ cell }) => {
-      return {
-        // Apply taller height for progress cells (except initializing), otherwise use standard height
-        fontSize:
-          tableSize === 'compact'
-            ? 'var(--mantine-font-size-xs)'
-            : 'var(--mantine-font-size-sm)',
-        padding: tableSize === 'compact' ? '2px 8px' : '4px 10px',
-      };
-    },
-  });
+  const renderDetail = (epg, id) => {
+    const column = columns.find((column) => column.accessorKey === id);
+    return column.cell({
+      cell: { getValue: () => epg[id] },
+      row: { original: epg },
+    });
+  };
 
   return (
     <Box
-      style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        height: '100%',
+      }}
     >
       <Flex
         style={{
@@ -556,6 +522,7 @@ const EPGsTable = () => {
           flexShrink: 0,
         }}
         gap={15}
+        wrap="wrap"
       >
         <Text
           h={24}
@@ -569,12 +536,13 @@ const EPGsTable = () => {
             marginBottom: 0,
           }}
         >
-          EPGs
+          EPG Sources
         </Text>
         <Flex gap={6} align="center">
           <Menu shadow="md" width={200} closeOnItemClick={false}>
             <MenuTarget>
               <Button
+                aria-label="Filter EPG types"
                 size="xs"
                 variant={isTypeFiltered ? 'filled' : 'default'}
                 color={isTypeFiltered ? 'blue' : undefined}
@@ -656,34 +624,7 @@ const EPGsTable = () => {
         </Flex>
       </Flex>
 
-      <Paper
-        style={{
-          bgcolor: theme.palette.background.paper,
-          borderRadius: 2,
-        }}
-      >
-        {/* Top toolbar with Remove, Assign, Auto-match, and Add buttons */}
-        <Box
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            padding: 0,
-          }}
-        ></Box>
-      </Paper>
-
-      <Box
-        style={{
-          // Fill whatever space the page layout gives this table and scroll
-          // internally, instead of sizing to content and pushing the page taller.
-          flex: '1 1 auto',
-          minHeight: 0,
-          overflowX: 'auto',
-          overflowY: 'auto',
-          border: 'solid 1px rgb(68,68,68)',
-          borderRadius: 'var(--mantine-radius-default)',
-        }}
-      >
+      <ScrollArea style={{ flex: 1, minHeight: 0 }} type="auto">
         {filteredData.length === 0 ? (
           <Text size="xl" c="dimmed" ta="center" py="xl">
             {data.length === 0
@@ -691,9 +632,97 @@ const EPGsTable = () => {
               : 'No EPG sources match this filter.'}
           </Text>
         ) : (
-          <CustomTable table={table} />
+          <Stack gap="md">
+            {filteredData.map((source) => (
+              <Paper
+                key={source.id}
+                component="article"
+                aria-label={`EPG source ${source.name}`}
+                className={cardClasses.card}
+                withBorder
+                p="md"
+                radius="md"
+                style={
+                  source.is_active
+                    ? undefined
+                    : { opacity: 0.65, filter: 'grayscale(0.75)' }
+                }
+              >
+                <Stack gap="sm">
+                  <Group justify="space-between" align="flex-start">
+                    <Box style={{ minWidth: 0, flex: '1 1 200px' }}>
+                      <Group gap="xs">
+                        <Tooltip
+                          label={source.name}
+                          multiline
+                          className={cardClasses.detailTooltip}
+                        >
+                          <Text
+                            fw={700}
+                            size="lg"
+                            truncate
+                            className={cardClasses.name}
+                          >
+                            {source.name}
+                          </Text>
+                        </Tooltip>
+                        <Badge variant="light">
+                          {renderDetail(source, 'source_type')}
+                        </Badge>
+                        <SourceStatus
+                          label={formatStatusText(
+                            source.source_type === 'dummy'
+                              ? 'idle'
+                              : source.status
+                          )}
+                          color={getStatusColor(
+                            source.source_type === 'dummy'
+                              ? 'idle'
+                              : source.status
+                          )}
+                          messages={[epgMessage(source)]}
+                          messageColor={
+                            source.status === 'error' ? 'red' : undefined
+                          }
+                        />
+                      </Group>
+                      {renderDetail(source, 'url')}
+                    </Box>
+                    <Group gap="xs" align="stretch" wrap="nowrap">
+                      {renderDetail(source, 'is_active')}
+                      <RowActions
+                        row={{ original: source }}
+                        editEPG={editEPG}
+                        deleteEPG={deleteEPG}
+                        refreshEPG={handleRefreshEPG}
+                      />
+                    </Group>
+                  </Group>
+                  <Group gap="xl" align="flex-start">
+                    <Box>
+                      <Text size="xs" fw={600} mb={4}>
+                        EPG channels
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        {source.epg_data_count ?? '—'}
+                      </Text>
+                    </Box>
+                    <Box>
+                      <Text size="xs" fw={600} mb={4}>
+                        Last refresh
+                      </Text>
+                      <Stack gap={4}>
+                        {renderDetail(source, 'updated_at')}
+                        <EPGStatusCell epg={source} />
+                      </Stack>
+                    </Box>
+                  </Group>
+                </Stack>
+              </Paper>
+            ))}
+          </Stack>
         )}
-      </Box>
+      </ScrollArea>
 
       <EPGForm epg={epg} isOpen={epgModalOpen} onClose={closeEPGForm} />
       <DummyEPGForm
@@ -737,17 +766,26 @@ const EPGsTable = () => {
 
 Name: ${epgToDelete.name}
 Source Type: ${epgToDelete.source_type}
-${
-  epgToDelete.source_type === 'schedules_direct'
-    ? epgToDelete.username
-      ? `Username: ${epgToDelete.username}`
-      : '(credentials set)'
-    : epgToDelete.url
-      ? `URL: ${epgToDelete.url}`
-      : epgToDelete.file_path
-        ? `File Path: ${epgToDelete.file_path}`
-        : ''
-}
+`}
+              {epgToDelete.source_type === 'schedules_direct' ? (
+                epgToDelete.username ? (
+                  <>
+                    Username:{' '}
+                    <SensitiveValue component="span" inherit>
+                      {epgToDelete.username}
+                    </SensitiveValue>
+                  </>
+                ) : (
+                  '(credentials set)'
+                )
+              ) : epgToDelete.url ? (
+                `URL: ${epgToDelete.url}`
+              ) : epgToDelete.file_path ? (
+                `File Path: ${epgToDelete.file_path}`
+              ) : (
+                ''
+              )}
+              {`
 
 This will remove all related program information and channel associations.
 This action cannot be undone.`}

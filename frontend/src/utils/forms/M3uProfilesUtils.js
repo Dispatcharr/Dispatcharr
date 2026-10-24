@@ -1,12 +1,17 @@
 export const parseExpirationDate = (profile) => {
   const expDate = profile?.custom_properties?.user_info?.exp_date;
-  if (!expDate) return null;
-  try {
-    return new Date(parseInt(expDate) * 1000);
-  } catch {
-    return null;
-  }
+  const date = profile?.exp_date
+    ? new Date(profile.exp_date)
+    : expDate != null && expDate !== ''
+      ? new Date(Number(expDate) * 1000)
+      : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
 };
+
+export const isTrialProfile = (profile) =>
+  [true, 1, '1', 'true'].includes(
+    profile?.custom_properties?.user_info?.is_trial
+  );
 
 export const isAccountExpired = (profile) => {
   const expDate = parseExpirationDate(profile);

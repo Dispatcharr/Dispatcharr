@@ -1613,6 +1613,32 @@ export default class API {
     }
   }
 
+  static async advanceM3USetup(id, action) {
+    const response = await request(`${host}/api/m3u/accounts/${id}/setup/`, {
+      method: 'POST',
+      body: { action },
+    });
+    usePlaylistsStore.getState().updatePlaylist(response);
+    return response;
+  }
+
+  static async checkM3UConnection(values) {
+    return await request(`${host}/api/m3u/accounts/check-connection/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static async getM3UEPG(id) {
+    return await request(`${host}/api/m3u/accounts/${id}/epg/`);
+  }
+
+  static async createM3UEPG(id) {
+    return await request(`${host}/api/m3u/accounts/${id}/epg/`, {
+      method: 'POST',
+    });
+  }
+
   static async refreshPlaylist(id, includeVod) {
     try {
       const url = `${host}/api/m3u/refresh/${id}/`;
@@ -1721,18 +1747,11 @@ export default class API {
       // Original implementation for full updates
       let body = null;
       if (payload.file) {
-        delete payload.server_url;
-
         body = new FormData();
-        appendPlaylistFormData(body, values);
+        appendPlaylistFormData(body, payload);
       } else {
         delete payload.file;
-        if (!payload.server_url) {
-          delete payload.sever_url;
-        }
-
         body = { ...payload };
-        delete body.file;
       }
 
       const response = await request(`${host}/api/m3u/accounts/${id}/`, {
@@ -2095,13 +2114,17 @@ export default class API {
     const { id, ...payload } = values;
 
     try {
-      await request(`${host}/api/m3u/accounts/${accountId}/profiles/${id}/`, {
-        method: 'PUT',
-        body: payload,
-      });
+      const response = await request(
+        `${host}/api/m3u/accounts/${accountId}/profiles/${id}/`,
+        {
+          method: 'PUT',
+          body: payload,
+        }
+      );
 
       const playlist = await API.getPlaylist(accountId);
       usePlaylistsStore.getState().updatePlaylist(playlist);
+      return response;
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
     }

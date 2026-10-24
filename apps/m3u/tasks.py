@@ -724,8 +724,8 @@ def iter_m3u_entries(lines):
 
 @shared_task
 def refresh_m3u_accounts():
-    """Queue background parse for all active M3UAccounts."""
-    active_accounts = M3UAccount.objects.filter(is_active=True)
+    """Queue background parse for active accounts whose setup is complete."""
+    active_accounts = M3UAccount.objects.filter(is_active=True, setup_step="")
     count = 0
     for account in active_accounts:
         refresh_single_m3u_account.delay(account.id)
@@ -1762,6 +1762,20 @@ def cleanup_streams(account_id, scan_start_time=timezone.now):
 
     # Return the total count of deleted streams
     return total_deleted
+
+
+@shared_task
+def prepare_account_setup(account_id):
+    from .account_setup import discover_setup_categories
+
+    task_name = "prepare_m3u_account_setup"
+    if not acquire_task_lock(task_name, account_id):
+        return
+    try:
+        with TaskLockRenewer(task_name, account_id):
+            discover_setup_categories(account_id)
+    finally:
+        release_task_lock(task_name, account_id)
 
 
 @shared_task

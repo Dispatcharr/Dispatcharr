@@ -150,6 +150,12 @@ class VODAfterLiveDecisionTests(SimpleTestCase):
 
 
 class ManualLiveRefreshEndpointTests(SimpleTestCase):
+    def setUp(self):
+        pending_accounts = patch("apps.m3u.api_views.M3UAccount.objects")
+        accounts = pending_accounts.start()
+        self.addCleanup(pending_accounts.stop)
+        accounts.filter.return_value.exclude.return_value.exists.return_value = False
+
     @patch("apps.m3u.api_views.refresh_single_m3u_account.delay")
     def test_initial_combined_refresh_queues_vod_even_with_separate_schedule(self, delay):
         request = SimpleNamespace(query_params={"include_vod": "true"})
