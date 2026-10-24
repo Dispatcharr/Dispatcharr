@@ -856,7 +856,7 @@ class VODCategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
                 if vod_enabled:
                     # Ensure relations exist for this account
-                    auto_enable_new = custom_props.get("auto_enable_new_groups_vod", True)
+                    auto_enable_new = False
 
                     M3UVODCategoryRelation.objects.get_or_create(
                         category=movie_category,

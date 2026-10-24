@@ -40,6 +40,8 @@ from .serializers import (
 
 from .tasks import refresh_single_m3u_account, refresh_m3u_accounts, refresh_account_info
 from .utils import hash_key_fields
+from .rule_previews import StreamFilterPreviewMixin
+from .category_selection import category_selection_state
 from core.tasks import (
     rehash_streams,
     release_rehash_locks,
@@ -57,7 +59,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     queryset = M3UAccount.objects.select_related(
         "refresh_task__crontab", "refresh_task__interval",
         "vod_refresh_task__crontab", "vod_refresh_task__interval",
-    ).prefetch_related("channel_group", "profiles", "filters")
+    ).prefetch_related("channel_group", "profiles", "filters", "group_rules")
     serializer_class = M3UAccountSerializer
 
     def get_permissions(self):
@@ -92,18 +94,22 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             (row["m3u_account_id"], row["channel_group_id"]): row["c"]
             for row in counts_qs
         }
+        selection_counts = M3UAccount.get_vod_category_selection_counts(account_ids)
+        context = {
+            **self.get_serializer_context(),
+            "stream_counts": stream_counts,
+            "vod_category_selection_counts": selection_counts,
+        }
 
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(
-                page, many=True,
-                context={**self.get_serializer_context(), "stream_counts": stream_counts},
+                page, many=True, context=context,
             )
             return self.get_paginated_response(serializer.data)
 
         serializer = self.get_serializer(
-            queryset, many=True,
-            context={**self.get_serializer_context(), "stream_counts": stream_counts},
+            queryset, many=True, context=context,
         )
         return Response(serializer.data)
 
@@ -304,8 +310,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             )
 
             # Create relations for both categories (disabled by default until first refresh)
-            account_custom_props = instance.custom_properties or {}
-            auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+            auto_enable_new = False
 
             M3UVODCategoryRelation.objects.get_or_create(
                 category=movie_category,
@@ -622,6 +627,15 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                     )
 
             for setting in group_settings:
+                custom_properties = ensure_custom_properties_dict(
+                    setting.get("custom_properties")
+                )
+                cleanup_mode = custom_properties.get("orphan_channel_cleanup")
+                if cleanup_mode not in (None, "always", "preserve_customized", "never"):
+                    return Response(
+                        {"error": "Invalid auto-sync orphan cleanup mode."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
                 start = setting.get("auto_sync_channel_start")
                 end = setting.get("auto_sync_channel_end")
                 if (start is not None and start < 1) or (
@@ -649,11 +663,18 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                     )
 
             with transaction.atomic():
+                existing_groups = {
+                    row.channel_group_id: row
+                    for row in ChannelGroupM3UAccount.objects.select_for_update().filter(
+                        m3u_account=account,
+                        channel_group_id__in=[row.get("channel_group") for row in group_settings],
+                    )
+                }
                 group_objects = [
                     ChannelGroupM3UAccount(
                         channel_group_id=setting["channel_group"],
                         m3u_account=account,
-                        enabled=setting.get("enabled", True),
+                        **category_selection_state(setting, existing_groups.get(setting["channel_group"])),
                         auto_channel_sync=setting.get("auto_channel_sync", False),
                         auto_sync_channel_start=setting.get("auto_sync_channel_start"),
                         auto_sync_channel_end=setting.get("auto_sync_channel_end"),
@@ -674,6 +695,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         unique_fields=["channel_group", "m3u_account"],
                         update_fields=[
                             "enabled",
+                            "ignored",
                             "auto_channel_sync",
                             "auto_sync_channel_start",
                             "auto_sync_channel_end",
@@ -723,7 +745,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                     category_objects.append(M3UVODCategoryRelation(
                         category_id=setting["id"],
                         m3u_account=account,
-                        enabled=setting.get("enabled", True),
+                        **category_selection_state(setting, existing),
                         custom_properties={key: value for key, value in properties.items() if key not in metadata_keys},
                         metadata_defaults=defaults,
                     ))
@@ -733,7 +755,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         category_objects,
                         update_conflicts=True,
                         unique_fields=["m3u_account", "category"],
-                        update_fields=["enabled", "custom_properties", "metadata_defaults"],
+                        update_fields=["enabled", "ignored", "custom_properties", "metadata_defaults"],
                     )
 
             return Response({"message": "Group settings updated successfully"})
@@ -745,7 +767,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             )
 
 
-class M3UFilterViewSet(viewsets.ModelViewSet):
+class M3UFilterViewSet(StreamFilterPreviewMixin, viewsets.ModelViewSet):
     queryset = M3UFilter.objects.all()
     serializer_class = M3UFilterSerializer
 
@@ -753,21 +775,16 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
         return permissions_for_action(self)
 
     def get_queryset(self):
-        m3u_account_id = self.kwargs["account_id"]
-        return M3UFilter.objects.filter(m3u_account_id=m3u_account_id)
+        m3u_account_id = self.kwargs.get("account_id")
+        if m3u_account_id is None:
+            return self.queryset.none()
+        return M3UFilter.objects.filter(m3u_account_id=m3u_account_id).order_by(
+            "order", "id"
+        )
 
     def perform_create(self, serializer):
-        # Get the account ID from the URL
-        account_id = self.kwargs["account_id"]
-
-        # # Get the M3UAccount instance for the account_id
-        # m3u_account = M3UAccount.objects.get(id=account_id)
-
-        # Save the 'm3u_account' in the serializer context
-        serializer.context["m3u_account"] = account_id
-
-        # Perform the actual save
-        serializer.save(m3u_account_id=account_id)
+        account = get_object_or_404(M3UAccount, pk=self.kwargs["account_id"])
+        serializer.save(m3u_account=account)
 
 
 class ServerGroupViewSet(viewsets.ModelViewSet):

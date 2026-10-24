@@ -411,6 +411,7 @@ class M3UVODCategoryRelation(models.Model):
     enabled = models.BooleanField(
         default=False, help_text="Set to false to deactivate this category for the M3U account"
     )
+    ignored = models.BooleanField(default=False)
 
     custom_properties = models.JSONField(blank=True, null=True, help_text="Provider-specific data like quality, language, etc.")
     metadata_defaults = models.JSONField(default=dict, blank=True)
@@ -423,9 +424,20 @@ class M3UVODCategoryRelation(models.Model):
         verbose_name = 'M3U VOD Category Relation'
         verbose_name_plural = 'M3U VOD Category Relations'
         unique_together = [('m3u_account', 'category')]
+        constraints = [models.CheckConstraint(
+            condition=models.Q(ignored=False) | models.Q(enabled=False),
+            name="vod_ignored_category_disabled",
+        )]
 
     def __str__(self):
         return f"{self.m3u_account.name} - {self.category.name}"
+
+    def save(self, *args, **kwargs):
+        if self.ignored:
+            self.enabled = False
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"enabled"}
+        super().save(*args, **kwargs)
 
 
 class VODContentAlias(models.Model):

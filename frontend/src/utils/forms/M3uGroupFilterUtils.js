@@ -1,5 +1,6 @@
 import API from '../../api.js';
 import { refreshPlaylist, updatePlaylist } from './M3uUtils.js';
+import useVODStore from '../../store/useVODStore';
 
 const updateM3UGroupSettings = async (
   playlist,
@@ -18,6 +19,7 @@ export const buildGroupStates = (channelGroups, playlistChannelGroups) => {
     .filter((group) => channelGroups[group.channel_group])
     .map((group) => ({
       ...group,
+      ignored: !!group.ignored,
       name: channelGroups[group.channel_group].name,
       auto_channel_sync: group.auto_channel_sync || false,
       auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
@@ -35,13 +37,12 @@ const parseCustomProperties = (raw) => {
   }
 };
 
-export const saveAndRefreshPlaylist = async (
+export const savePlaylistGroupSettings = async (
   playlist,
   groupStates,
   movieCategoryStates,
   seriesCategoryStates,
-  autoEnableSettings,
-  isInitialSetup = false
+  autoEnableSettings
 ) => {
   const groupSettings = prepareGroupSettings(groupStates);
   const categorySettings = prepareCategorySettings(
@@ -51,6 +52,26 @@ export const saveAndRefreshPlaylist = async (
 
   await updatePlaylist(playlist, autoEnableSettings);
   await updateM3UGroupSettings(playlist, groupSettings, categorySettings);
+  useVODStore
+    .getState()
+    .updateCategorySelections(playlist.id, categorySettings);
+};
+
+export const saveAndRefreshPlaylist = async (
+  playlist,
+  groupStates,
+  movieCategoryStates,
+  seriesCategoryStates,
+  autoEnableSettings,
+  isInitialSetup = false
+) => {
+  await savePlaylistGroupSettings(
+    playlist,
+    groupStates,
+    movieCategoryStates,
+    seriesCategoryStates,
+    autoEnableSettings
+  );
   if (
     isInitialSetup &&
     playlist.account_type === 'XC' &&
@@ -96,11 +117,14 @@ export const prepareCategorySettings = (
   return [...movieCategoryStates, ...seriesCategoryStates]
     .filter(
       (state) =>
-        state.enabled !== state.original_enabled || categoryPropsChanged(state)
+        state.enabled !== state.original_enabled ||
+        !!state.ignored !== !!state.original_ignored ||
+        categoryPropsChanged(state)
     )
     .map((state) => ({
       id: state.id,
       enabled: state.enabled,
+      ignored: !!state.ignored,
       custom_properties: state.custom_properties || undefined,
     }));
 };

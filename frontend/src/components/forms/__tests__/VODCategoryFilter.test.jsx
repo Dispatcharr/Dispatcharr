@@ -1,80 +1,108 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
+import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Store mock ─────────────────────────────────────────────────────────────────
+vi.mock('../M3UGroupContentPreview.jsx', () => ({ default: () => null }));
+vi.mock('../../ListPagination.jsx', () => ({ default: () => null }));
 vi.mock('../../../store/useVODStore', () => ({ default: vi.fn() }));
 
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  Filter: () => <svg />,
+  Plus: () => <svg />,
+  Eye: () => <svg />,
+  Settings: () => <svg />,
+  Eraser: () => <svg />,
+  Undo2: () => <svg />,
   CircleCheck: () => <svg data-testid="icon-circle-check" />,
   CircleX: () => <svg data-testid="icon-circle-x" />,
-  Settings: () => <svg data-testid="icon-settings" />,
-  Plus: () => <svg data-testid="icon-plus" />,
 }));
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({
+  Indicator: ({ children }) => <>{children}</>,
+  Anchor: ({ children, onClick }) => (
+    <button onClick={onClick}>{children}</button>
+  ),
+  UnstyledButton: ({ children, onClick, disabled, ...props }) => (
+    <button
+      aria-label={props['aria-label']}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  ),
+  Badge: ({ children, color, variant }) => (
+    <span data-color={color} data-variant={variant}>
+      {children}
+    </span>
+  ),
+  Modal: ({ children, opened, title, onClose, closeButtonProps }) =>
+    opened ? (
+      <div role="dialog" aria-label={title}>
+        <button
+          aria-label={closeButtonProps?.['aria-label'] || 'Close modal'}
+          onClick={onClose}
+        >
+          Close
+        </button>
+        {children}
+      </div>
+    ) : null,
+  Table: ({ children }) => <table>{children}</table>,
+  TableThead: ({ children }) => <thead>{children}</thead>,
+  TableTbody: ({ children }) => <tbody>{children}</tbody>,
+  TableTr: ({ children }) => <tr>{children}</tr>,
+  TableTh: ({ children, w }) => <th style={{ width: w }}>{children}</th>,
+  TableTd: ({ children }) => <td>{children}</td>,
+  ScrollArea: ({ children }) => <div>{children}</div>,
+  Tooltip: ({ children }) => <>{children}</>,
+  Popover: Object.assign(({ children }) => <div>{children}</div>, {
+    Target: ({ children }) => <>{children}</>,
+    Dropdown: ({ children }) => <div>{children}</div>,
+  }),
+  ActionIcon: ({ children, onClick, disabled, ...props }) => (
+    <button
+      aria-label={props['aria-label']}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  ),
+  Box: ({ children }) => <div>{children}</div>,
+  Paper: ({ children }) => <div>{children}</div>,
+  Button: ({
     children,
     onClick,
     disabled,
     color,
     variant,
-    'aria-label': label,
-  }) => (
-    <button
-      aria-label={label}
-      onClick={onClick}
-      disabled={disabled}
-      data-color={color}
-      data-variant={variant}
-    >
-      {children}
-    </button>
-  ),
-  Tooltip: ({ children }) => children,
-  Modal: ({ opened, children }) =>
-    opened ? <div role="dialog">{children}</div> : null,
-  ScrollArea: ({ children }) => <div>{children}</div>,
-  MultiSelect: ({
-    value = [],
-    data = [],
-    onChange,
     'aria-label': ariaLabel,
   }) => (
-    <select
-      multiple
-      aria-label={ariaLabel}
-      value={value}
-      onChange={(event) =>
-        onChange(
-          Array.from(event.target.selectedOptions, (option) => option.value)
-        )
-      }
-    >
-      {data.map((item) => (
-        <option key={item.value} value={item.value}>
-          {item.label}
-        </option>
-      ))}
-    </select>
-  ),
-  Box: ({ children }) => <div>{children}</div>,
-  Button: ({ children, onClick, disabled, color, variant }) => (
     <button
       onClick={onClick}
       disabled={disabled}
       data-color={color}
       data-variant={variant}
+      aria-label={ariaLabel}
     >
       {children}
     </button>
   ),
-  Checkbox: ({ label, checked, onChange, disabled }) => (
+  Checkbox: ({
+    label,
+    checked,
+    onChange,
+    disabled,
+    'aria-label': ariaLabel,
+  }) => (
     <label>
       <input
         type="checkbox"
-        aria-label={label}
+        aria-label={ariaLabel || label}
         checked={checked}
         onChange={(e) =>
           onChange?.({ currentTarget: { checked: e.target.checked } })
@@ -143,6 +171,24 @@ vi.mock('@mantine/core', () => ({
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import useVODStore from '../../../store/useVODStore';
 import VODCategoryFilter from '../VODCategoryFilter';
+
+const filterStatus = (status) => {
+  for (const key of ['enabled', 'disabled', 'ignored']) {
+    const checkbox = screen.getByRole('checkbox', {
+      name: key[0].toUpperCase() + key.slice(1),
+      exact: true,
+    });
+    const checked = status === 'all' ? key !== 'ignored' : key === status;
+    if (checkbox.checked !== checked) fireEvent.click(checkbox);
+  }
+};
+const applyStatus = (status) => {
+  fireEvent.click(screen.getByRole('button', { name: /^Edit settings/ }));
+  fireEvent.change(screen.getByLabelText('Status'), {
+    target: { value: status },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply to selected' }));
+};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const makeCategories = () => [
@@ -232,19 +278,25 @@ describe('VODCategoryFilter', () => {
   // ── Rendering ─────────────────────────────────────────────────────────────
 
   describe('rendering', () => {
-    it('renders without crashing', () => {
+    it('reserves enough status-column width for the full badge label', () => {
       render(<VODCategoryFilter {...defaultProps()} />);
-      expect(screen.getByTestId('simple-grid')).toBeInTheDocument();
+      expect(screen.getByRole('columnheader', { name: 'Status' })).toHaveStyle({
+        width: '100px',
+      });
+      expect(
+        within(screen.getByRole('table')).getByText('Disabled')
+      ).toBeInTheDocument();
     });
 
-    it('renders a button for each category matching the type and playlist', () => {
+    it('renders without crashing', () => {
       render(<VODCategoryFilter {...defaultProps()} />);
-      expect(
-        screen.getByRole('button', { name: 'Action' })
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole('button', { name: 'Comedy' })
-      ).toBeInTheDocument();
+      expect(screen.getByRole('table')).toBeInTheDocument();
+    });
+
+    it('renders a text label for each category matching the type and playlist', () => {
+      render(<VODCategoryFilter {...defaultProps()} />);
+      expect(screen.getByText('Action')).toBeInTheDocument();
+      expect(screen.getByText('Comedy')).toBeInTheDocument();
     });
 
     it('does not render categories of a different type', () => {
@@ -259,21 +311,24 @@ describe('VODCategoryFilter', () => {
       expect(screen.getByPlaceholderText(/filter/i)).toBeInTheDocument();
     });
 
-    it('renders the segmented status control', () => {
-      render(<VODCategoryFilter {...defaultProps()} />);
-      expect(screen.getByTestId('segmented-control')).toBeInTheDocument();
-    });
-
-    it('renders Enable All and Disable All buttons', () => {
-      render(<VODCategoryFilter {...defaultProps()} />);
-      expect(screen.getByText('Select Visible')).toBeInTheDocument();
-      expect(screen.getByText('Deselect Visible')).toBeInTheDocument();
-    });
-
-    it('renders the Auto-enable new groups checkbox', () => {
+    it('renders the category status filter', () => {
       render(<VODCategoryFilter {...defaultProps()} />);
       expect(
-        screen.getByLabelText(/automatically enable new/i)
+        screen.getByRole('button', { name: 'Filter category status' })
+      ).toBeInTheDocument();
+    });
+
+    it('requires a selection before bulk actions', () => {
+      render(<VODCategoryFilter {...defaultProps()} />);
+      expect(screen.getByText('Edit settings (0)')).toBeDisabled();
+      expect(screen.queryByText('Enable selected')).not.toBeInTheDocument();
+      expect(screen.queryByText('Disable selected')).not.toBeInTheDocument();
+    });
+
+    it('explains that new categories require an import rule or manual selection', () => {
+      render(<VODCategoryFilter {...defaultProps()} />);
+      expect(
+        screen.getByText('New unmatched categories are imported disabled.')
       ).toBeInTheDocument();
     });
   });
@@ -285,12 +340,8 @@ describe('VODCategoryFilter', () => {
       render(<VODCategoryFilter {...defaultProps()} />);
       const input = screen.getByPlaceholderText(/filter/i);
       fireEvent.change(input, { target: { value: 'act' } });
-      expect(
-        screen.getByRole('button', { name: 'Action' })
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole('button', { name: 'Comedy' })
-      ).not.toBeInTheDocument();
+      expect(screen.getByText('Action')).toBeInTheDocument();
+      expect(screen.queryByText('Comedy')).not.toBeInTheDocument();
     });
 
     it('is case-insensitive', () => {
@@ -298,12 +349,8 @@ describe('VODCategoryFilter', () => {
       fireEvent.change(screen.getByPlaceholderText(/filter/i), {
         target: { value: 'COMEDY' },
       });
-      expect(
-        screen.getByRole('button', { name: 'Comedy' })
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole('button', { name: 'Action' })
-      ).not.toBeInTheDocument();
+      expect(screen.getByText('Comedy')).toBeInTheDocument();
+      expect(screen.queryByText('Action')).not.toBeInTheDocument();
     });
 
     it('shows all categories when filter is cleared', () => {
@@ -311,13 +358,9 @@ describe('VODCategoryFilter', () => {
       const input = screen.getByPlaceholderText(/filter/i);
       fireEvent.change(input, { target: { value: 'act' } });
       fireEvent.change(input, { target: { value: '' } });
-      expect(
-        screen.getByRole('button', { name: 'Action' })
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole('button', { name: 'Comedy' })
-      ).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Drama' })).toBeInTheDocument();
+      expect(screen.getByText('Action')).toBeInTheDocument();
+      expect(screen.getByText('Comedy')).toBeInTheDocument();
+      expect(screen.getByText('Drama')).toBeInTheDocument();
     });
 
     it('shows no categories when filter matches nothing', () => {
@@ -325,9 +368,7 @@ describe('VODCategoryFilter', () => {
       fireEvent.change(screen.getByPlaceholderText(/filter/i), {
         target: { value: 'zzznomatch' },
       });
-      expect(
-        screen.queryByRole('button', { name: 'Action' })
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Action')).not.toBeInTheDocument();
     });
   });
 
@@ -343,14 +384,10 @@ describe('VODCategoryFilter', () => {
         ],
       });
       render(<VODCategoryFilter {...props} />);
-      fireEvent.click(screen.getByTestId('segment-enabled'));
-      expect(
-        screen.getByRole('button', { name: 'Action' })
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole('button', { name: 'Comedy' })
-      ).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Drama' })).toBeInTheDocument();
+      filterStatus('enabled');
+      expect(screen.getByText('Action')).toBeInTheDocument();
+      expect(screen.queryByText('Comedy')).not.toBeInTheDocument();
+      expect(screen.getByText('Drama')).toBeInTheDocument();
     });
 
     it('shows only disabled categories when "Disabled" segment is selected', () => {
@@ -362,13 +399,9 @@ describe('VODCategoryFilter', () => {
         ],
       });
       render(<VODCategoryFilter {...props} />);
-      fireEvent.click(screen.getByTestId('segment-disabled'));
-      expect(
-        screen.queryByRole('button', { name: 'Action' })
-      ).not.toBeInTheDocument();
-      expect(
-        screen.getByRole('button', { name: 'Comedy' })
-      ).toBeInTheDocument();
+      filterStatus('disabled');
+      expect(screen.queryByText('Action')).not.toBeInTheDocument();
+      expect(screen.getByText('Comedy')).toBeInTheDocument();
     });
 
     it('shows all categories when "All" segment is active', () => {
@@ -380,14 +413,10 @@ describe('VODCategoryFilter', () => {
         ],
       });
       render(<VODCategoryFilter {...props} />);
-      fireEvent.click(screen.getByTestId('segment-disabled'));
-      fireEvent.click(screen.getByTestId('segment-all'));
-      expect(
-        screen.getByRole('button', { name: 'Action' })
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole('button', { name: 'Comedy' })
-      ).toBeInTheDocument();
+      filterStatus('disabled');
+      filterStatus('all');
+      expect(screen.getByText('Action')).toBeInTheDocument();
+      expect(screen.getByText('Comedy')).toBeInTheDocument();
     });
   });
 
@@ -400,14 +429,10 @@ describe('VODCategoryFilter', () => {
       fireEvent.change(screen.getByPlaceholderText(/filter/i), {
         target: { value: 'o' },
       });
-      fireEvent.click(screen.getByTestId('segment-disabled'));
+      filterStatus('disabled');
       // "Comedy" matches "o" AND is disabled; "Action" matches "o" but is enabled
-      expect(
-        screen.getByRole('button', { name: 'Comedy' })
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole('button', { name: 'Action' })
-      ).not.toBeInTheDocument();
+      expect(screen.getByText('Comedy')).toBeInTheDocument();
+      expect(screen.queryByText('Action')).not.toBeInTheDocument();
     });
   });
 
@@ -426,7 +451,10 @@ describe('VODCategoryFilter', () => {
           {...defaultProps({ setCategoryStates, categoryStates })}
         />
       );
-      fireEvent.click(screen.getByText('Select Visible'));
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: 'Select visible categories' })
+      );
+      applyStatus('enabled');
       const called = latestCategoryStates(setCategoryStates, categoryStates);
       expect(called.find((s) => s.id === 1).enabled).toBe(true);
       expect(called.find((s) => s.id === 2).enabled).toBe(true);
@@ -448,7 +476,10 @@ describe('VODCategoryFilter', () => {
       fireEvent.change(screen.getByPlaceholderText(/filter/i), {
         target: { value: 'act' },
       });
-      fireEvent.click(screen.getByText('Select Visible'));
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: 'Select visible categories' })
+      );
+      applyStatus('enabled');
       const called = latestCategoryStates(setCategoryStates, categoryStates);
       expect(called.find((s) => s.id === 1).enabled).toBe(true);
       // Comedy and Drama were filtered out — their state should be unchanged
@@ -462,7 +493,10 @@ describe('VODCategoryFilter', () => {
       const setCategoryStates = vi.fn();
       const props = defaultProps({ setCategoryStates });
       render(<VODCategoryFilter {...props} />);
-      fireEvent.click(screen.getByText('Deselect Visible'));
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: 'Select visible categories' })
+      );
+      applyStatus('disabled');
       const called = latestCategoryStates(
         setCategoryStates,
         props.categoryStates
@@ -487,7 +521,10 @@ describe('VODCategoryFilter', () => {
       fireEvent.change(screen.getByPlaceholderText(/filter/i), {
         target: { value: 'comedy' },
       });
-      fireEvent.click(screen.getByText('Deselect Visible'));
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: 'Select visible categories' })
+      );
+      applyStatus('disabled');
       const called = latestCategoryStates(setCategoryStates, categoryStates);
       expect(called.find((s) => s.id === 2).enabled).toBe(false);
       expect(called.find((s) => s.id === 1).enabled).toBe(true);
@@ -497,8 +534,106 @@ describe('VODCategoryFilter', () => {
 
   // ── Auto-enable new groups ────────────────────────────────────────────────
 
-  describe('autoEnableNewGroups checkbox', () => {
-    it('calls setAutoEnableNewGroups(true) when checked', () => {
+  describe('selection and bulk settings', () => {
+    it('clears a selection when switching accounts', () => {
+      const props = defaultProps();
+      const view = render(<VODCategoryFilter {...props} />);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select Action' }));
+      expect(screen.getByText('Edit settings (1)')).toBeEnabled();
+      view.rerender(
+        <VODCategoryFilter {...props} playlist={makePlaylist({ id: 11 })} />
+      );
+      expect(screen.getByText('Edit settings (0)')).toBeDisabled();
+    });
+    it('selection alone never changes enabled or category metadata', () => {
+      const setCategoryStates = vi.fn();
+      render(<VODCategoryFilter {...defaultProps({ setCategoryStates })} />);
+      setCategoryStates.mockClear();
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: 'Select visible categories' })
+      );
+      expect(setCategoryStates).not.toHaveBeenCalled();
+      expect(screen.getByText('Edit settings (3)')).toBeEnabled();
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: 'Select visible categories' })
+      );
+      expect(screen.getByText('Edit settings (0)')).toBeDisabled();
+    });
+
+    it('bulk updates only selected categories and preserves unrelated properties', () => {
+      const setCategoryStates = vi.fn();
+      const categoryStates = [
+        {
+          id: 1,
+          name: 'Action',
+          enabled: true,
+          custom_properties: {
+            language: 'en',
+            quality: '1080p',
+            custom: 'keep',
+          },
+        },
+        {
+          id: 2,
+          name: 'Comedy',
+          enabled: false,
+          custom_properties: { language: 'fr' },
+        },
+      ];
+      render(
+        <VODCategoryFilter
+          {...defaultProps({ setCategoryStates, categoryStates })}
+        />
+      );
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select Action' }));
+      fireEvent.click(screen.getByText('Edit settings (1)'));
+      const dialog = screen.getByRole('dialog', {
+        name: 'Edit settings for 1 category',
+      });
+      expect(within(dialog).getByText('Metadata')).toBeInTheDocument();
+      expect(
+        within(dialog).queryByText(/Defaults apply only|Import defaults only/)
+      ).not.toBeInTheDocument();
+      fireEvent.change(within(dialog).getByLabelText('Resolution'), {
+        target: { value: '2160p' },
+      });
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Apply to selected' })
+      );
+      const next = latestCategoryStates(setCategoryStates, categoryStates);
+      expect(next[0].custom_properties).toEqual({
+        language: 'en',
+        quality: '1080p',
+        resolution: '2160p',
+        custom: 'keep',
+      });
+      expect(next[1]).toBe(categoryStates[1]);
+      expect(next[0].enabled).toBe(true);
+    });
+
+    it('canceling a bulk edit does not change the draft', () => {
+      const setCategoryStates = vi.fn();
+      render(<VODCategoryFilter {...defaultProps({ setCategoryStates })} />);
+      setCategoryStates.mockClear();
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select Action' }));
+      fireEvent.click(screen.getByText('Edit settings (1)'));
+      const dialog = screen.getByRole('dialog', {
+        name: 'Edit settings for 1 category',
+      });
+      fireEvent.click(
+        within(dialog).getByLabelText('Clear Resolution defaults')
+      );
+      fireEvent.click(
+        within(dialog).getByRole('button', {
+          name: 'Close bulk category settings',
+        })
+      );
+      expect(setCategoryStates).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('new category defaults', () => {
+    it('does not expose the legacy fallback when previously disabled', () => {
       const setAutoEnableNewGroups = vi.fn();
       render(
         <VODCategoryFilter
@@ -508,11 +643,13 @@ describe('VODCategoryFilter', () => {
           })}
         />
       );
-      fireEvent.click(screen.getByLabelText(/automatically enable new/i));
-      expect(setAutoEnableNewGroups).toHaveBeenCalledWith(true);
+      expect(
+        screen.queryByLabelText(/enable unmatched new/i)
+      ).not.toBeInTheDocument();
+      expect(setAutoEnableNewGroups).not.toHaveBeenCalled();
     });
 
-    it('calls setAutoEnableNewGroups(false) when unchecked', () => {
+    it('does not expose the legacy fallback when previously enabled', () => {
       const setAutoEnableNewGroups = vi.fn();
       render(
         <VODCategoryFilter
@@ -522,8 +659,10 @@ describe('VODCategoryFilter', () => {
           })}
         />
       );
-      fireEvent.click(screen.getByLabelText(/automatically enable new/i));
-      expect(setAutoEnableNewGroups).toHaveBeenCalledWith(false);
+      expect(
+        screen.queryByLabelText(/enable unmatched new/i)
+      ).not.toBeInTheDocument();
+      expect(setAutoEnableNewGroups).not.toHaveBeenCalled();
     });
   });
 
@@ -533,16 +672,12 @@ describe('VODCategoryFilter', () => {
     it('renders no category buttons when categories list is empty', () => {
       setupMocks({ categories: [] });
       render(<VODCategoryFilter {...defaultProps({ categoryStates: [] })} />);
-      expect(
-        screen.queryByRole('button', { name: 'Action' })
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Action')).not.toBeInTheDocument();
     });
 
     it('renders no category buttons when categoryStates is empty', () => {
       render(<VODCategoryFilter {...defaultProps({ categoryStates: [] })} />);
-      expect(
-        screen.queryByRole('button', { name: 'Action' })
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Action')).not.toBeInTheDocument();
     });
 
     it('renders categories only for the matching playlist id', () => {
@@ -566,67 +701,64 @@ describe('VODCategoryFilter', () => {
 
   // ── Language / quality ────────────────────────────────────────────────────
 
-  describe('compact metadata summaries', () => {
-    it('uses a disabled settings action for categories that are not enabled', () => {
+  describe('source metadata defaults', () => {
+    it('keeps editors unmounted until opening and uses a disabled gear for disabled categories', () => {
       render(<VODCategoryFilter {...defaultProps()} />);
-      const disabled = screen.getByRole('button', {
-        name: 'Edit defaults for Comedy',
-      });
-      expect(disabled).toBeDisabled();
+      expect(screen.queryByLabelText('Resolution')).not.toBeInTheDocument();
+      const row = screen.getByText('Action').closest('tr');
       expect(
-        disabled.querySelector('[data-testid="icon-settings"]')
-      ).not.toBeNull();
-      fireEvent.click(disabled);
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        within(row.lastElementChild)
+          .getAllByRole('button')
+          .map((button) => button.getAttribute('aria-label'))
+      ).toEqual(['Edit defaults for Action', 'Preview category']);
       expect(
+        screen.getByRole('button', { name: 'Edit defaults for Comedy' })
+      ).toBeDisabled();
+      fireEvent.click(
         screen.getByRole('button', { name: 'Edit defaults for Action' })
-      ).toBeEnabled();
-    });
-
-    it('highlights configured defaults and keeps an empty settings action neutral', () => {
-      render(<VODCategoryFilter {...defaultProps()} />);
-      const configured = screen.getByRole('button', {
-        name: 'Edit defaults for Action',
-      });
-      expect(configured).toHaveAttribute('data-variant', 'light');
-      expect(configured).toHaveAttribute('data-color', 'blue');
-      const empty = screen.getByRole('button', {
-        name: 'Edit defaults for Drama',
-      });
-      expect(empty).toHaveAttribute('data-variant', 'subtle');
-      expect(empty).toHaveAttribute('data-color', 'gray');
-    });
-
-    it('renders an edit action instead of inline metadata controls', () => {
-      render(<VODCategoryFilter {...defaultProps()} />);
-      expect(
-        screen.getAllByRole('button', { name: /^Edit defaults for/ })
-      ).toHaveLength(3);
-      expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    });
-
-    it('summarizes legacy language and numeric resolution without inputs', () => {
-      render(<VODCategoryFilter {...defaultProps()} />);
-      expect(screen.getByText('DUB: ENG · 1080p')).toBeInTheDocument();
-    });
-
-    it('keeps feature summaries readable without storage prefixes', () => {
-      render(
-        <VODCategoryFilter
-          {...defaultProps({
-            categoryStates: [
-              {
-                id: 1,
-                name: 'Action',
-                enabled: true,
-                custom_properties: { video_features: ['hdr', 'custom:imax'] },
-              },
-            ],
-          })}
-        />
       );
-      expect(screen.getByText('HDR, IMAX')).toBeInTheDocument();
+      expect(screen.getByLabelText('Resolution')).toHaveValue('1080p');
+      expect(
+        screen.getByRole('button', {
+          name: 'Remove English (eng) from DUB languages',
+        })
+      ).toBeInTheDocument();
+    });
+
+    it('cancels changes without mutating the draft and applies only to the selected category', () => {
+      const StatefulFilter = () => {
+        const [categoryStates, setCategoryStates] = useState(
+          defaultProps().categoryStates
+        );
+        return (
+          <VODCategoryFilter
+            {...defaultProps({ categoryStates, setCategoryStates })}
+          />
+        );
+      };
+      render(<StatefulFilter />);
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Edit defaults for Action' })
+      );
+      fireEvent.change(screen.getByLabelText('Resolution'), {
+        target: { value: '2160p' },
+      });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Close category defaults' })
+      );
+      expect(screen.getByText('eng', { exact: true })).toBeInTheDocument();
+      expect(screen.getByText('1080p', { exact: true })).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Edit defaults for Action' })
+      );
+      fireEvent.change(screen.getByLabelText('Resolution'), {
+        target: { value: '2160p' },
+      });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Apply', exact: true })
+      );
+      expect(screen.getByText('eng', { exact: true })).toBeInTheDocument();
+      expect(screen.getByText('2160p', { exact: true })).toBeInTheDocument();
     });
 
     it('hydrates custom_properties from the store on mount', () => {

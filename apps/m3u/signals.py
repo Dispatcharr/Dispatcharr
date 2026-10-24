@@ -10,6 +10,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+@receiver(post_delete, sender=M3UAccount)
+def cleanup_live_filter_catalog(sender, instance, **kwargs):
+    from .filter_catalog import remove_live_filter_catalog
+
+    for scope in ("live", "live-groups", "movie", "series"):
+        remove_live_filter_catalog(instance.id, scope)
+
+
 @receiver(post_save, sender=M3UAccount)
 def refresh_account_on_save(sender, instance, created, **kwargs):
     """

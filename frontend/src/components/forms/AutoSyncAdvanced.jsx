@@ -6,10 +6,10 @@ import {
   Button,
   Center,
   Checkbox,
-  Divider,
   Flex,
   Group,
   MultiSelect,
+  Paper,
   Popover,
   PopoverDropdown,
   PopoverTarget,
@@ -70,7 +70,7 @@ const RegexPreviewBox = ({ group, kind, regexPreviewState }) => {
     <Box
       style={{
         border: '1px solid #3F3F46',
-        borderRadius: 6,
+        borderRadius: 'var(--mantine-radius-default)',
         padding: 8,
         backgroundColor: '#1E1E22',
         overflow: 'hidden',
@@ -92,7 +92,9 @@ const RegexPreviewBox = ({ group, kind, regexPreviewState }) => {
       {result && !result.error && result.matches?.length === 0 && (
         <Text size="xs" c="dimmed">
           {result.total_in_group === 0
-            ? 'No streams in this group yet. Run an M3U refresh first to populate streams.'
+            ? result.content_source === 'provider'
+              ? 'The provider returned no streams for this category.'
+              : 'No stream data is available. Run a Live refresh to populate this category.'
             : emptyText}
         </Text>
       )}
@@ -151,8 +153,10 @@ const AutoSyncAdvanced = ({
   channelGroups,
   streamProfiles,
   regexPreviewState,
+  contentState,
   onApplyGroupChange,
   onScheduleRegexPreview,
+  onRetryRegexPreview,
   onOpenLogoUpload,
   channelLogos,
   playlist,
@@ -301,17 +305,29 @@ const AutoSyncAdvanced = ({
 
   return (
     <Stack gap="lg">
-      <Stack gap="sm">
-        <Divider
-          label={
-            <Text size="sm" fw={600} c="gray.3">
-              Name Transforms
-            </Text>
-          }
-          labelPosition="left"
-          size="sm"
-          color="gray.6"
-        />
+      <Stack component={Paper} withBorder p="sm" gap="sm">
+        <Text fw={600}>Name transforms</Text>
+        {(contentState?.loading ||
+          regexPreviewState[group.channel_group]?.loadingContent) && (
+          <Text size="xs" c="dimmed" role="status">
+            Loading category preview…
+          </Text>
+        )}
+        {!contentState?.error &&
+          regexPreviewState[group.channel_group]?.loadError && (
+            <Group gap="xs">
+              <Text size="sm" c="red" role="alert">
+                {regexPreviewState[group.channel_group].loadError}
+              </Text>
+              <Button
+                size="compact-xs"
+                variant="light"
+                onClick={onRetryRegexPreview}
+              >
+                Retry category preview
+              </Button>
+            </Group>
+          )}
         <Tooltip
           label="Apply a regex find/replace to channel names during sync. Leave both empty to skip."
           withArrow
@@ -399,17 +415,8 @@ const AutoSyncAdvanced = ({
         )}
       </Stack>
 
-      <Stack gap="sm">
-        <Divider
-          label={
-            <Text size="sm" fw={600} c="gray.3">
-              EPG & Logo
-            </Text>
-          }
-          labelPosition="left"
-          size="sm"
-          color="gray.6"
-        />
+      <Stack component={Paper} withBorder p="sm" gap="sm">
+        <Text fw={600}>EPG &amp; Logo</Text>
         <Flex gap="xs" align="flex-start">
           <Tooltip
             label="Force a specific EPG source. Defaults to auto-matching by tvg_id when blank."
@@ -602,17 +609,8 @@ const AutoSyncAdvanced = ({
         </Flex>
       </Stack>
 
-      <Stack gap="sm">
-        <Divider
-          label={
-            <Text size="sm" fw={600} c="gray.3">
-              Channel Assignment
-            </Text>
-          }
-          labelPosition="left"
-          size="sm"
-          color="gray.6"
-        />
+      <Stack component={Paper} withBorder p="sm" gap="sm">
+        <Text fw={600}>Channel assignment</Text>
         <Flex gap="xs">
           <Tooltip
             label="Send auto-created channels into a different group than their source."

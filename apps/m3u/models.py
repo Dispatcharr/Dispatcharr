@@ -1,6 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import logging
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.utils import timezone as django_timezone
 from core.models import CoreSettings, UserAgent
 import re
 from django.dispatch import receiver
@@ -10,9 +12,16 @@ from core.utils import custom_properties_as_dict
 from .utils import parse_m3u_hash_keys
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
+logger = logging.getLogger(__name__)
 
 
 class M3UAccount(models.Model):
+    class SetupStep(models.TextChoices):
+        ACCOUNT = "account", "Account"
+        CONTENT = "content", "Content"
+        EPG = "epg", "Optional EPG"
+        CATEGORIES = "categories", "Categories"
+
     class Types(models.TextChoices):
         STADNARD = "STD", "Standard"
         XC = "XC", "Xtream Codes"
@@ -61,6 +70,10 @@ class M3UAccount(models.Model):
     )
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.IDLE
+    )
+    setup_step = models.CharField(
+        max_length=16, choices=SetupStep.choices, blank=True, default="",
+        help_text="Unfinished guided setup step, independent of refresh status.",
     )
     last_message = models.TextField(
         null=True,
@@ -127,6 +140,82 @@ class M3UAccount(models.Model):
             if keys:
                 return keys
         return parse_m3u_hash_keys(CoreSettings.get_m3u_hash_key())
+
+    def update_setup_step_for_account_type(self, previous_account_type):
+        """Keep unfinished setup aligned with the edited connection type."""
+        if not self.setup_step or self.setup_step in {
+            self.SetupStep.ACCOUNT, self.SetupStep.CONTENT,
+        }:
+            return
+        if self.account_type != self.Types.XC:
+            self.setup_step = self.SetupStep.CATEGORIES
+        elif previous_account_type != self.Types.XC:
+            self.setup_step = self.SetupStep.EPG
+
+    def get_refresh_schedule(self, *, vod=False):
+        """Describe the existing Beat schedule without changing or running it."""
+        task = self.vod_refresh_task if vod else self.refresh_task
+        if task is None:
+            return {"enabled": False, "last_run_at": None, "next_run_at": None}
+
+        next_run = None
+        if task.enabled:
+            try:
+                now = django_timezone.now()
+                reference = task.last_run_at or task.date_changed or now
+                due = task.schedule.is_due(reference)
+                seconds = 0 if due.is_due else max(0, float(due.next))
+                next_run = now + timedelta(seconds=seconds)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                logger.warning(
+                    "Could not calculate next refresh for task %s",
+                    task.name,
+                    exc_info=True,
+                )
+        return {
+            "enabled": bool(task.enabled),
+            "last_run_at": task.last_run_at,
+            "next_run_at": next_run,
+        }
+
+    @classmethod
+    def get_vod_category_selection_counts(cls, account_ids):
+        """Count saved selections for multiple accounts without loading categories."""
+        from apps.vod.models import M3UVODCategoryRelation
+
+        rows = (
+            M3UVODCategoryRelation.objects.filter(m3u_account_id__in=account_ids)
+            .order_by()
+            .values("m3u_account_id", "category__category_type")
+            .annotate(
+                total=models.Count("id"),
+                selected=models.Count("id", filter=models.Q(enabled=True)),
+            )
+        )
+        counts = {}
+        for row in rows:
+            counts.setdefault(row["m3u_account_id"], {})[
+                row["category__category_type"]
+            ] = {"selected": row["selected"], "total": row["total"]}
+        return counts
+
+    def get_category_selection_counts(self, *, vod_counts=None):
+        """Summarize saved account memberships, including disabled categories."""
+        if vod_counts is None:
+            vod_counts = self.get_vod_category_selection_counts([self.pk]).get(
+                self.pk, {}
+            )
+        live = list(self.channel_group.all())
+        return {
+            "live": {
+                "selected": sum(row.enabled for row in live),
+                "total": len(live),
+            },
+            **{
+                scope: vod_counts.get(scope, {"selected": 0, "total": 0})
+                for scope in ("movie", "series")
+            },
+        }
 
     def clean(self):
         if self.max_streams < 0:
@@ -217,10 +306,13 @@ class M3UFilter(models.Model):
         default=True,
         help_text="If True, matching items are excluded; if False, only matches are included.",
     )
+    enabled = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=0)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
 
     def applies_to(self, stream_name, group_name):
+        if not self.enabled:
+            return False
         target = group_name if self.filter_type == "group" else stream_name
         return bool(re.search(self.regex_pattern, target, re.IGNORECASE))
 
@@ -236,6 +328,72 @@ class M3UFilter(models.Model):
         )
         exclude_status = "Exclude" if self.exclude else "Include"
         return f"[{self.m3u_account.name}] {filter_type_display}: {self.regex_pattern} ({exclude_status})"
+
+
+class M3UGroupRule(models.Model):
+    """Ordered import policy for newly discovered provider groups."""
+
+    class Scope(models.TextChoices):
+        LIVE = "live", "Live TV"
+        MOVIE = "movie", "VOD Movies"
+        SERIES = "series", "VOD Series"
+
+    class MatchField(models.TextChoices):
+        GROUP_NAME = "group_name", "Group name"
+        ITEM_NAME = "item_name", "Contained item name"
+
+    class MatchMode(models.TextChoices):
+        ANY = "any", "Any item"
+        ALL = "all", "All items"
+
+    class Action(models.TextChoices):
+        # Keep the retired metadata-only result readable for review.
+        KEEP = "keep", "Keep import selection"
+        ENABLE = "enable", "Import enabled"
+        DISABLE = "disable", "Import disabled"
+        IGNORE = "ignore", "Ignore"
+
+    m3u_account = models.ForeignKey(
+        M3UAccount, on_delete=models.CASCADE, related_name="group_rules"
+    )
+    scope = models.CharField(max_length=10, choices=Scope.choices)
+    match_field = models.CharField(
+        max_length=20, choices=MatchField.choices, default=MatchField.GROUP_NAME
+    )
+    match_mode = models.CharField(
+        max_length=10, choices=MatchMode.choices, default=MatchMode.ANY
+    )
+    regex_pattern = models.CharField(max_length=500)
+    action = models.CharField(
+        max_length=10, choices=Action.choices, default=Action.DISABLE
+    )
+    case_sensitive = models.BooleanField(default=False)
+    enabled = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0)
+
+    metadata_defaults = models.JSONField(default=dict, blank=True)
+
+    @property
+    def requires_review(self):
+        # Retain retired results for review without rewriting saved policies.
+        return self.action not in {self.Action.ENABLE, self.Action.DISABLE, self.Action.IGNORE}
+
+    class Meta:
+        ordering = ("scope", "order", "id")
+        indexes = [
+            models.Index(
+                fields=("m3u_account", "scope", "enabled", "order"),
+                name="m3u_group_rule_lookup_idx",
+            )
+        ]
+
+    def clean(self):
+        import regex
+
+        try:
+            regex.compile(self.regex_pattern)
+        except regex.error as exc:
+            raise ValidationError({"regex_pattern": str(exc)}) from exc
 
 
 class ServerGroup(models.Model):

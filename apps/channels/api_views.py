@@ -341,6 +341,8 @@ class StreamViewSet(viewsets.ModelViewSet):
                     "total_in_group": serializers.IntegerField(),
                     "total_scanned": serializers.IntegerField(),
                     "scan_limit_hit": serializers.BooleanField(),
+                    "content_source": serializers.CharField(),
+                    "can_load_provider": serializers.BooleanField(),
                     "find_matches": serializers.ListField(
                         child=serializers.DictField(), required=False
                     ),
@@ -467,6 +469,27 @@ class StreamViewSet(viewsets.ModelViewSet):
             base_qs = base_qs.filter(m3u_account_id=m3u_account_id)
         names_iter = base_qs.values_list("name", flat=True)[:SCAN_CAP]
         total_in_group = base_qs.count()
+        content_source = "imported"
+        can_load_provider = False
+        if not total_in_group and m3u_account_id is not None:
+            from apps.m3u.category_preview import cached_preview, can_load_preview
+            from apps.m3u.models import M3UAccount
+            from .models import ChannelGroupM3UAccount
+
+            account = M3UAccount.objects.filter(pk=m3u_account_id).first()
+            relation = ChannelGroupM3UAccount.objects.filter(
+                m3u_account_id=m3u_account_id, channel_group__name=group_name
+            ).first()
+            if account and relation:
+                rows = cached_preview(account, "live", relation)
+                if rows is not None:
+                    content_source = "provider"
+                    total_in_group = len(rows)
+                    names_iter = [
+                        str(row.get("name") or "") for row in rows[:SCAN_CAP]
+                    ]
+                else:
+                    can_load_provider = can_load_preview(account, "live", relation)
 
         find_matches = []
         filter_matches = []
@@ -518,6 +541,8 @@ class StreamViewSet(viewsets.ModelViewSet):
             "total_in_group": total_in_group,
             "total_scanned": total_scanned,
             "scan_limit_hit": total_in_group > SCAN_CAP,
+            "content_source": content_source,
+            "can_load_provider": can_load_provider,
         }
         if find_pat:
             response_payload["find_matches"] = find_matches

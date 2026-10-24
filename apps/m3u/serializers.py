@@ -1,21 +1,131 @@
 from core.utils import validate_flexible_url, ensure_custom_properties_dict
 from rest_framework import serializers, status
 from rest_framework.response import Response
-from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
+from drf_spectacular.utils import extend_schema_field
+from .models import M3UAccount, M3UFilter, M3UGroupRule, ServerGroup, M3UAccountProfile
 from .utils import parse_m3u_hash_keys
+from .category_selection import category_selection_state
 from core.models import UserAgent
 from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
 from apps.channels.serializers import (
     ChannelGroupM3UAccountSerializer,
 )
 from datetime import timezone as dt_tz
+from django.db import transaction
 import logging
 import json
 
 logger = logging.getLogger(__name__)
 
 
-class M3UFilterSerializer(serializers.ModelSerializer):
+def rule_match_identity(rule):
+    """Compare identical predicates, not arbitrary regex equivalence or results."""
+    if isinstance(rule, M3UGroupRule):
+        if not rule.enabled or rule.requires_review:
+            return None
+        return (
+            rule.scope,
+            rule.regex_pattern,
+            rule.case_sensitive,
+        )
+    if not rule.enabled:
+        return None
+    return (
+        rule.filter_type,
+        rule.regex_pattern,
+        (rule.custom_properties or {}).get("case_sensitive", True),
+    )
+
+
+def validate_unique_rule_matches(rules):
+    seen = {}
+    for position, rule in enumerate(rules, 1):
+        identity = rule_match_identity(rule)
+        if identity is None:
+            continue
+        targets = rule_result_fields(rule)
+        previous = seen.setdefault(identity, {})
+        overlap = targets & previous.keys()
+        if overlap:
+            previous_position = min(previous[key] for key in overlap)
+            raise serializers.ValidationError(
+                {
+                    "regex_pattern": (
+                        f"Rules {previous_position} and {position} have an identical "
+                        "active match. Edit the existing rule instead."
+                    )
+                }
+            )
+        previous.update({key: position for key in targets})
+
+
+def rule_result_fields(rule):
+    """Fields used by ordered coverage and duplicate validation."""
+    if not isinstance(rule, M3UGroupRule):
+        return {"import"}
+    return set(rule.metadata_defaults or {}) | (
+        {"import"} if rule.action != M3UGroupRule.Action.KEEP else set()
+    )
+
+
+class UniqueRuleMatchMixin:
+    """Serialize account rule writes so concurrent saves cannot add duplicates."""
+
+    def _validate_unique_match(self, account, values, instance=None):
+        data = (
+            {
+                field: getattr(instance, field)
+                for field in self.Meta.fields
+                if not self.fields[field].read_only
+            }
+            if instance is not None
+            else {}
+        )
+        candidate = self.Meta.model(**{**data, **values})
+        identity = rule_match_identity(candidate)
+        if identity is None:
+            return
+        existing = self.Meta.model.objects.filter(m3u_account=account).order_by(
+            "order", "id"
+        )
+        if instance is not None:
+            existing = existing.exclude(pk=instance.pk)
+        for rule in existing:
+            if (
+                rule_match_identity(rule) == identity
+                and rule_result_fields(rule) & rule_result_fields(candidate)
+            ):
+                raise serializers.ValidationError(
+                    {
+                        "regex_pattern": (
+                            "An identical active match already exists "
+                            f"(rule ID {rule.pk}). Edit that rule instead."
+                        )
+                    }
+                )
+
+    def create(self, validated_data):
+        if self.context.get("validated_rule_list"):
+            return super().create(validated_data)
+        account = validated_data["m3u_account"]
+        with transaction.atomic():
+            M3UAccount.objects.select_for_update().get(pk=account.pk)
+            self._validate_unique_match(account, validated_data)
+            return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if self.context.get("validated_rule_list"):
+            return super().update(instance, validated_data)
+        with transaction.atomic():
+            M3UAccount.objects.select_for_update().get(pk=instance.m3u_account_id)
+            instance.refresh_from_db()
+            self._validate_unique_match(
+                instance.m3u_account, validated_data, instance
+            )
+            return super().update(instance, validated_data)
+
+
+class M3UFilterSerializer(UniqueRuleMatchMixin, serializers.ModelSerializer):
     """Serializer for M3U Filters"""
 
     class Meta:
@@ -25,9 +135,248 @@ class M3UFilterSerializer(serializers.ModelSerializer):
             "filter_type",
             "regex_pattern",
             "exclude",
+            "enabled",
             "order",
             "custom_properties",
         ]
+
+    def validate_regex_pattern(self, value):
+        import regex
+
+        if not value.strip():
+            raise serializers.ValidationError("Enter a regular expression.")
+        try:
+            regex.compile(value)
+        except regex.error as exc:
+            raise serializers.ValidationError(
+                f"Invalid regular expression: {exc}"
+            ) from exc
+        return value
+
+    def validate_custom_properties(self, value):
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Must be an object.")
+        if "case_sensitive" in value and not isinstance(value["case_sensitive"], bool):
+            raise serializers.ValidationError("case_sensitive must be a boolean.")
+        return value
+
+
+class M3UGroupRuleSerializer(UniqueRuleMatchMixin, serializers.ModelSerializer):
+    requires_review = serializers.BooleanField(read_only=True)
+    match_field = serializers.ChoiceField(choices=("group_name",), required=False)
+    match_mode = serializers.ChoiceField(choices=("any",), required=False)
+
+    class Meta:
+        model = M3UGroupRule
+        fields = [
+            "id",
+            "scope",
+            "match_field",
+            "match_mode",
+            "regex_pattern",
+            "action",
+            "case_sensitive",
+            "enabled",
+            "order",
+            "metadata_defaults",
+            "requires_review",
+        ]
+        extra_kwargs = {
+            "action": {
+                "help_text": (
+                    "Choose enable, disable or reversible ignore. Saved keep results are "
+                    "retained for review only and cannot run."
+                )
+            },
+        }
+
+    validate_regex_pattern = M3UFilterSerializer.validate_regex_pattern
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.requires_review:
+            data["enabled"] = False
+        return data
+
+    def validate_metadata_defaults(self, value):
+        from apps.vod.metadata import validate_source_metadata
+
+        try:
+            return validate_source_metadata(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate(self, attrs):
+        scope = attrs.get("scope", getattr(self.instance, "scope", None))
+        existing = self.instance or self.context.get(
+            "existing_group_rules", {}
+        ).get(attrs.get("preview_id"))
+        action = attrs.get("action", getattr(self.instance, "action", "disable"))
+        if action not in {M3UGroupRule.Action.ENABLE, M3UGroupRule.Action.DISABLE, M3UGroupRule.Action.IGNORE}:
+            if (
+                existing is None
+                or action != existing.action
+                or scope != existing.scope
+                or attrs.get("enabled", False)
+            ):
+                raise serializers.ValidationError({
+                    "action": (
+                        "Choose Enabled, Disabled or Ignore. Removed "
+                        "import results are paused until explicitly replaced."
+                    )
+                })
+            attrs["enabled"] = False
+        elif existing is not None and existing.requires_review:
+            attrs.setdefault("enabled", False)
+        match_field = attrs.get(
+            "match_field", getattr(existing, "match_field", "group_name")
+        )
+        match_mode = attrs.get(
+            "match_mode", getattr(existing, "match_mode", "any")
+        )
+        if match_field != "group_name" or match_mode != "any":
+            raise serializers.ValidationError(
+                {"match_field": "Import rules match category names only."}
+            )
+        metadata = attrs.get(
+            "metadata_defaults", getattr(self.instance, "metadata_defaults", {})
+        )
+        if scope == M3UGroupRule.Scope.LIVE and metadata:
+            raise serializers.ValidationError(
+                {"metadata_defaults": (
+                    "Metadata defaults are available for VOD categories only."
+                )}
+            )
+        return attrs
+
+
+class M3UFilterPreviewRowSerializer(M3UFilterSerializer):
+    preview_id = serializers.CharField(max_length=128)
+
+    class Meta(M3UFilterSerializer.Meta):
+        fields = M3UFilterSerializer.Meta.fields + ["preview_id"]
+
+
+class M3UGroupRulePreviewRowSerializer(M3UGroupRuleSerializer):
+    preview_id = serializers.CharField(max_length=128)
+
+    class Meta(M3UGroupRuleSerializer.Meta):
+        fields = M3UGroupRuleSerializer.Meta.fields + ["preview_id"]
+
+
+class M3UFilterPreviewRequestSerializer(serializers.Serializer):
+    target_id = serializers.CharField(max_length=128)
+    rules = M3UFilterPreviewRowSerializer(many=True, allow_empty=False)
+    group_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+        required=False,
+    )
+
+
+class M3UFilterSelectionSerializer(serializers.Serializer):
+    group_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), allow_empty=False,
+    )
+
+
+class M3UGroupRulePreviewRequestSerializer(serializers.Serializer):
+    target_id = serializers.CharField(max_length=128)
+    rules = M3UGroupRulePreviewRowSerializer(many=True, allow_empty=False)
+
+
+class M3URuleOrderSerializer(serializers.Serializer):
+    ids = serializers.ListField(child=serializers.IntegerField(min_value=1))
+    positions = serializers.ListField(
+        child=serializers.IntegerField(min_value=0), required=False
+    )
+    scope = serializers.ChoiceField(choices=M3UGroupRule.Scope.choices, required=False)
+
+
+class M3UGroupRuleOrderSerializer(M3URuleOrderSerializer):
+    scope = serializers.ChoiceField(choices=M3UGroupRule.Scope.choices)
+
+
+class M3UPreviewResultSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    source_metadata = serializers.JSONField(required=False)
+    group = serializers.CharField(required=False)
+    result = serializers.CharField(required=False)
+    relation_id = serializers.IntegerField(required=False)
+    target_id = serializers.IntegerField(required=False)
+    currently_enabled = serializers.BooleanField(required=False)
+    currently_ignored = serializers.BooleanField(required=False)
+    would_enable = serializers.BooleanField(allow_null=True, required=False)
+    would_ignore = serializers.BooleanField(allow_null=True, required=False)
+    action = serializers.CharField(required=False)
+    item_count = serializers.IntegerField(required=False)
+    metadata_defaults = serializers.JSONField(required=False)
+
+
+class M3UGroupContentQuerySerializer(serializers.Serializer):
+    scope = serializers.ChoiceField(choices=M3UGroupRule.Scope.choices)
+    group_id = serializers.IntegerField(min_value=1)
+    search = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
+class M3UGroupContentAvailabilitySerializer(serializers.Serializer):
+    live = serializers.ListField(child=serializers.IntegerField())
+    movie = serializers.ListField(child=serializers.IntegerField())
+    series = serializers.ListField(child=serializers.IntegerField())
+
+
+class M3URuleCoverageSerializer(serializers.Serializer):
+    rule_id = serializers.CharField()
+    count = serializers.IntegerField()
+    field_counts = serializers.DictField(
+        child=serializers.IntegerField(), required=False
+    )
+
+
+class M3UFilterAvailabilitySerializer(serializers.Serializer):
+    ready = serializers.BooleanField()
+    selected_count = serializers.IntegerField()
+    refresh_in_progress = serializers.BooleanField()
+    refresh_failed = serializers.BooleanField()
+    last_completed_refresh = serializers.DateTimeField(allow_null=True)
+    missing_group_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False,
+    )
+    can_load_provider = serializers.BooleanField(required=False)
+
+
+class M3UPreviewResponseSerializer(serializers.Serializer):
+    count = serializers.IntegerField()
+    results = M3UPreviewResultSerializer(many=True)
+    page = serializers.IntegerField()
+    page_size = serializers.IntegerField()
+    content_source = serializers.ChoiceField(
+        choices=("imported", "provider"), required=False
+    )
+    can_load_provider = serializers.BooleanField(required=False)
+    inventory_count = serializers.IntegerField(required=False)
+    catalog_complete = serializers.BooleanField(required=False)
+    last_completed_refresh = serializers.DateTimeField(allow_null=True, required=False)
+    refresh_in_progress = serializers.BooleanField(required=False)
+    rule_coverage = M3URuleCoverageSerializer(many=True, required=False)
+
+
+class M3UCategoryRuleUpdateSerializer(serializers.Serializer):
+    target_id = serializers.IntegerField()
+    enabled = serializers.BooleanField(allow_null=True)
+    ignored = serializers.BooleanField(allow_null=True)
+    metadata_defaults = serializers.JSONField()
+
+
+class M3URuleApplyResponseSerializer(serializers.Serializer):
+    updated = serializers.IntegerField()
+    target_ids = serializers.ListField(child=serializers.IntegerField(), required=False)
+    scope = serializers.CharField(required=False)
+    enabled = serializers.BooleanField(required=False, allow_null=True)
+    ignored = serializers.BooleanField(required=False, allow_null=True)
+    category_updates = M3UCategoryRuleUpdateSerializer(many=True, required=False)
 
 
 class M3UAccountProfileSerializer(serializers.ModelSerializer):

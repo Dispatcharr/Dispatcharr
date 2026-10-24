@@ -5,6 +5,11 @@ from django.db.models import F, OuterRef, Q, Subquery, TextField, Value
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Coalesce, Lower
 from apps.m3u.models import M3UAccount
+from apps.m3u.group_rules import (
+    CategoryImportMap,
+    account_group_rules,
+    evaluate_group_rules,
+)
 from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
 from core.utils import TaskLockRenewer, acquire_task_lock, release_task_lock, ensure_custom_properties_dict
@@ -13,6 +18,10 @@ from .models import (
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
 from .metadata import update_declared_metadata
+from .refresh_progress import VODRefreshProgress
+from apps.m3u.category_preview import (
+    import_cached_categories, known_provider_total, remember_categories,
+)
 from datetime import datetime
 import logging
 import json
@@ -146,6 +155,12 @@ def _refresh_vod_content_impl(account_id):
     """Refresh VOD content for an M3U account with batch processing for improved performance"""
     # Import here to avoid circular import
     from apps.m3u.tasks import send_m3u_update
+    from apps.m3u.filter_catalog import (
+        discard_live_filter_catalog,
+        publish_live_filter_catalog,
+    )
+
+    category_maps = ()
 
     try:
         account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
@@ -160,9 +175,10 @@ def _refresh_vod_content_impl(account_id):
 
         logger.info(f"Starting batch VOD refresh for account {account.name}")
         start_time = timezone.now()
+        progress = VODRefreshProgress(account_id)
 
         # Send start notification
-        send_m3u_update(account_id, "vod_refresh", 0, status="processing")
+        progress.send("Connecting to provider", 0)
 
         with XtreamCodesClient(
             account.server_url,
@@ -171,6 +187,7 @@ def _refresh_vod_content_impl(account_id):
             account.get_user_agent_string()
         ) as client:
 
+            progress.send("Fetching categories and catalog", 5)
             category_maps = refresh_categories(account.id, client)
             if category_maps is None:
                 message = (
@@ -192,16 +209,23 @@ def _refresh_vod_content_impl(account_id):
 
             # Refresh movies with batch processing (pass scan start time)
             movie_provider_total = refresh_movies(
-                client, account, movie_categories, relations, scan_start_time=start_time
+                client,
+                account,
+                movie_categories,
+                relations,
+                scan_start_time=start_time,
+                progress=progress,
             )
 
             # Refresh series with batch processing (pass scan start time)
             series_provider_total = refresh_series(
-                client, account, series_categories, relations, scan_start_time=start_time
+                client, account, series_categories, relations,
+                scan_start_time=start_time, progress=progress,
             )
 
         # Cleanup orphaned VOD content after refresh (scoped to this account only)
         logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
+        progress.send("Cleaning up stale content", 97)
         cleanup_result = cleanup_orphaned_vod_content(account_id=account_id, scan_start_time=start_time)
         logger.info(f"VOD cleanup completed: {cleanup_result}")
         selected_movies = M3UMovieRelation.objects.filter(
@@ -233,6 +257,13 @@ def _refresh_vod_content_impl(account_id):
             end_time,
         )
 
+        for scope, categories in zip(("movie", "series"), category_maps):
+            publish_live_filter_catalog(
+                account_id, getattr(categories, "catalog_stage", None), scope=scope
+            )
+            if isinstance(categories, CategoryImportMap):
+                categories.catalog_stage = None
+
         # Send completion notification
         send_m3u_update(account_id, "vod_refresh", 100, status="success",
                        message=f"VOD refresh completed in {duration:.2f} seconds")
@@ -249,6 +280,51 @@ def _refresh_vod_content_impl(account_id):
                        message=f"VOD refresh failed: {str(e)}")
 
         return f"VOD refresh failed: {str(e)}"
+
+    finally:
+        for categories in category_maps or ():
+            discard_live_filter_catalog(getattr(categories, "catalog_stage", None))
+
+
+def _stage_category_inventory(account, scope, categories, catalog):
+    if not isinstance(categories, CategoryImportMap):
+        return
+    from apps.m3u.filter_catalog import write_live_filter_catalog
+
+    rows = (
+        {
+            "name": item.get("name") or "",
+            "attributes": {
+                "group-title": categories.group_names.get(
+                    str(item.get("category_id")), "Uncategorized"
+                ),
+            },
+        }
+        for item in catalog
+    )
+    categories.catalog_stage = write_live_filter_catalog(
+        account.id, rows, publish=False, scope=scope
+    )
+
+
+def _category_import_map(categories_data, category_type, account):
+    """Discover groups using the same first-match policy as the draft preview."""
+    remember_categories(account, category_type, categories_data)
+    by_name = batch_create_categories(categories_data, category_type, account)
+    result = CategoryImportMap()
+    for category in categories_data:
+        name = category.get("category_name", "Unknown")
+        provider_id = category.get("category_id")
+        if provider_id is None:
+            continue
+        provider_id = str(provider_id)
+        result.group_names[provider_id] = name
+        if name in getattr(by_name, "ignored", ()):
+            result.ignored.add(provider_id)
+        elif name in by_name:
+            result[provider_id] = by_name[name]
+    return result
+
 
 def refresh_categories(account_id, client=None):
     account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
@@ -271,16 +347,9 @@ def refresh_categories(account_id, client=None):
             f"({account.name}); aborting VOD refresh to preserve existing category selections"
         )
         return None
-    category_map = batch_create_categories(categories_data, 'movie', account)
-
-    # Create a mapping from provider category IDs to our category objects
-    movies_category_id_map = {}
-    for cat_data in categories_data:
-        cat_name = cat_data.get('category_name', 'Unknown')
-        provider_cat_id = cat_data.get('category_id')
-        our_category = category_map.get(cat_name)
-        if provider_cat_id and our_category:
-            movies_category_id_map[str(provider_cat_id)] = our_category
+    movies_category_id_map = _category_import_map(
+        categories_data, "movie", account
+    )
 
     # Get the category list to properly map category IDs and names
     logger.info("Fetching series categories from provider...")
@@ -291,21 +360,32 @@ def refresh_categories(account_id, client=None):
             f"({account.name}); aborting VOD refresh to preserve existing category selections"
         )
         return None
-    category_map = batch_create_categories(categories_data, 'series', account)
-
-    # Create a mapping from provider category IDs to our category objects
-    series_category_id_map = {}
-    for cat_data in categories_data:
-        cat_name = cat_data.get('category_name', 'Unknown')
-        provider_cat_id = cat_data.get('category_id')
-        our_category = category_map.get(cat_name)
-        if provider_cat_id and our_category:
-            series_category_id_map[str(provider_cat_id)] = our_category
+    series_category_id_map = _category_import_map(
+        categories_data, "series", account
+    )
 
     return movies_category_id_map, series_category_id_map
 
-def refresh_movies(client, account, categories_by_provider, relations, scan_start_time=None):
-    """Refresh movie content using single API call for all movies"""
+
+def _cached_selected_catalog(client, account, scope, categories, relations):
+    # Uncategorized cannot be requested by an exact provider category ID.
+    uncategorized = categories.get("__uncategorized__")
+    if uncategorized and getattr(relations.get(uncategorized.id), "enabled", False):
+        return None
+    ids = [
+        provider_id
+        for provider_id, category in categories.items()
+        if provider_id != "__uncategorized__"
+        and getattr(relations.get(category.id), "enabled", False)
+        and not getattr(relations.get(category.id), "ignored", False)
+    ]
+    return import_cached_categories(account, scope, ids, client)
+
+
+def refresh_movies(
+    client, account, categories_by_provider, relations, scan_start_time=None, progress=None
+):
+    """Refresh movies, reusing selected category previews or one full catalog."""
     logger.info(f"Refreshing movies for account {account.name}")
 
     # Ensure "Uncategorized" category exists for movies without a category
@@ -316,15 +396,18 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
     )
 
     # Ensure there's a relation for the Uncategorized category
-    account_custom_props = account.custom_properties or {}
-    auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+    category_decision = evaluate_group_rules(
+        account_group_rules(account, "movie"), group_name="Uncategorized"
+    )
+    auto_enable_new = category_decision.enabled
 
     uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
         category=uncategorized_category,
         m3u_account=account,
         defaults={
             'enabled': auto_enable_new,
-            'custom_properties': {}
+            'custom_properties': {},
+            'metadata_defaults': category_decision.metadata_defaults,
         }
     )
 
@@ -339,9 +422,24 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
     # Add to categories_by_provider with a special key for items without category
     categories_by_provider['__uncategorized__'] = uncategorized_category
 
-    # Get all movies in a single API call
-    logger.info("Fetching all movies from provider...")
-    all_movies_data = client.get_vod_streams()  # No category_id = get all movies
+    logger.info("Fetching movie content for import...")
+    if progress:
+        progress.send("Fetching movies", 10)
+    all_movies_data = getattr(categories_by_provider, "catalog", None)
+    partial_catalog = False
+    if all_movies_data is None:
+        all_movies_data = _cached_selected_catalog(
+            client, account, "movie", categories_by_provider, relations
+        )
+        partial_catalog = all_movies_data is not None
+        if all_movies_data is None:
+            all_movies_data = client.get_vod_streams()
+    if isinstance(categories_by_provider, CategoryImportMap):
+        categories_by_provider.catalog = None
+    if not partial_catalog:
+        _stage_category_inventory(
+            account, "movie", categories_by_provider, all_movies_data
+        )
 
     # Process movies in chunks using the simple approach
     chunk_size = 1000
@@ -354,14 +452,28 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 
         logger.info(f"Processing movie chunk {chunk_num}/{total_chunks} ({len(chunk)} movies)")
         process_movie_batch(account, chunk, categories_by_provider, relations, scan_start_time)
+        if progress:
+            processed = i + len(chunk)
+            progress.send(
+                "Processing movies",
+                10 + 45 * processed / total_movies,
+                processed=processed,
+                total=total_movies,
+            )
+
+    if progress and not total_movies:
+        progress.send("Processing movies", 55, processed=0, total=0)
 
     del all_movies_data
     logger.info(f"Completed processing all {total_movies} movies in {total_chunks} chunks")
-    return total_movies
+    # The selected categories are complete, but their sum is not a provider total.
+    return known_provider_total(account, "movie") if partial_catalog else total_movies
 
 
-def refresh_series(client, account, categories_by_provider, relations, scan_start_time=None):
-    """Refresh series content using single API call for all series"""
+def refresh_series(
+    client, account, categories_by_provider, relations, scan_start_time=None, progress=None
+):
+    """Refresh series, reusing selected category previews or one full catalog."""
     logger.info(f"Refreshing series for account {account.name}")
 
     # Ensure "Uncategorized" category exists for series without a category
@@ -372,15 +484,18 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
     )
 
     # Ensure there's a relation for the Uncategorized category
-    account_custom_props = account.custom_properties or {}
-    auto_enable_new = account_custom_props.get("auto_enable_new_groups_series", True)
+    category_decision = evaluate_group_rules(
+        account_group_rules(account, "series"), group_name="Uncategorized"
+    )
+    auto_enable_new = category_decision.enabled
 
     uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
         category=uncategorized_category,
         m3u_account=account,
         defaults={
             'enabled': auto_enable_new,
-            'custom_properties': {}
+            'custom_properties': {},
+            'metadata_defaults': category_decision.metadata_defaults,
         }
     )
 
@@ -395,9 +510,24 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
     # Add to categories_by_provider with a special key for items without category
     categories_by_provider['__uncategorized__'] = uncategorized_category
 
-    # Get all series in a single API call
-    logger.info("Fetching all series from provider...")
-    all_series_data = client.get_series()  # No category_id = get all series
+    logger.info("Fetching series content for import...")
+    if progress:
+        progress.send("Fetching series", 60)
+    all_series_data = getattr(categories_by_provider, "catalog", None)
+    partial_catalog = False
+    if all_series_data is None:
+        all_series_data = _cached_selected_catalog(
+            client, account, "series", categories_by_provider, relations
+        )
+        partial_catalog = all_series_data is not None
+        if all_series_data is None:
+            all_series_data = client.get_series()
+    if isinstance(categories_by_provider, CategoryImportMap):
+        categories_by_provider.catalog = None
+    if not partial_catalog:
+        _stage_category_inventory(
+            account, "series", categories_by_provider, all_series_data
+        )
 
     # Process series in chunks using the simple approach
     chunk_size = 1000
@@ -410,15 +540,28 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
 
         logger.info(f"Processing series chunk {chunk_num}/{total_chunks} ({len(chunk)} series)")
         process_series_batch(account, chunk, categories_by_provider, relations, scan_start_time)
+        if progress:
+            processed = i + len(chunk)
+            progress.send(
+                "Processing series",
+                60 + 30 * processed / total_series,
+                processed=processed,
+                total=total_series,
+            )
+
+    if progress and not total_series:
+        progress.send("Processing series", 90, processed=0, total=0)
 
     del all_series_data
     logger.info(f"Completed processing all {total_series} series in {total_chunks} chunks")
-    return total_series
+    return known_provider_total(account, "series") if partial_catalog else total_series
 
 
 def batch_create_categories(categories_data, category_type, account):
     """Create categories in batch and return a mapping"""
-    category_names = [cat.get('category_name', 'Unknown') for cat in categories_data]
+    category_names = list(
+        dict.fromkeys(cat.get("category_name", "Unknown") for cat in categories_data)
+    )
 
     relations_to_create = []
 
@@ -433,12 +576,30 @@ def batch_create_categories(categories_data, category_type, account):
 
     logger.debug(f"Found {len(existing_categories)} existing categories")
 
-    # Check if we should auto-enable new categories based on account settings
-    account_custom_props = account.custom_properties or {}
-    if category_type == 'movie':
-        auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
-    else:  # series
-        auto_enable_new = account_custom_props.get("auto_enable_new_groups_series", True)
+    # New categories are opt-in through import rules; existing selections
+    # are not changed by discovery.
+    auto_enable_new = False
+
+    known_names = set(
+        M3UVODCategoryRelation.objects.filter(
+            m3u_account=account, category__category_type=category_type
+        ).values_list("category__name", flat=True)
+    )
+    rules = account_group_rules(account, category_type)
+    decisions = {
+        name: evaluate_group_rules(
+            rules,
+            group_name=name,
+            default_enabled=auto_enable_new,
+        )
+        for name in category_names
+        if name not in known_names
+    }
+    ignored = {
+        name for name, decision in decisions.items() if decision.ignored
+    } | set(M3UVODCategoryRelation.objects.filter(
+        m3u_account=account, category__category_type=category_type, ignored=True,
+    ).values_list("category__name", flat=True))
 
     # Create missing categories in batch
     new_categories = []
@@ -450,12 +611,22 @@ def batch_create_categories(categories_data, category_type, account):
         else:
             # Existing category - create relationship with enabled based on auto_enable setting
             # (category exists globally but is new to this account)
-            relations_to_create.append(M3UVODCategoryRelation(
-                category=existing_categories[name],
-                m3u_account=account,
-                custom_properties={},
-                enabled=auto_enable_new,
-            ))
+            relations_to_create.append(
+                M3UVODCategoryRelation(
+                    category=existing_categories[name],
+                    m3u_account=account,
+                    custom_properties={},
+                    enabled=(
+                        decisions[name].enabled
+                        if name in decisions
+                        else auto_enable_new
+                    ),
+                    ignored=name in ignored,
+                    metadata_defaults=(
+                        decisions[name].metadata_defaults if name in decisions else {}
+                    ),
+                )
+            )
 
     logger.debug(f"{len(new_categories)} new categories found")
     logger.debug(f"{len(relations_to_create)} existing categories found for account")
@@ -474,7 +645,9 @@ def batch_create_categories(categories_data, category_type, account):
                     category=cat,
                     m3u_account=account,
                     custom_properties={},
-                    enabled=auto_enable_new,
+                    enabled=decisions[cat.name].enabled,
+                    ignored=decisions[cat.name].ignored,
+                    metadata_defaults=decisions[cat.name].metadata_defaults,
                 )
             )
 
@@ -496,7 +669,7 @@ def batch_create_categories(categories_data, category_type, account):
 
     relations_to_delete = [
         rel for rel in existing_relations
-        if rel.category_id not in current_category_ids and rel.category.name != "Uncategorized"
+        if not rel.ignored and rel.category_id not in current_category_ids and rel.category.name != "Uncategorized"
     ]
 
     if relations_to_delete:
@@ -525,23 +698,7 @@ def batch_create_categories(categories_data, category_type, account):
             VODCategory.objects.filter(id__in=orphaned_category_ids).delete()
             logger.info(f"Deleted {len(orphaned_category_ids)} orphaned {category_type} categories with no remaining associations")
 
-    # 🔑 Fetch all relations for this account, for all categories
-    # relations = { rel.id: rel for rel in M3UVODCategoryRelation.objects
-    #     .filter(category__in=existing_categories.values(), m3u_account=account)
-    #     .select_related("category", "m3u_account")
-    # }
-
-    # Attach relations to category objects
-    # for rel in relations:
-    #     existing_categories[rel.category.name]['relation'] = {
-    #         "relation_id": rel.id,
-    #         "category_id": rel.category_id,
-    #         "account_id": rel.m3u_account_id,
-    #     }
-
-
-    return existing_categories
-
+    return CategoryImportMap(existing_categories, ignored=ignored)
 
 
 @shared_task
@@ -582,6 +739,8 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             category = None
 
             provider_cat_id = str(movie_data.get('category_id', '')) if movie_data.get('category_id') else None
+            if provider_cat_id in getattr(categories, "ignored", ()):
+                continue
             movie_data['_provider_category_id'] = provider_cat_id
             movie_data['_category_id'] = None
 
@@ -947,6 +1106,8 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             category = None
 
             provider_cat_id = str(series_data.get('category_id', '')) if series_data.get('category_id') else None
+            if provider_cat_id in getattr(categories, "ignored", ()):
+                continue
             series_data['_provider_category_id'] = provider_cat_id
             series_data['_category_id'] = None
 

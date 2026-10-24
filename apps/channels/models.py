@@ -604,6 +604,14 @@ class Channel(models.Model):
         related_name="auto_created_channels",
         help_text="The M3U account that auto-created this channel"
     )
+    auto_created_from = models.ForeignKey(
+        "ChannelGroupM3UAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="auto_created_channels",
+        help_text="The provider group membership that auto-created this channel",
+    )
 
     # Populated at import; rolled up via ChannelStream signal / m3u refresh.
     is_catchup = models.BooleanField(
@@ -1362,6 +1370,7 @@ class ChannelGroupM3UAccount(models.Model):
     )
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     enabled = models.BooleanField(default=True)
+    ignored = models.BooleanField(default=False)
     auto_channel_sync = models.BooleanField(
         default=False,
         help_text='Automatically create/delete channels to match streams in this group'
@@ -1390,11 +1399,19 @@ class ChannelGroupM3UAccount(models.Model):
 
     class Meta:
         unique_together = ("channel_group", "m3u_account")
+        constraints = [models.CheckConstraint(
+            condition=models.Q(ignored=False) | models.Q(enabled=False),
+            name="live_ignored_category_disabled",
+        )]
 
     def __str__(self):
         return f"{self.channel_group.name} - {self.m3u_account.name} (Enabled: {self.enabled})"
 
     def save(self, *args, **kwargs):
+        if self.ignored:
+            self.enabled = False
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"enabled"}
         if self.custom_properties is not None and not isinstance(
             self.custom_properties, dict
         ):

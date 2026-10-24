@@ -129,3 +129,33 @@ class XCEmptyFetchGuardTests(TransactionTestCase):
         mock_sync.assert_called_once()
         account.refresh_from_db()
         self.assertEqual(account.status, M3UAccount.Status.SUCCESS)
+
+    @patch('apps.vod.tasks.refresh_vod_content.delay')
+    def test_initial_import_includes_enabled_vod_despite_separate_schedule(self, vod):
+        account, group, _stream, _channel = self._setup_xc_account_with_auto_channel()
+        account.custom_properties = {'enable_vod': True}
+        account.vod_refresh_after_live = False
+        account.save(update_fields=['custom_properties', 'vod_refresh_after_live'])
+        stream = {
+            'name': 'Example stream',
+            'url': 'https://example.invalid/live.m3u8',
+            'attributes': {'group-title': group.name, 'stream_id': '1'},
+        }
+        with (
+            patch(
+                'apps.m3u.tasks.refresh_m3u_groups',
+                return_value=([], {group.name: group.id}),
+            ),
+            patch('apps.m3u.tasks.collect_xc_streams', return_value=([stream], 1)),
+            patch(
+                'apps.m3u.tasks._process_stream_batches_with_retry',
+                return_value=(1, 0, 0, 0),
+            ),
+            patch('apps.m3u.tasks.cleanup_streams', return_value=0),
+            patch('apps.m3u.tasks.cleanup_stale_group_relationships'),
+            patch('apps.m3u.tasks.sync_auto_channels', return_value={}),
+            patch('apps.m3u.tasks.send_m3u_update'),
+            patch('apps.m3u.tasks.log_system_event'),
+        ):
+            _refresh_single_m3u_account_impl(account.id, include_vod=True)
+        vod.assert_called_once_with(account.id)

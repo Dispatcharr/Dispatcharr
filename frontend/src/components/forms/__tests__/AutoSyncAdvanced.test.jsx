@@ -46,6 +46,7 @@ vi.mock('lucide-react', () => ({
 
 vi.mock('@mantine/core', () => ({
   Box: ({ children, style }) => <div style={style}>{children}</div>,
+  Paper: ({ children }) => <div>{children}</div>,
   Button: ({ children, onClick, disabled, loading, variant, size, color }) => (
     <button
       onClick={onClick}

@@ -47,6 +47,15 @@ const hasChannelGroupChange = (update) =>
     'channel_group_id'
   );
 
+const ruleErrorNotification = (message, error, accountId, kind) => {
+  const id = `account-rules-${accountId}-${kind}-error`;
+  hideNotification(id);
+  return errorNotification(message, error, {
+    id,
+    autoClose: false,
+  });
+};
+
 // FormData cannot encode null. Empty string clears hash_key so the account
 // inherits the global M3U Hash Key (same as JSON body sending null).
 const appendPlaylistFormData = (body, values) => {
@@ -1576,6 +1585,7 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update M3U group settings', e);
+      throw e;
     }
   }
 
@@ -1624,6 +1634,12 @@ export default class API {
       errorNotification('Failed to refresh Live TV', e);
       throw e;
     }
+  }
+  static async getM3UStreamFilterAvailability(accountId, groupIds) {
+    return request(
+      `${host}/api/m3u/accounts/${accountId}/filters/availability/`,
+      ...(groupIds ? [{ method: 'POST', body: { group_ids: groupIds } }] : [])
+    );
   }
   static async refreshAllPlaylist() {
     try {
@@ -2152,6 +2168,193 @@ export default class API {
       );
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
+    }
+  }
+
+  static async getM3URules(accountId, kind, scope) {
+    try {
+      const query = scope ? `?scope=${encodeURIComponent(scope)}` : '';
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/${query}`
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to load account rules',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async getM3UGroupContent(
+    accountId,
+    scope,
+    groupId,
+    page,
+    pageSize,
+    search = ''
+  ) {
+    const query = new URLSearchParams({
+      scope,
+      group_id: groupId,
+      page,
+      page_size: pageSize,
+      search,
+    });
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/content-preview/?${query}`
+    );
+  }
+
+  static async getM3UGroupContentAvailability(accountId) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/content-availability/`
+    );
+  }
+
+  static async loadM3UGroupContent(
+    accountId,
+    scope,
+    groupId,
+    pageSize = 50,
+    search = ''
+  ) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/load-content-preview/?page_size=${pageSize}`,
+      { method: 'POST', body: { scope, group_id: groupId, search } }
+    );
+  }
+
+  static async saveM3URule(accountId, kind, ruleId, values) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/${ruleId ? `${ruleId}/` : ''}`,
+        { method: ruleId ? 'PATCH' : 'POST', body: values }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to save account rule',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async deleteM3URule(accountId, kind, ruleId) {
+    try {
+      await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/${ruleId}/`,
+        { method: 'DELETE' }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to delete account rule',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async previewM3URules(
+    accountId,
+    kind,
+    rules,
+    targetId,
+    page,
+    pageSize,
+    { notifyOnError = true, groupIds } = {}
+  ) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/preview-draft/?page=${page}&page_size=${pageSize}`,
+        {
+          method: 'POST',
+          body: {
+            rules,
+            target_id: String(targetId),
+            ...(groupIds ? { group_ids: groupIds } : {}),
+          },
+        }
+      );
+    } catch (error) {
+      if (notifyOnError)
+        ruleErrorNotification(
+          'Failed to preview account rules',
+          error,
+          accountId,
+          kind
+        );
+      throw error;
+    }
+  }
+
+  static async reorderM3URules(accountId, kind, ids, scope, positions) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/reorder/`,
+        {
+          method: 'POST',
+          body: { ids, positions, ...(scope ? { scope } : {}) },
+        }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to save rule order',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async analyzeM3URules(accountId, kind, rules, options = {}) {
+    return API.previewM3URules(
+      accountId,
+      kind,
+      rules,
+      rules[0].preview_id,
+      1,
+      1,
+      { ...options, notifyOnError: false }
+    );
+  }
+
+  static async applyM3UGroupRule(accountId, ruleId) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/group-rules/${ruleId}/apply/`,
+        { method: 'POST' }
+      );
+    } catch (error) {
+      errorNotification('Failed to apply import rule', error);
+      throw error;
+    }
+  }
+
+  static async saveApplyM3UGroupRules(accountId, rules, targetId) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/group-rules/save-apply/`,
+        {
+          method: 'POST',
+          body: { rules, target_id: String(targetId) },
+        }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to save and apply import rules',
+        error,
+        accountId,
+        'group-rules'
+      );
+      throw error;
     }
   }
 

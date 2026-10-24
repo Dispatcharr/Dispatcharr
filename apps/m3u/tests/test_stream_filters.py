@@ -11,6 +11,13 @@ from apps.m3u.tasks import (
 
 
 class CompileM3UStreamFiltersTests(SimpleTestCase):
+    def test_disabled_filter_is_not_compiled_or_applied(self):
+        from apps.m3u.models import M3UFilter
+
+        paused = M3UFilter(regex_pattern="[", enabled=False)
+        self.assertEqual(_compile_m3u_stream_filters([paused]), [])
+        self.assertFalse(paused.applies_to("News", "News"))
+
     def test_compiles_case_insensitive_when_configured(self):
         filter_obj = MagicMock()
         filter_obj.regex_pattern = "news"

@@ -11,6 +11,8 @@ from .api_views import (
     M3UAccountProfileViewSet,
 )
 
+from .rule_previews import M3UGroupRuleViewSet
+
 app_name = "m3u"
 
 router = DefaultRouter()
@@ -26,6 +28,11 @@ router.register(
     basename="m3u-filters",
 )
 router.register(r"server-groups", ServerGroupViewSet, basename="server-group")
+router.register(
+    r"accounts/(?P<account_id>\d+)/group-rules",
+    M3UGroupRuleViewSet,
+    basename="m3u-group-rules",
+)
 
 urlpatterns = [
     path("refresh/", RefreshM3UAPIView.as_view(), name="m3u_refresh"),

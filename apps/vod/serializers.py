@@ -177,7 +177,7 @@ class M3UVODCategoryRelationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = M3UVODCategoryRelation
-        fields = ["category", "m3u_account", "enabled", "custom_properties", "metadata_defaults"]
+        fields = ["category", "m3u_account", "enabled", "ignored", "custom_properties", "metadata_defaults"]
 
 
 class VODCategorySerializer(serializers.ModelSerializer):

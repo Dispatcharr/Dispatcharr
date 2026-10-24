@@ -1,0 +1,80 @@
+.ruleRow[data-covered='true'] {
+  color: var(--mantine-color-dimmed);
+
+  :global(.mantine-Input-input) {
+    color: var(--mantine-color-dimmed);
+  }
+}
+
+.coverageMarker {
+  display: inline-flex;
+  flex-shrink: 0;
+  vertical-align: middle;
+  color: var(--mantine-color-dimmed);
+}
+
+.ruleTable {
+  table-layout: fixed;
+}
+
+.ruleTable :is(th, td) {
+  padding: 6px;
+}
+
+.centeredCell.centeredCell {
+  text-align: center;
+}
+
+.centeredCheckbox {
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.metadataCell.metadataCell {
+  position: relative;
+  padding: 0;
+}
+
+.metadataFields {
+  display: grid;
+  grid-template-columns: 90fr 90fr 90fr 110fr;
+  align-items: center;
+  min-height: 42px;
+}
+
+.metadataFields > div {
+  min-width: 0;
+  padding: 6px;
+}
+
+.metadataOverlay.metadataOverlay {
+  position: absolute;
+  inset: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-default);
+  color: var(--mantine-color-blue-5);
+  background: light-dark(rgb(255 255 255 / 75%), rgb(37 38 43 / 72%));
+  opacity: 0;
+}
+
+.metadataCell:hover .metadataOverlay:not(:disabled),
+.metadataOverlay:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .metadataOverlay.metadataOverlay:not(:disabled) {
+    opacity: 1;
+    background: light-dark(rgb(255 255 255 / 35%), rgb(37 38 43 / 35%));
+  }
+}
+.ruleRow[data-inactive='true'] {
+  opacity: 0.55;
+}
+
+.ruleRow:not([data-inactive='true']) :global(.mantine-Input-input:disabled) {
+  color: var(--mantine-color-text);
+}
