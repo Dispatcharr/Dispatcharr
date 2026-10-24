@@ -263,7 +263,7 @@ const StreamProfiles = () => {
       <Paper
         style={{
           bgcolor: theme.palette.background.paper,
-          borderRadius: 2,
+          borderRadius: 'var(--mantine-radius-default)',
         }}
       >
         <Box

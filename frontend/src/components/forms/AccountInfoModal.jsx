@@ -7,7 +7,6 @@ import {
   Center,
   Divider,
   Group,
-  Modal,
   Stack,
   Table,
   TableTbody,
@@ -27,6 +26,7 @@ import {
 } from 'lucide-react';
 import usePlaylistsStore from '../../store/playlists';
 import { SensitiveValue } from '../SensitiveFields.jsx';
+import StackedModal from '../StackedModal.jsx';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
   formatTimestamp,
@@ -98,7 +98,12 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
 
   if (!currentProfile || !currentProfile.custom_properties) {
     return (
-      <Modal opened={isOpen} onClose={onClose} title="Account Information">
+      <StackedModal
+        stackId="m3u-profile-account-info"
+        opened={isOpen}
+        onClose={onClose}
+        title="Account Information"
+      >
         <Center p="lg">
           <Stack align="center" spacing="md">
             <Info size={48} color="gray" />
@@ -109,7 +114,7 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
             </Text>
           </Stack>
         </Center>
-      </Modal>
+      </StackedModal>
     );
   }
 
@@ -148,7 +153,8 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
   const isExpired = timeRemaining === 'Expired';
 
   return (
-    <Modal
+    <StackedModal
+      stackId="m3u-profile-account-info"
       opened={isOpen}
       onClose={onClose}
       title={
@@ -257,7 +263,7 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
                 style={{
                   backgroundColor: 'rgba(134, 142, 150, 0.08)',
                   border: '1px solid rgba(134, 142, 150, 0.2)',
-                  borderRadius: 6,
+                  borderRadius: 'var(--mantine-radius-default)',
                 }}
               >
                 <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
@@ -393,7 +399,7 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
           style={{
             backgroundColor: 'rgba(134, 142, 150, 0.08)',
             border: '1px solid rgba(134, 142, 150, 0.2)',
-            borderRadius: 6,
+            borderRadius: 'var(--mantine-radius-default)',
           }}
         >
           <Group spacing="xs" align="center" position="apart">
@@ -423,7 +429,7 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
           </Group>
         </Box>
       </Stack>
-    </Modal>
+    </StackedModal>
   );
 };
 

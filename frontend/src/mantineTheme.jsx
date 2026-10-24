@@ -1,6 +1,15 @@
-import { createTheme, MantineProvider, rem } from '@mantine/core';
+import { Checkbox, CheckboxIndicator, createTheme } from '@mantine/core';
 
 const theme = createTheme({
+  defaultRadius: 'md',
+
+  components: {
+    Checkbox: Checkbox.extend({ defaultProps: { radius: 'sm' } }),
+    CheckboxIndicator: CheckboxIndicator.extend({
+      defaultProps: { radius: 'sm' },
+    }),
+  },
+
   globalStyles: (theme) => ({
     ':root': {
       '--mantine-color-text': '#fff',

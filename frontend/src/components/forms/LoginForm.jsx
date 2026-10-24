@@ -298,8 +298,8 @@ const LoginForm = () => {
               If running with Docker:
             </Text>
             <Code block>
-              docker exec -it &lt;container_name&gt; python manage.py changepassword
-              &lt;username&gt;
+              docker exec -it &lt;container_name&gt; python manage.py
+              changepassword &lt;username&gt;
             </Code>
           </div>
           <div>

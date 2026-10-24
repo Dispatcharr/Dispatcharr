@@ -88,6 +88,7 @@ vi.mock('../../components/PluginActionList.jsx', () => ({
 
 vi.mock('@mantine/core', async () => {
   return {
+    useModalStackContext: () => null,
     ActionIcon: ({ children, onClick, ...props }) => <button onClick={onClick} {...props}>{children}</button>,
     AppShellMain: ({ children }) => <div>{children}</div>,
     Badge: ({ children }) => <span>{children}</span>,

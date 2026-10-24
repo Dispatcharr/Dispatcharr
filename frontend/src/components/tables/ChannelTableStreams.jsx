@@ -374,7 +374,7 @@ const StreamInfoCell = React.memo(
             p="xs"
             style={{
               backgroundColor: 'rgba(0,0,0,0.1)',
-              borderRadius: '4px',
+              borderRadius: 'var(--mantine-radius-default)',
             }}
           >
             <StatsCategory

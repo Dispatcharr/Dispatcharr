@@ -1,5 +1,5 @@
 // frontend/src/components/FloatingVideo.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import usePlaylistsStore from '../store/playlists';
 import useStreamsStore from '../store/streams';
 import useChannelsStore from '../store/channels';
@@ -13,11 +13,62 @@ import {
   ScrollArea,
   Text,
   Code,
+  Progress,
 } from '@mantine/core';
 import API from '../api';
 import { useNavigate } from 'react-router-dom';
 import { CircleCheck } from 'lucide-react';
-import { showNotification } from '../utils/notificationUtils.js';
+import {
+  showNotification,
+  updateNotification,
+  hideNotification,
+} from '../utils/notificationUtils.js';
+import { getStatusContent } from '../utils/tables/M3UsTableUtils.js';
+
+const RefreshProgress = ({ data }) => {
+  const content = getStatusContent(data);
+  if (!content) return <Text size="xs">Preparing next phase…</Text>;
+  const labels = {
+    downloading: 'Downloading',
+    parsing: 'Processing streams',
+    groups: 'Processing categories',
+  };
+  const phase =
+    content.phase ||
+    labels[content.type] ||
+    content.label ||
+    'Preparing refresh';
+  return (
+    <Stack gap={4}>
+      <Text size="xs">
+        {phase}
+        {content.progress != null && `: ${content.progress}%`}
+      </Text>
+      {content.progress != null && (
+        <Progress size="xs" value={content.progress} />
+      )}
+      {content.elapsedTime && (
+        <Text size="xs">Elapsed: {content.elapsedTime}</Text>
+      )}
+      {content.timeRemaining && (
+        <Text size="xs">Remaining (estimated): {content.timeRemaining}</Text>
+      )}
+      {content.speed && <Text size="xs">Speed: {content.speed}</Text>}
+      {content.itemsProcessed != null && content.itemsTotal != null && (
+        <Text size="xs">
+          Catalog entries: {content.itemsProcessed.toLocaleString()} /{' '}
+          {content.itemsTotal.toLocaleString()}
+        </Text>
+      )}
+      {content.streamsProcessed != null && (
+        <Text size="xs">Streams: {content.streamsProcessed}</Text>
+      )}
+      {content.groupsProcessed != null && (
+        <Text size="xs">Categories: {content.groupsProcessed}</Text>
+      )}
+    </Stack>
+  );
+};
 
 const M3uSetupSuccess = ({ data }) => {
   const navigate = useNavigate();
@@ -32,19 +83,19 @@ const M3uSetupSuccess = ({ data }) => {
 
     // Then navigate to the content sources page
     // Using the exact path that matches your app's routing structure
-    navigate('/sources');
+    navigate('/sources/m3u');
   };
 
   return (
     <Stack>
       {data.message ||
-        'M3U groups loaded. Configure group filters and auto channel sync settings.'}
+        'M3U categories loaded. Configure category imports and auto channel sync settings.'}
       <Group grow>
         <Button size="xs" variant="default" onClick={onClickRefresh}>
           Refresh Now
         </Button>
         <Button size="xs" variant="outline" onClick={onClickConfigure}>
-          Configure Groups
+          Configure Categories
         </Button>
       </Group>
     </Stack>
@@ -118,15 +169,32 @@ export default function M3URefreshNotification() {
   const fetchEPGData = useEPGsStore((s) => s.fetchEPGData);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
 
-  const [notificationStatus, setNotificationStatus] = useState({});
+  const notificationStatus = useRef({});
+  const visibleNotifications = useRef(new Set());
   // Modal payload for the "Click for details" affordance on syncs that
   // produced failed_stream_details. Null when the modal is closed.
   const [failureModal, setFailureModal] = useState(null);
 
+  const notify = (data, notification) => {
+    const kind = data.action === 'vod_refresh' ? 'vod' : 'live';
+    const id = `m3u-refresh-${data.account}-${kind}`;
+    const options = {
+      ...notification,
+      id,
+      onClose: () => visibleNotifications.current.delete(id),
+    };
+    if (visibleNotifications.current.has(id)) updateNotification(id, options);
+    else {
+      visibleNotifications.current.add(id);
+      showNotification(options);
+    }
+  };
+
   const handleM3UUpdate = (data) => {
     // Skip if status hasn't changed
     if (
-      JSON.stringify(notificationStatus[data.account]) == JSON.stringify(data)
+      JSON.stringify(notificationStatus.current[data.account]) ==
+      JSON.stringify(data)
     ) {
       return;
     }
@@ -137,10 +205,17 @@ export default function M3URefreshNotification() {
     }
 
     // Update notification status
-    setNotificationStatus((prev) => ({
-      ...prev,
-      [data.account]: data,
-    }));
+    notificationStatus.current[data.account] = data;
+
+    // Guided setup owns its handoffs; retain errors, but do not add a
+    // second configure/categories prompt or progress toast over its dialog.
+    if (playlist.setup_step && data.status !== 'error') {
+      if (data.status === 'pending_setup') {
+        fetchChannelGroups();
+        fetchPlaylists();
+      }
+      return;
+    }
 
     // Handle different status types
     if (data.status === 'pending_setup') {
@@ -153,46 +228,39 @@ export default function M3URefreshNotification() {
       return;
     }
 
-    // Skip if already errored
-    const currentStatus = notificationStatus[data.account];
-    if (currentStatus && currentStatus.status === 'error') {
-      return;
-    }
-
-    // Handle normal progress updates (0% start, 100% completion)
-    if (data.progress === 0 || data.progress === 100) {
-      handleProgressNotification(playlist, data);
-    }
+    handleProgressNotification(playlist, data);
   };
 
   const handlePendingSetup = (playlist, data) => {
     fetchChannelGroups();
     fetchPlaylists();
 
-    showNotification({
+    notify(data, {
       title: `M3U Setup: ${playlist.name}`,
       message: <M3uSetupSuccess data={data} />,
       color: 'orange.5',
+      loading: false,
+      withCloseButton: true,
       autoClose: 5000,
     });
   };
 
   const handleError = (playlist, data) => {
-    if (data.progress === 100) {
-      showNotification({
-        title: `M3U Processing: ${playlist.name}`,
-        message: `${data.action || 'Processing'} failed: ${data.error || 'Unknown error'}`,
-        color: 'red',
-        autoClose: 5000,
-      });
-    }
+    notify(data, {
+      title: `${data.action === 'vod_refresh' ? 'VOD' : 'Live TV'} refresh: ${playlist.name}`,
+      message: data.error || data.message || 'Refresh failed. Please retry.',
+      color: 'red',
+      loading: false,
+      withCloseButton: true,
+      autoClose: false,
+    });
   };
 
   const getActionMessage = (action) => {
     const messages = {
       downloading: 'Downloading',
       parsing: 'Stream parsing',
-      processing_groups: 'Group parsing',
+      processing_groups: 'Category loading',
       vod_refresh: 'VOD content refresh',
     };
     return messages[action] || 'Processing';
@@ -215,6 +283,19 @@ export default function M3URefreshNotification() {
   };
 
   const handleProgressNotification = (playlist, data) => {
+    const complete =
+      data.progress === 100 &&
+      ['parsing', 'processing_groups', 'vod_refresh'].includes(data.action);
+    if (!complete) {
+      notify(data, {
+        title: `${data.action === 'vod_refresh' ? 'VOD' : 'Live TV'} refresh: ${playlist.name}`,
+        message: <RefreshProgress data={data} />,
+        loading: true,
+        autoClose: false,
+        withCloseButton: false,
+      });
+      return;
+    }
     const baseMessage = getActionMessage(data.action);
     let message =
       data.progress == 0
@@ -271,30 +352,42 @@ export default function M3URefreshNotification() {
       }
     }
 
-    showNotification({
-      title: `M3U Processing: ${playlist.name}`,
+    notify(data, {
+      title: `${data.action === 'vod_refresh' ? 'VOD' : 'Live TV'} refresh: ${playlist.name}`,
       message: body,
-      loading: data.progress == 0,
+      loading: false,
       autoClose,
-      icon: data.progress == 100 ? <CircleCheck /> : null,
+      withCloseButton: true,
+      color: data.channels_failed > 0 ? 'yellow' : 'green',
+      icon: <CircleCheck />,
     });
   };
 
   useEffect(() => {
-    // Reset notificationStatus when playlists change to prevent stale data
-    if (playlists.length > 0 && Object.keys(notificationStatus).length > 0) {
-      const validIds = playlists.map((p) => p.id);
-      const currentIds = Object.keys(notificationStatus).map(Number);
-
-      // If we have notification statuses for playlists that no longer exist, reset the state
-      if (!currentIds.every((id) => validIds.includes(id))) {
-        setNotificationStatus({});
+    const validIds = new Set(playlists.map((playlist) => String(playlist.id)));
+    for (const account of Object.keys(notificationStatus.current)) {
+      if (!validIds.has(account)) {
+        delete notificationStatus.current[account];
+        for (const kind of ['live', 'vod']) {
+          const id = `m3u-refresh-${account}-${kind}`;
+          if (visibleNotifications.current.delete(id)) hideNotification(id);
+        }
       }
     }
 
     // Process all refresh progress updates
     Object.values(refreshProgress).map((data) => handleM3UUpdate(data));
-  }, [playlists, refreshProgress]);
+  });
+
+  useEffect(() => {
+    const visible = visibleNotifications.current;
+    const seen = notificationStatus.current;
+    return () => {
+      visible.forEach((id) => hideNotification(id));
+      visible.clear();
+      for (const account of Object.keys(seen)) delete seen[account];
+    };
+  }, []);
 
   return (
     <Modal

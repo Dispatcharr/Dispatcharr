@@ -25,6 +25,7 @@ vi.mock('../../../utils/forms/AccountInfoModalUtils.js', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  useModalStackContext: () => null,
   ActionIcon: ({ children, onClick, loading, disabled }) => (
     <button
       data-testid="action-icon"

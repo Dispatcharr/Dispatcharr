@@ -16,6 +16,18 @@ vi.mock('@mantine/core', () => ({
 }));
 
 describe('ContentSourcesPage', () => {
+  it('shows only M3U accounts on the M3U source page', () => {
+    useUserAgentsStore.mockReturnValue(null);
+    render(<ContentSourcesPage section="m3u" />);
+    expect(screen.getByTestId('m3us-table')).toBeInTheDocument();
+    expect(screen.queryByTestId('epgs-table')).not.toBeInTheDocument();
+  });
+  it('shows only EPG sources on the EPG source page', () => {
+    useUserAgentsStore.mockReturnValue(null);
+    render(<ContentSourcesPage section="epg" />);
+    expect(screen.getByTestId('epgs-table')).toBeInTheDocument();
+    expect(screen.queryByTestId('m3us-table')).not.toBeInTheDocument();
+  });
   it('renders error on userAgents error', () => {
     const errorMessage = 'Failed to load userAgents.';
     useUserAgentsStore.mockReturnValue(errorMessage);

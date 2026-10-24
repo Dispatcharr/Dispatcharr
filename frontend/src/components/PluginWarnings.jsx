@@ -47,7 +47,7 @@ export const PluginWarningBox = ({ tone, icon, children }) => {
       style={{
         background,
         border: `1px solid ${border}`,
-        borderRadius: 'var(--mantine-radius-sm)',
+        borderRadius: 'var(--mantine-radius-default)',
         padding: '10px 14px',
         display: 'flex',
         gap: 10,

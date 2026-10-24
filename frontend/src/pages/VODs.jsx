@@ -2,16 +2,11 @@ import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
   Box,
-  Flex,
-  Grid,
-  GridCol,
-  Group,
-  Loader,
-  LoadingOverlay,
-  Pagination,
+  Button,
   SegmentedControl,
   Select,
   Stack,
+  Text,
   TextInput,
   Title,
 } from '@mantine/core';
@@ -20,6 +15,12 @@ import { useDisclosure } from '@mantine/hooks';
 import useAuthStore from '../store/auth';
 import useVODStore from '../store/useVODStore';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+import ListPagination from '../components/ListPagination.jsx';
+import {
+  hideNotification,
+  showNotification,
+} from '../utils/notificationUtils.js';
+import classes from '../components/VODLayout.module.css';
 import {
   filterCategoriesToEnabled,
   getCategoryOptions,
@@ -34,28 +35,9 @@ const VODModal = React.lazy(() => import('../components/VODModal'));
 const VODCard = React.lazy(() => import('../components/cards/VODCard'));
 const SeriesCard = React.lazy(() => import('../components/cards/SeriesCard'));
 
-const MIN_CARD_WIDTH = 260;
-const MAX_CARD_WIDTH = 320;
-
-const useCardColumns = () => {
-  const [columns, setColumns] = useState(4);
-
-  useEffect(() => {
-    const calcColumns = () => {
-      const container = document.getElementById('vods-container');
-      const width = container ? container.offsetWidth : window.innerWidth;
-      let colCount = Math.floor(width / MIN_CARD_WIDTH);
-      if (colCount < 1) colCount = 1;
-      if (colCount > 6) colCount = 6;
-      setColumns(colCount);
-    };
-    calcColumns();
-    window.addEventListener('resize', calcColumns);
-    return () => window.removeEventListener('resize', calcColumns);
-  }, []);
-
-  return columns;
-};
+const PAGE_SIZES = [12, 24, 48, 96];
+const LOAD_ERROR_ID = 'vod-library-load-error';
+const CATEGORIES_ERROR_ID = 'vod-library-categories-error';
 
 const VODsPage = () => {
   const authUser = useAuthStore((s) => s.user);
@@ -63,7 +45,7 @@ const VODsPage = () => {
   const seriesEnabled = isVodSeriesEnabled(authUser);
   const vodAllowed = canViewVod(authUser);
 
-  const currentPageContent = useVODStore((s) => s.currentPageContent); // Direct subscription
+  const currentPageContent = useVODStore((s) => s.currentPageContent);
   const allCategories = useVODStore((s) => s.categories);
   const filters = useVODStore((s) => s.filters);
   const currentPage = useVODStore((s) => s.currentPage);
@@ -74,13 +56,15 @@ const VODsPage = () => {
   const setPageSize = useVODStore((s) => s.setPageSize);
   const fetchContent = useVODStore((s) => s.fetchContent);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
+  const categoriesError = useVODStore((s) => s.categoriesError);
+  const categoriesLoading = useVODStore((s) => s.categoriesLoading);
 
   // Hydrate page size from localStorage before the first content fetch so a
   // stored size that differs from the store default does not cause a refetch.
   const [pageSizeReady, setPageSizeReady] = useState(false);
   useEffect(() => {
     const stored = localStorage.getItem('vodsPageSize');
-    if (stored && !isNaN(Number(stored)) && Number(stored) !== pageSize) {
+    if (PAGE_SIZES.includes(Number(stored)) && Number(stored) !== pageSize) {
       setPageSize(Number(stored));
     }
     setPageSizeReady(true);
@@ -88,11 +72,10 @@ const VODsPage = () => {
   }, []);
 
   const handlePageSizeChange = (value) => {
-    setPageSize(Number(value));
-    localStorage.setItem('vodsPageSize', value);
+    setPageSize(value);
+    localStorage.setItem('vodsPageSize', String(value));
   };
 
-  // const showVideo = useVideoStore((s) => s.showVideo); - removed as unused
   const [selectedSeries, setSelectedSeries] = useState(null);
   const [selectedVOD, setSelectedVOD] = useState(null);
   const [
@@ -102,7 +85,9 @@ const VODsPage = () => {
   const [vodModalOpened, { open: openVODModal, close: closeVODModal }] =
     useDisclosure(false);
   const [initialLoad, setInitialLoad] = useState(true);
-  const columns = useCardColumns();
+  const [fetching, setFetching] = useState(false);
+  const [contentError, setContentError] = useState(null);
+  const [reload, setReload] = useState(0);
   const [categories, setCategories] = useState({});
 
   const typeOptions = useMemo(() => {
@@ -134,14 +119,6 @@ const VODsPage = () => {
     setFilters({ type: requiredType, category: '' });
   }, [vodAllowed, requiredType, filters.type, setFilters]);
 
-  // Helper function to get display data based on current filters
-  const getDisplayData = () => {
-    return (currentPageContent || []).map((item) => ({
-      ...item,
-      _vodType: item.contentType === 'movie' ? 'movie' : 'series',
-    }));
-  };
-
   useEffect(() => {
     setCategories(filterCategoriesToEnabled(allCategories));
   }, [allCategories]);
@@ -152,9 +129,46 @@ const VODsPage = () => {
   }, [vodAllowed, fetchCategories]);
 
   useEffect(() => {
+    if (!vodAllowed || !categoriesError) {
+      hideNotification(CATEGORIES_ERROR_ID);
+      return;
+    }
+    showNotification({
+      id: CATEGORIES_ERROR_ID,
+      title: 'Library categories could not be loaded',
+      message:
+        'Titles remain available. Retry categories to update the category filter.',
+      color: 'red',
+      autoClose: false,
+    });
+  }, [vodAllowed, categoriesError]);
+
+  useEffect(() => {
     if (!vodAllowed || !pageSizeReady) return;
     if (requiredType && filters.type !== requiredType) return;
-    fetchContent().finally(() => setInitialLoad(false));
+    let cancelled = false;
+    setFetching(true);
+    fetchContent().finally(() => {
+      if (cancelled) return;
+      const error = useVODStore.getState().error;
+      setContentError(error);
+      setInitialLoad(false);
+      setFetching(false);
+      if (error) {
+        showNotification({
+          id: LOAD_ERROR_ID,
+          title: 'Library could not be loaded',
+          message: error,
+          color: 'red',
+          autoClose: false,
+        });
+      } else {
+        hideNotification(LOAD_ERROR_ID);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [
     vodAllowed,
     pageSizeReady,
@@ -163,7 +177,16 @@ const VODsPage = () => {
     currentPage,
     pageSize,
     fetchContent,
+    reload,
   ]);
+
+  useEffect(
+    () => () => {
+      hideNotification(LOAD_ERROR_ID);
+      hideNotification(CATEGORIES_ERROR_ID);
+    },
+    []
+  );
 
   if (!vodAllowed) {
     return <Navigate to="/channels" replace />;
@@ -192,101 +215,134 @@ const VODsPage = () => {
 
   const categoryOptions = getCategoryOptions(categories, filters);
 
-  const totalPages = Math.ceil(totalCount / pageSize);
   const showTypeControl = typeOptions.length > 1;
 
   return (
-    <Box p="md" id="vods-container">
-      <Stack spacing="md">
-        <Group position="apart">
-          <Title order={2}>Video on Demand</Title>
-        </Group>
-
-        {/* Filters */}
-        <Group spacing="md" align="end">
+    <Box p="md" id="vods-container" className={classes.library}>
+      <Stack gap="md">
+        <Title order={2}>Library</Title>
+        <div className={classes.toolbar}>
           {showTypeControl && (
             <SegmentedControl
               value={filters.type}
               onChange={handleTypeChange}
               data={typeOptions}
+              aria-label="Content type"
             />
           )}
 
           <TextInput
             placeholder="Search VODs..."
-            icon={<Search size={16} />}
+            aria-label="Search library"
+            leftSection={<Search size={16} />}
             value={filters.search}
             onChange={(e) => setFilters({ search: e.target.value })}
-            miw={200}
+            className={classes.search}
           />
 
           <Select
             placeholder="Category"
+            aria-label="Category"
             data={categoryOptions}
             value={filters.category}
             onChange={onCategoryChange}
             clearable
-            miw={150}
+            className={classes.category}
+            searchable
+            error={!!categoriesError}
+            disabled={categoriesLoading}
+            aria-busy={categoriesLoading}
           />
-
-          <Select
-            label="Page Size"
-            value={String(pageSize)}
-            onChange={handlePageSizeChange}
-            data={['12', '24', '48', '96'].map((v) => ({
-              value: v,
-              label: v,
-            }))}
-            w={110}
-          />
-        </Group>
+          {categoriesError && (
+            <Button
+              variant="default"
+              onClick={() => fetchCategories()}
+              disabled={categoriesLoading}
+            >
+              {categoriesLoading ? 'Retrying categories…' : 'Retry categories'}
+            </Button>
+          )}
+        </div>
 
         {/* Content */}
         {initialLoad ? (
-          <Flex justify="center" py="xl">
-            <Loader size="lg" />
-          </Flex>
+          <Text role="status" c="dimmed" ta="center" py="xl">
+            Loading library…
+          </Text>
+        ) : contentError ? (
+          <Stack align="center" py="xl" gap="sm">
+            <Text c="red">Library could not be loaded.</Text>
+            <Button
+              variant="default"
+              onClick={() => setReload((value) => value + 1)}
+              disabled={fetching}
+            >
+              Retry
+            </Button>
+          </Stack>
         ) : (
           <>
-            <Grid gutter="md">
-              <ErrorBoundary inline>
-                <Suspense fallback={<Loader />}>
-                  {getDisplayData().map((item) => (
-                    <GridCol
-                      span={12 / columns}
-                      key={`${item.contentType}_${item.id}`}
-                      miw={MIN_CARD_WIDTH}
-                      maw={MAX_CARD_WIDTH}
-                      m={'0 auto'}
+            <Box aria-busy={fetching}>
+              {fetching && (
+                <Text size="sm" c="dimmed" role="status" mb="sm">
+                  Updating library…
+                </Text>
+              )}
+              {currentPageContent.length ? (
+                <div className={classes.grid}>
+                  <ErrorBoundary inline>
+                    <Suspense
+                      fallback={
+                        <Text c="dimmed" role="status">
+                          Loading titles…
+                        </Text>
+                      }
                     >
-                      {item.contentType === 'series' ? (
-                        <SeriesCard series={item} onClick={handleSeriesClick} />
-                      ) : (
-                        <VODCard vod={item} onClick={handleVODCardClick} />
-                      )}
-                    </GridCol>
-                  ))}
-                </Suspense>
-              </ErrorBoundary>
-            </Grid>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <Flex justify="center" mt="md">
-                <Pagination
-                  page={currentPage}
-                  onChange={setPage}
-                  total={totalPages}
-                />
-              </Flex>
-            )}
+                      {currentPageContent.map((item) => (
+                        <React.Fragment key={`${item.contentType}_${item.id}`}>
+                          {item.contentType === 'series' ? (
+                            <SeriesCard
+                              series={item}
+                              onClick={handleSeriesClick}
+                            />
+                          ) : (
+                            <VODCard vod={item} onClick={handleVODCardClick} />
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </Suspense>
+                  </ErrorBoundary>
+                </div>
+              ) : (
+                !fetching && (
+                  <Stack align="center" gap="xs" py="xl">
+                    <Text fw={600}>No titles found.</Text>
+                    <Text size="sm" c="dimmed">
+                      {filters.search || filters.category
+                        ? 'Try a different search or category.'
+                        : 'No movies or series have been imported yet.'}
+                    </Text>
+                  </Stack>
+                )
+              )}
+            </Box>
+            <ListPagination
+              page={currentPage}
+              pageSize={pageSize}
+              total={totalCount}
+              onPageChange={setPage}
+              onPageSizeChange={handlePageSizeChange}
+              pageSizeOptions={PAGE_SIZES}
+              itemLabel="Items"
+              disabled={fetching}
+            />
           </>
         )}
       </Stack>
 
       {/* Series Episodes Modal */}
       <ErrorBoundary inline>
-        <Suspense fallback={<LoadingOverlay />}>
+        <Suspense fallback={null}>
           <SeriesModal
             series={selectedSeries}
             opened={seriesModalOpened}
@@ -297,7 +353,7 @@ const VODsPage = () => {
 
       {/* VOD Details Modal */}
       <ErrorBoundary inline>
-        <Suspense fallback={<LoadingOverlay />}>
+        <Suspense fallback={null}>
           <VODModal
             vod={selectedVOD}
             opened={vodModalOpened}

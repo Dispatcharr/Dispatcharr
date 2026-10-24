@@ -38,6 +38,7 @@ vi.mock('@mantine/dropzone', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  useModalStackContext: () => null,
   Box: ({ children }) => <div>{children}</div>,
   Button: ({ children, onClick, type, loading, variant }) => (
     <button

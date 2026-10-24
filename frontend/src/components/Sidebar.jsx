@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
   ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Eye,
@@ -434,12 +435,26 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           }
 
           return withDivider(
-            <NavItem
-              key={item.path}
-              item={item}
-              isActive={location.pathname === item.path}
-              collapsed={collapsed}
-            />
+            <Box key={item.id}>
+              {!collapsed &&
+                item.section &&
+                navItems[idx - 1]?.section !== item.section && (
+                  <Text
+                    size="xs"
+                    fw={700}
+                    tt="uppercase"
+                    c="dimmed"
+                    className="sidebar-section-heading"
+                  >
+                    {item.section}
+                  </Text>
+                )}
+              <NavItem
+                item={item}
+                isActive={location.pathname === item.path}
+                collapsed={collapsed}
+              />
+            </Box>
           );
         })}
       </Stack>
@@ -493,6 +508,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   return (
     <AppShellNavbar
+      className={`dispatcharr-sidebar${collapsed ? ' dispatcharr-sidebar-collapsed' : ''}`}
       width={{ base: collapsed ? miniDrawerWidth : drawerWidth }}
       p="xs"
       style={{
@@ -501,31 +517,43 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         minHeight: '100vh',
         display: 'flex',
         flexDirection: 'column',
+        overflow: 'visible',
       }}
     >
-      {/* Brand: click to toggle collapse */}
-      <Group
-        onClick={toggleDrawer}
-        style={{
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '16px 12px',
-          fontSize: 18,
-          fontWeight: 600,
-          color: '#FFFFFF',
-          justifyContent: collapsed ? 'center' : 'flex-start',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        <img width={30} src={logo} alt="Dispatcharr" />
-        {!collapsed && (
-          <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 150 }}>
-            Dispatcharr
-          </Text>
-        )}
-      </Group>
+      <Box className="sidebar-brand">
+        <Group
+          gap={12}
+          wrap="nowrap"
+          justify={collapsed ? 'center' : 'flex-start'}
+          className="sidebar-brand-content"
+        >
+          <img width={32} height={32} src={logo} alt="Dispatcharr" />
+          {!collapsed && (
+            <Text
+              fw={600}
+              size="lg"
+              c="white"
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+              }}
+            >
+              Dispatcharr
+            </Text>
+          )}
+        </Group>
+        <ActionIcon
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          onClick={toggleDrawer}
+          variant="default"
+          size={22}
+          className="sidebar-edge-toggle"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+        </ActionIcon>
+      </Box>
 
       <SlidingPanels
         isOpen={nav.isOpen}
@@ -552,7 +580,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               environment.ip_lookup_pending && (
                 <Box>
                   <Text size="xs" fw={500} mb={4}>Public IP</Text>
-                  <Skeleton height={36} radius="sm" />
+                  <Skeleton height={36} radius="md" />
                 </Box>
               )}
 
@@ -568,7 +596,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                       display: 'flex',
                       alignItems: 'center',
                       border: '1px solid var(--mantine-color-default-border)',
-                      borderRadius: 'var(--mantine-radius-sm)',
+                      borderRadius: 'var(--mantine-radius-default)',
                       backgroundColor: 'var(--mantine-color-dark-6)',
                       height: '36px',
                       paddingLeft: '10px',

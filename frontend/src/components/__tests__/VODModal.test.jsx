@@ -9,6 +9,10 @@ import useSettingsStore from '../../store/settings';
 vi.mock('../../store/useVODStore');
 vi.mock('../../store/useVideoStore');
 vi.mock('../../store/settings');
+vi.mock('../../utils/notificationUtils.js', () => ({
+  showNotification: vi.fn(),
+  hideNotification: vi.fn(),
+}));
 
 // Mock utils
 vi.mock('../../utils', () => ({
@@ -150,6 +154,25 @@ describe('VODModal', () => {
     mockFetchMovieProviders.mockResolvedValue([mockProvider]);
   });
 
+  it.each([0, '0', '0.0', null])(
+    'omits empty rating and duration badges (%s)',
+    async (rating) => {
+      const vod = { ...mockVOD, rating, duration_secs: 0 };
+      mockFetchMovieDetailsFromProvider.mockResolvedValue(vod);
+      render(<VODModal vod={vod} opened onClose={mockOnClose} />);
+      await waitFor(() =>
+        expect(screen.getByText('Play Movie')).not.toBeDisabled()
+      );
+      expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('0.0', { exact: true })
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('0 min', { exact: true })
+      ).not.toBeInTheDocument();
+    }
+  );
+
   it('should not render when vod is null', () => {
     render(<VODModal vod={null} opened={true} onClose={mockOnClose} />);
     expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
@@ -200,6 +223,61 @@ describe('VODModal', () => {
     await waitFor(() => {
       expect(mockFetchMovieProviders).toHaveBeenCalledWith(mockVOD.id);
     });
+  });
+  it('shows the title once and fetches each initial resource only once', async () => {
+    render(<VODModal vod={mockVOD} opened onClose={mockOnClose} />);
+    await screen.findByText('Test Provider');
+    expect(screen.getAllByText('Test Movie')).toHaveLength(1);
+    expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledTimes(1);
+    expect(mockFetchMovieProviders).toHaveBeenCalledTimes(1);
+  });
+  it('shows artwork when the provider supplies a URL string', async () => {
+    mockFetchMovieDetailsFromProvider.mockResolvedValue({
+      ...mockVOD,
+      movie_image: null,
+      logo: 'https://example.com/provider-poster.jpg',
+    });
+    render(<VODModal vod={mockVOD} opened onClose={mockOnClose} />);
+    await waitFor(() =>
+      expect(screen.getByAltText('Test Movie')).toHaveAttribute(
+        'src',
+        'https://example.com/provider-poster.jpg'
+      )
+    );
+  });
+
+  it('does not let a slow provider response overwrite a newer selection', async () => {
+    let resolveOlder;
+    mockFetchMovieProviders.mockResolvedValue([
+      mockProvider,
+      { ...mockProvider, id: 2 },
+      { ...mockProvider, id: 3 },
+    ]);
+    mockFetchMovieDetailsFromProvider.mockImplementation((id, providerId) =>
+      providerId === 2
+        ? new Promise((resolve) => {
+            resolveOlder = resolve;
+          })
+        : Promise.resolve({
+            ...mockVOD,
+            name: providerId === 3 ? 'Latest provider movie' : mockVOD.name,
+          })
+    );
+    render(<VODModal vod={mockVOD} opened onClose={mockOnClose} />);
+    const select = await screen.findByTestId('provider-select');
+    fireEvent.change(select, { target: { value: '2' } });
+    fireEvent.change(select, { target: { value: '3' } });
+    await screen.findByText('Latest provider movie');
+    resolveOlder({ ...mockVOD, name: 'Outdated provider movie' });
+    await waitFor(() =>
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Latest provider movie'
+      )
+    );
+    expect(
+      screen.queryByText('Outdated provider movie')
+    ).not.toBeInTheDocument();
+    expect(mockFetchMovieProviders).toHaveBeenCalledTimes(1);
   });
 
   it('should show loading state while fetching details', () => {
@@ -323,7 +401,7 @@ describe('VODModal', () => {
     render(<VODModal vod={vodWithTech} opened={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Technical Details:/)).toBeInTheDocument();
+      expect(screen.getByText(/Technical Details/)).toBeInTheDocument();
     });
   });
 

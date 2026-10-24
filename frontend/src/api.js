@@ -2021,9 +2021,7 @@ export default class API {
   static async getGrid(params = new URLSearchParams()) {
     try {
       const qs = params.toString();
-      const url = qs
-        ? `${host}/api/epg/grid/?${qs}`
-        : `${host}/api/epg/grid/`;
+      const url = qs ? `${host}/api/epg/grid/?${qs}` : `${host}/api/epg/grid/`;
       const response = await request(url);
 
       return response.data;

@@ -89,6 +89,11 @@ describe('VODCardUtils', () => {
   });
 
   describe('vodLogoSrc', () => {
+    it('accepts the URL string returned by provider details', () => {
+      expect(
+        VODCardUtils.vodLogoSrc('https://provider.example/poster.jpg')
+      ).toBe('https://provider.example/poster.jpg');
+    });
     it('prefers cache_url over url', () => {
       expect(
         VODCardUtils.vodLogoSrc({
@@ -99,9 +104,9 @@ describe('VODCardUtils', () => {
     });
 
     it('falls back to url when cache_url is missing', () => {
-      expect(VODCardUtils.vodLogoSrc({ url: 'http://provider/poster.jpg' })).toBe(
-        'http://provider/poster.jpg'
-      );
+      expect(
+        VODCardUtils.vodLogoSrc({ url: 'http://provider/poster.jpg' })
+      ).toBe('http://provider/poster.jpg');
     });
 
     it('returns null for missing logo', () => {

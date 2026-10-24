@@ -53,6 +53,7 @@ vi.mock('../../../utils/forms/CronBuilderUtils.js', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', async () => ({
+  useModalStackContext: () => null,
   Badge: ({ children, size, variant, color }) => (
     <span
       data-testid="badge"

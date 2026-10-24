@@ -1,6 +1,4 @@
 import {
-  ActionIcon,
-  Badge,
   Box,
   Card,
   CardSection,
@@ -9,8 +7,9 @@ import {
   Stack,
   Text,
 } from '@mantine/core';
-import { Calendar, Clock, Play, Star } from 'lucide-react';
+import { Clock, Play, Star } from 'lucide-react';
 import React from 'react';
+import classes from '../VODLayout.module.css';
 import {
   formatDuration,
   getSeasonLabel,
@@ -20,117 +19,115 @@ import {
 const VODCard = ({ vod, onClick }) => {
   const isEpisode = vod.type === 'episode';
   const posterSrc = vodLogoSrc(vod.logo);
+  const durationSeconds = vod.duration_secs ?? vod.duration;
+  const hasRating = Number(vod.rating) > 0;
 
   const getDisplayTitle = () => {
     if (isEpisode && vod.series) {
       return (
-        <Stack spacing={4}>
-          <Text size="sm" c="dimmed">
+        <Stack gap={4}>
+          <Text size="sm" c="dimmed" lineClamp={1} title={vod.series.name}>
             {vod.series.name}
           </Text>
-          <Text weight={500}>
+          <Text
+            fw={600}
+            size="sm"
+            lineClamp={2}
+            title={`${getSeasonLabel(vod)} - ${vod.name}`}
+            className={classes.cardTitle}
+          >
             {getSeasonLabel(vod)} - {vod.name}
           </Text>
         </Stack>
       );
     }
-    return <Text weight={500}>{vod.name}</Text>;
+    return (
+      <Text
+        fw={600}
+        size="sm"
+        lineClamp={2}
+        title={vod.name}
+        className={classes.cardTitle}
+      >
+        {vod.name}
+      </Text>
+    );
   };
 
-  const handleCardClick = async () => {
-    // Just pass the basic vod info to the parent handler
+  const handleCardClick = () => {
     onClick(vod);
   };
 
   return (
     <Card
-      shadow="sm"
-      padding="md"
+      padding={0}
       radius="md"
       withBorder
-      style={{ cursor: 'pointer', backgroundColor: '#27272A' }}
+      className={classes.card}
+      role="button"
+      tabIndex={0}
+      aria-label={`Preview ${vod.name}`}
+      aria-haspopup="dialog"
       onClick={handleCardClick}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          handleCardClick();
+        }
+      }}
     >
       <CardSection>
-        <Box pos="relative" h={300}>
+        <Box className={classes.cardMedia}>
           {posterSrc ? (
             <Image
               src={posterSrc}
-              height={300}
+              className={classes.cardImage}
               alt={vod.name}
-              fit="contain"
+              fit="cover"
+              loading="lazy"
             />
           ) : (
-            <Box
-              style={{
-                backgroundColor: '#404040',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-              h={300}
-              display="flex"
-            >
-              <Play size={48} color="#666" />
+            <Box className={classes.placeholder} h="100%" display="flex">
+              <Play size={36} aria-hidden="true" />
             </Box>
           )}
-
-          <ActionIcon
-            style={{
-              backgroundColor: 'rgba(0,0,0,0.7)',
-            }}
-            pos="absolute"
-            top={8}
-            right={8}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClick(vod);
-            }}
-          >
-            <Play size={16} color="white" />
-          </ActionIcon>
-
-          <Badge
-            pos="absolute"
-            bottom={8}
-            left={8}
-            color={isEpisode ? 'blue' : 'green'}
-          >
-            {isEpisode ? 'Episode' : 'Movie'}
-          </Badge>
         </Box>
       </CardSection>
 
-      <Stack spacing={8} mt="md">
+      <Stack gap={2} className={classes.cardInfo}>
         {getDisplayTitle()}
 
-        <Group spacing={16}>
-          {vod.year && (
-            <Group spacing={4}>
-              <Calendar size={14} color="#666" />
-              <Text size="xs" c="dimmed">
-                {vod.year}
-              </Text>
-            </Group>
-          )}
+        <Text size="xs" c="dimmed">
+          {isEpisode ? 'Episode' : 'Movie'}
+          {vod.year ? (
+            <>
+              {' '}
+              · <span>{vod.year}</span>
+            </>
+          ) : null}
+        </Text>
 
-          {vod.duration && (
-            <Group spacing={4}>
-              <Clock size={14} color="#666" />
-              <Text size="xs" c="dimmed">
-                {formatDuration(vod.duration_secs)}
-              </Text>
-            </Group>
-          )}
+        {(durationSeconds > 0 || hasRating) && (
+          <Group gap="sm">
+            {durationSeconds > 0 && (
+              <Group gap={4} wrap="nowrap" c="dimmed">
+                <Clock size={12} aria-hidden="true" />
+                <Text size="xs" c="dimmed">
+                  {formatDuration(durationSeconds)}
+                </Text>
+              </Group>
+            )}
 
-          {vod.rating && (
-            <Group spacing={4}>
-              <Star size={14} color="#666" />
-              <Text size="xs" c="dimmed">
-                {vod.rating}
-              </Text>
-            </Group>
-          )}
-        </Group>
+            {hasRating && (
+              <Group gap={4} wrap="nowrap" c="dimmed">
+                <Star size={12} aria-hidden="true" />
+                <Text size="xs" c="dimmed">
+                  {vod.rating}
+                </Text>
+              </Group>
+            )}
+          </Group>
+        )}
 
         {vod.genre && (
           <Text size="xs" c="dimmed" lineClamp={1}>

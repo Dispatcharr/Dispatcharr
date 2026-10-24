@@ -20,10 +20,11 @@ import {
   Stack,
   Text,
   Textarea,
-  TextInput,
 } from '@mantine/core';
+import { SensitiveTextInput as TextInput } from '../SensitiveFields.jsx';
 import { Info } from 'lucide-react';
 import { useForm } from '@mantine/form';
+import ConfirmationDialog from '../ConfirmationDialog.jsx';
 import useEPGsStore from '../../store/epgs';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
@@ -96,6 +97,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   const [programPosterUrl, setProgramPosterUrl] = useState('');
   const [timezoneOptions, setTimezoneOptions] = useState([]);
   const [loadingTimezones, setLoadingTimezones] = useState(true);
+  const [discardOpen, setDiscardOpen] = useState(false);
 
   const form = useForm({
     initialValues: getDummyEpgFormInitialValues(),
@@ -188,6 +190,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   ]);
 
   useEffect(() => {
+    if (!isOpen) return;
+    setDiscardOpen(false);
     if (epg) {
       const custom = epg.custom_properties || {};
       form.setValues({
@@ -196,13 +200,14 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         source_type: 'dummy',
         custom_properties: buildCustomProperties(custom),
       });
+      form.resetDirty();
       applyCustomState(custom);
     } else {
       form.reset();
       applyCustomState(); // called with no args — all setters receive ''
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [epg]);
+  }, [epg, isOpen]);
 
   // Fetch available timezones from the API
   useEffect(() => {
@@ -292,21 +297,23 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           return;
         }
 
-        await updateEPG(values, epg);
+        const result = await updateEPG(values, epg);
+        if (!result?.id) return;
         showNotification({
           title: 'Success',
           message: 'Dummy EPG source updated successfully',
           color: 'green',
         });
       } else {
-        await addEPG(values);
+        const result = await addEPG(values);
+        if (!result?.id) return;
         showNotification({
           title: 'Success',
           message: 'Dummy EPG source created successfully',
           color: 'green',
         });
       }
-      onClose();
+      close();
     } catch (error) {
       showNotification({
         title: 'Error',
@@ -316,13 +323,43 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     }
   };
 
+  const close = () => {
+    form.reset();
+    applyCustomState();
+    setDiscardOpen(false);
+    onClose();
+  };
+
+  const requestClose = () => {
+    if (form.submitting) return;
+    if (form.isDirty()) setDiscardOpen(true);
+    else close();
+  };
+
   return (
     <Modal
       opened={isOpen}
-      onClose={onClose}
+      onClose={requestClose}
       title={epg ? 'Edit Dummy EPG Source' : 'Create Dummy EPG Source'}
       size="xl"
+      closeButtonProps={{ disabled: form.submitting }}
+      closeOnEscape={!discardOpen && !form.submitting}
+      closeOnClickOutside={!discardOpen && !form.submitting}
+      trapFocus={!discardOpen}
     >
+      <ConfirmationDialog
+        opened={discardOpen}
+        onClose={() => setDiscardOpen(false)}
+        onConfirm={close}
+        title="Discard unsaved changes?"
+        message={
+          epg?.id
+            ? 'These EPG changes have not been saved. Discard them and close? Previously saved settings will be kept.'
+            : 'This EPG source has not been created. Discard the unsaved entries?'
+        }
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+      />
       <form onSubmit={form.onSubmit(handleSubmit)}>
         <Stack spacing="md">
           {/* Import from Existing - Only show when creating new */}
@@ -1207,10 +1244,20 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           )}
 
           <Group justify="flex-end" mt="md">
-            <Button variant="default" onClick={onClose}>
+            <Button
+              variant="default"
+              onClick={requestClose}
+              disabled={form.submitting}
+            >
               Cancel
             </Button>
-            <Button type="submit">{epg ? 'Update' : 'Create'}</Button>
+            <Button
+              type="submit"
+              disabled={form.submitting}
+              loading={form.submitting}
+            >
+              {epg ? 'Update' : 'Create'}
+            </Button>
           </Group>
         </Stack>
       </form>

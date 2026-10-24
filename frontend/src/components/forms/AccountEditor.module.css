@@ -1,0 +1,217 @@
+/* Keep editor layout stable regardless of Mantine's CSS bundle order. */
+.content.content {
+  --modal-content-height: 92dvh;
+  height: var(--modal-content-height);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.body.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  flex-shrink: 0;
+}
+
+.form.form,
+.tabs.tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabList.tabList {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.panel.panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--mantine-spacing-md) 2px;
+}
+
+.footer.footer {
+  flex: 0 0 auto;
+  margin-top: auto;
+  border-top: 1px solid var(--mantine-color-default-border);
+  padding-top: var(--mantine-spacing-md);
+}
+
+.plainFooter.plainFooter {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.categoryFooter.categoryFooter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  padding-top: var(--mantine-spacing-xs);
+}
+
+.categoryFooterActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--mantine-spacing-xs);
+}
+
+.accountContent {
+  --modal-size: 72vw;
+}
+
+.accountContent.accountContent {
+  height: auto;
+  max-height: 92dvh;
+}
+
+/* Match the Xtream account step, including shorter URL/file and setup panels. */
+.m3uContent.m3uContent {
+  height: min(36.5rem, 92dvh);
+}
+
+.accountGrid {
+  min-height: 100%;
+}
+
+.setupPanel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--mantine-spacing-md) 2px;
+}
+
+/* All panels share one grid cell, so the tallest panel sets a stable height. */
+.accountTabs.accountTabs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.accountPanel.accountPanel {
+  display: block !important;
+  grid-area: 2 / 1;
+}
+
+.accountPanel[data-editor-active='false'] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.categoryPanel.categoryPanel {
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.categoryTableFrame.categoryTableFrame {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-default);
+}
+
+.categorySearch {
+  flex: 0 1 24rem;
+  min-width: 0;
+}
+
+.categoryStatusButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px;
+  border-radius: var(--mantine-radius-default);
+}
+
+.categoryStatusButton:hover .categoryStatusBadge {
+  filter: brightness(1.15);
+}
+
+.categoryStatusButton:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+
+/* Separate cell borders keep scrolled rows from showing above the sticky header. */
+.categoryTable.categoryTable {
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.categoryTable thead {
+  background-color: var(--mantine-color-body);
+}
+
+.categoryTable :is(th, td) {
+  border-bottom: 1px solid var(--table-border-color);
+}
+
+.categoryTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.paginationSlot {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.previewStack.previewStack {
+  flex: 1;
+  min-height: 0;
+}
+
+.previewScroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.previewContent {
+  --modal-size: 60vw;
+}
+
+.sourceContent {
+  --modal-size: 68vw;
+}
+
+.sourceContent.sourceContent {
+  height: auto;
+  max-height: 92dvh;
+}
+
+.userContent.userContent {
+  height: min(36.5rem, 92dvh);
+  max-height: 92dvh;
+}
+
+@media (max-width: 50em) {
+  .accountContent,
+  .sourceContent,
+  .previewContent {
+    --modal-size: 94vw;
+  }
+}
+
+@media (max-width: 65em) {
+  .categoryFooter.categoryFooter {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .paginationSlot {
+    grid-column: 1;
+  }
+}

@@ -5,6 +5,8 @@ import useUsersStore from '../../store/users';
 import useChannelsStore from '../../store/channels';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
+import useScreenshotMode from '../../store/useScreenshotMode.js';
+import { SensitiveValue } from '../SensitiveFields.jsx';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
 import {
@@ -54,11 +56,23 @@ import {
   getUserFullName,
 } from '../../utils/tables/UsersTableUtils.js';
 
+const resizableColumns = [
+  { id: 'user_level', size: 120, minRatio: 0.07 },
+  { id: 'username', size: 120, minRatio: 0.08 },
+  { id: 'name', size: 125, minRatio: 0.07 },
+  { id: 'email', size: 150, minRatio: 0.09 },
+  { id: 'date_joined', size: 120, minRatio: 0.08 },
+  { id: 'last_login', size: 175, minRatio: 0.1 },
+  { id: 'custom_properties', size: 125, minRatio: 0.08 },
+  { id: 'channel_profiles', size: 180, minRatio: 0.1 },
+];
+
 const deleteUser = (id) => {
   return API.deleteUser(id);
 };
 const XCPasswordCell = ({ getValue }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const screenshotMode = useScreenshotMode((state) => state.enabled);
   const customProps = getValue() || {};
   const password = customProps.xc_password || 'N/A';
 
@@ -82,16 +96,30 @@ const XCPasswordCell = ({ getValue }) => {
           whiteSpace: 'nowrap',
         }}
       >
-        {password === 'N/A' ? 'N/A' : isVisible ? password : '••••••••'}
+        {password === 'N/A'
+          ? 'N/A'
+          : isVisible && !screenshotMode
+            ? password
+            : '••••••••'}
       </Text>
       {password !== 'N/A' && (
         <ActionIcon
           size="xs"
           variant="transparent"
           color="gray"
+          aria-label={
+            isVisible && !screenshotMode
+              ? 'Hide XC password'
+              : 'Show XC password'
+          }
+          disabled={screenshotMode}
           onClick={() => setIsVisible((v) => !v)}
         >
-          {isVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+          {isVisible && !screenshotMode ? (
+            <EyeOff size={12} />
+          ) : (
+            <Eye size={12} />
+          )}
         </ActionIcon>
       )}
     </Group>
@@ -198,6 +226,7 @@ const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
         size={iconSize}
         variant="transparent"
         color={theme.tailwind.yellow[3]}
+        aria-label={`Edit user ${row.original.username}`}
         onClick={onEdit}
         disabled={authUser.user_level !== USER_LEVELS.ADMIN}
       >
@@ -208,6 +237,7 @@ const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
         size={iconSize}
         variant="transparent"
         color={theme.tailwind.red[6]}
+        aria-label={`Delete user ${row.original.username}`}
         onClick={onDelete}
         disabled={
           authUser.user_level !== USER_LEVELS.ADMIN ||
@@ -249,6 +279,19 @@ const UsersTable = () => {
   // Empty query uses delay 0 so the clear button restores the list immediately.
   const debouncedSearch = useDebounce(search, search.trim() === '' ? 0 : 300);
   const [sorting, setSorting] = useState([]);
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
+    'users-table-column-sizing',
+    {}
+  );
+  const responsiveColumnSizing = useMemo(
+    () =>
+      Object.fromEntries(
+        resizableColumns
+          .filter(({ id }) => columnSizing[id] != null)
+          .map(({ id }) => [id, columnSizing[id]])
+      ),
+    [columnSizing]
+  );
 
   const executeDeleteUser = useCallback(async (id) => {
     setIsLoading(true);
@@ -320,7 +363,9 @@ const UsersTable = () => {
               textOverflow: 'ellipsis',
             }}
           >
-            {getValue()}
+            <SensitiveValue component="span" inherit>
+              {getValue()}
+            </SensitiveValue>
           </Box>
         ),
       },
@@ -453,6 +498,26 @@ const UsersTable = () => {
     ]
   );
 
+  const responsiveColumns = useMemo(
+    () =>
+      columns.map((column) => {
+        const sizing = resizableColumns.find(
+          ({ id }) => id === (column.id || column.accessorKey)
+        );
+        return sizing
+          ? {
+              ...column,
+              grow: true,
+              flexRatio: true,
+              size: sizing.size,
+              minSize: 0,
+              enableResizing: sizing.id !== 'channel_profiles',
+            }
+          : column;
+      }),
+    [columns]
+  );
+
   const closeUserForm = () => {
     setSelectedUser(null);
     setUserModalOpen(false);
@@ -472,7 +537,7 @@ const UsersTable = () => {
   const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
 
   const table = useTable({
-    columns,
+    columns: responsiveColumns,
     data,
     allRowIds: data.map((user) => user.id),
     enablePagination: false,
@@ -480,6 +545,11 @@ const UsersTable = () => {
     enableRowVirtualization: false,
     renderTopToolbar: false,
     sorting,
+    columnSizing: responsiveColumnSizing,
+    setColumnSizing,
+    pairedColumnSizing: resizableColumns,
+    tableId: 'users',
+    onResetColumnSizing: () => setColumnSizing({}),
     manualSorting: true,
     manualFiltering: true,
     manualPagination: false,
@@ -506,7 +576,7 @@ const UsersTable = () => {
           minHeight: '100vh',
         }}
       >
-        <Stack gap="md" style={{ maxWidth: '1200px', width: '100%' }}>
+        <Stack gap="md" style={{ minWidth: 0, width: '100%' }}>
           <Flex style={{ alignItems: 'center', paddingBottom: 10 }} gap={15}>
             <Text
               style={{
@@ -622,7 +692,11 @@ const UsersTable = () => {
             <div style={{ whiteSpace: 'pre-line' }}>
               {`Are you sure you want to delete the following user?
 
-Username: ${userToDelete.username}
+Username: `}
+              <SensitiveValue component="span" inherit>
+                {userToDelete.username}
+              </SensitiveValue>
+              {`
 Email: ${userToDelete.email}
 User Level: ${USER_LEVEL_LABELS[userToDelete.user_level]}
 

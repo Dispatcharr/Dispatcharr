@@ -844,12 +844,12 @@ describe('StreamsTable', () => {
       expect(screen.getByText('Add Individual Stream')).toBeInTheDocument();
     });
 
-    it('navigates to /sources when "Add M3U" is clicked', async () => {
+    it('navigates to /sources/m3u when "Add M3U" is clicked', async () => {
       const mockNavigate = vi.fn();
       vi.mocked(useNavigate).mockReturnValue(mockNavigate);
       await renderEmpty();
       fireEvent.click(screen.getByText('Add M3U'));
-      expect(mockNavigate).toHaveBeenCalledWith('/sources');
+      expect(mockNavigate).toHaveBeenCalledWith('/sources/m3u');
     });
 
     it('opens stream form when "Add Individual Stream" is clicked', async () => {

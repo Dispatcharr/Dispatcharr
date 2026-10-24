@@ -1,11 +1,41 @@
-.mantine-Stack-root .navlink {
+.dispatcharr-sidebar .sidebar-brand {
+  position: relative;
+  margin: 0 4px;
+  padding: 14px 8px 18px;
+  border-bottom: 1px solid #2a2a2e;
+}
+
+.dispatcharr-sidebar .sidebar-brand-content {
+  min-width: 0;
+  min-height: 32px;
+}
+
+.dispatcharr-sidebar .sidebar-edge-toggle {
+  position: absolute;
+  top: 18px;
+  right: -25px;
+  z-index: 20;
+  color: #d4d4d8;
+  background: #202025;
+  border: 1px solid #3d3d42;
+  border-radius: var(--mantine-radius-default);
+}
+
+.dispatcharr-sidebar .sidebar-section-heading {
+  padding: 2px 10px 4px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.dispatcharr-sidebar .navlink {
   display: flex;
   flex-direction: row; /* Ensures horizontal layout */
   flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
-  padding: 4px 8px !important;
-  border-radius: 6px;
+  min-height: 38px;
+  padding: 7px 10px !important;
+  border-radius: var(--mantine-radius-default);
   background-color: transparent; /* Default background when not active */
   border: 1px solid transparent;
   transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
@@ -13,32 +43,48 @@
 }
 
 /* Active state styles */
-.navlink.navlink-active {
+.dispatcharr-sidebar .navlink.navlink-active {
   color: #ffffff;
   background-color: #245043;
   border: 1px solid #3ba882;
 }
 
 /* Hover effect */
-.navlink:hover {
-  background-color: #2A2F34;
-  border: 1px solid #3D3D42;
+.dispatcharr-sidebar .navlink:hover {
+  background-color: #2a2f34;
+  border: 1px solid #3d3d42;
 }
 
 /* Hover effect for active state */
-.navlink.navlink-active:hover {
+.dispatcharr-sidebar .navlink.navlink-active:hover {
   background-color: #3a3a40;
   border: 1px solid #3ba882;
 }
 
 /* Collapse condition for justifyContent */
-.navlink.navlink-collapsed {
+.dispatcharr-sidebar .navlink.navlink-collapsed {
   justify-content: center;
   padding: 4px !important;
 }
 
-.navlink:not(.navlink-collapsed) {
+.dispatcharr-sidebar .navlink:not(.navlink-collapsed) {
   justify-content: flex-start;
 }
 
+.dispatcharr-sidebar .sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
 
+.dispatcharr-sidebar .sidebar-version {
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dispatcharr-sidebar-collapsed .sidebar-tools {
+  flex-direction: column;
+}

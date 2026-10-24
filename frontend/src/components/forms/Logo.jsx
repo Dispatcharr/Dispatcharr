@@ -7,7 +7,6 @@ import {
   Divider,
   Group,
   Image,
-  Modal,
   Stack,
   Text,
 } from '@mantine/core';
@@ -21,6 +20,7 @@ import {
 import { FileImage, Upload, X } from 'lucide-react';
 import { showNotification } from '../../utils/notificationUtils.js';
 import ConfirmationDialog from '../ConfirmationDialog.jsx';
+import StackedModal from '../StackedModal.jsx';
 import {
   createLogo,
   getFilenameWithoutExtension,
@@ -226,7 +226,8 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
 
   return (
     <>
-      <Modal
+      <StackedModal
+        stackId="m3u-category-logo-editor"
         opened={isOpen}
         onClose={onClose}
         title={logo ? 'Edit Logo' : 'Add Logo'}
@@ -362,7 +363,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
             </Group>
           </Stack>
         </form>
-      </Modal>
+      </StackedModal>
 
       <ConfirmationDialog
         opened={!!overwriteValues}

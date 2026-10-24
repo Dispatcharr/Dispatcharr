@@ -104,10 +104,23 @@ export const getStatusContent = (data) => {
       return { type: 'initializing' };
 
     case 'vod_refresh':
-      return { type: 'simple', label: 'Refreshing VOD...' };
+      return {
+        type: 'vod',
+        progress: parseInt(data.progress || 0),
+        phase: data.phase || 'Refreshing VOD catalog',
+        elapsedTime:
+          data.elapsed_time != null ? formatDuration(data.elapsed_time) : null,
+        timeRemaining:
+          data.time_remaining != null
+            ? formatDuration(data.time_remaining)
+            : null,
+        itemsProcessed: data.items_processed,
+        itemsTotal: data.items_total,
+      };
 
     case 'downloading':
-      if (data.progress === 0) return { type: 'simple', label: 'Downloading...' };
+      if (data.progress === 0)
+        return { type: 'simple', label: 'Downloading...' };
       return {
         type: 'downloading',
         progress: parseInt(data.progress),

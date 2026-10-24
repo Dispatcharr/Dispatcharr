@@ -85,6 +85,18 @@ describe('navigation config', () => {
   });
 
   describe('getOrderedNavItems', () => {
+    it('preserves the upstream plugin panel and pinned-entry metadata', () => {
+      const plugins = getOrderedNavItems(null, true).find(
+        (item) => item.id === 'plugins'
+      );
+      expect(plugins).toMatchObject({
+        path: '/plugins',
+        panel: 'plugins',
+        dynamicPinned: true,
+      });
+      expect(plugins.paths).toBeUndefined();
+    });
+
     it('returns default order when no saved order exists for admin', () => {
       const result = getOrderedNavItems(null, true);
 
@@ -198,7 +210,7 @@ describe('navigation config', () => {
       expect(resultIds.indexOf('vods')).toBeGreaterThan(
         resultIds.indexOf('channels')
       );
-      expect(resultIds.indexOf('vods')).toBeLessThan(
+      expect(resultIds.indexOf('vods')).toBeGreaterThan(
         resultIds.indexOf('guide')
       );
     });
@@ -215,9 +227,9 @@ describe('navigation config', () => {
       });
       expect(result.map((item) => item.id)).toEqual([
         'channels',
-        'vods',
         'guide',
         'dvr',
+        'vods',
         'settings',
       ]);
     });
@@ -301,6 +313,20 @@ describe('navigation config', () => {
 
     it('is false between two consecutive leaves', () => {
       expect(isGroupBoundary([leaf, leaf], 1)).toBe(false);
+    });
+
+    it('preserves group boundaries around pinned plugin entries', () => {
+      const plugins = { id: 'plugins', dynamicPinned: true };
+      expect(isGroupBoundary([leaf, plugins], 1)).toBe(true);
+      expect(isGroupBoundary([plugins, leaf], 1)).toBe(true);
+    });
+
+    it('retains the Live TV and VOD section boundaries', () => {
+      const channels = { ...leaf, section: 'Live TV' };
+      const guide = { ...leaf, section: 'Live TV' };
+      const library = { ...leaf, section: 'Video on Demand' };
+      expect(isGroupBoundary([channels, guide, library], 1)).toBe(false);
+      expect(isGroupBoundary([channels, guide, library], 2)).toBe(true);
     });
 
     it('is true between two consecutive groups', () => {
