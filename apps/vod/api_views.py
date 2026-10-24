@@ -11,7 +11,8 @@ import logging
 from types import SimpleNamespace
 from apps.accounts.permissions import (
     Authenticated,
-    permission_classes_by_action,
+    IsAdmin,
+    permissions_for_action,
 )
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
@@ -110,12 +111,7 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'image':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         user = _authenticated_user(self.request)
@@ -135,7 +131,12 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
         return qs
 
     @extend_schema(responses=M3UMovieRelationSerializer(many=True))
-    @action(detail=True, methods=['get'], url_path='providers')
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='providers',
+        permission_classes=[Authenticated],
+    )
     def get_providers(self, request, pk=None):
         """Get all providers (M3U accounts) that have this movie"""
         movie = self.get_object()
@@ -171,7 +172,12 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
             404: OpenApiResponse(description='Relation not found or not active'),
         },
     )
-    @action(detail=True, methods=['get'], url_path='provider-info')
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='provider-info',
+        permission_classes=[Authenticated],
+    )
     def provider_info(self, request, pk=None):
         """Get detailed movie information from the original provider, throttled to 24h."""
         movie = self.get_object()
@@ -381,12 +387,7 @@ class EpisodeViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelView
     ordering = ['series__name', 'season_number', 'episode_number']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'image':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         user = _authenticated_user(self.request)
@@ -417,12 +418,7 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'image':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         user = _authenticated_user(self.request)
@@ -435,7 +431,12 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
         ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
 
     @extend_schema(responses=M3USeriesRelationSerializer(many=True))
-    @action(detail=True, methods=['get'], url_path='providers')
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='providers',
+        permission_classes=[Authenticated],
+    )
     def get_providers(self, request, pk=None):
         """Get all providers (M3U accounts) that have this series"""
         series = self.get_object()
@@ -448,7 +449,12 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
         return Response(serializer.data)
 
     @extend_schema(responses=EpisodeWithProvidersSerializer(many=True))
-    @action(detail=True, methods=['get'], url_path='episodes')
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='episodes',
+        permission_classes=[Authenticated],
+    )
     def get_episodes(self, request, pk=None):
         """Get episodes for this series with provider information"""
         series = self.get_object()
@@ -503,7 +509,12 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
             500: OpenApiResponse(description='Failed to fetch series information'),
         },
     )
-    @action(detail=True, methods=['get'], url_path='provider-info')
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='provider-info',
+        permission_classes=[Authenticated],
+    )
     def series_info(self, request, pk=None):
         """Get detailed series information, refreshing from provider if needed"""
         logger.debug(f"SeriesViewSet.series_info called for series ID: {pk}")
@@ -748,10 +759,7 @@ class VODCategoryViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         qs = VODCategory.objects.all()
@@ -832,10 +840,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     @extend_schema(
         parameters=[
@@ -1120,12 +1125,7 @@ class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
     ordering = ['name']
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            if self.action == 'cache':
-                return [AllowAny()]
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""
@@ -1194,7 +1194,12 @@ class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
             500: OpenApiResponse(description='Bulk delete failed'),
         },
     )
-    @action(detail=False, methods=["delete"], url_path="bulk-delete")
+    @action(
+        detail=False,
+        methods=["delete"],
+        url_path="bulk-delete",
+        permission_classes=[IsAdmin],
+    )
     def bulk_delete(self, request):
         """Delete multiple VOD logos at once"""
         logo_ids = request.data.get('logo_ids', [])
@@ -1231,7 +1236,7 @@ class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
             500: OpenApiResponse(description='Cleanup failed'),
         },
     )
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], permission_classes=[IsAdmin])
     def cleanup(self, request):
         """Delete all VOD logos that are not used by any movies or series"""
         try:

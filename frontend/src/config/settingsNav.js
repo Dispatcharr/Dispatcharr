@@ -1,6 +1,7 @@
 import { lazy } from 'react';
 import {
   ArrowLeftRight,
+  CalendarDays,
   DatabaseBackup,
   FileOutput,
   KeyRound,
@@ -22,6 +23,7 @@ const ProxySettingsForm = lazy(() => import('../components/forms/settings/ProxyS
 const StreamProfilesTable = lazy(() => import('../components/tables/StreamProfilesTable.jsx'));
 const OutputProfilesTable = lazy(() => import('../components/tables/OutputProfilesTable.jsx'));
 const DvrSettingsForm = lazy(() => import('../components/forms/settings/DvrSettingsForm.jsx'));
+const EpgSettingsForm = lazy(() => import('../components/forms/settings/EpgSettingsForm.jsx'));
 const UserAgentsTable = lazy(() => import('../components/tables/UserAgentsTable.jsx'));
 const NetworkAccessForm = lazy(() => import('../components/forms/settings/NetworkAccessForm.jsx'));
 const SystemSettingsForm = lazy(() => import('../components/forms/settings/SystemSettingsForm.jsx'));
@@ -59,6 +61,14 @@ export const SETTINGS_GROUPS = [
     adminOnly: true,
     sections: [
       { id: 'dvr-settings', label: 'DVR Settings', icon: Tv, Component: DvrSettingsForm },
+    ],
+  },
+  {
+    id: 'epg',
+    label: 'EPG',
+    adminOnly: true,
+    sections: [
+      { id: 'epg-settings', label: 'EPG Settings', icon: CalendarDays, Component: EpgSettingsForm },
     ],
   },
   {

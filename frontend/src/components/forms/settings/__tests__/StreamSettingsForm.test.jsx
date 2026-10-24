@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import StreamSettingsForm from '../StreamSettingsForm';
 
@@ -305,8 +305,9 @@ describe('StreamSettingsForm', () => {
 
     it('populates stream profile options from store', () => {
       render(<StreamSettingsForm active={true} />);
-      expect(screen.getByText('Default')).toBeInTheDocument();
-      expect(screen.getByText('HLS')).toBeInTheDocument();
+      const profiles = screen.getByTestId('default_stream_profile');
+      expect(within(profiles).getByRole('option', { name: 'Default' })).toBeInTheDocument();
+      expect(within(profiles).getByRole('option', { name: 'HLS' })).toBeInTheDocument();
     });
 
     it('does not show success alert on initial render', () => {

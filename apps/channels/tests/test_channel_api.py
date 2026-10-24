@@ -5,7 +5,13 @@ from datetime import timedelta
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from apps.channels.models import Channel, ChannelGroup, ChannelOverride
+from apps.channels.models import (
+    Channel,
+    ChannelGroup,
+    ChannelGroupM3UAccount,
+    ChannelOverride,
+)
+from apps.m3u.models import M3UAccount
 
 User = get_user_model()
 
@@ -19,6 +25,10 @@ class ChannelBulkEditAPITests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
         self.bulk_edit_url = "/api/channels/channels/edit/bulk/"
+        self.custom_account, _ = M3UAccount.objects.get_or_create(
+            name="custom",
+            defaults={"locked": True},
+        )
 
         # Create test channel group
         self.group1 = ChannelGroup.objects.create(name="Test Group 1")
@@ -139,6 +149,50 @@ class ChannelBulkEditAPITests(TestCase):
         self.channel3.refresh_from_db()
         self.assertEqual(self.channel1.channel_group, self.group2)
         self.assertEqual(self.channel3.channel_group, self.group1)
+
+    def test_bulk_edit_marks_manual_channel_destination_group_as_custom(self):
+        self.assertFalse(
+            ChannelGroupM3UAccount.objects.filter(
+                channel_group=self.group2,
+                m3u_account=self.custom_account,
+            ).exists()
+        )
+
+        response = self.client.patch(
+            self.bulk_edit_url,
+            [{"id": self.channel1.id, "channel_group_id": self.group2.id}],
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            ChannelGroupM3UAccount.objects.filter(
+                channel_group=self.group2,
+                m3u_account=self.custom_account,
+            ).exists()
+        )
+
+    def test_bulk_edit_does_not_mark_auto_created_channel_destination_group(self):
+        auto_created = Channel.objects.create(
+            channel_number=4.0,
+            name="Auto Created",
+            channel_group=self.group1,
+            auto_created=True,
+        )
+
+        response = self.client.patch(
+            self.bulk_edit_url,
+            [{"id": auto_created.id, "channel_group_id": self.group2.id}],
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(
+            ChannelGroupM3UAccount.objects.filter(
+                channel_group=self.group2,
+                m3u_account=self.custom_account,
+            ).exists()
+        )
 
     def test_bulk_edit_nonexistent_channel(self):
         """Test bulk update with a channel that doesn't exist"""
@@ -1375,8 +1429,8 @@ class ChannelListIncludeStreamsQueryTests(TestCase):
 
 
 class ChannelAssignedProfileScopeTests(TestCase):
-    """Non-admin with assigned profiles: list/summary/get_ids are limited to
-    enabled memberships in those profiles; retrieve by id is not.
+    """Non-admin with assigned profiles: list, summary, get_ids, and retrieve
+    by id are limited to enabled memberships in those profiles.
     """
 
     def setUp(self):
@@ -1419,12 +1473,49 @@ class ChannelAssignedProfileScopeTests(TestCase):
         ids = {row["id"] for row in response.data["results"]}
         self.assertEqual(ids, {self.in_profile.id})
 
-    def test_retrieve_reaches_channel_outside_assigned_profile(self):
+    def test_retrieve_reaches_channel_inside_assigned_profile(self):
+        response = self.client.get(f"/api/channels/channels/{self.in_profile.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.in_profile.id)
+
+    def test_retrieve_hides_channel_outside_assigned_profile(self):
         response = self.client.get(
             f"/api/channels/channels/{self.out_of_profile.id}/"
         )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_retrieve_with_streams_does_not_expose_provider_urls_outside_profile(self):
+        from apps.channels.models import Stream
+
+        stream = Stream.objects.create(
+            name="Provider", url="http://provider.example/live/secret"
+        )
+        self.out_of_profile.streams.add(stream)
+        response = self.client.get(
+            f"/api/channels/channels/{self.out_of_profile.id}/",
+            {"include_streams": "true"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn(b"provider.example", response.content)
+
+    def test_unassigned_profile_id_returns_nothing(self):
+        from apps.channels.models import ChannelProfile
+
+        other = ChannelProfile.objects.create(name="Not Assigned")
+        response = self.client.get(
+            "/api/channels/channels/summary/", {"channel_profile_id": other.id}
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["id"], self.out_of_profile.id)
+        self.assertEqual(response.json(), [])
+
+    def test_show_disabled_does_not_escape_assigned_profiles(self):
+        response = self.client.get(
+            "/api/channels/channels/summary/",
+            {"channel_profile_id": self.profile.id, "show_disabled": "true"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
 
     def test_explicit_profile_id_still_scopes_by_membership(self):
         response = self.client.get(
@@ -1531,6 +1622,46 @@ class ChannelGroupVisibilityTests(TestCase):
         self.assertTrue(
             {"Sports", "Adult", "Premium", "Empty Unused"}.issubset(names)
         )
+
+
+class ChannelGroupEffectiveCountTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="group_count_admin", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.source = ChannelGroup.objects.create(name="Source")
+        self.target = ChannelGroup.objects.create(name="Target")
+        channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Overridden channel",
+            channel_group=self.source,
+        )
+        ChannelOverride.objects.create(channel=channel, channel_group=self.target)
+
+    def test_list_and_claim_responses_use_effective_channel_counts(self):
+        response = self.client.get("/api/channels/groups/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        counts = {group["name"]: group["channel_count"] for group in response.data}
+        self.assertEqual(counts["Source"], 0)
+        self.assertEqual(counts["Target"], 1)
+
+        response = self.client.post(
+            f"/api/channels/groups/{self.target.id}/claim-custom/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["channel_count"], 1)
+
+    def test_unclaim_response_uses_effective_channel_count(self):
+        self.client.post(f"/api/channels/groups/{self.source.id}/claim-custom/")
+
+        response = self.client.post(
+            f"/api/channels/groups/{self.source.id}/unclaim-custom/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["channel_count"], 0)
 
 
 class ChannelListOnlyCatchupFilterTests(TestCase):

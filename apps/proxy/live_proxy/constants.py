@@ -24,6 +24,9 @@ class ChannelState:
     # finally block to decide whether a failed stream can write ERROR.
     PRE_ACTIVE = frozenset([INITIALIZING, CONNECTING, BUFFERING, WAITING_FOR_CLIENTS])
 
+    # Startup / first-viewer wait. BUFFERING is mid-stream, so it is not here.
+    STARTUP = frozenset([INITIALIZING, CONNECTING, WAITING_FOR_CLIENTS])
+
 # Event types
 class EventType:
     STREAM_SWITCH = "stream_switch"
@@ -35,6 +38,7 @@ class EventType:
     CLIENT_STOP = "client_stop"
     ENSURE_OUTPUT_FORMAT = "ensure_output_format"
     ENSURE_OUTPUT_PROFILE = "ensure_output_profile"
+    HLS_PLAYLIST_READY = "hls_playlist_ready"
 
 # Stream types
 class StreamType:

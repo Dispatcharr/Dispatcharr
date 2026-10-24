@@ -10,7 +10,10 @@ class BaseConfig:
     RETRY_WINDOW_SECONDS = 1800  # Reset retry counter after this long without a failure
     STABLE_CONNECTION_THRESHOLD = 30  # Seconds of uptime before switch rotation state resets
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
-    CONNECTION_TIMEOUT = 10  # seconds to wait for initial connection
+    # Fallback when proxy_settings is unavailable. Prefer get_connection_timeout().
+    CONNECTION_TIMEOUT = 10
+    # Fallback when proxy_settings is unavailable. Prefer get_stream_startup_timeout().
+    STREAM_STARTUP_TIMEOUT = 8
     MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up
     FAILOVER_ROTATION_COOLDOWN = 60 # Wait this long after exhausting all streams before wrapping back to the top.
     BUFFER_CHUNK_SIZE = 188 * 1361  # ~256KB
@@ -56,6 +59,8 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "stream_startup_timeout": 8,
+                "connection_timeout": 10,
                 "validate_redirect_urls": True,
             }
 
@@ -115,6 +120,16 @@ class TSConfig(BaseConfig):
     GHOST_CLIENT_MULTIPLIER = 10.0  # How many heartbeat intervals before client considered ghost (10 = 50s, must exceed STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD = 40s)
     CLIENT_WAIT_TIMEOUT = 60  # Seconds to wait for channel to become ready
 
+    # Native HLS output (code-level; not DB / UI Proxy Settings)
+    HLS_SEGMENT_DURATION = 4  # Target segment length in seconds
+    # Floor for HLS segment Redis TTL sizing (not the advertised playlist
+    # length; the playlist tracks surviving Redis chunks).
+    HLS_WINDOW_SIZE = 10
+    # Pull-based HLS clients: treat as ghost after this many missed segment
+    # intervals with no playlist/segment poll (3 x 4s = 12s). Matches the
+    # spirit of the legacy hls_proxy CLIENT_TIMEOUT_FACTOR approach.
+    HLS_CLIENT_GHOST_SEGMENTS = 3
+
     # Stream health and recovery settings
     MAX_HEALTH_RECOVERY_ATTEMPTS = 2     # Maximum times to attempt recovery for a single stream
     MAX_RECONNECT_ATTEMPTS = 3           # Maximum reconnects to try before switching streams
@@ -161,6 +176,18 @@ class TSConfig(BaseConfig):
         """Whether Redirect mode probes the provider URL (HEAD/GET) before handing off."""
         settings = cls.get_proxy_settings()
         return bool(settings.get("validate_redirect_urls", True))
+
+    @classmethod
+    def get_stream_startup_timeout(cls):
+        """Seconds without data from a newly connected stream before failover."""
+        settings = cls.get_proxy_settings()
+        return settings.get("stream_startup_timeout", cls.STREAM_STARTUP_TIMEOUT)
+
+    @classmethod
+    def get_connection_timeout(cls):
+        """Seconds without data from an active stream before marking it unhealthy."""
+        settings = cls.get_proxy_settings()
+        return settings.get("connection_timeout", cls.CONNECTION_TIMEOUT)
 
     # Dynamic property access for these settings
     @property

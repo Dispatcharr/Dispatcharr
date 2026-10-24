@@ -560,6 +560,83 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
 
 
+class FetchSchedulesDirectSystemStatusTests(TestCase):
+    """
+    SD /status systemStatus must tolerate documented objects and bare strings.
+
+    Observed responses have included an empty string entry. Blank or missing
+    status continues the refresh; Offline still stops before lineups.
+    """
+
+    def _fetch_with_status(self, payload):
+        from apps.epg.sd_tasks import fetch_schedules_direct
+
+        source = EPGSource.objects.create(
+            name=f'SD Status {EPGSource.objects.count()}',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+        auth = MagicMock(ok=True, debug_rejected=False, token='test-token')
+        status_response = MagicMock(
+            status_code=200, json=MagicMock(return_value=payload),
+        )
+        lineups_response = MagicMock(
+            status_code=200, json=MagicMock(return_value={'lineups': []}),
+        )
+        with patch('apps.epg.sd_tasks.sd_obtain_token', return_value=auth), \
+             patch('apps.epg.sd_tasks.sd_authorized_request') as request, \
+             patch('apps.epg.sd_tasks.send_epg_update') as update:
+            request.side_effect = [
+                (status_response, 'test-token'),
+                (lineups_response, 'test-token'),
+            ]
+            fetch_schedules_direct(source, stations_only=True)
+
+        source.refresh_from_db()
+        return source, request, update
+
+    def test_blank_and_online_statuses_continue_to_lineups(self):
+        # Includes the observed empty-string shape plus documented objects.
+        payloads = [
+            {'systemStatus': ['']},
+            {'systemStatus': ['Online']},
+            {'systemStatus': [{'status': 'Online'}]},
+            {'systemStatus': []},
+            {},
+            {'systemStatus': None},
+            {'systemStatus': 'Online'},
+            {'systemStatus': [None, {}, 123, '  ']},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                source, request, _ = self._fetch_with_status(payload)
+                self.assertEqual(request.call_count, 2)
+                self.assertTrue(request.call_args.args[1].endswith('/lineups'))
+                self.assertEqual(source.status, EPGSource.STATUS_IDLE)
+                self.assertIn('No lineups configured', source.last_message)
+
+    def test_offline_status_stops_before_lineups(self):
+        payloads = [
+            {'systemStatus': ['Offline']},
+            {'systemStatus': [{'status': 'Offline'}]},
+            {'systemStatus': [' offline ']},
+            {'systemStatus': 'Offline'},
+            {'systemStatus': ['', 'Online', {'status': 'Offline'}]},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                source, request, update = self._fetch_with_status(payload)
+                request.assert_called_once()
+                self.assertTrue(request.call_args.args[1].endswith('/status'))
+                self.assertEqual(source.status, EPGSource.STATUS_IDLE)
+                self.assertIn('Do not retry for at least 1 hour', source.last_message)
+                update.assert_called_with(
+                    source.id, 'refresh', 100, status='idle',
+                    message=source.last_message,
+                )
+
+
 class FetchSchedulesDirectStationsOnlyTests(TestCase):
     """stations_only fetch must signal channel parsing completion to the frontend."""
 
@@ -749,6 +826,90 @@ class SDScheduleBackfillTests(TestCase):
         )
         self.assertEqual(count, 2)
         self.assertEqual(sorted(changed['10001']), self.DATE_LIST)
+
+
+class SDGuideHistoryTests(TestCase):
+    """SD keeps ended programmes for the guide-history window and prunes the rest."""
+
+    def setUp(self):
+        self.source = EPGSource.objects.create(
+            name='SD History', source_type='schedules_direct'
+        )
+        self.now = timezone.now().replace(microsecond=0)
+        self.epg = EPGData.objects.create(
+            epg_source=self.source, tvg_id='10001', name='10001'
+        )
+
+    def _program(self, *, ended_days_ago, title):
+        end = self.now - timedelta(days=ended_days_ago)
+        return ProgramData.objects.create(
+            epg=self.epg,
+            tvg_id='10001',
+            title=title,
+            start_time=end - timedelta(hours=1),
+            end_time=end,
+        )
+
+    def test_prune_keeps_the_default_one_day_of_history(self):
+        from apps.epg.sd_tasks import _sd_prune_ended_programmes
+
+        self._program(ended_days_ago=0.5, title='Recent')
+        self._program(ended_days_ago=3, title='Old')
+
+        deleted = _sd_prune_ended_programmes([self.epg.id])
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual(
+            list(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True)),
+            ['Recent'],
+        )
+
+    def test_prune_keeps_catchup_days_of_history(self):
+        from apps.epg.sd_tasks import _sd_prune_ended_programmes
+
+        Channel.objects.create(
+            channel_number=1, name='SD Catchup', epg_data=self.epg,
+            is_catchup=True, catchup_days=5,
+        )
+        self._program(ended_days_ago=3, title='Within catch-up')
+        self._program(ended_days_ago=8, title='Past catch-up')
+
+        _sd_prune_ended_programmes([self.epg.id])
+
+        self.assertEqual(
+            list(ProgramData.objects.filter(epg=self.epg).values_list('title', flat=True)),
+            ['Within catch-up'],
+        )
+
+    def test_station_with_only_old_rows_counts_as_empty(self):
+        from apps.epg.sd_tasks import _sd_stations_without_current_data
+
+        self._program(ended_days_ago=1, title='Yesterday')
+        window_start = self.now.replace(hour=0, minute=0, second=0)
+
+        empty = _sd_stations_without_current_data(
+            [self.epg.id], {'10001'}, window_start
+        )
+
+        self.assertEqual(empty, {'10001'})
+
+    def test_station_with_a_current_row_is_not_empty(self):
+        from apps.epg.sd_tasks import _sd_stations_without_current_data
+
+        ProgramData.objects.create(
+            epg=self.epg,
+            tvg_id='10001',
+            title='Tonight',
+            start_time=self.now,
+            end_time=self.now + timedelta(hours=1),
+        )
+        window_start = self.now.replace(hour=0, minute=0, second=0)
+
+        empty = _sd_stations_without_current_data(
+            [self.epg.id], {'10001'}, window_start
+        )
+
+        self.assertEqual(empty, set())
 
 
 class SDProgramMetadataDeltaTests(TestCase):

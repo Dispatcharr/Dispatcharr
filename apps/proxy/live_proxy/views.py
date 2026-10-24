@@ -1,7 +1,6 @@
 import json
 import time
 import random
-import re
 import pathlib
 from django.db import close_old_connections
 from django.http import (
@@ -12,24 +11,20 @@ from django.http import (
     Http404,
 )
 from django.views.decorators.csrf import csrf_exempt
-from django.shortcuts import get_object_or_404
 from .server import ProxyServer
 from .channel_status import ChannelStatus, build_live_channel_stats_data
 from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
 from dispatcharr.utils import get_client_ip, network_access_allowed
 from .redis_keys import RedisKeys
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, Stream
 from apps.accounts.models import User
+from apps.accounts.xc_auth import authorize_xc_client
 from core.models import CoreSettings, PROXY_PROFILE_NAME, StreamProfile
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-from apps.accounts.permissions import (
-    IsAdmin,
-    permission_classes_by_method,
-    permission_classes_by_action,
-)
+from apps.accounts.permissions import IsAdmin
 from .constants import ChannelState, ChannelMetadataField
 from .services.channel_service import ChannelService
 from core.utils import send_websocket_update
@@ -44,10 +39,15 @@ from .url_utils import (
     release_worker_stream,
 )
 from .utils import get_logger
+from .config_helper import ConfigHelper
 import gevent
 from apps.proxy.utils import check_user_stream_limits
+from .output.hls.session import SESSION_TOKEN_HEADER, mint_hls_session
 
 logger = get_logger()
+
+# Poll interval while a same-worker follower waits for the leader's local resources.
+_LOCAL_SETUP_WAIT_POLL_SECONDS = 0.05
 
 
 def _is_skip_redirect_requested(request, user, client_id):
@@ -264,6 +264,33 @@ def _channel_setup_needed(proxy_server, channel_id):
     return True, state, False
 
 
+def _local_channel_resources_ready(proxy_server, channel_id):
+    return (
+        channel_id in proxy_server.stream_buffers
+        and channel_id in proxy_server.client_managers
+    )
+
+
+def _wait_for_local_channel_ready(proxy_server, channel_id):
+    """Wait while same-worker setup runs, until its buffers and managers exist.
+
+    A follower that attached because the channel is in `_channels_setting_up` must
+    not call initialize_channel before the URL exists: that path treats a missing
+    URL as failure and tears down the leader's setup (buffers, managers, Redis).
+
+    Returns False when the setup claim ends without local resources or the client
+    wait timeout elapses. Only in-memory state is polled, so waiting adds no Redis
+    traffic; a channel that starts stopping is rejected by the caller's later check.
+    """
+    deadline = time.time() + ConfigHelper.client_wait_timeout()
+    while channel_id in proxy_server._channels_setting_up and time.time() < deadline:
+        if _local_channel_resources_ready(proxy_server, channel_id):
+            return True
+        gevent.sleep(_LOCAL_SETUP_WAIT_POLL_SECONDS)
+    # Also covers the leader publishing resources and clearing its claim in one step.
+    return _local_channel_resources_ready(proxy_server, channel_id)
+
+
 def _drop_pre_registered_client(proxy_server, channel_id, client_id):
     """Undo an early add_client() when setup aborts before streaming starts."""
     mgr = proxy_server.client_managers.get(channel_id)
@@ -272,8 +299,16 @@ def _drop_pre_registered_client(proxy_server, channel_id, client_id):
         return
     if not proxy_server.redis_client:
         return
-    proxy_server.redis_client.srem(RedisKeys.clients(channel_id), client_id)
-    proxy_server.redis_client.delete(RedisKeys.client_metadata(channel_id, client_id))
+    client_key = RedisKeys.client_metadata(channel_id, client_id)
+    token = proxy_server.redis_client.hget(client_key, "hls_token")
+    pipe = proxy_server.redis_client.pipeline(transaction=False)
+    pipe.srem(RedisKeys.clients(channel_id), client_id)
+    pipe.delete(client_key)
+    if token:
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
+        pipe.delete(RedisKeys.hls_session(token))
+    pipe.execute()
 
 
 def _resolve_output_format(user, force=None, request=None):
@@ -283,6 +318,8 @@ def _resolve_output_format(user, force=None, request=None):
         'ts':     'mpegts',
         'fmp4':   'fmp4',
         'mp4':    'fmp4',
+        'hls':    'hls',
+        'm3u8':   'hls',
     }
     if force:
         return force
@@ -426,8 +463,12 @@ def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_pr
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
-def stream_ts(request, channel_id, user=None, force_output_format=None):
-    if not network_access_allowed(request, "STREAMS"):
+def stream_ts(
+    request, channel_id, user=None, force_output_format=None, *, check_network=True
+):
+    # stream_xc calls authorize_xc_client (XC_API) first, then passes
+    # check_network=False so this path is not also gated by STREAMS.
+    if check_network and not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
@@ -696,9 +737,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                         connection_allocated = True
 
                     # generate_stream_url already resolved the stream. Scoped previews
-                    # carry the M3U profile in the worker id; otherwise read it from
-                    # the assignment (channel_stream is keyed by channel pk, and a
-                    # bare Stream has no channel assignment to look up).
+                    # carry the M3U profile in the worker id; channels read the bare
+                    # assignment keys; default stream previews use :preview.
                     stream_id = resolved_stream_id
                     _stream_key, m3u_profile_id = parse_preview_worker_id(channel_id)
                     if m3u_profile_id is None and proxy_server.redis_client:
@@ -708,9 +748,15 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             )
                             if stream_id_bytes:
                                 stream_id = int(stream_id_bytes)
-                        profile_id_bytes = proxy_server.redis_client.get(
-                            f"stream_profile:{stream_id}"
-                        )
+                            profile_id_bytes = proxy_server.redis_client.get(
+                                f"stream_profile:{stream_id}"
+                            )
+                        elif isinstance(channel, Stream) and stream_id is not None:
+                            profile_id_bytes = proxy_server.redis_client.get(
+                                Stream.preview_profile_key(stream_id)
+                            )
+                        else:
+                            profile_id_bytes = None
                         if profile_id_bytes:
                             m3u_profile_id = int(profile_id_bytes)
                     logger.info(
@@ -787,12 +833,27 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     if owned_for_init:
                         proxy_server.release_ownership(channel_id, signal_stopping=False)
 
-        # Register client - can do this regardless of initialization state
-        # Create local resources if needed
+        # Register client - can do this regardless of initialization state.
+        # Create local resources if needed. A same-worker follower must wait for
+        # the leader's buffers/managers instead of initializing with a missing URL.
         if (
-            channel_id not in proxy_server.stream_buffers
-            or channel_id not in proxy_server.client_managers
+            not _local_channel_resources_ready(proxy_server, channel_id)
+            and channel_id in proxy_server._channels_setting_up
         ):
+            logger.info(
+                f"[{client_id}] Waiting for in-progress setup of channel {channel_id} "
+                f"on this worker before attaching"
+            )
+            if not _wait_for_local_channel_ready(proxy_server, channel_id):
+                logger.warning(
+                    f"[{client_id}] Setup of channel {channel_id} ended without local "
+                    f"resources or timed out"
+                )
+                return JsonResponse(
+                    {"error": "Channel setup failed or timed out"}, status=503
+                )
+
+        if not _local_channel_resources_ready(proxy_server, channel_id):
             logger.debug(
                 f"[{client_id}] Channel {channel_id} exists in Redis but not initialized in this worker - initializing now"
             )
@@ -923,7 +984,38 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 {"error": "Channel resources unavailable"}, status=503
             )
 
-        if resolved_output_format == 'fmp4':
+        if resolved_output_format == 'hls':
+            # HLS is pull-based: no long-lived response. Start the segmenter
+            # and redirect to an opaque playlist URL so relative segment URIs
+            # stay on that capability path (each request touches the client
+            # record; the ghost reaper handles disconnect, same as every
+            # other client type).
+            if not proxy_server.ensure_output_format(
+                channel_id, resolved_format,
+                source_buffer=source_buffer if resolved_output_profile else None,
+            ):
+                if _client_pre_registered:
+                    _drop_pre_registered_client(proxy_server, channel_id, client_id)
+                return JsonResponse(
+                    {"error": "Failed to start output format segmenter"}, status=500
+                )
+            token = mint_hls_session(
+                proxy_server.redis_client,
+                channel_id,
+                client_id,
+                user_id=user.id if user is not None else None,
+            )
+            if not token:
+                if _client_pre_registered:
+                    _drop_pre_registered_client(proxy_server, channel_id, client_id)
+                return JsonResponse(
+                    {"error": "Failed to create HLS session"}, status=500
+                )
+            response = HttpResponseRedirect(f"/proxy/hls/{token}/index.m3u8")
+            response[SESSION_TOKEN_HEADER] = token
+            response["Access-Control-Expose-Headers"] = SESSION_TOKEN_HEADER
+            return response
+        elif resolved_output_format == 'fmp4':
             if not proxy_server.ensure_output_format(
                 channel_id, resolved_format,
                 source_buffer=source_buffer if resolved_output_profile else None,
@@ -985,59 +1077,63 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         close_old_connections()
 
 
+def _resolve_xc_live_channel(user, channel_id):
+    """Return (channel, error_response). Admin missing channels raise Http404."""
+    try:
+        channel_pk = int(channel_id)
+    except (TypeError, ValueError):
+        return None, JsonResponse({"error": "Not found"}, status=404)
+
+    channel = channels_queryset_for_user(
+        Channel.objects.filter(id=channel_pk),
+        user,
+    ).first()
+    if not channel:
+        if user.user_level >= 10:
+            raise Http404()
+        return None, JsonResponse({"error": "Not found"}, status=404)
+    return channel, None
+
+
+def _xc_live_channel_or_error(request, username, password, channel_id):
+    """Auth + channel lookup for XC live stream entry URLs."""
+    user, error = authorize_xc_client(request, username, password, "XC_API")
+    if error is not None:
+        return None, None, error
+    channel, error = _resolve_xc_live_channel(user, channel_id)
+    if error is not None:
+        return None, None, error
+    return user, channel, None
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc(request, username, password, channel_id):
     try:
-        user = get_object_or_404(User, username=username)
-
         extension = pathlib.Path(channel_id).suffix
         channel_id = pathlib.Path(channel_id).stem
 
-        if not network_access_allowed(request, 'STREAMS', user):
-            return Response({"error": "Forbidden"}, status=403)
-
-        custom_properties = user.custom_properties or {}
-
-        if "xc_password" not in custom_properties:
-            return Response({"error": "Invalid credentials"}, status=401)
-
-        if custom_properties["xc_password"] != password:
-            return Response({"error": "Invalid credentials"}, status=401)
-
-        if user.user_level < 10:
-            user_profile_count = user.channel_profiles.count()
-
-            # If user has ALL profiles or NO profiles, give unrestricted access
-            if user_profile_count == 0:
-                # No profile filtering - user sees all channels based on user_level
-                filters = {
-                    "id": int(channel_id),
-                    "user_level__lte": user.user_level
-                }
-                channel = Channel.objects.filter(**filters).first()
-            else:
-                # User has specific limited profiles assigned
-                filters = {
-                    "id": int(channel_id),
-                    "channelprofilemembership__enabled": True,
-                    "user_level__lte": user.user_level,
-                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                }
-                channel = Channel.objects.filter(**filters).distinct().first()
-
-            if not channel:
-                return JsonResponse({"error": "Not found"}, status=404)
-        else:
-            channel = get_object_or_404(Channel, id=channel_id)
+        user, channel, error = _xc_live_channel_or_error(
+            request, username, password, channel_id
+        )
+        if error is not None:
+            return error
 
         if extension.lower() == '.mp4':
             force_format = 'fmp4'
         elif extension.lower() == '.ts':
             force_format = 'mpegts'
+        elif extension.lower() == '.m3u8':
+            force_format = 'hls'
         else:
             force_format = None
-        return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
+        return stream_ts(
+            request._request,
+            str(channel.uuid),
+            user,
+            force_output_format=force_format,
+            check_network=False,
+        )
     except Http404:
         raise
     finally:
@@ -1407,3 +1503,4 @@ def next_stream(request, channel_id):
         return JsonResponse({"error": str(e)}, status=500)
     finally:
         close_old_connections()
+

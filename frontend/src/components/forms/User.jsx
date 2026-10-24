@@ -19,7 +19,7 @@ import {
   TextInput,
   useMantineTheme,
 } from '@mantine/core';
-import { Copy, Key, RotateCcwKey, X } from 'lucide-react';
+import { Copy, Key, RotateCcwKey, Trash2, X } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import usePlaylistsStore from '../../store/playlists';
@@ -27,6 +27,7 @@ import useOutputProfilesStore from '../../store/outputProfiles';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
 import { DVR_ACCESS } from '../../utils/dvrAccess';
 import useAuthStore from '../../store/auth';
+import useSettingsStore from '../../store/settings';
 import { copyToClipboard } from '../../utils';
 import {
   createUser,
@@ -38,12 +39,22 @@ import {
   updateUser,
   userToFormValues,
 } from '../../utils/forms/UserUtils.js';
+import ApiKeyQrPopover from './ApiKeyQrPopover';
+import UserAppData from './UserAppData';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
   const m3uProfiles = usePlaylistsStore((s) => s.profiles);
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
+  const epgHistoryMaxDays = useSettingsStore((s) => {
+    const raw = s.settings?.epg_settings?.value?.epg_history_max_days;
+    const number = Number(raw);
+    if (!Number.isFinite(number)) {
+      return 30;
+    }
+    return Math.max(0, Math.min(365, Math.trunc(number)));
+  });
   const setUser = useAuthStore((s) => s.setUser);
 
   const [, setEnableXC] = useState(false);
@@ -57,6 +68,8 @@ const User = ({ user = null, isOpen, onClose }) => {
   const [generating, setGenerating] = useState(false);
   const [_generatedKey, setGeneratedKey] = useState(null);
   const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
+  const [activeTab, setActiveTab] = useState('account');
+  const [clearAllAppData, setClearAllAppData] = useState(null);
 
   const theme = useMantineTheme();
 
@@ -99,6 +112,15 @@ const User = ({ user = null, isOpen, onClose }) => {
     onClose();
   };
 
+  // Start on the Account tab each time the modal opens or switches users. Keyed
+  // on the id, not the user object, so a refreshed copy of the same user (for
+  // example after revoking an API key) does not yank the current tab away.
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab('account');
+    }
+  }, [isOpen, user?.id]);
+
   useEffect(() => {
     if (user?.id) {
       const values = userToFormValues(user);
@@ -119,6 +141,8 @@ const User = ({ user = null, isOpen, onClose }) => {
       setSelectedAllowedM3uProfiles([]);
       setAllowedM3uProfilesUnrestricted(true);
     }
+    // form is from useForm; only re-sync when the edited user changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const onAllowedM3uProfilesChange = (values) => {
@@ -274,7 +298,7 @@ const User = ({ user = null, isOpen, onClose }) => {
   return (
     <Modal opened={isOpen} onClose={onClose} title="User" size="xl">
       <form onSubmit={form.onSubmit(onSubmit)}>
-        <Tabs defaultValue="account">
+        <Tabs value={activeTab} onChange={setActiveTab}>
           <TabsList mb="md">
             <TabsTab value="account">Account</TabsTab>
             {showPermissions && (
@@ -282,6 +306,7 @@ const User = ({ user = null, isOpen, onClose }) => {
             )}
             <TabsTab value="epg">EPG Defaults</TabsTab>
             <TabsTab value="api">API &amp; XC</TabsTab>
+            {user?.id && <TabsTab value="app-data">App Data</TabsTab>}
           </TabsList>
 
           <TabsPanel value="account">
@@ -439,18 +464,22 @@ const User = ({ user = null, isOpen, onClose }) => {
               </Text>
               <Group grow align="flex-start">
                 <NumberInput
-                  label="Days forward (0 = all)"
-                  description="How many future days of EPG data to include"
+                  label="Days forward"
+                  description="Future days of EPG to include. Empty uses the system default. 0 means all stored future programmes."
+                  placeholder="System default"
                   min={0}
                   max={365}
+                  allowDecimal={false}
                   {...form.getInputProps('epg_days')}
                   key={form.key('epg_days')}
                 />
                 <NumberInput
-                  label="Days back (0 = none)"
-                  description="How many past days of EPG data to include (max 30)"
+                  label="Days back"
+                  description="Past days of EPG to include. Empty uses the system default. 0 means none."
+                  placeholder="System default"
                   min={0}
-                  max={30}
+                  max={epgHistoryMaxDays}
+                  allowDecimal={false}
                   {...form.getInputProps('epg_prev_days')}
                   key={form.key('epg_prev_days')}
                 />
@@ -493,6 +522,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                   data={[
                     { value: 'mpegts', label: 'MPEG-TS' },
                     { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                    { value: 'hls', label: 'HLS' },
                   ]}
                   {...form.getInputProps('output_format')}
                   key={form.key('output_format')}
@@ -530,21 +560,27 @@ const User = ({ user = null, isOpen, onClose }) => {
                       label="API Key"
                       disabled={true}
                       value={userAPIKey}
+                      rightSectionWidth={56}
+                      rightSectionPointerEvents="auto"
                       rightSection={
-                        <ActionIcon
-                          variant="transparent"
-                          size="sm"
-                          color="white"
-                          onClick={() =>
-                            copyToClipboard(userAPIKey, {
-                              successTitle: 'API Key Copied!',
-                              successMessage:
-                                'The API Key has been copied to your clipboard.',
-                            })
-                          }
-                        >
-                          <Copy />
-                        </ActionIcon>
+                        <Group gap={4} wrap="nowrap">
+                          <ApiKeyQrPopover apiKey={userAPIKey} user={user} />
+                          <ActionIcon
+                            variant="transparent"
+                            size="sm"
+                            color="white"
+                            aria-label="Copy API key"
+                            onClick={() =>
+                              copyToClipboard(userAPIKey, {
+                                successTitle: 'API Key Copied!',
+                                successMessage:
+                                  'The API Key has been copied to your clipboard.',
+                              })
+                            }
+                          >
+                            <Copy />
+                          </ActionIcon>
+                        </Group>
                       }
                     />
                   )}
@@ -577,9 +613,35 @@ const User = ({ user = null, isOpen, onClose }) => {
               )}
             </Stack>
           </TabsPanel>
+
+          {user?.id && (
+            <TabsPanel value="app-data">
+              {activeTab === 'app-data' && (
+                <UserAppData
+                  // Non-admins may only call /me/app-data/; numeric ids are
+                  // for admins managing another user (own id also works).
+                  userId={authUser?.id === user.id ? 'me' : user.id}
+                  username={user.username}
+                  onClearAllChange={setClearAllAppData}
+                />
+              )}
+            </TabsPanel>
+          )}
         </Tabs>
 
         <Group justify="flex-end" mt="md">
+          {activeTab === 'app-data' && clearAllAppData && (
+            <Button
+              type="button"
+              variant="light"
+              color="red"
+              size="sm"
+              leftSection={<Trash2 size={16} />}
+              onClick={clearAllAppData.clear}
+            >
+              Clear all
+            </Button>
+          )}
           <Button
             type="submit"
             variant="contained"

@@ -119,6 +119,14 @@ def ensure_custom_properties_dict(value):
     return custom_properties_as_dict(value)
 
 
+def clamp_int(value, default, lo, hi):
+    """Coerce a settings value to an int within [lo, hi], falling back to default on garbage."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def truncate_with_warning(value, max_length, *, label):
     """Clamp a string to ``max_length``, logging a warning when truncated.
 
@@ -383,11 +391,12 @@ class TaskLockRenewer:
     slow downloads or large parsing jobs don't lose their lock mid-operation.
     """
 
-    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120, expected_value=None):
         self.task_name = task_name
         self.id = id
         self.ttl = ttl
         self.renewal_interval = renewal_interval
+        self.expected_value = expected_value
         self.lock_id = f"task_lock_{task_name}_{id}"
         self._stop_event = threading.Event()
         self._thread = None
@@ -397,17 +406,24 @@ class TaskLockRenewer:
         while not self._stop_event.wait(self.renewal_interval):
             try:
                 redis_client = RedisClient.get_client()
-                if redis_client.exists(self.lock_id):
-                    redis_client.expire(self.lock_id, self.ttl)
-                    logger.debug(
-                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
-                    )
-                else:
-                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                current = redis_client.get(self.lock_id)
+                if isinstance(current, bytes):
+                    current = current.decode()
+                if current is None:
+                    # Lock was deleted externally (e.g. manual release). Stop renewing.
                     logger.warning(
                         f"Lock {self.lock_id} no longer exists, stopping renewal"
                     )
                     break
+                if self.expected_value is not None and current != self.expected_value:
+                    logger.warning(
+                        f"Lock {self.lock_id} is held by another owner, stopping renewal"
+                    )
+                    break
+                redis_client.expire(self.lock_id, self.ttl)
+                logger.debug(
+                    f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                )
             except Exception as e:
                 logger.error(f"Error renewing lock {self.lock_id}: {e}")
 
@@ -993,6 +1009,113 @@ def _send_async(channel_layer, group, message):
     except Exception:
         pass
     _do()
+
+
+# Admin inbox notices when auth rate limiting trips. Cooldown is shared across
+# workers via the default Redis cache so spray does not refill the bell;
+# deleting the row clears dismissals so a later window can notify again.
+XC_AUTH_LOCKOUT_NOTICE_KEY = "xc-auth-lockout"
+XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY = "xc_auth_lockout_notice_cooldown"
+XC_AUTH_LOCKOUT_COOLDOWN_SECONDS = 3600
+
+LOGIN_RATE_LIMIT_NOTICE_KEY = "login-rate-limit"
+LOGIN_RATE_LIMIT_COOLDOWN_CACHE_KEY = "login_rate_limit_notice_cooldown"
+LOGIN_RATE_LIMIT_COOLDOWN_SECONDS = 3600
+
+API_KEY_AUTH_LOCKOUT_NOTICE_KEY = "api-key-auth-lockout"
+API_KEY_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY = "api_key_auth_lockout_notice_cooldown"
+API_KEY_AUTH_LOCKOUT_COOLDOWN_SECONDS = 3600
+
+
+def _notify_auth_lockout_inbox(
+    *,
+    notification_key,
+    cooldown_cache_key,
+    cooldown_seconds,
+    title,
+    message,
+):
+    """Create or refresh a cooldown-gated auth lockout admin inbox notice.
+
+    Claims the cooldown with ``cache.add`` first so overlapping trips produce
+    one notice. If creating the row fails after the claim, the cooldown key is
+    cleared so a later attempt can try again. Returns the notification when
+    one was created, otherwise None.
+    """
+    from django.core.cache import cache
+
+    from core.models import SystemNotification
+
+    if not cache.add(cooldown_cache_key, True, timeout=cooldown_seconds):
+        return None
+
+    try:
+        SystemNotification.objects.filter(notification_key=notification_key).delete()
+        notification = SystemNotification.objects.create(
+            notification_key=notification_key,
+            notification_type=SystemNotification.NotificationType.WARNING,
+            priority=SystemNotification.Priority.HIGH,
+            source=SystemNotification.Source.SYSTEM,
+            title=title,
+            message=message,
+            action_data={
+                "action_url": "/stats",
+                "action_text": "Open Stats",
+            },
+            is_active=True,
+            admin_only=True,
+        )
+    except Exception:
+        cache.delete(cooldown_cache_key)
+        raise
+
+    send_websocket_notification(notification)
+    return notification
+
+
+def notify_xc_auth_lockout_inbox():
+    """Create or refresh the cooldown-gated XC lockout admin inbox notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=XC_AUTH_LOCKOUT_NOTICE_KEY,
+        cooldown_cache_key=XC_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=XC_AUTH_LOCKOUT_COOLDOWN_SECONDS,
+        title="XC authentication rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "failed XC credential attempts. Check System Events on the Stats "
+            "page for IP addresses and details."
+        ),
+    )
+
+
+def notify_login_rate_limit_inbox():
+    """Create or refresh the cooldown-gated JWT/admin login lockout notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=LOGIN_RATE_LIMIT_NOTICE_KEY,
+        cooldown_cache_key=LOGIN_RATE_LIMIT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=LOGIN_RATE_LIMIT_COOLDOWN_SECONDS,
+        title="Login rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "login attempts (JWT, reverse-proxy headers, or Django admin). Check "
+            "System Events on the Stats page for IP addresses and details."
+        ),
+    )
+
+
+def notify_api_key_auth_lockout_inbox():
+    """Create or refresh the cooldown-gated API-key lockout admin inbox notice."""
+    return _notify_auth_lockout_inbox(
+        notification_key=API_KEY_AUTH_LOCKOUT_NOTICE_KEY,
+        cooldown_cache_key=API_KEY_AUTH_LOCKOUT_COOLDOWN_CACHE_KEY,
+        cooldown_seconds=API_KEY_AUTH_LOCKOUT_COOLDOWN_SECONDS,
+        title="API key authentication rate limit triggered",
+        message=(
+            "One or more clients were temporarily locked out after too many "
+            "failed API key attempts. Check System Events on the Stats page "
+            "for IP addresses and details."
+        ),
+    )
 
 
 def send_websocket_notification(notification):

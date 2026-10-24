@@ -14,8 +14,9 @@ from django.http import Http404
 from django.urls import reverse
 from django.utils import timezone as django_timezone
 
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, ChannelProfile
-from apps.channels.utils import format_channel_number
+from apps.channels.utils import format_channel_number, resolve_epg_output_window
 from apps.epg.models import ProgramData
 from apps.epg.utils import sd_poster_proxy_path
 from apps.output.dummy_epg import (
@@ -24,7 +25,10 @@ from apps.output.dummy_epg import (
     prefetch_streams_for_stream_named_sources,
     resolve_pattern_match_name,
 )
-from apps.output.streaming_chunk_cache import stream_cached_response
+from apps.output.streaming_chunk_cache import (
+    EPG_CACHE_GENERATION_KEY,
+    stream_cached_response,
+)
 from core.utils import build_absolute_uri_with_port, log_system_event
 
 logger = logging.getLogger(__name__)
@@ -40,28 +44,14 @@ def _epg_export_teardown():
     spawn_memory_trim(close_connections=True)
 
 
-def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=False):
+def generate_epg(request, profile_name=None, user=None):
     """
     Dynamically generate an XMLTV (EPG) file using a streaming response.
     Since the EPG data is stored independently of Channels, we group programmes
     by their associated EPGData record.
     """
-    user_custom = (user.custom_properties or {}) if user else {}
-    try:
-        num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
-        num_days = max(0, min(num_days, 365))
-    except (ValueError, TypeError):
-        num_days = 0
-    if xc_catchup_prev_days:
-        from apps.channels.utils import resolve_xc_epg_prev_days
-
-        prev_days = resolve_xc_epg_prev_days(request, user)
-    else:
-        try:
-            prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
-            prev_days = max(0, min(prev_days, 30))
-        except (ValueError, TypeError):
-            prev_days = 0
+    window = resolve_epg_output_window(request, user)
+    num_days, prev_days = window.forward_days, window.prev_days
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
 
@@ -84,30 +74,11 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
 
         # Get channels based on user/profile
         if user is not None:
-            if user.user_level < 10:
-                user_profile_count = user.channel_profiles.count()
-
-                # If user has ALL profiles or NO profiles, give unrestricted access
-                if user_profile_count == 0:
-                    # No profile filtering - user sees all channels based on user_level
-                    filters = {"user_level__lte": user.user_level}
-                    # Hide adult content if user preference is set
-                    if (user.custom_properties or {}).get('hide_adult_content', False):
-                        filters["is_adult"] = False
-                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source')
-                else:
-                    # User has specific limited profiles assigned
-                    filters = {
-                        "channelprofilemembership__enabled": True,
-                        "user_level__lte": user.user_level,
-                        "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                    }
-                    # Hide adult content if user preference is set
-                    if (user.custom_properties or {}).get('hide_adult_content', False):
-                        filters["is_adult"] = False
-                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source').distinct()
-            else:
-                base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('logo', 'epg_data__epg_source')
+            base_qs = channels_queryset_for_user(
+                Channel.objects.all(),
+                user,
+                level_cap_admins=True,
+            ).select_related("logo", "epg_data__epg_source")
         else:
             if profile_name is not None:
                 try:
@@ -286,7 +257,11 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                     end_time__gte=lookback_cutoff,
                 )
 
-            programs_base_qs = programs_qs.order_by('epg_id', 'id').values(
+            # Paged by (epg_id, end_time, id) so each page can use the
+            # (epg, end_time) index and skip retained history before the
+            # lookback. Rows of one EPG stay together; flush_pending re-sorts
+            # them by start time before writing.
+            programs_base_qs = programs_qs.order_by('epg_id', 'end_time', 'id').values(
                 'id', 'epg_id', 'start_time', 'end_time', 'title', 'sub_title',
                 'description', 'custom_properties',
             )
@@ -298,6 +273,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             program_batch = []
             chunk_size = _EPG_PROGRAM_DB_CHUNK_SIZE
             last_epg_id = 0
+            last_end_time = None
             last_id = 0
             _poster_site_origin = request_origin
 
@@ -324,15 +300,20 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                 pending.clear()
 
             while True:
-                program_chunk = list(
-                    programs_base_qs.filter(epg_id__gte=last_epg_id)
-                    .exclude(epg_id=last_epg_id, id__lte=last_id)[:chunk_size]
-                )
+                page_qs = programs_base_qs.filter(epg_id__gte=last_epg_id)
+                if last_end_time is not None:
+                    page_qs = page_qs.exclude(
+                        epg_id=last_epg_id, end_time__lt=last_end_time
+                    ).exclude(
+                        epg_id=last_epg_id, end_time=last_end_time, id__lte=last_id
+                    )
+                program_chunk = list(page_qs[:chunk_size])
                 if not program_chunk:
                     break
 
                 last_row = program_chunk[-1]
                 last_epg_id = last_row['epg_id']
+                last_end_time = last_row['end_time']
                 last_id = last_row['id']
 
                 for prog in program_chunk:
@@ -655,4 +636,5 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
         build_epg_stream,
         content_type="application/xml",
         filename="Dispatcharr.xml",
+        generation_key=EPG_CACHE_GENERATION_KEY,
     )

@@ -2,9 +2,9 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.accounts.permissions import (
-    Authenticated,
-    permission_classes_by_action,
-    permission_classes_by_method,
+    IsAdmin,
+    permissions_for_action,
+    permissions_for_method,
 )
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -28,6 +28,7 @@ from apps.channels.utils import coerce_channel_profile_ids
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
+from apps.vod.utils import validate_category_custom_properties
 
 from .serializers import (
     M3UAccountSerializer,
@@ -37,7 +38,16 @@ from .serializers import (
 )
 
 from .tasks import refresh_single_m3u_account, refresh_m3u_accounts, refresh_account_info
+from .utils import hash_key_fields
+from core.tasks import (
+    rehash_streams,
+    release_rehash_locks,
+    try_acquire_rehash_locks,
+)
 import json
+
+
+_HASH_KEY_INVALID = object()
 
 
 class M3UAccountViewSet(viewsets.ModelViewSet):
@@ -49,10 +59,16 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     serializer_class = M3UAccountSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
+
+    def _reject_if_locked(self, instance):
+        """Locked accounts (system ``custom``) cannot be changed or deleted."""
+        if instance.locked:
+            return Response(
+                {"error": "Cannot modify or delete a locked M3U account"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -148,51 +164,120 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        locked_response = self._reject_if_locked(instance)
+        if locked_response is not None:
+            return locked_response
         old_vod_enabled = False
+        old_hash_fields = hash_key_fields(
+            (instance.custom_properties or {}).get("hash_key")
+        )
+        hash_key_changing = False
+        preacquired_locks = []
+        lock_token = None
+
+        # Only a real hash_key field-set change gates the save. Unrelated
+        # edits (name, is_active alone, file, etc.) and reorder-only
+        # changes skip this entirely. Acquire uses SET NX (check and take
+        # in one step). Inactive accounts are locked too: the rehash still
+        # rewrites their streams, and the account can be turned back on
+        # before that task finishes.
+        if "hash_key" in request.data:
+            try:
+                incoming_hash_fields = hash_key_fields(
+                    request.data.get("hash_key"), strict=True
+                )
+            except (TypeError, ValueError):
+                # Non-CSV shapes or unknown fields: let the serializer
+                # return the field validation error.
+                incoming_hash_fields = _HASH_KEY_INVALID
+            if (
+                incoming_hash_fields is not _HASH_KEY_INVALID
+                and incoming_hash_fields != old_hash_fields
+            ):
+                hash_key_changing = True
+                preacquired_locks, blocked, lock_token = try_acquire_rehash_locks(
+                    account_id=instance.id
+                )
+                if blocked:
+                    return Response(
+                        {
+                            "detail": (
+                                "Cannot change the hash key override while this "
+                                "account is refreshing. Wait for the refresh to "
+                                "finish, then try again."
+                            ),
+                            "hash_key": [
+                                "Account is currently refreshing. Try again later."
+                            ],
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
 
         # Check current VOD setting
         if instance.custom_properties:
             custom_props = instance.custom_properties or {}
             old_vod_enabled = custom_props.get("enable_vod", False)
+        new_vod_enabled = old_vod_enabled
 
-        # Handle file upload first, if any
-        file_path = None
-        if "file" in request.FILES:
-            file = request.FILES["file"]
-            try:
-                file_path = safe_upload_path(file.name, "/data/uploads/m3us")
-            except ValueError:
-                return Response({"detail": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            # Handle file upload first, if any
+            file_path = None
+            if "file" in request.FILES:
+                file = request.FILES["file"]
+                try:
+                    file_path = safe_upload_path(file.name, "/data/uploads/m3us")
+                except ValueError:
+                    return Response({"detail": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
 
-            os.makedirs("/data/uploads/m3us", exist_ok=True)
-            with open(file_path, "wb+") as destination:
-                for chunk in file.chunks():
-                    destination.write(chunk)
+                os.makedirs("/data/uploads/m3us", exist_ok=True)
+                with open(file_path, "wb+") as destination:
+                    for chunk in file.chunks():
+                        destination.write(chunk)
 
-            # Add file_path to the request data so it's available during creation
-            request.data._mutable = True  # Allow modification of the request data
-            request.data["file_path"] = (
-                file_path  # Include the file path if a file was uploaded
-            )
+                # Add file_path to the request data so it's available during creation
+                request.data._mutable = True  # Allow modification of the request data
+                request.data["file_path"] = (
+                    file_path  # Include the file path if a file was uploaded
+                )
 
-            # Handle the user_agent field - convert "null" string to None
-            if "user_agent" in request.data and request.data["user_agent"] == "null":
-                request.data["user_agent"] = None
+                # Handle the user_agent field - convert "null" string to None
+                if "user_agent" in request.data and request.data["user_agent"] == "null":
+                    request.data["user_agent"] = None
 
-            # Handle server_url appropriately
-            if "server_url" in request.data and not request.data["server_url"]:
-                request.data.pop("server_url")
+                # Handle server_url appropriately
+                if "server_url" in request.data and not request.data["server_url"]:
+                    request.data.pop("server_url")
 
-            request.data._mutable = False  # Make the request data immutable again
+                request.data._mutable = False  # Make the request data immutable again
 
-            if instance.file_path and os.path.exists(instance.file_path):
-                os.remove(instance.file_path)
+                if instance.file_path and os.path.exists(instance.file_path):
+                    os.remove(instance.file_path)
 
-        # Now call super().update() to update the instance
-        response = super().update(request, *args, **kwargs)
+            # Now call super().update() to update the instance
+            response = super().update(request, *args, **kwargs)
 
-        # Check if VOD setting changed and trigger refresh if needed
-        new_vod_enabled = request.data.get("enable_vod", old_vod_enabled)
+            # If this account's hash key override changed, rehash just its own
+            # streams. Locks were taken before the save so the setting and the
+            # rehash cannot race a concurrent refresh.
+            if hash_key_changing:
+                instance.refresh_from_db(fields=["custom_properties"])
+                new_keys = instance.get_effective_hash_keys()
+                lock_ids = list(preacquired_locks)
+                rehash_streams.delay(
+                    new_keys,
+                    account_id=instance.id,
+                    locks_preacquired=True,
+                    preacquired_lock_ids=lock_ids,
+                    preacquired_lock_token=lock_token,
+                )
+                preacquired_locks = []
+
+            # Check if VOD setting changed and trigger refresh if needed
+            new_vod_enabled = request.data.get("enable_vod", old_vod_enabled)
+        finally:
+            # Release only if we never handed ownership to the rehash task
+            # (validation failure, unexpected error, or no rehash queued).
+            release_rehash_locks(preacquired_locks, lock_token)
 
         if (
             instance.account_type == M3UAccount.Types.XC
@@ -249,6 +334,9 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         """Handle partial updates with special logic for is_active field"""
         instance = self.get_object()
+        locked_response = self._reject_if_locked(instance)
+        if locked_response is not None:
+            return locked_response
 
         # Check if we're toggling is_active
         if (
@@ -276,8 +364,14 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         survive with their other streams. The legacy
         ``?cleanup_channels`` query parameter is accepted for backward
         compatibility but ignored.
+
+        Locked accounts (the system ``custom`` account) cannot be
+        modified or deleted.
         """
         instance = self.get_object()
+        locked_response = self._reject_if_locked(instance)
+        if locked_response is not None:
+            return locked_response
         from apps.channels.models import Channel
         from apps.proxy.live_proxy.services.channel_service import (
             ChannelService,
@@ -332,7 +426,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             },
         },
     )
-    @action(detail=True, methods=["get"], url_path="auto-created-channels-count")
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="auto-created-channels-count",
+        permission_classes=[IsAdmin],
+    )
     def auto_created_channels_count(self, request, pk=None):
         """
         Preview how many auto-created channels would be removed if the account
@@ -374,7 +473,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             },
         },
     )
-    @action(detail=True, methods=["post"], url_path="repack-group")
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="repack-group",
+        permission_classes=[IsAdmin],
+    )
     def repack_group(self, request, pk=None):
         """
         Manually re-pack visible channels in one of this account's
@@ -441,7 +545,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 )
         return Response(result)
 
-    @action(detail=True, methods=["post"], url_path="refresh-vod")
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="refresh-vod",
+        permission_classes=[IsAdmin],
+    )
     def refresh_vod(self, request, pk=None):
         """Trigger VOD content refresh for XtreamCodes accounts"""
         account = self.get_object()
@@ -478,7 +587,12 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    @action(detail=True, methods=["patch"], url_path="group-settings")
+    @action(
+        detail=True,
+        methods=["patch"],
+        url_path="group-settings",
+        permission_classes=[IsAdmin],
+    )
     def update_group_settings(self, request, pk=None):
         """Update auto channel sync settings for M3U account groups"""
         account = self.get_object()
@@ -486,6 +600,20 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         category_settings = request.data.get("category_settings", [])
 
         try:
+            validated_category_props = {}
+            for setting in category_settings:
+                try:
+                    validated_category_props[setting.get("id")] = (
+                        validate_category_custom_properties(
+                            setting.get("custom_properties")
+                        )
+                    )
+                except ValueError as e:
+                    return Response(
+                        {"error": f"Category {setting.get('id')}: {e}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             for setting in group_settings:
                 start = setting.get("auto_sync_channel_start")
                 end = setting.get("auto_sync_channel_end")
@@ -546,14 +674,27 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         ],
                     )
 
+                category_ids = [
+                    setting["id"] for setting in category_settings if setting.get("id")
+                ]
+                existing_category_props = {
+                    rel.category_id: rel.custom_properties or {}
+                    for rel in M3UVODCategoryRelation.objects.filter(
+                        m3u_account=account, category_id__in=category_ids
+                    )
+                }
+
                 category_objects = [
                     M3UVODCategoryRelation(
                         category_id=setting["id"],
                         m3u_account=account,
                         enabled=setting.get("enabled", True),
-                        custom_properties=ensure_custom_properties_dict(
-                            setting.get("custom_properties")
-                        ),
+                        # Merged so a partial update (e.g. only `quality`) keeps
+                        # the category's language, which keys its VOD identity
+                        custom_properties={
+                            **existing_category_props.get(setting["id"], {}),
+                            **validated_category_props.get(setting["id"], {}),
+                        },
                     )
                     for setting in category_settings
                     if setting.get("id")
@@ -581,10 +722,7 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
     serializer_class = M3UFilterSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         m3u_account_id = self.kwargs["account_id"]
@@ -611,22 +749,14 @@ class ServerGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ServerGroupSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class RefreshM3UAPIView(APIView):
     """Triggers refresh for all active M3U accounts"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers a refresh of all active M3U accounts",
@@ -643,12 +773,7 @@ class RefreshSingleM3UAPIView(APIView):
     """Triggers refresh for a single M3U account"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers a refresh of a single M3U account",
@@ -668,12 +793,7 @@ class RefreshAccountInfoAPIView(APIView):
     """Triggers account info refresh for a single M3U account"""
 
     def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_method(self.request)
 
     @extend_schema(
         description="Triggers a refresh of account information for a specific M3U profile",
@@ -718,10 +838,7 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     serializer_class = UserAgentSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
 
 class M3UAccountProfileViewSet(viewsets.ModelViewSet):
@@ -729,10 +846,7 @@ class M3UAccountProfileViewSet(viewsets.ModelViewSet):
     serializer_class = M3UAccountProfileSerializer
 
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
-        except KeyError:
-            return [Authenticated()]
+        return permissions_for_action(self)
 
     def get_queryset(self):
         m3u_account_id = self.kwargs["account_id"]

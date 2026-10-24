@@ -5,7 +5,21 @@ import ipaddress
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from dispatcharr.utils import validate_proxy_auth_header
-from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY, REVERSE_PROXY_AUTH_KEY
+from .models import (
+    CoreSettings,
+    UserAgent,
+    StreamProfile,
+    OutputProfile,
+    DVR_SETTINGS_KEY,
+    EPG_DAYS_LIMIT,
+    EPG_HISTORY_MAX_DAYS_DEFAULT,
+    EPG_HISTORY_MIN_DAYS_DEFAULT,
+    EPG_SETTINGS_KEY,
+    NETWORK_ACCESS_KEY,
+    SYSTEM_SETTINGS_KEY,
+    REVERSE_PROXY_AUTH_KEY,
+)
+from .utils import clamp_int
 
 from dispatcharr.log_collector import (
     DEFAULT_LOG_KEEP,
@@ -13,15 +27,6 @@ from dispatcharr.log_collector import (
     MAX_LOG_KEEP,
     MAX_LOG_MB,
 )
-
-
-
-def _clamp_int(value, default, lo, hi):
-    """Coerce a settings value to an int within [lo, hi], falling back to default on garbage."""
-    try:
-        return max(lo, min(hi, int(value)))
-    except (TypeError, ValueError):
-        return default
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -72,10 +77,62 @@ class OutputProfileSerializer(serializers.ModelSerializer):
         return _update_profile(self, instance, validated_data)
 
 
+def _clamp_epg_history_fields(value):
+    """Clamp guide-history day fields in place.
+
+    The reader also clamps, so a bad stored value cannot change behavior. Doing
+    it on write keeps the saved row equal to what the settings page will show.
+    """
+    if not isinstance(value, dict):
+        return
+    if "epg_history_max_days" in value:
+        value["epg_history_max_days"] = clamp_int(
+            value["epg_history_max_days"],
+            EPG_HISTORY_MAX_DAYS_DEFAULT,
+            0,
+            EPG_DAYS_LIMIT,
+        )
+    if "epg_history_min_days" in value:
+        max_days = clamp_int(
+            value.get("epg_history_max_days"),
+            EPG_HISTORY_MAX_DAYS_DEFAULT,
+            0,
+            EPG_DAYS_LIMIT,
+        )
+        value["epg_history_min_days"] = min(
+            clamp_int(
+                value["epg_history_min_days"],
+                EPG_HISTORY_MIN_DAYS_DEFAULT,
+                0,
+                EPG_DAYS_LIMIT,
+            ),
+            max_days,
+        )
+    if "epg_default_prev_days" in value:
+        max_days = clamp_int(
+            value.get("epg_history_max_days"),
+            EPG_HISTORY_MAX_DAYS_DEFAULT,
+            0,
+            EPG_DAYS_LIMIT,
+        )
+        value["epg_default_prev_days"] = clamp_int(
+            value["epg_default_prev_days"], 0, 0, max_days
+        )
+    if "epg_default_days" in value:
+        value["epg_default_days"] = clamp_int(
+            value["epg_default_days"], 0, 0, EPG_DAYS_LIMIT
+        )
+
+
 class CoreSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = CoreSettings
         fields = "__all__"
+
+    def create(self, validated_data):
+        if validated_data.get("key") == EPG_SETTINGS_KEY:
+            _clamp_epg_history_fields(validated_data.get("value"))
+        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         if instance.key == NETWORK_ACCESS_KEY:
@@ -107,15 +164,18 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
             value = validated_data.get("value")
             if isinstance(value, dict):
                 if "log_max_mb" in value:
-                    value["log_max_mb"] = _clamp_int(
+                    value["log_max_mb"] = clamp_int(
                         value["log_max_mb"], DEFAULT_LOG_MB, 1, MAX_LOG_MB
                     )
                 if "log_keep" in value:
-                    value["log_keep"] = _clamp_int(
+                    value["log_keep"] = clamp_int(
                         value["log_keep"], DEFAULT_LOG_KEEP, 2, MAX_LOG_KEEP
                     )
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
+
+        if instance.key == EPG_SETTINGS_KEY:
+            _clamp_epg_history_fields(validated_data.get("value"))
 
         if instance.key == REVERSE_PROXY_AUTH_KEY:
             value = validated_data.get("value") or {}
@@ -166,6 +226,8 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
+    stream_startup_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=8)
+    connection_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=10)
     validate_redirect_urls = serializers.BooleanField(required=False, default=True)
 
     def validate_buffering_timeout(self, value):
@@ -205,6 +267,20 @@ class ProxySettingsSerializer(serializers.Serializer):
     def validate_new_client_behind_seconds(self, value):
         if value < 0 or value > 120:
             raise serializers.ValidationError("New client buffer must be between 0 and 120 seconds")
+        return value
+
+    def validate_stream_startup_timeout(self, value):
+        if value < 1 or value > 120:
+            raise serializers.ValidationError(
+                "Stream startup timeout must be between 1 and 120 seconds"
+            )
+        return value
+
+    def validate_connection_timeout(self, value):
+        if value < 1 or value > 120:
+            raise serializers.ValidationError(
+                "Stream idle timeout must be between 1 and 120 seconds"
+            )
         return value
 
 

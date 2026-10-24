@@ -1,30 +1,25 @@
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
 import json
 from django.urls import reverse
+from apps.channels.access import channels_queryset_for_user
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
-from apps.channels.utils import MAX_AUTO_PREV_DAYS, format_channel_number, is_catchup_enabled
-from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
+from apps.channels.utils import format_channel_number, is_catchup_enabled, resolve_epg_output_window
+from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled, xc_language_suffix
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from apps.epg.models import ProgramData
-from apps.accounts.models import User
+from apps.accounts.xc_auth import authorize_xc_client
 from dispatcharr.utils import get_client_ip, network_access_allowed
 from django.utils import timezone as django_timezone
-from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta, timezone as dt_timezone
-import html
 import time
 from urllib.parse import urlencode, urlparse
 from ipaddress import ip_address
 import base64
 import logging
 from django.db.models.functions import Lower
-import os
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
-import regex
-from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 from apps.output.dummy_epg import (
@@ -188,30 +183,11 @@ def generate_m3u(request, profile_name=None, user=None):
         return response
 
     if user is not None:
-        if user.user_level < 10:
-            user_profile_count = user.channel_profiles.count()
-
-            # If user has ALL profiles or NO profiles, give unrestricted access
-            if user_profile_count == 0:
-                # No profile filtering - user sees all channels based on user_level
-                filters = {"user_level__lte": user.user_level}
-                # Hide adult content if user preference is set
-                if (user.custom_properties or {}).get('hide_adult_content', False):
-                    filters["is_adult"] = False
-                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
-            else:
-                # User has specific limited profiles assigned
-                filters = {
-                    "channelprofilemembership__enabled": True,
-                    "user_level__lte": user.user_level,
-                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                }
-                # Hide adult content if user preference is set
-                if (user.custom_properties or {}).get('hide_adult_content', False):
-                    filters["is_adult"] = False
-                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
-        else:
-            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
+        base_qs = channels_queryset_for_user(
+            Channel.objects.all(),
+            user,
+            level_cap_admins=True,
+        ).select_related("channel_group", "logo")
 
     else:
         if profile_name is not None:
@@ -419,7 +395,6 @@ def generate_m3u(request, profile_name=None, user=None):
                     catchup_days = direct_stream_catchup_days
             elif is_xc_request and channel.is_catchup:
                 catchup_days = channel.catchup_days or 0
-            catchup_days = min(catchup_days, MAX_AUTO_PREV_DAYS)
             if catchup_days > 0 and use_direct_urls:
                 catchup_attrs = f'catchup="xc" catchup-days="{catchup_days}" '
             elif catchup_days > 0 and _catchup_source_prefix is not None:
@@ -486,32 +461,9 @@ def generate_m3u(request, profile_name=None, user=None):
     return response
 
 
-def xc_get_user(request):
-    username = request.GET.get("username")
-    password = request.GET.get("password")
-
-    if not username or not password:
-        return None
-
-    user = get_object_or_404(User, username=username)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return None
-
-    if custom_properties["xc_password"] != password:
-        return None
-
-    if not network_access_allowed(request, 'XC_API', user):
-        return None
-
-    return user
-
-
 def _xc_allowed_output_formats(user):
     """Return the list of allowed output formats for the XC API user_info response."""
-    return ['ts', 'mp4']
+    return ['ts', 'mp4', 'm3u8']
 
 
 def _build_xc_server_info(request, hostname, port):
@@ -532,12 +484,7 @@ def _build_xc_server_info(request, hostname, port):
     }
 
 
-def xc_get_info(request, full=False):
-    user = xc_get_user(request)
-
-    if user is None:
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
-
+def xc_get_info(request, user, full=False):
     raw_host = request.get_host()
     if ":" in raw_host:
         hostname, port = raw_host.split(":", 1)
@@ -578,12 +525,44 @@ def xc_get_info(request, full=False):
     return info
 
 
+def _xc_api_user(request, blocked_event=None):
+    """Authorize username/password query params against the XC API allowlist.
+
+    When *blocked_event* is set (``m3u_blocked`` or ``epg_blocked``), a
+    failure is written to the system log before the error is returned.
+    """
+    user, error = authorize_xc_client(
+        request,
+        request.GET.get("username"),
+        request.GET.get("password"),
+        "XC_API",
+    )
+    if error is None or not blocked_event:
+        return user, error
+
+    client_ip = get_client_ip(request) or "unknown"
+    user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
+    if error.status_code == 403:
+        reason = "Network access denied (XC API)"
+    elif error.status_code == 429:
+        reason = "XC auth rate limited"
+    else:
+        reason = "Invalid XC credentials"
+    log_system_event(
+        event_type=blocked_event,
+        user=request.GET.get("username", "unknown"),
+        reason=reason,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
+    return user, error
+
+
 def xc_player_api(request, full=False):
     action = request.GET.get("action")
-    user = xc_get_user(request)
-
-    if user is None:
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
+    user, error = _xc_api_user(request)
+    if error is not None:
+        return error
 
     if action == "get_live_categories":
         return JsonResponse(xc_get_live_categories(user), safe=False)
@@ -611,86 +590,31 @@ def xc_player_api(request, full=False):
     else:
         # For any other action (including get_account_info or unknown actions),
         # return server_info/account_info to match provider behavior
-        server_info = xc_get_info(request)
-        return JsonResponse(server_info, safe=False)
+        return JsonResponse(xc_get_info(request, user), safe=False)
 
 
 def xc_panel_api(request):
-    user = xc_get_user(request)
+    user, error = _xc_api_user(request)
+    if error is not None:
+        return error
 
-    if user is None:
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
-
-    return JsonResponse(xc_get_info(request, True))
+    return JsonResponse(xc_get_info(request, user, True))
 
 
 def xc_get(request):
-    if not network_access_allowed(request, 'XC_API'):
-        # Log blocked M3U download
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='m3u_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Network access denied (XC API)',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
-    action = request.GET.get("action")
-    user = xc_get_user(request)
-
-    if user is None:
-        # Log blocked M3U download due to invalid credentials
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='m3u_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Invalid XC credentials',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
+    user, error = _xc_api_user(request, blocked_event="m3u_blocked")
+    if error is not None:
+        return error
 
     return generate_m3u(request, None, user)
 
 
 def xc_xmltv(request):
-    if not network_access_allowed(request, 'XC_API'):
-        # Log blocked EPG download
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='epg_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Network access denied (XC API)',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+    user, error = _xc_api_user(request, blocked_event="epg_blocked")
+    if error is not None:
+        return error
 
-    user = xc_get_user(request)
-
-    if user is None:
-        # Log blocked EPG download due to invalid credentials
-        from core.utils import log_system_event
-        client_ip = get_client_ip(request) or "unknown"
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        log_system_event(
-            event_type='epg_blocked',
-            user=request.GET.get('username', 'unknown'),
-            reason='Invalid XC credentials',
-            client_ip=client_ip,
-            user_agent=user_agent,
-        )
-        return JsonResponse({'error': 'Unauthorized'}, status=401)
-
-    return generate_epg(request, None, user, xc_catchup_prev_days=True)
+    return generate_epg(request, None, user)
 
 
 def xc_get_live_categories(user):
@@ -707,32 +631,21 @@ def xc_get_live_categories(user):
     )
     hidden_exclusion = {"channels__hidden_from_output": False}
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
-
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channel groups
-            channel_groups = ChannelGroup.objects.filter(
-                channels__isnull=False,
-                channels__user_level__lte=user.user_level,
-                **hidden_exclusion,
-            ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "channels__channelprofilemembership__enabled": True,
-                "channels__user_level__lte": user.user_level,
-                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
-                **hidden_exclusion,
-            }
-            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
-    else:
-        channel_groups = ChannelGroup.objects.filter(
+    visible_channel_ids = channels_queryset_for_user(
+        Channel.objects.all(),
+        user,
+        level_cap_admins=True,
+    ).values("pk")
+    channel_groups = (
+        ChannelGroup.objects.filter(
             channels__isnull=False,
-            channels__user_level__lte=user.user_level,
+            channels__id__in=visible_channel_ids,
             **hidden_exclusion,
-        ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
+        )
+        .distinct()
+        .annotate(min_channel_number=effective_min)
+        .order_by("min_channel_number")
+    )
 
     for group in channel_groups:
         response.append(
@@ -749,39 +662,13 @@ def xc_get_live_categories(user):
 def _xc_live_streams_setup(request, user, category_id):
     from apps.channels.managers import with_effective_values
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
-
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {"user_level__lte": user.user_level}
-            if category_id is not None:
-                filters["channel_group__id"] = category_id
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            if category_id is not None:
-                filters["channel_group__id"] = category_id
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
-    else:
-        if not category_id:
-            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
-        else:
-            base_qs = Channel.objects.filter(
-                channel_group__id=category_id, user_level__lte=user.user_level
-            ).select_related('channel_group', 'logo')
+    base_qs = channels_queryset_for_user(
+        Channel.objects.all(),
+        user,
+        level_cap_admins=True,
+    ).select_related("channel_group", "logo")
+    if category_id is not None:
+        base_qs = base_qs.filter(channel_group__id=category_id)
 
     channels = (
         with_effective_values(base_qs, select_related_fks=True)
@@ -794,7 +681,9 @@ def _xc_live_streams_setup(request, user, category_id):
     def _get_default_group_id():
         nonlocal _default_group_id
         if _default_group_id is None:
-            _default_group_id = ChannelGroup.objects.get_or_create(name="Default Group")[0].id
+            _default_group_id = ChannelGroup.objects.get_or_create_manual(
+                name="Default Group"
+            )[0].id
         return _default_group_id
 
     # Build collision-free integer channel number mapping.
@@ -934,40 +823,12 @@ def xc_get_epg(request, user, short=False):
             .select_related('epg_data__epg_source', 'override__epg_data__epg_source')
         )
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
-
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {
-                "id": resolved_channel_id,
-                "user_level__lte": user.user_level
-            }
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channel = _annotate(Channel.objects.filter(**filters)).first()
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "id": resolved_channel_id,
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channel = _annotate(Channel.objects.filter(**filters).distinct()).first()
-
-        if not channel:
-            raise Http404()
-    else:
-        channel = _annotate(Channel.objects.filter(id=resolved_channel_id)).first()
-        if not channel:
-            raise Http404()
-
+    channel = _annotate(
+        channels_queryset_for_user(
+            Channel.objects.filter(id=resolved_channel_id),
+            user,
+        )
+    ).first()
     if not channel:
         raise Http404()
 
@@ -1014,26 +875,16 @@ def xc_get_epg(request, user, short=False):
         int(channel.effective_channel_number) if channel.effective_channel_number is not None else 0,
     )
 
-    from apps.channels.utils import resolve_xc_epg_prev_days
-
     limit = int(request.GET.get('limit', 4))
-    user_custom = user.custom_properties or {}
-    try:
-        num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
-        num_days = max(0, min(num_days, 365))
-    except (ValueError, TypeError):
-        num_days = 0
-    prev_days = resolve_xc_epg_prev_days(request, user, auto_detect_fallback=False)
+    window = resolve_epg_output_window(request, user)
+    num_days, prev_days = window.forward_days, window.prev_days
     now = django_timezone.now()
 
-    # XC catch-up clients expect past programmes when prev_days was not set.
-    # Only expand from channel.catchup_days while catch-up is allowed; when
-    # disabled, honor URL / user epg_prev_days alone (no forced lookback).
+    # The resolved window is the guide. Catch-up advertising and has_archive
+    # still follow the channel archive.
     catchup_allowed = is_catchup_enabled(user=user)
     channel_is_catchup = getattr(channel, "is_catchup", False)
-    _channel_catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
-    if catchup_allowed and channel_is_catchup and prev_days == 0:
-        prev_days = _channel_catchup_days
+    _channel_catchup_days = getattr(channel, "catchup_days", 0) or 0
 
     lookback_cutoff = now - timedelta(days=prev_days)
     forward_cutoff = now + timedelta(days=num_days) if num_days > 0 else None
@@ -1156,7 +1007,7 @@ def xc_get_epg(request, user, short=False):
 
 XC_MOVIE_VALUE_FIELDS = (
     'id', 'movie_id', 'category_id', 'container_extension',
-    'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
+    'movie__id', 'movie__name', 'movie__language', 'movie__rating', 'movie__created_at',
     'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
     'movie__year', 'movie__is_adult', 'movie__custom_properties', 'movie__logo_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
@@ -1165,7 +1016,7 @@ XC_MOVIE_VALUE_FIELDS = (
 
 XC_SERIES_VALUE_FIELDS = (
     'id', 'series_id', 'category_id', 'updated_at',
-    'series__id', 'series__name', 'series__description', 'series__genre',
+    'series__id', 'series__name', 'series__language', 'series__description', 'series__genre',
     'series__year', 'series__rating', 'series__custom_properties', 'series__logo_id',
     'series__tmdb_id', 'series__imdb_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
@@ -1386,7 +1237,7 @@ def xc_get_vod_streams(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": row['movie__name'],
+            "name": xc_language_suffix(row['movie__name'], row['movie__language']),
             "stream_type": "movie",
             "stream_id": row['movie__id'],
             "stream_icon": _xc_cover_or_logo(
@@ -1481,8 +1332,8 @@ def xc_get_series(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": row['series__name'],
-            "series_id": row['id'],
+            "name": xc_language_suffix(row['series__name'], row['series__language']),
+            "series_id": row['series__id'],
             "cover": _xc_cover_or_logo(
                 request,
                 'series',
@@ -1530,13 +1381,20 @@ def xc_get_series_info(request, user, series_id):
         raise Http404()
 
     # Users with VOD access get series from all active M3U accounts
-    filters = {"id": series_id, "m3u_account__is_active": True}
+    filters = {"series_id": series_id, "m3u_account__is_active": True}
 
     try:
-        series_relation = M3USeriesRelation.objects.select_related('series', 'series__logo').get(**filters)
-        series = series_relation.series
-    except M3USeriesRelation.DoesNotExist:
+        series_relation = (
+            M3USeriesRelation.objects.select_related('series', 'series__logo')
+            .filter(**filters)
+            .order_by('-m3u_account__priority', 'id')
+            .first()
+        )
+    except (ValueError, TypeError):
         raise Http404()
+    if not series_relation:
+        raise Http404()
+    series = series_relation.series
 
     # Check if we need to refresh detailed info (similar to vod api_views pattern)
     try:
@@ -1753,7 +1611,7 @@ def xc_get_series_info(request, user, series_id):
     info = {
         'seasons': seasons_list,
         "info": {
-            "name": series_data['name'],
+            "name": xc_language_suffix(series_data['name'], series.language),
             "cover": series_cover,
             "plot": series_data['description'],
             "cast": series_data['cast'],
@@ -1909,8 +1767,8 @@ def xc_get_vod_info(request, user, vod_id):
     # Transform API response to XtreamCodes format
     info = {
         "info": {
-            "name": movie_data.get('name', movie.name),
-            "o_name": movie_data.get('name', movie.name),
+            "name": xc_language_suffix(movie_data.get('name', movie.name), movie.language),
+            "o_name": xc_language_suffix(movie_data.get('name', movie.name), movie.language),
             "cover_big": movie_cover,
             "movie_image": movie_cover,
             'description': movie_data.get('description', ''),
@@ -1939,7 +1797,7 @@ def xc_get_vod_info(request, user, vod_id):
         },
         "movie_data": {
             "stream_id": movie.id,
-            "name": movie.name,
+            "name": xc_language_suffix(movie.name, movie.language),
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],

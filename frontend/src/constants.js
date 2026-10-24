@@ -18,11 +18,12 @@ export const NETWORK_ACCESS_OPTIONS = {
   STREAMS: {
     label: 'Stream Endpoints',
     description:
-      'Limit network access to stream URLs, including XC stream URLs',
+      'Limit access to non-XC stream URLs (UUID proxy, catch-up sessions, recordings).',
   },
   XC_API: {
     label: 'XC API',
-    description: 'Limit access to the XC API',
+    description:
+      'Limit access to XC-credentialed URLs (player API, playlists, XMLTV, live, VOD, and timeshift)',
   },
   UI: {
     label: 'UI',
@@ -41,6 +42,18 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Speed threshold below which buffering is detected (1.0 = normal speed)',
   },
+  stream_startup_timeout: {
+    label: 'Stream Startup Timeout',
+    advanced: true,
+    description:
+      'Seconds without data after a connection opens before trying the next stream. Each new connection gets this timeout until it sends data. If there is no other stream to try, the channel keeps waiting up to Channel Initialization Timeout. Keep this shorter than Channel Initialization Timeout so the switch happens before the client is dropped.',
+  },
+  connection_timeout: {
+    label: 'Stream Idle Timeout',
+    advanced: true,
+    description:
+      'Seconds without data from a stream that has already sent data before treating it as stalled.',
+  },
   redis_chunk_ttl: {
     label: 'Buffer Chunk TTL',
     advanced: true,
@@ -56,7 +69,7 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Channel Initialization Timeout',
     advanced: true,
     description:
-      'Maximum seconds to wait for the initial buffer to fill while a channel is connecting. Channels that never receive enough buffered data are stopped after this limit.',
+      'Maximum seconds the channel may spend connecting and cycling failover streams before giving up on startup. This is the overall budget, not the per-stream wait (see Stream Startup Timeout).',
   },
   channel_client_wait_period: {
     label: 'Client Connect Grace Period',

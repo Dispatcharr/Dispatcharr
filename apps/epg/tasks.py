@@ -2,6 +2,7 @@
 
 import logging
 import gzip
+from collections import defaultdict
 import html.entities
 import lzma
 import os
@@ -30,6 +31,8 @@ from channels.layers import get_channel_layer
 from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
 from apps.epg.utils import (
     _ONSCREEN_RE,
+    epg_first_start,
+    epg_retention_cutoffs,
     extract_season_episode_from_description,
     fill_original_air_date_if_missing,
     send_epg_update,
@@ -302,6 +305,69 @@ class _PrependStream:
 
     def __exit__(self, *_):
         self.close()
+
+
+# Only the last few KB are needed to confirm the root </tv> closed. Keeps
+# multi-hundred-MB guide checks constant-memory and cheap on I/O.
+_XMLTV_COMPLETENESS_TAIL_BYTES = 8192
+
+
+def _xmltv_file_is_complete(file_path: str) -> bool:
+    """Return True when file_path looks like a finished XMLTV document.
+
+    XMLTV uses a single <tv> root. A truncated download almost never ends with
+    </tv>, while recover=True would otherwise treat a partial file as success.
+    Reads only a small tail so large guides do not inflate memory use.
+    """
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        return False
+    if size <= 0:
+        return False
+    try:
+        with open(file_path, 'rb') as f:
+            f.seek(max(0, size - _XMLTV_COMPLETENESS_TAIL_BYTES))
+            tail = f.read()
+    except OSError:
+        return False
+    return tail.rstrip().endswith(b'</tv>')
+
+
+def _unlink_quiet(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError as e:
+        logger.warning(f"Failed to remove {path}: {e}")
+
+
+def _reject_incomplete_xmltv(source, file_path: str, *, ws_action: str) -> bool:
+    """Log, status-update, and return False when file_path is truncated XMLTV."""
+    size = 0
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        pass
+    logger.error(
+        f"Incomplete XMLTV for source {source.name}: {file_path} "
+        f"({size} bytes) does not end with </tv>"
+    )
+    msg = (
+        f"EPG file appears incomplete (missing closing </tv>). "
+        f"Keeping previous data when available; will retry on next refresh."
+    )
+    _set_epg_source_status(
+        source.id,
+        EPGSource.STATUS_ERROR,
+        msg,
+        source_name=source.name,
+        notify_error=True,
+        ws_action=ws_action,
+    )
+    return False
 
 
 def _open_xmltv_file(file_path: str):
@@ -582,6 +648,15 @@ def fetch_xmltv(source):
                 logger.error(f"Failed to extract existing compressed file: {e}")
                 # Continue with the original file if extraction fails
 
+        check_path = source.extracted_file_path or source.file_path
+        if (
+            check_path
+            and check_path.endswith('.xml')
+            and os.path.exists(check_path)
+            and not _xmltv_file_is_complete(check_path)
+        ):
+            return _reject_incomplete_xmltv(source, check_path, ws_action="downloading")
+
         # Set the status to success in the database
         source.status = 'success'
         source.save(update_fields=['status'])
@@ -608,6 +683,9 @@ def fetch_xmltv(source):
         return False
 
     logger.info(f"Fetching XMLTV data from source: {source.name}")
+    temp_download_path = None
+    incoming_xml_path = None
+    incoming_compressed_path = None
     try:
         # Get default user agent from settings
         stream_settings = CoreSettings.get_stream_settings()
@@ -713,9 +791,12 @@ def fetch_xmltv(source):
             # Create temporary download file with .tmp extension
             temp_download_path = os.path.join(cache_dir, f"{source.id}.tmp")
 
-            # Check if we have content length for progress tracking
+            # Content-Length is the on-the-wire body size. iter_content yields
+            # decoded bytes when Content-Encoding is present, so progress and the
+            # completeness check use response.raw.tell() (wire bytes) against it.
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
+            wire_bytes = 0
             start_time = time.time()
             last_update_time = start_time
             update_interval = 0.5  # Only update every 0.5 seconds
@@ -726,20 +807,24 @@ def fetch_xmltv(source):
                     f.write(chunk)
 
                     downloaded += len(chunk)
+                    wire_bytes = response.raw.tell()
                     elapsed_time = time.time() - start_time
 
-                    # Calculate download speed in KB/s
+                    # Speed display uses decoded bytes written. ETA uses wire
+                    # bytes when Content-Length is present so units match.
                     speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
 
-                    # Calculate progress percentage
                     if total_size and total_size > 0:
-                        progress = min(100, int((downloaded / total_size) * 100))
+                        progress = min(100, int((wire_bytes / total_size) * 100))
+                        wire_speed = wire_bytes / elapsed_time / 1024 if elapsed_time > 0 else 0
+                        time_remaining = (
+                            (total_size - wire_bytes) / (wire_speed * 1024)
+                            if wire_speed > 0 else 0
+                        )
                     else:
-                        # If no content length header, estimate progress
+                        # No Content-Length: estimate progress from decoded size.
                         progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
-
-                    # Time remaining (in seconds)
-                    time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
+                        time_remaining = 0
 
                     # Only send updates at specified intervals to avoid flooding
                     current_time = time.time()
@@ -758,8 +843,26 @@ def fetch_xmltv(source):
                     # Explicitly delete the chunk to free memory immediately
                     del chunk
 
-            # Send completion notification
-            send_epg_update(source.id, "downloading", 100)
+            wire_bytes = response.raw.tell()
+            # Chunked responses omit Content-Length; those rely on the </tv> check.
+            if total_size > 0 and wire_bytes != total_size:
+                logger.error(
+                    f"Incomplete download for {source.name}: got {wire_bytes} wire bytes, "
+                    f"expected {total_size}"
+                )
+                msg = (
+                    f"EPG download incomplete ({wire_bytes} of {total_size} bytes). "
+                    f"Keeping previous data when available; will retry on next refresh."
+                )
+                _set_epg_source_status(
+                    source.id,
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=source.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                )
+                return False
 
             # Determine the appropriate file extension based on content detection
             with open(temp_download_path, 'rb') as f:
@@ -776,78 +879,111 @@ def fetch_xmltv(source):
             # Ensure consistent final paths
             compressed_path = os.path.join(cache_dir, f"{source.id}{file_extension}" if is_compressed else f"{source.id}.compressed")
             xml_path = os.path.join(cache_dir, f"{source.id}.xml")
+            # Stage into *.incoming* first so a bad pull never deletes a good cache.
+            # The finally below removes these if they are still on disk.
+            incoming_xml_path = os.path.join(cache_dir, f"{source.id}.incoming.xml")
 
-            # Clean up old files before saving new ones
-            if os.path.exists(compressed_path):
-                try:
-                    os.remove(compressed_path)
-                    logger.debug(f"Removed old compressed file: {compressed_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to remove old compressed file: {e}")
-
-            if os.path.exists(xml_path):
-                try:
-                    os.remove(xml_path)
-                    logger.debug(f"Removed old XML file: {xml_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to remove old XML file: {e}")
-
-            # Rename the temp file to appropriate final path
             if is_compressed:
+                incoming_compressed_path = os.path.join(
+                    cache_dir, f"{source.id}.incoming{file_extension}"
+                )
                 try:
-                    os.rename(temp_download_path, compressed_path)
-                    logger.debug(f"Renamed temp file to compressed file: {compressed_path}")
-                    current_file_path = compressed_path
+                    os.replace(temp_download_path, incoming_compressed_path)
                 except OSError as e:
-                    logger.error(f"Failed to rename temp file to compressed file: {e}")
-                    current_file_path = temp_download_path  # Fall back to using temp file
-            else:
-                try:
-                    os.rename(temp_download_path, xml_path)
-                    logger.debug(f"Renamed temp file to XML file: {xml_path}")
-                    current_file_path = xml_path
-                except OSError as e:
-                    logger.error(f"Failed to rename temp file to XML file: {e}")
-                    current_file_path = temp_download_path  # Fall back to using temp file
+                    logger.error(f"Failed to stage compressed download: {e}")
+                    msg = f"Failed to stage downloaded EPG file: {e}"
+                    _set_epg_source_status(
+                        source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=source.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                    )
+                    return False
 
-            # Now extract the file if it's compressed
-            if is_compressed:
                 try:
-                    logger.info(f"Extracting compressed file {current_file_path}")
+                    logger.info(f"Extracting compressed file {incoming_compressed_path}")
                     send_epg_update(source.id, "extracting", 0, message="Extracting downloaded file")
-
-                    # Always extract to the standard XML path - set delete_original to True to clean up
-                    extracted = extract_compressed_file(current_file_path, xml_path, delete_original=True)
-
-                    if extracted:
-                        logger.info(f"Successfully extracted to {xml_path}, compressed file deleted")
-                        send_epg_update(source.id, "extracting", 100, message=f"File extracted successfully, temporary file removed")
-                        # Update to store only the extracted file path since the compressed file is now gone
-                        source.file_path = xml_path
-                        source.extracted_file_path = None
-                    else:
-                        logger.error("Extraction failed, using compressed file")
-                        send_epg_update(source.id, "extracting", 100, status="error", message="Extraction failed, using compressed file")
-                        # Use the compressed file
-                        source.file_path = current_file_path
-                        source.extracted_file_path = None
+                    extracted = extract_compressed_file(
+                        incoming_compressed_path, incoming_xml_path, delete_original=True
+                    )
+                    if not extracted:
+                        logger.error("Extraction failed for downloaded EPG file")
+                        msg = "Failed to extract downloaded EPG file"
+                        _set_epg_source_status(
+                            source.id,
+                            EPGSource.STATUS_ERROR,
+                            msg,
+                            source_name=source.name,
+                            notify_error=True,
+                            ws_action="extracting",
+                        )
+                        return False
                 except Exception as e:
                     logger.error(f"Error extracting file: {str(e)}", exc_info=True)
-                    send_epg_update(source.id, "extracting", 100, status="error", message=f"Error during extraction: {str(e)}")
-                    # Use the compressed file if extraction fails
-                    source.file_path = current_file_path
-                    source.extracted_file_path = None
+                    msg = f"Error during extraction: {str(e)}"
+                    _set_epg_source_status(
+                        source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=source.name,
+                        notify_error=True,
+                        ws_action="extracting",
+                    )
+                    return False
             else:
-                # It's already an XML file
-                source.file_path = current_file_path
-                source.extracted_file_path = None
+                try:
+                    os.replace(temp_download_path, incoming_xml_path)
+                except OSError as e:
+                    logger.error(f"Failed to stage XML download: {e}")
+                    msg = f"Failed to stage downloaded EPG file: {e}"
+                    _set_epg_source_status(
+                        source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=source.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                    )
+                    return False
 
-            # Update the source's file paths
+            if not _xmltv_file_is_complete(incoming_xml_path):
+                return _reject_incomplete_xmltv(
+                    source, incoming_xml_path, ws_action="downloading"
+                )
+
+            try:
+                os.replace(incoming_xml_path, xml_path)
+            except OSError as e:
+                logger.error(f"Failed to install cached EPG XML: {e}")
+                msg = f"Failed to save downloaded EPG file: {e}"
+                _set_epg_source_status(
+                    source.id,
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=source.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                )
+                return False
+
+            # Leftover compressed cache from older builds; XML is the source of truth.
+            _unlink_quiet(compressed_path)
+
+            source.file_path = xml_path
+            source.extracted_file_path = None
+            source.status = 'parsing'
             source.save(update_fields=['file_path', 'status', 'extracted_file_path'])
 
-            # Update status to parsing
-            source.status = 'parsing'
-            source.save(update_fields=['status'])
+            # Progress 100 with no error status is treated as success by the UI,
+            # so only fire it after the new file has passed validation and replaced
+            # the cache.
+            if is_compressed:
+                send_epg_update(
+                    source.id, "extracting", 100, message="File extracted successfully"
+                )
+            send_epg_update(source.id, "downloading", 100)
 
             logger.info(f"Cached EPG file saved to {source.file_path}")
 
@@ -976,6 +1112,12 @@ def fetch_xmltv(source):
             ws_error=msg,
         )
         return False
+    finally:
+        # Success has already renamed these onto the cache path, so this only
+        # removes a partial download or a rejected staged file.
+        _unlink_quiet(temp_download_path)
+        _unlink_quiet(incoming_xml_path)
+        _unlink_quiet(incoming_compressed_path)
 
 
 def extract_compressed_file(file_path, output_path=None, delete_original=False):
@@ -1256,24 +1398,11 @@ def parse_channels_only(source):
             should_log_memory = False
             logger.warning("psutil not available for memory tracking")
 
-        # Replace full dictionary load with more efficient lookup set
-        existing_tvg_ids = set()
+        existing_tvg_ids = set(
+            EPGData.objects.filter(epg_source=source).values_list('tvg_id', flat=True)
+        )
         existing_epgs = {}
         scanned_tvg_ids = set()  # Track tvg_ids seen in the current scan for stale cleanup
-        last_id = 0
-        chunk_size = 5000
-
-        while True:
-            tvg_id_chunk = set(EPGData.objects.filter(
-                epg_source=source,
-                id__gt=last_id
-            ).order_by('id').values_list('tvg_id', flat=True)[:chunk_size])
-
-            if not tvg_id_chunk:
-                break
-
-            existing_tvg_ids.update(tvg_id_chunk)
-            last_id = EPGData.objects.filter(tvg_id__in=tvg_id_chunk).order_by('-id')[0].id
         # Update progress to show file read starting
         send_epg_update(source.id, "parsing_channels", 10)
 
@@ -1784,6 +1913,10 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # Use streaming parsing to reduce memory usage
             # No need to check file type anymore since it's always XML
             logger.debug(f"Parsing programs for tvg_id={epg.tvg_id} from {file_path}")
+
+            if not _xmltv_file_is_complete(file_path):
+                _reject_incomplete_xmltv(epg_source, file_path, ws_action="parsing_programs")
+                return
     
             # Memory usage tracking
             if process:
@@ -1916,13 +2049,53 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # Swap old programmes for the newly parsed ones atomically. If the insert
             # fails (including a poisoned-connection blip), the transaction rolls back
             # and the previous guide data for this channel is left untouched.
+            #
+            # Stored programmes that ended at or before the new pull's first start
+            # are history the pull doesn't cover, so they stay until the retention
+            # cutoff. Anything ending after first_start runs into the new data and
+            # is replaced by it.
             with transaction.atomic():
-                deleted_count = ProgramData.objects.filter(epg=epg).delete()[0]
                 if programs_to_create:
+                    cutoff = epg_retention_cutoffs([epg.id])[epg.id]
+                    # Programmes in the pull that already ended before the cutoff
+                    # would only be pruned again on the next refresh.
+                    programs_to_create = [
+                        p for p in programs_to_create if p.end_time >= cutoff
+                    ]
+                    first_start = epg_first_start(
+                        (p.start_time for p in programs_to_create), cutoff
+                    )
+                    delete_q = Q(end_time__lt=cutoff)
+                    if first_start is not None:
+                        delete_q |= Q(end_time__gt=first_start)
+                    deleted_count = ProgramData.objects.filter(epg=epg).filter(
+                        delete_q
+                    ).delete()[0]
+                    # A stored row that starts before the cutoff and ends at or
+                    # before first_start is still here. Skip the pull's copy of
+                    # that same start so it is not inserted again. A spanning
+                    # row that ends after first_start was deleted above, and
+                    # the pull's copy of it is inserted.
+                    kept_starts = set(
+                        ProgramData.objects.filter(
+                            epg=epg, start_time__lt=cutoff, end_time__gte=cutoff
+                        ).values_list('start_time', flat=True)
+                    )
+                    programs_to_create = [
+                        p for p in programs_to_create
+                        if p.start_time >= cutoff or p.start_time not in kept_starts
+                    ]
                     for i in range(0, len(programs_to_create), _EPG_SWAP_BATCH_SIZE):
                         ProgramData.objects.bulk_create(
                             programs_to_create[i:i + _EPG_SWAP_BATCH_SIZE]
                         )
+                else:
+                    # An empty parse is far more likely a transient upstream/parse
+                    # failure than a channel that genuinely has zero programmes.
+                    # Do nothing rather than wipe a working guide on a hiccup.
+                    # That includes the cutoff prune: rows past catchup_days stay
+                    # until this channel shows up in a later pull.
+                    deleted_count = 0
             logger.debug(
                 f"Replaced {deleted_count} program(s) with {len(programs_to_create)} "
                 f"for {epg.tvg_id}"
@@ -2104,21 +2277,96 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
     Atomically replace mapped programme rows with staged data.
     Must be called inside transaction.atomic().
 
+    Per staged epg_id, stored rows are deleted when they ended before the
+    retention cutoff or end after the first staged start (see
+    epg_first_start). An epg_id with nothing staged this cycle keeps its rows
+    untouched, same as the single-channel path: an empty result usually means
+    an upstream/parse hiccup, not an empty guide. Such an epg_id also skips
+    the cutoff prune until it shows up in a later pull. mapped_epg_ids is used
+    defensively to ignore staged rows for an epg_id that isn't mapped.
+
     Staged rows are moved in batches (DELETE ... RETURNING + INSERT) so Postgres
     does not need to materialize the entire catalogue in one statement.
     """
+    if not _epg_program_staging_supported():
+        raise RuntimeError('_swap_staged_epg_programs requires PostgreSQL staging support')
+
     with connection.cursor() as cursor:
         cursor.execute("SET LOCAL statement_timeout = '10min'")
 
-    deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT DISTINCT epg_id FROM {_EPG_PROGRAM_STAGING_TABLE}")
+        mapped = set(mapped_epg_ids)
+        staged_epg_ids = [row[0] for row in cursor.fetchall() if row[0] in mapped]
+
+    cutoffs = epg_retention_cutoffs(staged_epg_ids)
+
+    # Same rule as epg_first_start, in SQL: first_start is the earliest staged
+    # start at or after the cutoff (among rows ending at or after it), and
+    # NULL when there is none.
+    program_table = ProgramData._meta.db_table
+    deleted_count = 0
+    range_batch_size = 1000
+    for i in range(0, len(staged_epg_ids), range_batch_size):
+        chunk = staged_epg_ids[i:i + range_batch_size]
+        values_sql = ", ".join(["(%s, %s)"] * len(chunk))
+        params = []
+        for epg_id in chunk:
+            params.extend([epg_id, cutoffs[epg_id]])
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH cutoffs (epg_id, cutoff) AS (
+                    VALUES {values_sql}
+                ),
+                firsts AS (
+                    SELECT c.epg_id, c.cutoff, MIN(s.start_time) AS first_start
+                    FROM cutoffs c
+                    LEFT JOIN {_EPG_PROGRAM_STAGING_TABLE} s
+                      ON s.epg_id = c.epg_id
+                     AND s.start_time >= c.cutoff
+                     AND s.end_time >= c.cutoff
+                    GROUP BY c.epg_id, c.cutoff
+                )
+                DELETE FROM {program_table} pd
+                USING firsts f
+                WHERE pd.epg_id = f.epg_id
+                  AND (pd.end_time < f.cutoff OR pd.end_time > f.first_start)
+                """,
+                params,
+            )
+            deleted_count += cursor.rowcount
+            # Do not insert a staged row that already ended before the cutoff.
+            # Also drop a staged row that starts before the cutoff when a stored
+            # row with that start is still present: that stored row ended at or
+            # before first_start and was kept. A spanning row that ended after
+            # first_start was deleted above, so the staged copy is inserted.
+            cursor.execute(
+                f"""
+                WITH cutoffs (epg_id, cutoff) AS (
+                    VALUES {values_sql}
+                )
+                DELETE FROM {_EPG_PROGRAM_STAGING_TABLE} s
+                USING cutoffs c
+                WHERE s.epg_id = c.epg_id
+                  AND (
+                    s.end_time < c.cutoff
+                    OR (
+                      s.start_time < c.cutoff
+                      AND EXISTS (
+                        SELECT 1 FROM {program_table} pd
+                        WHERE pd.epg_id = s.epg_id AND pd.start_time = s.start_time
+                      )
+                    )
+                  )
+                """,
+                params,
+            )
+
     logger.debug(f"Deleted {deleted_count} existing programs")
 
     _delete_orphaned_epg_programs(epg_source)
 
-    if not _epg_program_staging_supported():
-        raise RuntimeError('_swap_staged_epg_programs requires PostgreSQL staging support')
-
-    program_table = ProgramData._meta.db_table
     total_inserted = 0
     while True:
         with connection.cursor() as cursor:
@@ -2155,9 +2403,59 @@ def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_B
 
 
 def _swap_parsed_epg_programs(mapped_epg_ids, epg_source, programs_to_create, batch_size=_EPG_SWAP_BATCH_SIZE):
-    """SQLite/dev fallback: atomic delete + bulk insert from an in-memory batch list."""
+    """
+    SQLite/dev fallback: atomic scoped delete + bulk insert from an in-memory batch list.
+
+    Same rule as _swap_staged_epg_programs: per mapped epg_id in this batch,
+    stored rows are deleted when they ended before the retention cutoff or end
+    after the batch's first start (see epg_first_start). An epg_id with no rows
+    in this batch is left untouched. Rows for an epg_id that is not mapped are
+    ignored.
+    """
     with transaction.atomic():
-        deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+        mapped = set(mapped_epg_ids)
+        programs_to_create = [p for p in programs_to_create if p.epg_id in mapped]
+        by_epg = defaultdict(list)
+        for program in programs_to_create:
+            by_epg[program.epg_id].append(program)
+
+        cutoffs = epg_retention_cutoffs(by_epg.keys())
+        delete_q = None
+        for epg_id, epg_programs in by_epg.items():
+            cutoff = cutoffs[epg_id]
+            kept = (p.start_time for p in epg_programs if p.end_time >= cutoff)
+            first_start = epg_first_start(kept, cutoff)
+            rows_q = Q(end_time__lt=cutoff)
+            if first_start is not None:
+                rows_q |= Q(end_time__gt=first_start)
+            clause = Q(epg_id=epg_id) & rows_q
+            delete_q = clause if delete_q is None else delete_q | clause
+
+        # Same filters as the single-channel path.
+        programs_to_create = [
+            p for p in programs_to_create if p.end_time >= cutoffs[p.epg_id]
+        ]
+
+        deleted_count = ProgramData.objects.filter(delete_q).delete()[0] if delete_q else 0
+        if cutoffs:
+            # Same kept-row test as the single-channel path: start before this
+            # epg's cutoff and end at or after it.
+            earliest_cutoff = min(cutoffs.values())
+            latest_cutoff = max(cutoffs.values())
+            kept_starts = set()
+            for epg_id, start, end in ProgramData.objects.filter(
+                epg_id__in=list(cutoffs),
+                start_time__lt=latest_cutoff,
+                end_time__gte=earliest_cutoff,
+            ).values_list('epg_id', 'start_time', 'end_time'):
+                cutoff = cutoffs[epg_id]
+                if start < cutoff <= end:
+                    kept_starts.add((epg_id, start))
+            programs_to_create = [
+                p for p in programs_to_create
+                if p.start_time >= cutoffs[p.epg_id]
+                or (p.epg_id, p.start_time) not in kept_starts
+            ]
         _delete_orphaned_epg_programs(epg_source)
         for i in range(0, len(programs_to_create), batch_size):
             ProgramData.objects.bulk_create(programs_to_create[i:i + batch_size])
@@ -2268,6 +2566,13 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                     ws_error="No URL provided",
                 )
                 return False
+
+        # Cheap tail check before any staging/swap. Truncated files with
+        # recover=True otherwise look like a successful short catalogue.
+        if not _xmltv_file_is_complete(file_path):
+            return _reject_incomplete_xmltv(
+                epg_source, file_path, ws_action="parsing_programs"
+            )
 
         # Stream parsed rows into a session temp table, then swap in a short transaction.
         # This bounds Python memory (batched staging inserts) and Postgres memory (no

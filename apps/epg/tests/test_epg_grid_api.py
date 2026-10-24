@@ -37,6 +37,7 @@ from apps.output.dummy_epg import (
     prefetch_streams_for_stream_named_sources,
     resolve_channel_parse_name,
 )
+from core.models import EpgHistoryPolicy
 
 User = get_user_model()
 
@@ -994,6 +995,34 @@ class EPGGridWindowParamTests(TestCase):
         """days > 365 is clamped without error."""
         response = self._get_grid({"days": "9999"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_prev_days_is_clamped_to_the_configured_history_maximum(self):
+        self._create_program(-72, title="Three Days Ago")
+        with mock.patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 1, 0, 0),
+        ):
+            response = self._get_grid({"prev_days": "5"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = [p["title"] for p in _grid_programs(response)]
+        self.assertNotIn("Three Days Ago", titles)
+
+    def test_window_span_limit_follows_the_configured_history_maximum(self):
+        """A 381 day span fits under 365 + 30 days of history but not under 365 + 0."""
+        start = (FIXED_NOW - timedelta(days=380)).isoformat()
+        end = (FIXED_NOW + timedelta(days=1)).isoformat()
+        with mock.patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(1, 30, 0, 0),
+        ):
+            allowed = self._get_grid({"start": start, "end": end})
+        with mock.patch(
+            "core.models.CoreSettings.get_epg_history_policy",
+            return_value=EpgHistoryPolicy(0, 0, 0, 0),
+        ):
+            refused = self._get_grid({"start": start, "end": end})
+        self.assertEqual(allowed.status_code, status.HTTP_200_OK)
+        self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_prev_days_clamped_to_max(self):
         """prev_days > 30 is clamped without error."""
