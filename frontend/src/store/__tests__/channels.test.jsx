@@ -1,8 +1,11 @@
-import { renderHook, act } from '@testing-library/react';
+import { render, renderHook, screen, act } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import useChannelsStore from '../channels';
 import api from '../../api';
 import { showNotification } from '../../utils/notificationUtils';
+import useScreenshotMode from '../useScreenshotMode.js';
+import useUsersStore from '../users.jsx';
 
 // Mock dependencies
 vi.mock('../../api');
@@ -29,6 +32,8 @@ describe('useChannelsStore', () => {
     globalThis.localStorage = createStorageMock();
     globalThis.sessionStorage = createStorageMock();
     vi.clearAllMocks();
+    useScreenshotMode.setState({ enabled: false });
+    useUsersStore.setState({ users: [] });
     // Reset store state between tests
     useChannelsStore.setState({
       channels: {},
@@ -48,6 +53,45 @@ describe('useChannelsStore', () => {
       forceUpdate: 0,
     });
   });
+
+  it.each([false, true])(
+    'masks usernames but preserves IPs in client notifications (stopping=%s)',
+    (stopping) => {
+      useUsersStore.setState({ users: [{ id: 7, username: 'ExampleUser' }] });
+      const client = {
+        client_id: 'client-1',
+        user_id: 7,
+        ip_address: '203.0.113.7',
+        channel_id: 'channel-1',
+      };
+      if (stopping)
+        useChannelsStore.setState({ activeClients: { 'client-1': client } });
+      act(() =>
+        useChannelsStore.getState().setChannelStats({
+          channels: stopping
+            ? []
+            : [
+                {
+                  channel_id: 'channel-1',
+                  channel_name: 'Example channel',
+                  clients: [client],
+                },
+              ],
+        })
+      );
+      const notification = showNotification.mock.calls.find(
+        ([item]) =>
+          item.title ===
+          (stopping ? 'Client stopped streaming' : 'Channel started streaming')
+      )[0];
+      render(<MantineProvider>{notification.message}</MantineProvider>);
+      expect(screen.getByText('ExampleUser')).toBeInTheDocument();
+      act(() => useScreenshotMode.getState().toggle());
+      expect(screen.queryByText('ExampleUser')).not.toBeInTheDocument();
+      expect(screen.getByText('••••••••')).toBeInTheDocument();
+      expect(screen.getByText(/203\.0\.113\.7/)).toBeInTheDocument();
+    }
+  );
 
   describe('fetchChannelIds', () => {
     it('should fetch and store channels successfully', async () => {

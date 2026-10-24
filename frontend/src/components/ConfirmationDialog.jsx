@@ -1,6 +1,7 @@
 import { Modal, Group, Button, Checkbox, Box } from '@mantine/core';
 import React, { useEffect, useState } from 'react';
 import useWarningsStore from '../store/warnings';
+import { ScreenshotText } from './SensitiveFields.jsx';
 
 /**
  * A reusable confirmation dialog with option to suppress future warnings
@@ -110,7 +111,9 @@ const ConfirmationDialog = ({
       centered
       zIndex={zIndex}
     >
-      <Box mb={20}>{message}</Box>
+      <Box mb={20}>
+        <ScreenshotText>{message}</ScreenshotText>
+      </Box>
 
       {showDeleteFileOption && (
         <Checkbox

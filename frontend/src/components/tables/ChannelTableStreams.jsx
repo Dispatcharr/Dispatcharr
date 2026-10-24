@@ -1,7 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { copyToClipboard } from '../../utils';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
-import { ChevronDown, ChevronRight, Eye, GripHorizontal, SquareMinus, } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  GripHorizontal,
+  SquareMinus,
+} from 'lucide-react';
 import {
   ActionIcon,
   Badge,
@@ -15,13 +27,18 @@ import {
   Tooltip,
   useMantineTheme,
 } from '@mantine/core';
-import { flexRender, getCoreRowModel, useReactTable, } from '@tanstack/react-table';
+import {
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+} from '@tanstack/react-table';
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import usePlaylistsStore from '../../store/playlists';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
 import CatchupIndicator from '../CatchupIndicator';
+import { SensitiveValue } from '../SensitiveFields.jsx';
 import {
   closestCenter,
   DndContext,
@@ -33,7 +50,12 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
-import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy, } from '@dnd-kit/sortable';
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { shallow } from 'zustand/shallow';
 import useAuthStore from '../../store/auth';
@@ -147,8 +169,7 @@ const StatsCategory = ({ categoryName, stats }) => {
         {Object.entries(stats).map(([key, value]) => (
           <Tooltip key={key} label={`${key}: ${formatStatValue(key, value)}`}>
             <Badge size="xs" variant="light" color="gray">
-              {formatStatKey(key)}:{' '}
-              {formatStatValue(key, value)}
+              {formatStatKey(key)}: {formatStatValue(key, value)}
             </Badge>
           </Tooltip>
         ))}
@@ -207,7 +228,13 @@ const StreamInfoCell = React.memo(
             </Badge>
           )}
           {stream.url && (
-            <Tooltip label={stream.url}>
+            <Tooltip
+              label={
+                <SensitiveValue component="span" size="inherit">
+                  {stream.url}
+                </SensitiveValue>
+              }
+            >
               <Badge
                 size="xs"
                 variant="light"

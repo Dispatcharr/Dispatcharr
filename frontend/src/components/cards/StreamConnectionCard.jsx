@@ -28,6 +28,7 @@ import {
   Video,
 } from 'lucide-react';
 import ProgramPreview from '../ProgramPreview';
+import { SensitiveValue } from '../SensitiveFields.jsx';
 import {
   toFriendlyDuration,
   formatExactDuration,
@@ -321,9 +322,14 @@ const StreamConnectionCard = ({
           return usersMap[uid] || `User ${uid}`;
         },
         cell: ({ cell }) => (
-          <Text size="xs" truncate style={{ maxWidth: '100%' }}>
+          <SensitiveValue
+            size="xs"
+            truncate
+            style={{ maxWidth: '100%' }}
+            sensitive={cell.getValue() !== 'Anonymous'}
+          >
             {cell.getValue()}
-          </Text>
+          </SensitiveValue>
         ),
       },
       // Updated Connected column with tooltip

@@ -26,6 +26,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import usePlaylistsStore from '../../store/playlists';
+import { SensitiveValue } from '../SensitiveFields.jsx';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
   formatTimestamp,
@@ -280,7 +281,15 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
                 <TableTd fw={500} w="40%">
                   Username
                 </TableTd>
-                <TableTd>{user_info?.username || 'Unknown'}</TableTd>
+                <TableTd>
+                  <SensitiveValue
+                    component="span"
+                    inherit
+                    sensitive={!!user_info?.username}
+                  >
+                    {user_info?.username || 'Unknown'}
+                  </SensitiveValue>
+                </TableTd>
               </TableTr>
               <TableTr>
                 <TableTd fw={500}>Account Created</TableTd>
@@ -339,9 +348,9 @@ const AccountInfoModal = ({ isOpen, onClose, profile, onRefresh }) => {
                         Server URL
                       </TableTd>
                       <TableTd>
-                        <Text size="sm" family="monospace">
+                        <SensitiveValue size="sm" family="monospace">
                           {server_info.url}
-                        </Text>
+                        </SensitiveValue>
                       </TableTd>
                     </TableTr>
                   )}

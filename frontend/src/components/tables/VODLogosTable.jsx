@@ -19,6 +19,7 @@ import {
   Tooltip,
   useMantineTheme,
 } from '@mantine/core';
+import { SensitiveValue } from '../SensitiveFields.jsx';
 import { ExternalLink, Trash, SquareMinus } from 'lucide-react';
 import useVODLogosStore from '../../store/vodLogos';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
@@ -362,9 +363,13 @@ export default function VODLogosTable() {
                 maxWidth: 300,
               }}
             >
-              <Text size="sm" c="dimmed">
+              <SensitiveValue
+                size="sm"
+                c="dimmed"
+                sensitive={/^https?:\/\//i.test(getValue() || '')}
+              >
                 {getValue()}
-              </Text>
+              </SensitiveValue>
             </Box>
             {getValue()?.startsWith('http') && (
               <ActionIcon

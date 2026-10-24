@@ -1,6 +1,13 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import AccountInfoModal from '../AccountInfoModal';
+import useScreenshotMode from '../../../store/useScreenshotMode.js';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/playlists', () => ({ default: vi.fn() }));
@@ -131,6 +138,16 @@ const defaultProps = (overrides = {}) => ({
 describe('AccountInfoModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useScreenshotMode.setState({ enabled: false });
+  });
+
+  it('masks the provider username in screenshot mode', () => {
+    setupMocks();
+    render(<AccountInfoModal {...defaultProps()} />);
+    expect(screen.getByText('testuser')).toBeInTheDocument();
+    act(() => useScreenshotMode.getState().toggle());
+    expect(screen.queryByText('testuser')).not.toBeInTheDocument();
+    expect(screen.getByText('••••••••')).toBeInTheDocument();
   });
 
   // ── Visibility ─────────────────────────────────────────────────────────────

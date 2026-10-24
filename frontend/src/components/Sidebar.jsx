@@ -5,6 +5,8 @@ import {
   ArrowLeft,
   ChevronRight,
   Copy,
+  Eye,
+  EyeOff,
   Heart,
   HelpCircle,
   LogOut,
@@ -39,6 +41,39 @@ import { canViewDvr } from '../utils/dvrAccess';
 import { canViewVod } from '../utils/vodAccess';
 import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
+import useScreenshotMode from '../store/useScreenshotMode.js';
+import { SensitiveValue } from './SensitiveFields.jsx';
+
+export const ScreenshotModeButton = ({ collapsed = false }) => {
+  const enabled = useScreenshotMode((state) => state.enabled);
+  const toggle = useScreenshotMode((state) => state.toggle);
+  return (
+    <Tooltip
+      label={
+        enabled
+          ? 'Screenshot mode: URLs, usernames and passwords are hidden. Click to show them.'
+          : 'Hide URLs, usernames and passwords for screenshots'
+      }
+      position={collapsed ? 'right' : 'top'}
+      withArrow
+      multiline
+      maw={280}
+      events={{ hover: true, focus: true, touch: true }}
+    >
+      <ActionIcon
+        aria-label={
+          enabled ? 'Disable screenshot mode' : 'Enable screenshot mode'
+        }
+        aria-pressed={enabled}
+        variant={enabled ? 'light' : 'transparent'}
+        color={enabled ? 'blue' : 'gray'}
+        onClick={toggle}
+      >
+        {enabled ? <EyeOff size={20} /> : <Eye size={20} />}
+      </ActionIcon>
+    </Tooltip>
+  );
+};
 
 // Settings is the only remaining sub-panel (plugins used to have one too -
 // removed in favor of pinned rows directly in the primary nav). Kept as a
@@ -238,6 +273,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     useSettingsStore((s) => s.settings?.system_settings?.value?.log_persist) !==
     false;
   const appVersion = useSettingsStore((s) => s.version);
+  const versionLabel = `v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`;
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
@@ -579,7 +615,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                 <Group gap="xs">
                   <Avatar src="" radius="xl" />
                   <UnstyledButton onClick={() => setUserFormOpen(true)}>
-                    {authUser.first_name || authUser.username}
+                    <SensitiveValue component="span" inherit>
+                      {authUser.first_name || authUser.username}
+                    </SensitiveValue>
                   </UnstyledButton>
                 </Group>
                 <ActionIcon variant="transparent" color="white" size="xs">
@@ -596,49 +634,48 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         )}
       </Box>
 
-      {/* Version and Notifications */}
-      {!collapsed && (
-        <Group gap="xs" wrap="nowrap" style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}>
-          <Tooltip
-            label={`v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`}
-            position="top"
-          >
-            <Text
-              size="xs"
-              c="dimmed"
-              style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1, cursor: 'pointer' }}
-              onClick={() =>
-                copyToClipboard(
-                  `v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`,
-                  { successTitle: 'Copied', successMessage: 'Version copied to clipboard' }
-                )
-              }
+      {/* Tools above a dedicated version row. */}
+      <Box className="sidebar-footer">
+        <Group
+          gap="xs"
+          justify="center"
+          wrap="nowrap"
+          className="sidebar-tools"
+          role="group"
+          aria-label="Sidebar tools"
+        >
+          <Tooltip label="About" position={collapsed ? 'right' : 'top'}>
+            <ActionIcon
+              variant="transparent"
+              color="gray"
+              onClick={() => setAboutOpen(true)}
             >
-              v{appVersion?.version || '0.0.0'}{appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
-            </Text>
-          </Tooltip>
-          <Group gap="xs" wrap="nowrap">
-            <Tooltip label="About" position="top">
-              <ActionIcon variant="transparent" color="gray" onClick={() => setAboutOpen(true)}>
-                <HelpCircle size={20} />
-              </ActionIcon>
-            </Tooltip>
-            <DonateButton />
-            {isAuthenticated && <NotificationCenter />}
-          </Group>
-        </Group>
-      )}
-      {collapsed && (
-        <Box style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-          {isAuthenticated && <NotificationCenter />}
-          <DonateButton tooltipPosition="right" />
-          <Tooltip label="About" position="right">
-            <ActionIcon variant="transparent" color="gray" onClick={() => setAboutOpen(true)}>
               <HelpCircle size={20} />
             </ActionIcon>
           </Tooltip>
-        </Box>
-      )}
+          <DonateButton tooltipPosition={collapsed ? 'right' : 'top'} />
+          {isAuthenticated && <NotificationCenter />}
+          {isAuthenticated && <ScreenshotModeButton collapsed={collapsed} />}
+        </Group>
+        {!collapsed && (
+          <Tooltip label={versionLabel} position="top">
+            <UnstyledButton
+              className="sidebar-version"
+              aria-label="Copy version"
+              onClick={() =>
+                copyToClipboard(versionLabel, {
+                  successTitle: 'Copied',
+                  successMessage: 'Version copied to clipboard',
+                })
+              }
+            >
+              <Text size="xs" c="dimmed" ta="center">
+                {versionLabel}
+              </Text>
+            </UnstyledButton>
+          </Tooltip>
+        )}
+      </Box>
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={() => setUserFormOpen(false)} />
       <AboutModal isOpen={aboutOpen} onClose={() => setAboutOpen(false)} />

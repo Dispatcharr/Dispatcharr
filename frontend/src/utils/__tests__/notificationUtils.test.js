@@ -6,12 +6,18 @@ vi.mock('@mantine/notifications', () => ({
   notifications: {
     show: vi.fn(),
     update: vi.fn(),
+    hide: vi.fn(),
   },
 }));
 
 describe('notificationUtils', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('hides only the requested notification', () => {
+    notificationUtils.hideNotification('m3u-refresh-1-live');
+    expect(notifications.hide).toHaveBeenCalledWith('m3u-refresh-1-live');
   });
 
   describe('showNotification', () => {
@@ -74,10 +80,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, notificationObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(
-        notificationId,
-        notificationObject
-      );
+      expect(notifications.update).toHaveBeenCalledWith({
+        ...notificationObject,
+        id: notificationId,
+      });
       expect(notifications.update).toHaveBeenCalledTimes(1);
     });
 
@@ -103,10 +109,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, updateObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(
-        notificationId,
-        updateObject
-      );
+      expect(notifications.update).toHaveBeenCalledWith({
+        ...updateObject,
+        id: notificationId,
+      });
     });
 
     it('should handle loading to error transition', () => {
@@ -120,10 +126,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, updateObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(
-        notificationId,
-        updateObject
-      );
+      expect(notifications.update).toHaveBeenCalledWith({
+        ...updateObject,
+        id: notificationId,
+      });
     });
 
     it('should handle partial updates', () => {
@@ -134,10 +140,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, updateObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(
-        notificationId,
-        updateObject
-      );
+      expect(notifications.update).toHaveBeenCalledWith({
+        ...updateObject,
+        id: notificationId,
+      });
     });
 
     it('should handle empty notification id', () => {
@@ -145,7 +151,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification('', notificationObject);
 
-      expect(notifications.update).toHaveBeenCalledWith('', notificationObject);
+      expect(notifications.update).toHaveBeenCalledWith({
+        ...notificationObject,
+        id: '',
+      });
     });
 
     it('should handle null notification id', () => {
@@ -153,10 +162,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(null, notificationObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(
-        null,
-        notificationObject
-      );
+      expect(notifications.update).toHaveBeenCalledWith({
+        ...notificationObject,
+        id: null,
+      });
     });
   });
 });

@@ -10,8 +10,8 @@ import {
   Modal,
   Stack,
   Text,
-  TextInput,
 } from '@mantine/core';
+import { SensitiveTextInput as TextInput } from '../SensitiveFields.jsx';
 import {
   Dropzone,
   DropzoneAccept,

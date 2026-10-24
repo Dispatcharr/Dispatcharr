@@ -10,7 +10,10 @@ import useStreamsStore from './store/streams';
 import useStreamProfilesStore from './store/streamProfiles';
 import useOutputProfilesStore from './store/outputProfiles';
 import useSettingsStore from './store/settings';
-import { notifications } from '@mantine/notifications';
+import {
+  hideNotification,
+  showNotification,
+} from './utils/notificationUtils.js';
 import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
@@ -22,14 +25,15 @@ const host = import.meta.env.DEV
   ? `http://${window.location.hostname}:5656`
   : '';
 
-const errorNotification = (message, error) => {
+const errorNotification = (message, error, options = {}) => {
   const errorMessage = formatApiError(error);
 
-  notifications.show({
+  showNotification({
     title: 'Error',
     message: `${message}: ${errorMessage}`,
     autoClose: 10000,
     color: 'red',
+    ...options,
   });
 
   throw error;
@@ -964,7 +968,7 @@ export default class API {
 
       // Show success notification
       if (response.message) {
-        notifications.show({
+        showNotification({
           title: 'Channels Updated',
           message: response.message,
           color: 'green',
@@ -1026,7 +1030,7 @@ export default class API {
 
       // Optional success notification
       if (response?.success) {
-        notifications.show({
+        showNotification({
           title: 'Channel Names Updated',
           message: `Renamed ${response.updated_count} channel(s) via regex`,
           color: 'green',
@@ -1075,7 +1079,7 @@ export default class API {
 
       // Show notification about task status
       if (response.task_status) {
-        notifications.show({
+        showNotification({
           title: 'EPG Status',
           message: response.task_status,
           color: 'blue',
@@ -1098,7 +1102,7 @@ export default class API {
         }
       );
 
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: response.message,
         color: 'blue',
@@ -1121,7 +1125,7 @@ export default class API {
         }
       );
 
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: response.message,
         color: 'blue',
@@ -1144,7 +1148,7 @@ export default class API {
         }
       );
 
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: response.message,
         color: 'blue',
@@ -2421,7 +2425,7 @@ export default class API {
           (e?.body && (e.body.error || e.body.detail)) ||
           e?.message ||
           'Failed to import plugin';
-        notifications.show({
+        showNotification({
           title: 'Import failed',
           message: msg,
           color: 'red',
@@ -3499,7 +3503,7 @@ export default class API {
         method: 'POST',
         body: values,
       });
-      notifications.show({ title: 'Series rule saved' });
+      showNotification({ title: 'Series rule saved' });
       return resp;
     } catch (e) {
       errorNotification('Failed to save series rule', e);
@@ -3516,7 +3520,7 @@ export default class API {
       await request(`${host}/api/channels/series-rules/?${params}`, {
         method: 'DELETE',
       });
-      notifications.show({ title: 'Series rule removed' });
+      showNotification({ title: 'Series rule removed' });
     } catch (e) {
       errorNotification('Failed to remove series rule', e);
       throw e;
@@ -3531,7 +3535,7 @@ export default class API {
           method: 'POST',
         }
       );
-      notifications.show({ title: `Removed ${resp.removed || 0} upcoming` });
+      showNotification({ title: `Removed ${resp.removed || 0} upcoming` });
       useChannelsStore.getState().fetchRecordings();
       return resp;
     } catch (e) {
@@ -3579,7 +3583,7 @@ export default class API {
           },
         }
       );
-      notifications.show({ title: `Removed ${resp.removed || 0} scheduled` });
+      showNotification({ title: `Removed ${resp.removed || 0} scheduled` });
       return resp;
     } catch (e) {
       errorNotification('Failed to bulk-remove scheduled recordings', e);
@@ -3639,7 +3643,7 @@ export default class API {
           message += `, refreshing ${response.programs_refreshed} EPG source${response.programs_refreshed !== 1 ? 's' : ''}`;
         }
 
-        notifications.show({
+        showNotification({
           title: 'EPG Association',
           message: message,
           color: 'blue',
