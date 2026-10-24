@@ -547,6 +547,25 @@ def _invalidate_plugin_detail_cache(repo_id, manifest_data):
         cache.delete_many(keys)
 
 
+def _declared_plugin_manifest_urls(repo):
+    manifest_data = repo.cached_manifest or {}
+    manifest = manifest_data.get("manifest", manifest_data)
+    if not isinstance(manifest, dict):
+        return set()
+    _, metadata_base_url = _resolve_manifest_base_urls(manifest)
+    urls = set()
+    for plugin in manifest.get("plugins", []):
+        if not isinstance(plugin, dict):
+            continue
+        url = plugin.get("manifest_url")
+        if not isinstance(url, str) or not url:
+            continue
+        if metadata_base_url and not url.startswith(("http://", "https://")):
+            url = f"{metadata_base_url}/{url}"
+        urls.add(url)
+    return urls
+
+
 def _unmanage_dropped_slugs(repo, new_manifest_data):
     """After a manifest refresh, clear source_repo on any installed plugins
     whose slug is no longer listed in the repo's manifest.  Also syncs the
@@ -795,10 +814,8 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         return Response({"success": True, "result": result})
 
     def _dispatch_async(self, key, action, params, action_label):
-        from .tasks import run_plugin_action_task
-        from .task_history import record_task_started
-        async_result = run_plugin_action_task.apply_async(args=[key, action, params], queue="plugins")
-        record_task_started(key, async_result.id, action, action_label)
+        from .tasks import dispatch_plugin_action_task
+        async_result = dispatch_plugin_action_task(key, action, params, action_label)
         return Response({"success": True, "status": "started", "task_id": async_result.id})
 
     def _run_via_worker(self, key, action, params):
@@ -1655,6 +1672,12 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
         except PluginRepo.DoesNotExist:
             return Response(
                 {"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        if manifest_url not in _declared_plugin_manifest_urls(repo):
+            return Response(
+                {"error": "Manifest URL is not declared by this repository"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         cache_key = f"plugin_detail:{repo_id}:{hashlib.md5(manifest_url.encode()).hexdigest()}"

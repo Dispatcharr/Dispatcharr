@@ -23,6 +23,7 @@ from .capabilities import (
     compute_effective_capabilities,
     describe_capabilities,
     manifest_version_enforces_sandbox,
+    manifest_version_parses_capabilities,
     min_app_version_for_manifest_version,
     parse_manifest_version,
     manifest_version_supported,
@@ -37,9 +38,49 @@ from version import __timestamp__, __version__
 logger = logging.getLogger(__name__)
 
 
+_plugin_module_contexts: Dict[str, Tuple[str, str, str, Sequence[str], int]] = {}
+
+
+def _register_plugin_module_context(
+    plugin_key: str,
+    plugin_path: str,
+    storage_key: str,
+    capabilities: Sequence[str],
+    manifest_schema_version: int,
+) -> None:
+    _plugin_module_contexts[os.path.abspath(plugin_path)] = (
+        plugin_key,
+        os.path.abspath(plugin_path),
+        storage_key,
+        capabilities,
+        manifest_schema_version,
+    )
+
+
+def _plugin_module_context(path: str):
+    path = os.path.abspath(path)
+    for root, context in _plugin_module_contexts.items():
+        if path.startswith(f"{root}{os.sep}"):
+            return context
+    return None
+
+
 class _PluginSourceLoader(importlib.machinery.SourceFileLoader):
     def get_code(self, fullname):
         return self.source_to_code(self.get_data(self.path), self.path)
+
+    def exec_module(self, module):
+        context = _plugin_module_context(self.path)
+        if context is None:
+            return super().exec_module(module)
+        plugin_key, plugin_path, storage_key, capabilities, manifest_schema_version = context
+        module.__builtins__ = plugin_builtins(plugin_key, plugin_path, storage_key)
+        with running_as_plugin(
+            plugin_key,
+            capabilities=capabilities,
+            manifest_schema_version=manifest_schema_version,
+        ):
+            return super().exec_module(module)
 
 
 def _use_plugin_sources(path):
@@ -704,8 +745,21 @@ class PluginManager:
                 lp.help_url = manifest_help_url
             if manifest_fields and not lp.fields:
                 lp.fields = manifest_fields
-            if manifest_actions and not lp.actions:
+            if manifest_version_enforces_sandbox(manifest_schema_version):
+                # Version-2 manifests are the authority for executable action
+                # metadata. Loading an undeclared Python action would let it
+                # request async dispatch without appearing in the capability
+                # confirmation shown while the plugin is still disabled.
                 lp.actions = manifest_actions
+            elif manifest_actions and not lp.actions:
+                lp.actions = manifest_actions
+            if (
+                manifest_version_parses_capabilities(manifest_schema_version)
+                and any(action.get("async") for action in lp.actions if isinstance(action, dict))
+            ):
+                manifest_capabilities = sorted(
+                    set(manifest_capabilities) | {"background_tasks"}
+                )
             lp.capabilities = manifest_capabilities
             lp.manifest_schema_version = manifest_schema_version
             lp.trusted = trusted
@@ -742,6 +796,13 @@ class PluginManager:
             return None, None
 
         _use_plugin_sources(path)
+        _register_plugin_module_context(
+            key,
+            path,
+            storage_key,
+            capabilities,
+            manifest_schema_version,
+        )
         # Plugins may initialize durable state while importing, before they
         # receive an action or leadership context containing this path.
         data_dir = stable_plugin_data_path(key, path, storage_key)
@@ -1722,12 +1783,10 @@ class PluginManager:
                     f"'{action_id}'. It must match an \"id\" declared in plugin.json's "
                     "\"actions\" list."
                 )
-            from .tasks import run_plugin_action_task
-            from .task_history import record_task_started
-            async_result = run_plugin_action_task.apply_async(
-                args=[lp.key, action_id, params or {}], queue="plugins",
+            from .tasks import dispatch_plugin_action_task
+            async_result = dispatch_plugin_action_task(
+                lp.key, action_id, params or {}, action_def.get("label", action_id)
             )
-            record_task_started(lp.key, async_result.id, action_id, action_def.get("label", action_id))
             return async_result.id
         return dispatch_task
 

@@ -117,9 +117,9 @@ class DispatchTaskTests(SimpleTestCase):
 
         self.assertEqual(task_id, "task-2")
         mock_apply_async.assert_called_once_with(
-            args=["my-plugin", "do_work", {"limit": 5}], queue="plugins"
+            args=["my-plugin", "do_work", {"limit": 5}], queue="plugins", task_id=ANY
         )
-        mock_record.assert_called_once_with("my-plugin", "task-2", "do_work", "Do Work")
+        mock_record.assert_called_once_with("my-plugin", ANY, "do_work", "Do Work")
 
     def test_raises_value_error_for_unknown_action_id(self):
         pm = PluginManager()
@@ -142,7 +142,7 @@ class DispatchTaskTests(SimpleTestCase):
             dispatch_task("do_work")
 
         mock_apply_async.assert_called_once_with(
-            args=["my-plugin", "do_work", {}], queue="plugins"
+            args=["my-plugin", "do_work", {}], queue="plugins", task_id=ANY
         )
 
 

@@ -20,7 +20,7 @@ These tests guard against regression by:
 Event-triggered actions are always dispatched via Celery (queue="plugins"),
 fire-and-forget, never run inline.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from django.test import SimpleTestCase
 
@@ -78,6 +78,7 @@ class TriggerEventDispatchTests(SimpleTestCase):
         mock_apply_async.assert_called_once_with(
             args=["enabled-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
             queue="plugins",
+            task_id=ANY,
         )
 
     def test_skips_handlers_for_disabled_plugins(self):
@@ -96,6 +97,7 @@ class TriggerEventDispatchTests(SimpleTestCase):
         mock_apply_async.assert_called_once_with(
             args=["enabled-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
             queue="plugins",
+            task_id=ANY,
         )
 
     def test_action_without_matching_event_is_not_dispatched(self):
@@ -157,8 +159,10 @@ class TriggerEventDispatchTests(SimpleTestCase):
         mock_apply_async.assert_any_call(
             args=["failing-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
             queue="plugins",
+            task_id=ANY,
         )
         mock_apply_async.assert_any_call(
             args=["working-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
             queue="plugins",
+            task_id=ANY,
         )

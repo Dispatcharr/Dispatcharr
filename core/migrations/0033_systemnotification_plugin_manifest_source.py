@@ -2,7 +2,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    dependencies = [("core", "0031_default_reverse_proxy_auth_settings")]
+    dependencies = [("core", "0032_limit_default_interleave_delta")]
 
     operations = [
         migrations.AlterField(

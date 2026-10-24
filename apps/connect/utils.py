@@ -128,12 +128,7 @@ def trigger_event(event_name, payload):
         )
         try:
             # Fire-and-forget; nothing consumes the result either way.
-            from apps.plugins.tasks import run_plugin_action_task
-            from apps.plugins.task_history import record_task_started
-
-            async_result = run_plugin_action_task.apply_async(
-                args=[key, action_id, params], queue="plugins"
-            )
+            from apps.plugins.tasks import dispatch_plugin_action_task
             plugin = pm.get_plugin(key)
             action = next(
                 (
@@ -143,8 +138,8 @@ def trigger_event(event_name, payload):
                 ),
                 {},
             )
-            record_task_started(
-                key, async_result.id, action_id, action.get("label", action_id)
+            dispatch_plugin_action_task(
+                key, action_id, params, action.get("label", action_id)
             )
         except Exception:
             logger.exception(

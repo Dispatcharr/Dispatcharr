@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import uuid
 
 from celery import shared_task
 
@@ -51,6 +52,18 @@ def run_plugin_action_task(self, key, action_id, params=None):
     })
     record_task_complete(key, task_id, "ok", result=result)
     return result
+
+
+def dispatch_plugin_action_task(key, action_id, params, action_label):
+    """Record task history before publishing so a fast worker cannot replace
+    a terminal status with a later `running` update."""
+    from apps.plugins.task_history import record_task_started
+
+    task_id = str(uuid.uuid4())
+    record_task_started(key, task_id, action_id, action_label)
+    return run_plugin_action_task.apply_async(
+        args=[key, action_id, params], queue="plugins", task_id=task_id
+    )
 
 
 def evaluate_plugin_update_notification(plugin_key, name, installed_version, latest_version, install_status):

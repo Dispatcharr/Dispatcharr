@@ -1,7 +1,7 @@
 """PluginRunAPIView's two dispatch paths: per-action async manifest flag
 (fire-and-forget) and synchronous actions (queued and awaited)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -54,14 +54,19 @@ class PluginRunAPIViewAsyncTests(TestCase):
         async_result = MagicMock(id="task-123")
         with patch(
             "apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result
-        ) as mock_apply_async, patch.object(self.pm, "run_action") as mock_run:
+        ) as mock_apply_async, patch(
+            "apps.plugins.task_history.record_task_started"
+        ) as mock_record, patch.object(self.pm, "run_action") as mock_run:
             response = self._post("slow")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.data, {"success": True, "status": "started", "task_id": "task-123"}
         )
-        mock_apply_async.assert_called_once_with(args=["my-plugin", "slow", {}], queue="plugins")
+        mock_record.assert_called_once_with("my-plugin", ANY, "slow", "Slow")
+        mock_apply_async.assert_called_once_with(
+            args=["my-plugin", "slow", {}], queue="plugins", task_id=ANY
+        )
         mock_run.assert_not_called()
 
     def test_non_async_action_blocks_for_result(self):

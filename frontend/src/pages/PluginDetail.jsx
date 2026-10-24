@@ -390,6 +390,27 @@ function PluginDetailForKey({ routeKey: key }) {
   const selVer = pendingInstallParams?.version;
   const isDown = plugin.version && selVer && compareVersions(selVer, plugin.version) < 0;
 
+  const executeDetailInstall = async (params) => {
+    const result = await installPlugin(params);
+    if (result?.error_code === 'capability_confirmation_required') {
+      const confirmed = await usePluginStore.getState().requestEnableConfirmation({
+        key: plugin.key || params.slug,
+        name: plugin.name,
+        capabilities: result.capabilities || [],
+      }, 'update');
+      if (confirmed) {
+        return executeDetailInstall({
+          ...params,
+          acknowledge_capabilities: (result.capabilities || []).map((capability) => capability.id),
+        });
+      }
+      await installPlugin({ ...params, deny_capabilities: true });
+      usePluginStore.getState().invalidatePlugins();
+      return null;
+    }
+    return result;
+  };
+
   const confirmAndInstall = async () => {
     if (!pendingInstallParams) return;
     const params = pendingInstallParams;
@@ -397,7 +418,7 @@ function PluginDetailForKey({ routeKey: key }) {
     setPendingInstallParams(null);
     setInstalling(true);
     try {
-      const result = await installPlugin(params);
+      const result = await executeDetailInstall(params);
       if (result?.success) {
         showNotification({
           title: plugin.name,

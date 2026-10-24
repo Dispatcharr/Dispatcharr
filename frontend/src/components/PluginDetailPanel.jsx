@@ -133,6 +133,8 @@ const PluginDetailPanel = ({
     (v) => v.version === selectedVersion
   );
   const selectedChangelog = changelogLink(selectedVersionData?.changelog);
+  const registryUrl = isSafeHttpUrl(manifest.registry_url) ? manifest.registry_url : null;
+  const downloadUrl = isSafeHttpUrl(selectedVersionData?.url) ? selectedVersionData.url : null;
 
   const isSelSame =
     installedVersion &&
@@ -162,12 +164,12 @@ const PluginDetailPanel = ({
       onUninstall();
       return;
     }
-    if (!selectedVersionData?.url || !onInstall) return;
+    if (!downloadUrl || !onInstall) return;
     const params = {
       repo_id: repoId,
       slug,
       version: selectedVersion,
-      download_url: selectedVersionData.url,
+      download_url: downloadUrl,
       sha256: selectedVersionData.checksum_sha256,
       min_dispatcharr_version: selectedVersionData.min_dispatcharr_version,
       max_dispatcharr_version: selectedVersionData.max_dispatcharr_version,
@@ -352,11 +354,11 @@ const PluginDetailPanel = ({
                       Commit
                     </TableTd>
                     <TableTd>
-                      {manifest.registry_url ? (
+                      {registryUrl ? (
                         <Text
                           size="xs"
                           component="a"
-                          href={`${manifest.registry_url}/commit/${selectedVersionData.commit_sha}`}
+                          href={`${registryUrl}/commit/${selectedVersionData.commit_sha}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           c="blue"
@@ -369,7 +371,7 @@ const PluginDetailPanel = ({
                     </TableTd>
                   </TableTr>
                 )}
-                {selectedVersionData.url && (
+                {downloadUrl && (
                   <TableTr>
                     <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
                       Download
@@ -378,12 +380,12 @@ const PluginDetailPanel = ({
                       <Text
                         size="xs"
                         component="a"
-                        href={selectedVersionData.url}
+                        href={downloadUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         c="blue"
                       >
-                        {selectedVersionData.url.split('/').pop()}
+                        {downloadUrl.split('/').pop()}
                       </Text>
                     </TableTd>
                   </TableTr>

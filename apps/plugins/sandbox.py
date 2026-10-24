@@ -50,7 +50,10 @@ class _SocketProxy:
         return self._socket.connect(*args, **kwargs)
 
     def __getattr__(self, name):
-        return getattr(self._socket, name)
+        value = getattr(self._socket, name)
+        if name in {"connect_ex", "send", "sendall", "sendmsg", "sendto"}:
+            return _guard("outbound_network", value)
+        return value
 
 
 class _ModuleProxy(ModuleType):
