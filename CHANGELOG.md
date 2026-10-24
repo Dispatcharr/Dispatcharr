@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **AIO PostgreSQL no longer initializes as `SQL_ASCII` when the container locale is `C`.** Fresh `initdb` on minimal/CI images (including Ubuntu 26-based runners) defaulted to `SQL_ASCII`, so creating the app database with `--encoding=UTF8` failed against `template1` and backend CI could not start. `initdb` now requests UTF-8 explicitly while leaving the environment locale alone, and `ensure_app_database` creates the app DB from `template0` (same pattern as `ensure_utf8_encoding`) so UTF-8 still works if an older cluster's `template1` is ASCII. Existing data directories are unchanged.
 
+### Added
+
+- **Plugin manifests can declare capabilities that require administrator approval.** Enabling a plugin now shows the access it requests, including background work, persistent services, network listeners, outbound connections, subprocesses, filesystem writes, approved internal tasks, proxy internals, and user data. An update that adds a capability asks for approval again before it can run with the new access.
+- **Plugins can run asynchronous actions with progress and task history.** Manifest actions can dispatch background work, report progress to the UI, and retain recent run status across page loads. (Closes #699)
+- **Plugins can run leader-elected persistent services.** A plugin can register long-running lifecycle work that runs on one eligible process at a time.
+- **Plugin settings support richer field types.** Plugin authors can provide multiselects, collapsible sections, editable tables, file uploads, and reset-to-default controls. (Closes #1474, #1476, #1477, #1478, #1479)
+- **Plugins have a dedicated detail page and richer marketplace controls.** Users can view versions, changelogs, download counts, capability requirements, update state, task activity, and pin installed plugins in the sidebar.
+- **Official plugin registries can show trusted manifest messages.** Signed official registry manifests can provide targeted informational, warning, and critical notices that users can dismiss.
+
+### Changed
+
+- **Plugin execution context distinguishes code from persistent data.** Plugins now receive a replaceable `code_dir` and a version-stable `data_dir`, so update-safe storage has an explicit API.
+- **Marketplace update state is shared across plugin surfaces.** Version comparison and update status now drive the marketplace, installed-plugin cards, notifications, and the plugin detail page consistently.
+
 ## [0.33.0] - 2026-10-24
 
 ### Added
