@@ -1134,13 +1134,18 @@ def _xc_fetch_priority_distinct_relations(
     wide joined rows during DISTINCT ON and reduces parallel worker /dev/shm
     pressure in Docker.
     """
-    from django.db import connection, transaction
+    from django.db import connection
 
     narrow_qs = manager.filter(**rel_filters)
 
+    needs_artwork = bool(set(value_fields) & {'rel_movie_image', 'rel_backdrop'})
+
+    def _display_rows(qs):
+        return _xc_annotate_relation_artwork(qs) if needs_artwork else qs
+
     def _fetch_by_ids(ids):
         return list(
-            _xc_annotate_relation_artwork(manager.filter(pk__in=ids))
+            _display_rows(manager.filter(pk__in=ids))
             .values(*value_fields)
             .order_by(Lower(order_by_name_field))
         )
@@ -1152,18 +1157,12 @@ def _xc_fetch_priority_distinct_relations(
             .distinct(distinct_field)
             .values('pk')
         )
-        with transaction.atomic():
-            # Optional: disable parallel gather for this DISTINCT ON query if Docker
-            # /dev/shm pressure causes worker OOM on very large VOD libraries.
-            #with connection.cursor() as cursor:
-            #    cursor.execute("SET LOCAL max_parallel_workers_per_gather = 0")
-            winning_ids = list(winning_ids_qs.values_list('pk', flat=True))
-            if not winning_ids:
-                return []
-            return _fetch_by_ids(winning_ids)
+        # Keep the winning IDs in SQL. Materialising them in Python adds one
+        # round trip and re-encodes a catalogue-sized IN parameter list.
+        return _fetch_by_ids(winning_ids_qs)
 
     seen = {}
-    for row in _xc_annotate_relation_artwork(narrow_qs).values(*value_fields).order_by(
+    for row in _display_rows(narrow_qs).values(*value_fields).order_by(
         '-m3u_account__priority', 'id'
     ):
         key = row[distinct_field]
