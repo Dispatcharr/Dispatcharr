@@ -28,8 +28,14 @@ vi.mock('../../hooks/useBrowserStorage', () => ({
 // Mock Mantine components
 vi.mock('@mantine/core', async () => {
   return {
-    ActionIcon: ({ children, onClick }) => (
-      <button onClick={onClick}>{children}</button>
+    ActionIcon: ({ children, onClick, ...props }) => (
+      <button
+        onClick={onClick}
+        aria-label={props['aria-label']}
+        aria-expanded={props['aria-expanded']}
+      >
+        {children}
+      </button>
     ),
     Box: ({ children }) => <div>{children}</div>,
     Button: ({ children, onClick }) => (
@@ -124,13 +130,30 @@ describe('SystemEvents', () => {
   it('should expand and show events when chevron is clicked', async () => {
     render(<SystemEvents />);
 
-    const expandButton = screen.getByRole('button', { name: '' });
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand system events',
+      expanded: false,
+    });
     fireEvent.click(expandButton);
 
     await waitFor(() => {
       expect(screen.getByText('Channel Started')).toBeInTheDocument();
       expect(screen.getByText('Login Successful')).toBeInTheDocument();
     });
+
+    const collapseButton = screen.getByRole('button', {
+      name: 'Collapse system events',
+      expanded: true,
+    });
+    fireEvent.click(collapseButton);
+
+    expect(
+      screen.getByRole('button', {
+        name: 'Expand system events',
+        expanded: false,
+      })
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Channel Started')).not.toBeInTheDocument();
   });
 
   it('should display "No events recorded yet" when events array is empty', async () => {
@@ -138,7 +161,9 @@ describe('SystemEvents', () => {
 
     render(<SystemEvents />);
 
-    const expandButton = screen.getByRole('button', { name: '' });
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand system events',
+    });
     fireEvent.click(expandButton);
 
     await waitFor(() => {
@@ -149,7 +174,9 @@ describe('SystemEvents', () => {
   it('should call fetchEvents when refresh button is clicked', async () => {
     render(<SystemEvents />);
 
-    const expandButton = screen.getByRole('button', { name: '' });
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand system events',
+    });
     fireEvent.click(expandButton);
 
     await waitFor(() => {
@@ -177,7 +204,9 @@ describe('SystemEvents', () => {
 
     render(<SystemEvents />);
 
-    const expandButton = screen.getByRole('button', { name: '' });
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand system events',
+    });
     fireEvent.click(expandButton);
 
     await waitFor(() => {
@@ -196,7 +225,9 @@ describe('SystemEvents', () => {
 
     render(<SystemEvents />);
 
-    const expandButton = screen.getByRole('button', { name: '' });
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand system events',
+    });
     fireEvent.click(expandButton);
 
     await waitFor(() => {
@@ -225,7 +256,9 @@ describe('SystemEvents', () => {
   it('should display event details correctly', async () => {
     render(<SystemEvents />);
 
-    const expandButton = screen.getByRole('button', { name: '' });
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand system events',
+    });
     fireEvent.click(expandButton);
 
     await waitFor(() => {
@@ -242,7 +275,9 @@ describe('SystemEvents', () => {
 
     render(<SystemEvents />);
 
-    const expandButton = screen.getByRole('button', { name: '' });
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand system events',
+    });
     fireEvent.click(expandButton);
 
     await waitFor(() => {

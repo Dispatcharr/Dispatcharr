@@ -4,6 +4,8 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from dispatcharr.log_redaction import redact_log_text
+
 _REFRESH_INTERVAL_SECONDS = 5.0
 _cache = {"zone": None, "checked": 0.0}
 
@@ -51,6 +53,9 @@ def refresh_display_zone(force=False):
 class DisplayTimezoneFormatter(logging.Formatter):
     def __init__(self, format=None, datefmt=None, style="%"):
         super().__init__(fmt=format, datefmt=datefmt, style=style)
+
+    def format(self, record):
+        return redact_log_text(super().format(record))
 
     def formatTime(self, record, datefmt=None):
         dt = datetime.fromtimestamp(record.created, tz=_cache["zone"] or _env_zone())

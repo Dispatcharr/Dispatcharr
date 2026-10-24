@@ -1,13 +1,14 @@
 """Everything logger: the container's merged stdout flows through this
-process, which forwards each normalized line to the real stdout for docker
-logs and files the same bytes, so both sinks carry the same record.
+process, which redacts sensitive data before forwarding normalized lines to
+the real stdout for docker logs and persisting them to files.
 
 Runs standalone (python -m dispatcharr.log_collector <logdir>); no application
 process ever performs log file I/O. The reader owns stdin from the first
 instant and touches only stdout, so a dead /data can never back-pressure the
 producers; bounded memory with drop-oldest and an explicit dropped-lines
-marker absorbs disk stalls (markers are file-only: the forwarded stream never
-dropped anything). Every line is rewritten into the canonical
+marker absorbs disk stalls (markers are file-only). Oversized records have
+their continuation omitted in both sinks to prevent split-secret leaks;
+ordinary large records are capped only in files. Every line uses the canonical
 "stamp [offset] LEVEL source rest" grammar. Owns rotation and pruning.
 Django-free; configured via <logdir>/config/collector.conf from apply_settings().
 """
@@ -22,6 +23,12 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+if __package__:
+    from .log_redaction import redacted_log_lines
+else:
+    # The entrypoint runs this file directly, without Django/Celery bootstrap.
+    from log_redaction import redacted_log_lines
 
 
 def _role_suffix():
@@ -316,28 +323,13 @@ class Collector:
     # ── reader thread: stdin -> normalize -> gate -> forward -> buffer ────
 
     def reader(self, stream):
-        mid_line = False
-        overrun = False
-        while True:
-            chunk = stream.readline(_MAX_LINE_BYTES)
-            if not chunk:
-                break
-            more = not chunk.endswith(b"\n")
-            # Continuation chunks of an oversize line must not be stamped.
-            tail = mid_line
-            if mid_line:
-                line = chunk
-            else:
-                line = self._normalize(chunk)
-                # One runaway record can evict a rotation of history, so only the
-                # file copy is capped; docker logs takes the record whole.
-                overrun = len(line) > _MAX_RECORD_BYTES
-            mid_line = more
+        for chunk in redacted_log_lines(stream, max_line_bytes=_MAX_LINE_BYTES):
+            line = self._normalize(chunk)
+            # Redact before either sink; cap only the persisted copy of normal
+            # records. Extreme input continuations are omitted by the redactor.
+            overrun = len(line) > _MAX_RECORD_BYTES
             self._forward(line)
             if overrun:
-                if tail:
-                    # The file already carries this record's marker.
-                    continue
                 line = _cap_record(line)
             if not self.conf["persist"]:
                 # Keep forwarding; only the file sink honours the toggle.

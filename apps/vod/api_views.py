@@ -930,7 +930,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
         from django.db import connection
 
         logger = logging.getLogger(__name__)
-        logger.error("=== UnifiedContentViewSet.list() called ===")
 
         try:
             user = _authenticated_user(request)
@@ -944,8 +943,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             # Get pagination parameters
             page_size = int(request.query_params.get('page_size', 24))
             page_number = int(request.query_params.get('page', 1))
-
-            logger.error(f"Page {page_number}, page_size {page_size}")
 
             # Calculate offset for unified pagination
             offset = (page_number - 1) * page_size
@@ -1062,8 +1059,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
 
             params.extend([page_size, offset])
 
-            logger.error(f"Executing SQL with LIMIT {page_size} OFFSET {offset}")
-
             with connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 columns = [col[0] for col in cursor.description]
@@ -1109,8 +1104,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                         'content_type': item_dict['content_type']
                     }
                     results.append(formatted_item)
-
-            logger.error(f"Retrieved {len(results)} results via SQL")
 
             # Get total count estimate (for pagination info)
             # Use a separate efficient count query

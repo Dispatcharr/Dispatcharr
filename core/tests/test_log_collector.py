@@ -134,6 +134,19 @@ class ConfTests(SimpleTestCase):
         self.collector._drain()
         self.assertEqual(self.strip_stamps(self.read_log()), "one\ntwo\n")
 
+    def test_secrets_are_redacted_before_console_and_file_sinks(self):
+        self.feed(
+            b'Failed https://example.invalid?username=alice&password=secret status=403\n',
+            b'username=alice password=secret\n',
+        )
+        self.collector._drain()
+        for output in (self.read_forward(), self.read_log()):
+            self.assertNotIn('alice', output)
+            self.assertNotIn('secret', output)
+            self.assertNotIn('example.invalid', output)
+            self.assertIn('status=403', output)
+            self.assertIn('[REDACTED]', output)
+
     def test_drop_oldest_past_budget_writes_exact_marker(self):
         with mock.patch.object(log_collector, "_BUFFER_BYTES", 8):
             self.feed(b"aaaa\n", b"bbbb\n", b"cccc\n")
