@@ -68,14 +68,20 @@ vi.mock('../../PluginDetailPanel.jsx', () => ({
 vi.mock('../../PluginHeader.jsx', () => ({
   PluginLinks: ({ helpUrl, repoUrl, discordThread }) =>
     helpUrl || repoUrl || discordThread ? <div data-testid="plugin-links" /> : null,
-  PluginMetadata: ({ plugin, license, trailing }) => (
+  PluginMetadata: ({ plugin, license, sourceRepoName, trailing }) => (
     <div>
       {plugin.author && <span>{plugin.author}</span>}
       {license && <><svg data-testid="icon-scale" /><span>{license}</span></>}
+      {sourceRepoName && <span>{sourceRepoName}</span>}
       {trailing}
     </div>
   ),
-  SignatureIndicator: () => null,
+  SignatureIndicator: ({ signatureVerified }) =>
+    signatureVerified === true ? (
+      <svg data-testid="icon-shield-check" />
+    ) : signatureVerified === false ? (
+      <svg data-testid="icon-shield-alert" />
+    ) : null,
 }));
 
 // ── pluginUtils ────────────────────────────────────────────────────────────────
