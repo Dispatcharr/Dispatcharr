@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-24
+
 ### Added
 
 - **Proxy stream no-data timeouts are configurable.** Settings → Proxy → Advanced adds **Stream Startup Timeout** (`stream_startup_timeout`, default 8s) and **Stream Idle Timeout** (`connection_timeout`, default 10s). Each new connection requests a stream switch as soon as Stream Startup Timeout passes with no data from that connection. When there is no other stream to switch to, the channel waits out Channel Initialization Timeout as before instead of reopening the same URL every few seconds. After the connection has sent data, Stream Idle Timeout drives mid-stream health, still with the existing multi-check debounce. Channel Initialization Timeout remains the overall startup budget. (Fixes #1784)
