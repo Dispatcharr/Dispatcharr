@@ -193,7 +193,7 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
   - Unknown/future capability ids are ignored gracefully by older Dispatcharr builds; the registry is intentionally extensible.
 - Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin.
 - **`context["dispatch_task"]` is enforced for manifest version 2 and later:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. Versions `0` and `1` remain non-enforcing during the transition period. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
-- **Plugin directories:** `context["code_dir"]` is the installed plugin code directory. `context["data_dir"]` is the version-stable sibling directory for durable data, named `<canonical-plugin-id>_data`. Managed plugins use their repository slug as the canonical, version-free ID; unmanaged plugins use their version-free plugin key. Both paths are available in `run()`, `stop()`, and leadership hooks, so plugins never need to derive them themselves.
+- **Plugin directories:** `context["code_dir"]` is the installed plugin code directory. `context["data_dir"]` is the version-stable durable-data directory under `_data/<canonical-plugin-id>`. Managed plugins use their repository slug as the canonical, version-free ID; unmanaged plugins use their version-free plugin key. Both paths are available in `run()`, `stop()`, and leadership hooks, so plugins never need to derive them themselves.
 
   ```python
   import os
@@ -204,7 +204,7 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
           cache.write("{}")
   ```
 
-  For example, a plugin installed at `/data/plugins/example_plugin_1_2_3/` with canonical ID `example_plugin` receives `/data/plugins/example_plugin_data/`. Writes to other directories, such as `/tmp/output.json`, still require `filesystem_write`.
+  For example, a plugin installed at `/data/plugins/example_plugin_1_2_3/` with canonical ID `example_plugin` receives `/data/plugins/_data/example_plugin/`. Writes to other directories, such as `/tmp/output.json`, still require `filesystem_write`.
 
 ---
 

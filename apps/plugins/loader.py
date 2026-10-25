@@ -286,6 +286,8 @@ class PluginManager:
             new_packages: Dict[str, str] = {}
             new_aliases: Dict[str, str] = {}
             for entry in sorted(os.listdir(self.plugins_dir)):
+                if entry == "_data":
+                    continue
                 path = os.path.join(self.plugins_dir, entry)
                 if not os.path.isdir(path):
                     continue
@@ -874,7 +876,11 @@ class PluginManager:
             logger.warning(f"No Plugin class found for {key}; skipping")
             return None, package_name
 
-        with running_as_plugin(key):
+        with running_as_plugin(
+            key,
+            capabilities=capabilities,
+            manifest_schema_version=manifest_schema_version,
+        ):
             instance = plugin_cls()
 
         name = getattr(instance, "name", key)
@@ -1140,6 +1146,10 @@ class PluginManager:
             if not cfg.enabled:
                 raise PermissionError(f"Plugin '{key}' is disabled")
             params = params or {}
+            if lp.manifest_schema_version >= 2 and action_id not in {
+                action.get("id") for action in (lp.actions or []) if isinstance(action, dict)
+            }:
+                raise ValueError(f"Plugin '{key}' has no declared action '{action_id}'")
 
             context = self._build_context(lp, cfg, task_id=task_id)
 
@@ -1148,7 +1158,11 @@ class PluginManager:
                 raise ValueError(f"Plugin '{key}' has no runnable 'run' method")
 
             try:
-                with running_as_plugin(key):
+                with running_as_plugin(
+                    key,
+                    capabilities=lp.capabilities,
+                    manifest_schema_version=lp.manifest_schema_version,
+                ):
                     result = run_method(action_id, params, context)
             except Exception:
                 logger.exception(f"Plugin '{key}' action '{action_id}' failed")
@@ -1162,14 +1176,21 @@ class PluginManager:
             # including Connect event hooks and manual UI runs.
             close_old_connections()
 
-    def stop_plugin(self, key: str, reason: Optional[str] = None) -> bool:
+    def stop_plugin(
+        self,
+        key: str,
+        reason: Optional[str] = None,
+        *,
+        release_leadership: bool = True,
+    ) -> bool:
         try:
             # Tear down any persistent service this process leads for this
             # plugin synchronously: disable/reload must not leave a server
             # running headless under a lease the (about to be replaced or
             # disabled) instance no longer knows about, and must not wait on
             # TTL expiry for another process to notice.
-            self._release_plugin_leadership(key)
+            if release_leadership:
+                self._release_plugin_leadership(key)
 
             lp = self.get_plugin(key)
             if not lp or not lp.instance:
@@ -1192,13 +1213,21 @@ class PluginManager:
             if callable(stop_method):
                 try:
                     with savepoint():
-                        with running_as_plugin(key):
+                        with running_as_plugin(
+                            key,
+                            capabilities=lp.capabilities,
+                            manifest_schema_version=lp.manifest_schema_version,
+                        ):
                             stop_method(context)
                     return True
                 except TypeError:
                     try:
                         with savepoint():
-                            with running_as_plugin(key):
+                            with running_as_plugin(
+                                key,
+                                capabilities=lp.capabilities,
+                                manifest_schema_version=lp.manifest_schema_version,
+                            ):
                                 stop_method()
                         return True
                     except Exception:
@@ -1214,7 +1243,11 @@ class PluginManager:
                 if "stop" in actions:
                     try:
                         with savepoint():
-                            with running_as_plugin(key):
+                            with running_as_plugin(
+                                key,
+                                capabilities=lp.capabilities,
+                                manifest_schema_version=lp.manifest_schema_version,
+                            ):
                                 run_method("stop", {}, context)
                         return True
                     except Exception:
@@ -1352,7 +1385,11 @@ class PluginManager:
         with self._leadership_lock:
             self._leadership_state[key] = "leader"
         try:
-            with running_as_plugin(key):
+            with running_as_plugin(
+                key,
+                capabilities=lp.capabilities,
+                manifest_schema_version=lp.manifest_schema_version,
+            ):
                 hook(self._build_leadership_context(lp))
         except Exception:
             logger.exception(
@@ -1373,7 +1410,11 @@ class PluginManager:
             hook = getattr(lp.instance, "on_leader_lost", None)
             if callable(hook):
                 try:
-                    with running_as_plugin(key):
+                    with running_as_plugin(
+                        key,
+                        capabilities=lp.capabilities,
+                        manifest_schema_version=lp.manifest_schema_version,
+                    ):
                         hook(self._build_leadership_context(lp))
                 except Exception:
                     logger.exception("Plugin '%s' on_leader_lost() failed", key)
@@ -1529,6 +1570,8 @@ class PluginManager:
             path = None
             entry_name = None
             for entry in sorted(os.listdir(self.plugins_dir)):
+                if entry == "_data":
+                    continue
                 candidate = os.path.join(self.plugins_dir, entry)
                 if not os.path.isdir(candidate):
                     continue

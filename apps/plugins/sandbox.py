@@ -100,7 +100,7 @@ def _guard_module(name: str, module):
 
 
 def stable_plugin_data_path(plugin_key: str, plugin_path: str, storage_key: str = "") -> str:
-    """Return the version-stable sibling directory owned by a plugin."""
+    """Return the version-stable directory owned by a plugin."""
     plugin_path = os.path.abspath(plugin_path)
     stable_storage_key = storage_key or plugin_key
     if (
@@ -110,7 +110,7 @@ def stable_plugin_data_path(plugin_key: str, plugin_path: str, storage_key: str 
         or os.path.basename(stable_storage_key) != stable_storage_key
     ):
         stable_storage_key = plugin_key
-    return os.path.join(os.path.dirname(plugin_path), f"{stable_storage_key}_data")
+    return os.path.join(os.path.dirname(plugin_path), "_data", stable_storage_key)
 
 
 def _plugin_open(plugin_key: str, plugin_path: str, storage_key: str = ""):

@@ -195,14 +195,14 @@ class LeadershipContextTests(SimpleTestCase):
         pm = PluginManager()
         lp, _instance = _plugin_with_leader_hooks("svc")
         lp.cached_settings = {"foo": "bar"}
-        lp.data_dir = "/data/plugins/svc_data"
+        lp.data_dir = "/data/plugins/_data/svc"
         lp.path = "/data/plugins/svc_1_2_3"
         lp.actions = [{"id": "do_thing"}]
 
         context = pm._build_leadership_context(lp)
 
         self.assertEqual(context["settings"], {"foo": "bar"})
-        self.assertEqual(context["data_dir"], "/data/plugins/svc_data")
+        self.assertEqual(context["data_dir"], "/data/plugins/_data/svc")
         self.assertEqual(context["code_dir"], "/data/plugins/svc_1_2_3")
         self.assertEqual(context["actions"], {"do_thing": {"id": "do_thing"}})
         self.assertTrue(callable(context["dispatch_task"]))
@@ -212,6 +212,12 @@ class LeadershipContextTests(SimpleTestCase):
 
 
 class LeadershipTickTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        self.reload_token = patch.object(PluginManager, "_get_reload_token", return_value=0.0)
+        self.reload_token.start()
+        self.addCleanup(self.reload_token.stop)
+
     def test_plugin_without_hook_is_never_touched(self):
         pm = PluginManager()
         lp, _instance = _plugin_without_leader_hooks("plain")

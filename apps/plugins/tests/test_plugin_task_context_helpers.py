@@ -161,7 +161,7 @@ class RunActionResponseNormalizationTests(SimpleTestCase):
             instance=instance,
             path="/data/plugins/my-plugin_1_2_3",
         )
-        lp.data_dir = "/data/plugins/my-plugin_data"
+        lp.data_dir = "/data/plugins/_data/my-plugin"
         pm = PluginManager()
         cfg = MagicMock(enabled=True, settings={})
         with patch.object(pm, "get_plugin", return_value=lp), patch(
@@ -171,5 +171,5 @@ class RunActionResponseNormalizationTests(SimpleTestCase):
 
         self.assertEqual(result, {"status": "started", "task_id": "self-1"})
         instance.run.assert_called_once()
-        self.assertEqual(instance.run.call_args.args[2]["data_dir"], "/data/plugins/my-plugin_data")
+        self.assertEqual(instance.run.call_args.args[2]["data_dir"], "/data/plugins/_data/my-plugin")
         self.assertEqual(instance.run.call_args.args[2]["code_dir"], "/data/plugins/my-plugin_1_2_3")

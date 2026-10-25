@@ -51,16 +51,18 @@ def plugin_has_capability(capability_id: str) -> bool:
     from .capabilities import manifest_version_enforces_sandbox
     from .loader import PluginManager
 
-    plugin = PluginManager.get().get_plugin(key)
-    if plugin is None:
-        manifest_schema_version = _plugin_manifest_schema_version.get()
-        capabilities = _plugin_capabilities.get()
-        if manifest_schema_version is None or capabilities is None:
-            return False
+    manifest_schema_version = _plugin_manifest_schema_version.get()
+    capabilities = _plugin_capabilities.get()
+    # Candidate code runs before reload replaces the registry entry. An
+    # explicit execution snapshot must take precedence over outgoing metadata.
+    if manifest_schema_version is not None and capabilities is not None:
         return (
             not manifest_version_enforces_sandbox(manifest_schema_version)
             or capability_id in capabilities
         )
+    plugin = PluginManager.get().get_plugin(key)
+    if plugin is None:
+        return False
     return bool(
         not manifest_version_enforces_sandbox(plugin.manifest_schema_version)
         or capability_id in (plugin.capabilities or [])
