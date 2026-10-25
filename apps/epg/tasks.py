@@ -18,6 +18,7 @@ import psutil  # Add import for memory tracking
 import zipfile
 
 from celery import shared_task
+from apps.plugins.internal_tasks import plugin_callable_task
 from django.conf import settings
 from django.db import connection, transaction
 from django.db.models import Q
@@ -495,6 +496,7 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
+@plugin_callable_task
 @shared_task(time_limit=14400)
 def refresh_epg_data(source_id, force=False, _file_defer_retry=0):
     if not acquire_task_lock('refresh_epg_data', source_id):

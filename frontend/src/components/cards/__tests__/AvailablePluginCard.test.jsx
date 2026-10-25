@@ -12,7 +12,14 @@ vi.mock('react-router-dom', () => ({
 vi.mock('../../../store/plugins', () => {
   const mockUsePluginStore = vi.fn();
   mockUsePluginStore.getState = vi.fn();
-  return { usePluginStore: mockUsePluginStore };
+  return {
+    usePluginStore: mockUsePluginStore,
+    needsCapabilityAck: (plugin) => {
+      if (!plugin) return true;
+      const acked = new Set(plugin.acknowledged_capabilities || []);
+      return (plugin.capabilities || []).some((c) => !acked.has(c.id));
+    },
+  };
 });
 
 // ── PluginWarnings ─────────────────────────────────────────────────────────────
@@ -31,8 +38,11 @@ vi.mock('../../PluginWarnings.jsx', () => ({
 
 // ── PluginDetailPanel ──────────────────────────────────────────────────────────
 vi.mock('../../PluginDetailPanel.jsx', () => ({
-  default: ({ onInstall, onUninstall }) => (
-    <div data-testid="plugin-detail-panel">
+  default: ({ detail, onInstall, onUninstall, metadataActions }) => (
+    <div
+      data-testid="plugin-detail-panel"
+      data-changelog={detail?.manifest?.versions?.[0]?.changelog}
+    >
       <button
         data-testid="detail-install"
         onClick={() =>
@@ -50,8 +60,28 @@ vi.mock('../../PluginDetailPanel.jsx', () => ({
       <button data-testid="detail-uninstall" onClick={onUninstall}>
         Detail Uninstall
       </button>
+      {metadataActions}
     </div>
   ),
+}));
+
+vi.mock('../../PluginHeader.jsx', () => ({
+  PluginLinks: ({ helpUrl, repoUrl, discordThread }) =>
+    helpUrl || repoUrl || discordThread ? <div data-testid="plugin-links" /> : null,
+  PluginMetadata: ({ plugin, license, sourceRepoName, trailing }) => (
+    <div>
+      {plugin.author && <span>{plugin.author}</span>}
+      {license && <><svg data-testid="icon-scale" /><span>{license}</span></>}
+      {sourceRepoName && <span>{sourceRepoName}</span>}
+      {trailing}
+    </div>
+  ),
+  SignatureIndicator: ({ signatureVerified }) =>
+    signatureVerified === true ? (
+      <svg data-testid="icon-shield-check" />
+    ) : signatureVerified === false ? (
+      <svg data-testid="icon-shield-alert" />
+    ) : null,
 }));
 
 // ── pluginUtils ────────────────────────────────────────────────────────────────
@@ -102,7 +132,7 @@ vi.mock('@mantine/core', () => ({
       </span>
     ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, disabled, loading, color, variant }) => (
+  Button: ({ children, onClick, disabled, loading, color, variant, leftSection }) => (
     <button
       onClick={onClick}
       disabled={disabled || loading}
@@ -110,6 +140,7 @@ vi.mock('@mantine/core', () => ({
       data-variant={variant}
       data-loading={String(loading)}
     >
+      {leftSection}
       {children}
     </button>
   ),
@@ -155,15 +186,18 @@ vi.mock('@mantine/core', () => ({
 vi.mock('lucide-react', () => ({
   AlertTriangle: () => <svg data-testid="icon-alert-triangle" />,
   Ban: () => <svg data-testid="icon-ban" />,
+  CalendarClock: () => <svg data-testid="icon-calendar-clock" />,
   Check: () => <svg data-testid="icon-check" />,
   Download: () => <svg data-testid="icon-download" />,
   FlaskConical: () => <svg data-testid="icon-flask-conical" />,
   Info: () => <svg data-testid="icon-info" />,
   RefreshCw: () => <svg data-testid="icon-refresh-cw" />,
   RotateCcw: () => <svg data-testid="icon-rotate-ccw" />,
+  Scale: () => <svg data-testid="icon-scale" />,
   ShieldAlert: () => <svg data-testid="icon-shield-alert" />,
   ShieldCheck: () => <svg data-testid="icon-shield-check" />,
   Trash2: () => <svg data-testid="icon-trash2" />,
+  User: () => <svg data-testid="icon-user" />,
 }));
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -222,6 +256,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
   });
   const mockInvalidatePlugins = vi.fn();
   const mockFetchAvailablePlugins = vi.fn();
+  const mockRequestEnableConfirmation = vi.fn().mockResolvedValue(true);
 
   vi.mocked(usePluginStore).mockImplementation((sel) =>
     sel({ installPlugin: mockInstallPlugin })
@@ -229,6 +264,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
   usePluginStore.getState.mockReturnValue({
     invalidatePlugins: mockInvalidatePlugins,
     fetchAvailablePlugins: mockFetchAvailablePlugins,
+    requestEnableConfirmation: mockRequestEnableConfirmation,
   });
 
   // Default: versions are compatible, no downgrade, no bad signature
@@ -251,6 +287,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
     mockInstallPlugin,
     mockInvalidatePlugins,
     mockFetchAvailablePlugins,
+    mockRequestEnableConfirmation,
   };
 };
 
@@ -268,6 +305,36 @@ const getModalActionButton = (text) =>
 describe('AvailablePluginCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('confirms new capabilities before retrying an enabled plugin update', async () => {
+    const { mockInstallPlugin, mockRequestEnableConfirmation } = setupMocks();
+    vi.mocked(getInstallInfo).mockReturnValue({
+      isDowngrade: false,
+      isUpdate: true,
+      isBadSig: false,
+    });
+    mockInstallPlugin
+      .mockResolvedValueOnce({
+        error_code: 'capability_confirmation_required',
+        capabilities: [{ id: 'persistent_service', label: 'Run a persistent service' }],
+      })
+      .mockResolvedValueOnce({ success: true, plugin: { key: 'test-plugin', enabled: true } });
+    const plugin = makePlugin({ installed: true, install_status: 'update_available' });
+    render(<AvailablePluginCard plugin={plugin} appVersion={APP_VERSION} />);
+
+    fireEvent.click(screen.getByTestId('sized-install-button'));
+    fireEvent.click(getModalActionButton('Update'));
+
+    await waitFor(() => {
+      expect(mockRequestEnableConfirmation).toHaveBeenCalledWith(
+        expect.objectContaining({ capabilities: [{ id: 'persistent_service', label: 'Run a persistent service' }] }),
+        'update'
+      );
+      expect(mockInstallPlugin).toHaveBeenLastCalledWith(
+        expect.objectContaining({ acknowledge_capabilities: ['persistent_service'] })
+      );
+    });
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -305,12 +372,32 @@ describe('AvailablePluginCard', () => {
       expect(screen.getByText(/1\.0\.0/)).toBeInTheDocument();
     });
 
-    it('renders the license badge', () => {
+    it('renders a formatted download count when present', () => {
+      setupMocks();
+      render(
+        <AvailablePluginCard
+          plugin={makePlugin({ download_count: 12345 })}
+          appVersion={APP_VERSION}
+        />
+      );
+      expect(screen.getByText('12,345')).toBeInTheDocument();
+    });
+
+    it('does not render a download count when absent', () => {
+      setupMocks();
+      render(
+        <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
+      );
+      expect(screen.queryByText('12,345')).not.toBeInTheDocument();
+    });
+
+    it('renders the license with its icon', () => {
       setupMocks();
       render(
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
       );
       expect(screen.getByText('MIT')).toBeInTheDocument();
+      expect(screen.getByTestId('icon-scale')).toBeInTheDocument();
     });
 
     it('renders a last_updated badge', () => {
@@ -330,6 +417,7 @@ describe('AvailablePluginCard', () => {
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
       );
       expect(screen.getByText('More Info')).toBeInTheDocument();
+      expect(screen.queryByTestId('icon-info')).not.toBeInTheDocument();
     });
 
     it('renders Install button for not_installed plugin', () => {
@@ -418,7 +506,7 @@ describe('AvailablePluginCard', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('renders min version badge when min_dispatcharr_version is set', () => {
+    it('does not render min version metadata on the card', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -426,10 +514,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('0.9.0')).toBeInTheDocument();
+      expect(screen.queryByText('0.9.0')).not.toBeInTheDocument();
     });
 
-    it('renders max version badge when max_dispatcharr_version is set', () => {
+    it('does not render max version metadata on the card', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -437,17 +525,17 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('2.0.0')).toBeInTheDocument();
+      expect(screen.queryByText('2.0.0')).not.toBeInTheDocument();
     });
 
-    it('renders Downgrade button for update_available when isLatestDowngrade', () => {
+    it('renders Downgrade button when backend reports downgrade_available', () => {
       setupMocks();
-      // compareVersions(latest, installed) < 0 → isLatestDowngrade
-      vi.mocked(compareVersions).mockReturnValue(-1);
+      // isLatestDowngrade is now sourced directly from install_status, not
+      // computed client-side from compareVersions.
       render(
         <AvailablePluginCard
           plugin={makePlugin({
-            install_status: 'update_available',
+            install_status: 'downgrade_available',
             installed: true,
             installed_version: '1.1.0',
           })}
@@ -460,10 +548,10 @@ describe('AvailablePluginCard', () => {
     });
   });
 
-  // ── RepoBadge ──────────────────────────────────────────────────────────────
+  // ── Repository metadata ────────────────────────────────────────────────────
 
-  describe('RepoBadge', () => {
-    it('shows "Official Repo" badge when is_official_repo is true', () => {
+  describe('repository metadata', () => {
+    it('shows the repository name inline when is_official_repo is true', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -471,10 +559,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Official Repo')).toBeInTheDocument();
+      expect(screen.getByText('Test Repo')).toBeInTheDocument();
     });
 
-    it('shows community repo name badge when is_official_repo is false', () => {
+    it('shows the community repo name inline when is_official_repo is false', () => {
       setupMocks();
       render(
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
@@ -514,10 +602,10 @@ describe('AvailablePluginCard', () => {
     });
   });
 
-  // ── StatusBadge ────────────────────────────────────────────────────────────
+  // ── Install status indicator ───────────────────────────────────────────────
 
-  describe('StatusBadge', () => {
-    it('shows Installed badge for installed plugin', () => {
+  describe('InstallStatusIndicator', () => {
+    it('shows an installed indicator for an installed plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -525,10 +613,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Installed')).toBeInTheDocument();
+      expect(screen.getByLabelText('Installed')).toBeInTheDocument();
     });
 
-    it('shows prerelease Installed badge when installed_version_is_prerelease', () => {
+    it('shows a prerelease indicator when installed_version_is_prerelease', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -539,10 +627,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Prerelease')).toBeInTheDocument();
+      expect(screen.getByLabelText('Prerelease installed')).toBeInTheDocument();
     });
 
-    it('shows Update Available badge for update_available plugin', () => {
+    it('shows an update indicator for an update_available plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -553,10 +641,10 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Update Available')).toBeInTheDocument();
+      expect(screen.getByLabelText('Update available')).toBeInTheDocument();
     });
 
-    it('shows Deprecated badge for not-installed deprecated plugin', () => {
+    it('shows a deprecation indicator for a not-installed deprecated plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -567,10 +655,12 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Deprecated')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('This plugin has been marked as deprecated by its maintainer')
+      ).toBeInTheDocument();
     });
 
-    it('shows Installed badge for unmanaged plugin', () => {
+    it('shows an unmanaged install indicator for an unmanaged plugin', () => {
       setupMocks();
       render(
         <AvailablePluginCard
@@ -578,7 +668,9 @@ describe('AvailablePluginCard', () => {
           appVersion={APP_VERSION}
         />
       );
-      expect(screen.getByText('Installed')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Installed manually, installing from this repo will take over management')
+      ).toBeInTheDocument();
     });
   });
 
@@ -625,6 +717,21 @@ describe('AvailablePluginCard', () => {
   // ── More Info modal ────────────────────────────────────────────────────────
 
   describe('More Info modal', () => {
+    it('includes the latest changelog in a manifest-less detail fallback', () => {
+      setupMocks();
+      render(
+        <AvailablePluginCard
+          plugin={makePlugin({ latest_changelog: '459' })}
+          appVersion={APP_VERSION}
+        />
+      );
+      fireEvent.click(screen.getByText('More Info'));
+      expect(screen.getByTestId('plugin-detail-panel')).toHaveAttribute(
+        'data-changelog',
+        '459'
+      );
+    });
+
     it('opens detail modal when More Info is clicked', () => {
       setupMocks();
       render(
@@ -656,6 +763,25 @@ describe('AvailablePluginCard', () => {
           'https://example.com/manifest.json'
         );
       });
+    });
+
+    it('shows manifest links in the modal header', async () => {
+      setupMocks();
+      vi.mocked(PluginsUtils.getPluginDetailManifest).mockResolvedValue({
+        manifest: {
+          versions: [],
+          repo_url: 'https://github.com/example/plugin',
+        },
+        signature_verified: true,
+      });
+      render(
+        <AvailablePluginCard
+          plugin={makePlugin({ manifest_url: 'https://example.com/manifest.json' })}
+          appVersion={APP_VERSION}
+        />
+      );
+      fireEvent.click(screen.getByText('More Info'));
+      expect(await screen.findByTestId('plugin-links')).toBeInTheDocument();
     });
 
     it('closes detail modal when modal close button is clicked', () => {
@@ -932,7 +1058,8 @@ describe('AvailablePluginCard', () => {
       await waitFor(() => {
         expect(PluginsUtils.setPluginEnabled).toHaveBeenCalledWith(
           'test-plugin',
-          true
+          true,
+          []
         );
       });
     });

@@ -32,6 +32,13 @@ vi.mock('../../components/modals/ManageReposModal.jsx', () => ({
     ) : null,
 }));
 
+vi.mock('../../components/PluginEnableConfirmModal.jsx', () => ({
+  default: () => null,
+}));
+vi.mock('../../components/PluginManifestMessages.jsx', () => ({
+  default: () => <div data-testid="plugin-manifest-messages" />,
+}));
+
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
@@ -48,22 +55,12 @@ vi.mock('../../utils/components/pluginUtils.js', () => ({
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   Package: () => <svg data-testid="icon-package" />,
-  RefreshCcw: () => <svg data-testid="icon-refresh" />,
+  RefreshCw: () => <svg data-testid="icon-refresh" />,
   Search: () => <svg data-testid="icon-search" />,
 }));
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, loading, title }) => (
-    <button
-      data-testid="action-icon"
-      data-loading={loading}
-      title={title}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  ),
   AppShellMain: ({ children }) => <main>{children}</main>,
   Badge: ({ children, color, variant }) => (
     <span data-testid="badge" data-color={color} data-variant={variant}>
@@ -198,6 +195,8 @@ const setupStore = ({
       fetchRepos: mockFetchRepos,
       fetchAvailablePlugins: mockFetchAvailablePlugins,
       refreshRepo: mockRefreshRepo,
+      enableConfirm: { opened: false, plugin: null, resolve: null },
+      resolveEnableConfirmation: vi.fn(),
     })
   );
 
@@ -336,6 +335,33 @@ describe('PluginBrowsePage', () => {
       render(<PluginBrowsePage />);
       expect(screen.queryByTestId('plugin-card')).not.toBeInTheDocument();
     });
+
+    it('shows the download count sort option only when counts are available', () => {
+      setupStore({ availablePlugins: [makePlugin({ download_count: 42 })] });
+      render(<PluginBrowsePage />);
+      expect(screen.getByTestId('sort-select')).toHaveTextContent(
+        'Download Count'
+      );
+    });
+
+    it('sorts plugins by download count descending', () => {
+      setupStore({
+        availablePlugins: [
+          makePlugin({ slug: 'low', name: 'Low', download_count: 10 }),
+          makePlugin({ slug: 'missing', name: 'Missing' }),
+          makePlugin({ slug: 'high', name: 'High', download_count: 100 }),
+        ],
+      });
+      render(<PluginBrowsePage />);
+      fireEvent.change(screen.getByTestId('sort-select'), {
+        target: { value: 'downloads' },
+      });
+      expect(screen.getAllByTestId('plugin-card').map((card) => card.dataset.slug)).toEqual([
+        'high',
+        'low',
+        'missing',
+      ]);
+    });
   });
 
   // ── Manage Repos modal ─────────────────────────────────────────────────────
@@ -375,31 +401,31 @@ describe('PluginBrowsePage', () => {
         invalidatePlugins: mockInvalidatePlugins,
       });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(mockRefreshRepo).toHaveBeenCalledWith(1);
         expect(mockRefreshRepo).toHaveBeenCalledWith(2);
       });
     });
 
-    it('calls fetchAvailablePlugins, reloadPlugins, and invalidatePlugins after refresh', async () => {
+    it('calls fetchAvailablePlugins and invalidatePlugins after refresh, without reloading plugin code', async () => {
       setupStore({ repos: [makeRepo()] });
       vi.mocked(usePluginStore).getState.mockReturnValue({
         repos: [makeRepo()],
         invalidatePlugins: mockInvalidatePlugins,
       });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(mockFetchAvailablePlugins).toHaveBeenCalled();
-        expect(reloadPlugins).toHaveBeenCalled();
         expect(mockInvalidatePlugins).toHaveBeenCalled();
       });
+      expect(reloadPlugins).not.toHaveBeenCalled();
     });
 
     it('shows success notification on successful refresh', async () => {
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'Refreshed', color: 'green' })
@@ -417,6 +443,8 @@ describe('PluginBrowsePage', () => {
           fetchRepos: vi.fn(),
           fetchAvailablePlugins: vi.fn(),
           refreshRepo: mockRefreshRepo,
+          enableConfirm: { opened: false, plugin: null, resolve: null },
+          resolveEnableConfirmation: vi.fn(),
         })
       );
       vi.mocked(usePluginStore).getState.mockReturnValue({
@@ -424,7 +452,7 @@ describe('PluginBrowsePage', () => {
         invalidatePlugins: vi.fn(),
       });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'Error', color: 'red' })

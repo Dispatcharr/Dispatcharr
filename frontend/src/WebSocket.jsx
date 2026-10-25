@@ -17,6 +17,7 @@ import API from './api';
 import useSettingsStore from './store/settings';
 import useAuthStore from './store/auth';
 import useUsersStore from './store/users';
+import { usePluginStore } from './store/plugins.jsx';
 
 export const WebsocketContext = createContext([false, () => {}, null]);
 
@@ -951,7 +952,9 @@ export const WebsocketProvider = ({ children }) => {
                   notificationData.priority === 'critical'
                 ) {
                   const color =
-                    notificationData.notification_type === 'version_update'
+                    notificationData.priority === 'critical'
+                      ? 'red'
+                      : notificationData.notification_type === 'version_update'
                       ? 'green'
                       : notificationData.notification_type === 'warning'
                         ? 'orange'
@@ -990,6 +993,26 @@ export const WebsocketProvider = ({ children }) => {
             case 'ip_lookup_complete': {
               const { type: _t, ...ipData } = parsedEvent.data;
               useSettingsStore.getState().setEnvironmentFields(ipData);
+              break;
+            }
+
+            case 'plugin_task_progress': {
+              const { task_id, percent, message, updatedAt } = parsedEvent.data;
+              usePluginStore.getState().updatePluginTaskProgress(task_id, { percent, message, updatedAt });
+              break;
+            }
+
+            case 'plugin_task_complete': {
+              const { task_id, plugin, status: taskStatus, result, error, updatedAt } = parsedEvent.data;
+              usePluginStore.getState().completePluginTask(task_id, { status: taskStatus, result, error, updatedAt });
+              notifications.update({
+                id: `plugin-task-${task_id}`,
+                title: plugin,
+                message: taskStatus === 'ok' ? (result?.message || 'Completed') : (error || 'Failed'),
+                color: taskStatus === 'ok' ? 'green' : 'red',
+                loading: false,
+                autoClose: 5000,
+              });
               break;
             }
 

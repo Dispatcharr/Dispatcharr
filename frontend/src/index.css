@@ -122,6 +122,11 @@ table.mrt-table
   padding: 4px;
 }
 
+html.plugin-page-scrollbar-gutter {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
 .custom-multiselect .mantine-MultiSelect-input {
   min-height: 30px;
   max-height: 30px;

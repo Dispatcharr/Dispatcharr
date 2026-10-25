@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActionIcon,
   AppShellMain,
   Badge,
   Box,
@@ -14,16 +13,19 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { Package, RefreshCcw, Search } from 'lucide-react';
+import { Package, RefreshCw, Search } from 'lucide-react';
 import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
 import ManageReposModal from '../components/modals/ManageReposModal.jsx';
+import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import { showNotification } from '../utils/notificationUtils.js';
-import { reloadPlugins } from '../utils/pages/PluginsUtils.js';
 import { compareVersions } from '../utils/components/pluginUtils.js';
+import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
+import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
 
 export default function PluginBrowsePage() {
+  usePluginPageScrollbarGutter();
   const repos = usePluginStore((s) => s.repos);
   const availablePlugins = usePluginStore((s) => s.availablePlugins);
   const availableLoading = usePluginStore((s) => s.availableLoading);
@@ -64,6 +66,10 @@ export default function PluginBrowsePage() {
     }
   }, [fetchRepos, fetchAvailablePlugins]);
 
+  // Checks every enabled repo for updates. Deliberately does NOT trigger a
+  // full Python reload of installed plugins (that's a separate, disruptive
+  // action on the My Plugins page); this only refreshes manifest/version
+  // data.
   const handleRefreshAll = useCallback(async () => {
     setRefreshingAll(true);
     try {
@@ -71,7 +77,6 @@ export default function PluginBrowsePage() {
         await refreshRepo(repo.id);
       }
       await fetchAvailablePlugins();
-      await reloadPlugins();
       usePluginStore.getState().invalidatePlugins();
       showNotification({
         title: 'Refreshed',
@@ -104,6 +109,15 @@ export default function PluginBrowsePage() {
       ...Array.from(seen, ([id, name]) => ({ value: String(id), label: name })),
     ];
   }, [availablePlugins]);
+
+  const hasDownloadCounts = React.useMemo(
+    () =>
+      availablePlugins.some(
+        (plugin) =>
+          Number.isFinite(plugin.download_count) && plugin.download_count >= 0
+      ),
+    [availablePlugins]
+  );
 
   // Filter and sort plugins
   const filteredPlugins = React.useMemo(() => {
@@ -175,6 +189,15 @@ export default function PluginBrowsePage() {
           return (a.author || '').localeCompare(b.author || '');
         case 'updated':
           return (b.last_updated || '').localeCompare(a.last_updated || '');
+        case 'downloads': {
+          const aDownloads = Number.isFinite(a.download_count)
+            ? a.download_count
+            : -1;
+          const bDownloads = Number.isFinite(b.download_count)
+            ? b.download_count
+            : -1;
+          return bDownloads - aDownloads;
+        }
         default:
           return 0;
       }
@@ -231,7 +254,7 @@ export default function PluginBrowsePage() {
             <Button
               size="xs"
               variant="light"
-              color="teal"
+              color="blue"
               component="a"
               href="https://github.com/Dispatcharr/Plugins?tab=contributing-ov-file"
               target="_blank"
@@ -247,16 +270,19 @@ export default function PluginBrowsePage() {
             >
               Manage Repos
             </Button>
-            <ActionIcon
-              variant="light"
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<RefreshCw size={14} />}
               onClick={handleRefreshAll}
-              title="Refresh all repos"
               loading={refreshingAll}
             >
-              <RefreshCcw size={18} />
-            </ActionIcon>
+              Check for Updates
+            </Button>
           </Group>
         </Group>
+
+        <PluginManifestMessages />
 
         {loading && <Loader />}
 
@@ -280,6 +306,9 @@ export default function PluginBrowsePage() {
                 { value: 'name-desc', label: 'Name Z-A' },
                 { value: 'author', label: 'Author' },
                 { value: 'updated', label: 'Recently Updated' },
+                ...(hasDownloadCounts
+                  ? [{ value: 'downloads', label: 'Download Count' }]
+                  : []),
               ]}
               style={{ width: 170 }}
             />
@@ -336,7 +365,6 @@ export default function PluginBrowsePage() {
                 key={`${p.repo_id}-${p.slug}`}
                 plugin={p}
                 appVersion={appVersion}
-                multiRepo={repos.length > 1}
                 onBeforeInstall={(slug) => {
                   if (slug) {
                     if (p.install_status === 'update_available') {
@@ -398,6 +426,8 @@ export default function PluginBrowsePage() {
         opened={repoModalOpen}
         onClose={() => setRepoModalOpen(false)}
       />
+
+      <PluginEnableConfirmModal />
     </AppShellMain>
   );
 }

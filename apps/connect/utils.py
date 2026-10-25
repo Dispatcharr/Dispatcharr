@@ -127,7 +127,20 @@ def trigger_event(event_name, payload):
             action_id,
         )
         try:
-            pm.run_action(key, action_id, params)
+            # Fire-and-forget; nothing consumes the result either way.
+            from apps.plugins.tasks import dispatch_plugin_action_task
+            plugin = pm.get_plugin(key)
+            action = next(
+                (
+                    candidate
+                    for candidate in (plugin.actions if plugin else [])
+                    if isinstance(candidate, dict) and candidate.get("id") == action_id
+                ),
+                {},
+            )
+            dispatch_plugin_action_task(
+                key, action_id, params, action.get("label", action_id)
+            )
         except Exception:
             logger.exception(
                 "Plugin action failed for event '%s' on plugin id=%s action=%s",
