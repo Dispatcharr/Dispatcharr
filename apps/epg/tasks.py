@@ -311,6 +311,14 @@ class _PrependStream:
 # multi-hundred-MB guide checks constant-memory and cheap on I/O.
 _XMLTV_COMPLETENESS_TAIL_BYTES = 8192
 
+# Markup a CDN may append after the root when a guide is served as text/html,
+# e.g. Cloudflare's email-decode <script>. Only complete script elements and
+# whitespace qualify, so a truncated file cannot slip through on a stray
+# "</tv>" inside a comment or CDATA section near the end.
+_XMLTV_ALLOWED_TRAILER = re.compile(
+    rb'(?:\s*<script\b[^>]*>.*?</script\s*>)*\s*', re.IGNORECASE | re.DOTALL
+)
+
 
 def _xmltv_file_is_complete(file_path: str) -> bool:
     """Return True when file_path looks like a finished XMLTV document.
@@ -318,6 +326,10 @@ def _xmltv_file_is_complete(file_path: str) -> bool:
     XMLTV uses a single <tv> root. A truncated download almost never ends with
     </tv>, while recover=True would otherwise treat a partial file as success.
     Reads only a small tail so large guides do not inflate memory use.
+
+    Script elements a CDN appends after </tv> are tolerated (see
+    _XMLTV_ALLOWED_TRAILER); the parsers run with recover=True and stop at the
+    end of the root anyway.
     """
     try:
         size = os.path.getsize(file_path)
@@ -331,7 +343,11 @@ def _xmltv_file_is_complete(file_path: str) -> bool:
             tail = f.read()
     except OSError:
         return False
-    return tail.rstrip().endswith(b'</tv>')
+    root_end = tail.rfind(b'</tv>')
+    if root_end == -1:
+        return False
+    trailer = tail[root_end + len(b'</tv>'):]
+    return _XMLTV_ALLOWED_TRAILER.fullmatch(trailer) is not None
 
 
 def _unlink_quiet(path: str | None) -> None:
