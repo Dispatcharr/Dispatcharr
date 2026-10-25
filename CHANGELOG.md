@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Docker base image uses a first-party redistributable FFmpeg build.** The base was pinned to `linuxserver/ffmpeg:version-8.1.2-cli` (Ubuntu 24.04, FFmpeg 8.1.2) because `linuxserver/ffmpeg:latest` moved to FFmpeg 9 and NVENC API 13.1, which needs driver 610 and does not run on Pascal / driver 580. It now uses `ghcr.io/dispatcharr/ffmpeg:latest` from [`Dispatcharr/FFmpeg`](https://github.com/Dispatcharr/FFmpeg): Ubuntu 26.04, GPL v3, GnuTLS (not OpenSSL), fdk-aac-stripped (not full Fraunhofer FDK), no `--enable-nonfree`, and NVENC API 13.0 so Pascal / driver 580 still works. IPTV-oriented enables include libx264/libx265, libzvbi, libsrt (GnuTLS), librist, and the usual subtitle/audio stack. Comskip still links distro libav (Ubuntu 26.04 SONAMEs). The entrypoint no longer forces linuxserver's `LIBVA_DRIVERS_PATH` / `LD_LIBRARY_PATH`; libva uses its default driver path, and those variables are only kept if the user sets them.
 
+### Fixed
+
+- **AIO PostgreSQL no longer initializes as `SQL_ASCII` when the container locale is `C`.** Fresh `initdb` on minimal/CI images (including Ubuntu 26-based runners) defaulted to `SQL_ASCII`, so creating the app database with `--encoding=UTF8` failed against `template1` and backend CI could not start. `initdb` now requests UTF-8 explicitly while leaving the environment locale alone, and `ensure_app_database` creates the app DB from `template0` (same pattern as `ensure_utf8_encoding`) so UTF-8 still works if an older cluster's `template1` is ASCII. Existing data directories are unchanged.
+
 ## [0.33.0] - 2026-10-24
 
 ### Added
