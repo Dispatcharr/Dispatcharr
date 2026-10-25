@@ -280,7 +280,7 @@ export default function PluginsPage() {
 
   const handleImportPlugin = () => {
     return async () => {
-      const run = async (overwrite) => {
+      const run = async (overwrite, acknowledgeCapabilities = []) => {
         setImporting(true);
         const notifId = showNotification({
           title: 'Uploading plugin',
@@ -290,7 +290,7 @@ export default function PluginsPage() {
           withCloseButton: false,
         });
         try {
-          const resp = await importPlugin(importFile, overwrite, /* silent */ true);
+          const resp = await importPlugin(importFile, overwrite, /* silent */ true, acknowledgeCapabilities);
           if (resp?.success && resp.plugin) {
             setImported({ ...resp.plugin, was_managed: resp.was_managed, was_overwrite: overwrite });
             usePluginStore.getState().invalidatePlugins();
@@ -331,6 +331,23 @@ export default function PluginsPage() {
             );
             if (confirmed) {
               await run(true);
+            }
+          } else if (
+            overwrite &&
+            e?.body?.error_code === 'capability_confirmation_required'
+          ) {
+            const confirmed = await usePluginStore
+              .getState()
+              .requestEnableConfirmation(
+                {
+                  key: 'plugin',
+                  name: 'Plugin update',
+                  capabilities: e.body.capabilities || [],
+                },
+                'update'
+              );
+            if (confirmed) {
+              await run(true, (e.body.capabilities || []).map((capability) => capability.id));
             }
           } else {
             updateNotification({

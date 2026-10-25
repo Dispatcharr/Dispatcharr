@@ -2389,11 +2389,14 @@ export default class API {
     }
   }
 
-  static async importPlugin(file, overwrite = false, silent = false) {
+  static async importPlugin(file, overwrite = false, silent = false, acknowledgeCapabilities = []) {
     try {
       const form = new FormData();
       form.append('file', file);
       if (overwrite) form.append('overwrite', 'true');
+      for (const capability of acknowledgeCapabilities) {
+        form.append('acknowledge_capabilities', capability);
+      }
       const response = await request(`${host}/api/plugins/plugins/import/`, {
         method: 'POST',
         body: form,

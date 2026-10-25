@@ -239,39 +239,42 @@ const AvailablePluginCard = ({
       compareVersions(params.version, plugin.installed_version) < 0;
     onBeforeInstall?.(plugin.slug);
     setInstalling(true);
-    const result = await installPlugin(params);
-    setInstalling(false);
-    setPendingInstall(null);
-    if (result?.error_code === 'capability_confirmation_required') {
-      const confirmationPlugin = {
-        key: plugin.key || params.slug,
-        name: plugin.name,
-        capabilities: result.capabilities || [],
-      };
-      const confirmed = await usePluginStore
-        .getState()
-        .requestEnableConfirmation(confirmationPlugin, 'update');
-      if (confirmed) {
-        await executeInstall({
-          ...params,
-          acknowledge_capabilities: (result.capabilities || []).map((capability) => capability.id),
-        });
-      } else {
-        await installPlugin({ ...params, deny_capabilities: true });
-        usePluginStore.getState().invalidatePlugins?.();
+    try {
+      const result = await installPlugin(params);
+      if (result?.error_code === 'capability_confirmation_required') {
+        const confirmationPlugin = {
+          key: plugin.key || params.slug,
+          name: plugin.name,
+          capabilities: result.capabilities || [],
+        };
+        const confirmed = await usePluginStore
+          .getState()
+          .requestEnableConfirmation(confirmationPlugin, 'update');
+        if (confirmed) {
+          await executeInstall({
+            ...params,
+            acknowledge_capabilities: (result.capabilities || []).map((capability) => capability.id),
+          });
+        } else {
+          await installPlugin({ ...params, deny_capabilities: true });
+          usePluginStore.getState().invalidatePlugins?.();
+        }
+        return;
       }
-      return;
-    }
-    if (result?.success) {
-      setInstallAction(
-        wasDowngrade ? 'downgraded' : wasInstalled ? 'updated' : 'installed'
-      );
-      setInstalledKey(result.plugin?.key || params.slug);
-      setInstalledPlugin(result.plugin || null);
-      setPluginIsDisabled(result.plugin?.enabled === false);
-      setEnableNow(false);
-      setRestartPromptOpen(true);
-      onInstalled?.(plugin.slug);
+      if (result?.success) {
+        setInstallAction(
+          wasDowngrade ? 'downgraded' : wasInstalled ? 'updated' : 'installed'
+        );
+        setInstalledKey(result.plugin?.key || params.slug);
+        setInstalledPlugin(result.plugin || null);
+        setPluginIsDisabled(result.plugin?.enabled === false);
+        setEnableNow(false);
+        setRestartPromptOpen(true);
+        onInstalled?.(plugin.slug);
+      }
+    } finally {
+      setInstalling(false);
+      setPendingInstall(null);
     }
   };
 

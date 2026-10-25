@@ -25,9 +25,10 @@ export const setPluginEnabled = async (key, next, acknowledgeCapabilities = []) 
 export const importPlugin = async (
   importFile,
   overwrite = false,
-  silent = false
+  silent = false,
+  acknowledgeCapabilities = []
 ) => {
-  return await API.importPlugin(importFile, overwrite, silent);
+  return await API.importPlugin(importFile, overwrite, silent, acknowledgeCapabilities);
 };
 export const reloadPlugins = async () => {
   return await API.reloadPlugins();
