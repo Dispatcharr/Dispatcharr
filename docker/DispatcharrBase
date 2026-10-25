@@ -110,7 +110,8 @@ ENV UV_LINK_MODE=copy
 # --- Install runtime system dependencies (no build toolchain) ---
 # python3.13 + libpython3.13 back the copied venv; libpcre2-8-0 backs uWSGI;
 # libopenblas0 backs the legacy NumPy wheel; libargtable2-0 and distro libav*
-# are for comskip. SONAMEs are Ubuntu 26.04 (resolute).
+# are for comskip. jq is for custom stream-profile / plugin scripts that parse
+# ffprobe JSON. SONAMEs are Ubuntu 26.04 (resolute).
 # ca-certificates/gnupg2/curl/wget and software-properties-common
 # are kept for TLS and the AIO runtime apt step.
 RUN apt-get update && apt-get install --no-install-recommends -y \
@@ -119,7 +120,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
-    libpcre2-8-0 libopenblas0 procps pciutils \
+    libpcre2-8-0 libopenblas0 procps pciutils jq \
     nginx libargtable2-0 \
     libavformat62 libavcodec62 libavutil60 libswscale9 \
     vlc-bin vlc-plugin-base \
