@@ -187,6 +187,11 @@ def reconcile_official_messages(repo):
     from core.models import SystemNotification
     from core.utils import send_websocket_notification, send_websocket_update
 
+    # Manifest notices are owned by the official registry. Refreshing an
+    # unrelated repository must not retire its notices.
+    if not repo.is_official:
+        return
+
     active_ids = set()
     if repo.is_official and repo.enabled and repo.signature_verified is True:
         for message in validated_messages(repo.cached_manifest):

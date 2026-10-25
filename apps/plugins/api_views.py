@@ -21,7 +21,7 @@ import shutil
 import tempfile
 import requests as http_requests
 from urllib.parse import urlparse
-from apps.accounts.permissions import permissions_for_method
+from apps.accounts.permissions import IsAdmin, permissions_for_method
 from core.http_security import get_with_validated_redirects
 from core.image_proxy import IgnoreClientContentNegotiation
 from core.utils import build_absolute_uri_with_port
@@ -148,6 +148,34 @@ def _effective_capabilities_from_zip(zip_file):
             return compute_effective_capabilities(manifest) if isinstance(manifest, dict) else []
     except zipfile.BadZipFile:
         return []
+    finally:
+        zip_file.seek(0)
+
+
+def _plugin_key_from_zip(zip_file, file_name):
+    """Determine the import key using the same candidate rule as installation."""
+    try:
+        with zipfile.ZipFile(zip_file) as zf:
+            candidates = []
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                normalized = os.path.normpath(member.filename)
+                if normalized.startswith("..") or os.path.isabs(normalized):
+                    continue
+                basename = os.path.basename(normalized)
+                if basename in {"plugin.py", "__init__.py"}:
+                    directory = os.path.dirname(normalized)
+                    depth = len(directory.split(os.sep)) if directory else 0
+                    candidates.append((0 if basename == "plugin.py" else 1, depth, directory))
+            if not candidates:
+                return None
+            candidates.sort()
+            directory = candidates[0][2]
+            key = os.path.basename(directory.rstrip(os.sep)) if directory else os.path.splitext(file_name)[0]
+            return _sanitize_plugin_key(key)[:128]
+    except zipfile.BadZipFile:
+        return None
     finally:
         zip_file.seek(0)
 
@@ -600,11 +628,41 @@ class PluginImportAPIView(PluginAuthMixin, APIView):
         overwrite_flag = bool(request.data.get("overwrite"))
 
         pm = PluginManager.get()
-        result = _install_plugin_from_zip(
-            file, pm.plugins_dir,
-            file_name=getattr(file, "name", "plugin.zip"),
-            allow_overwrite=overwrite_flag,
+        plugin_key = _plugin_key_from_zip(file, getattr(file, "name", "plugin.zip"))
+        acknowledged = (
+            request.data.getlist("acknowledge_capabilities")
+            if hasattr(request.data, "getlist")
+            else request.data.get("acknowledge_capabilities", [])
         )
+        if not isinstance(acknowledged, list):
+            acknowledged = []
+        acknowledged = {capability for capability in acknowledged if isinstance(capability, str)}
+        with _plugin_mutation_lock(pm.plugins_dir):
+            existing_cfg = PluginConfig.objects.filter(key=plugin_key).first() if plugin_key else None
+            effective_capabilities = _effective_capabilities_from_zip(file)
+            unacknowledged = (
+                sorted(set(effective_capabilities) - set(existing_cfg.acknowledged_capabilities or []))
+                if overwrite_flag and existing_cfg and existing_cfg.enabled else []
+            )
+            if unacknowledged and not set(unacknowledged).issubset(acknowledged):
+                return Response(
+                    {
+                        "success": False,
+                        "error_code": "capability_confirmation_required",
+                        "capabilities": describe_capabilities(unacknowledged),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            result = _install_plugin_from_zip(
+                file, pm.plugins_dir,
+                file_name=getattr(file, "name", "plugin.zip"),
+                allow_overwrite=overwrite_flag,
+            )
+            if result["success"] and unacknowledged:
+                existing_cfg.acknowledged_capabilities = sorted(
+                    set(existing_cfg.acknowledged_capabilities or []) | set(unacknowledged)
+                )
+                existing_cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
         if not result["success"]:
             return Response(
                 {"success": False, "error": result["error"]},
@@ -710,6 +768,7 @@ class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
         },
     )
     def post(self, request, key, field_id):
+        key = normalize_plugin_key(key)
         pm = PluginManager.get()
         lp = pm.get_plugin(key)
         if not lp:
@@ -790,6 +849,13 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
 
         pm.discover_plugins(sync_db=False, use_cache=True)
         lp = pm.get_plugin(key)
+        if lp and lp.manifest_schema_version >= 2 and action not in {
+            item.get("id") for item in (lp.actions or []) if isinstance(item, dict)
+        }:
+            return Response(
+                {"success": False, "error": f"Unknown action '{action}'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         action_def = next(
             (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action), {}
         ) if lp else {}
@@ -843,8 +909,12 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
 
 
 class PluginTaskHistoryAPIView(PluginAuthMixin, APIView):
+    def get_permissions(self):
+        return [IsAdmin()]
+
     def get(self, request, key):
         from .task_history import get_task_history
+        key = normalize_plugin_key(key)
         return Response({"tasks": get_task_history(key)})
 
 
@@ -889,7 +959,7 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
                         # stop() is not transactional; running it under the row lock keeps a
                         # newer enable from being stopped by this older disable.
                         try:
-                            pm.stop_plugin(key, reason="disable")
+                            pm.stop_plugin(key, reason="disable", release_leadership=False)
                         except Exception:
                             logger.exception("Failed to stop plugin '%s' on disable", key)
                         # stop() can create a matching schedule in this transaction.
@@ -905,6 +975,13 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
                     cfg.save(update_fields=[
                         "enabled", "ever_enabled", "acknowledged_capabilities", "updated_at",
                     ])
+                    if stopping:
+                        # Commit disabled state and advertise the reload before making the
+                        # lease acquirable by a follower.
+                        transaction.on_commit(lambda: (
+                            pm._touch_reload_token(),
+                            pm._release_plugin_leadership(key),
+                        ))
                     if enabled:
                         pm.restore_schedules(cfg)
             except PluginConfig.DoesNotExist:
