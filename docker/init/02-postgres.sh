@@ -289,7 +289,12 @@ UPGEOF
 
         # Initialize PostgreSQL as the application user.
         # The superuser role is automatically named $POSTGRES_USER.
-        su - "$POSTGRES_USER" -c "$PG_BINDIR/initdb -D ${POSTGRES_DIR}"
+        # Always request UTF8 encoding. Locale C (common on minimal/CI
+        # images) otherwise defaults to SQL_ASCII, which breaks later
+        # createdb --encoding=UTF8 against template1. Do not force
+        # --locale here: preserve the environment locale when it is
+        # already a UTF-8 locale (e.g. C.UTF-8, en_US.UTF-8).
+        su - "$POSTGRES_USER" -c "$PG_BINDIR/initdb -D ${POSTGRES_DIR} --encoding=UTF8"
 
         # Configure authentication and network access.
         configure_pg_network "${POSTGRES_DIR}"
@@ -413,7 +418,9 @@ ensure_app_database() {
     fi
 
     echo "Application database '$POSTGRES_DB' not found — creating..."
-    if ! su - "$POSTGRES_USER" -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 ${POSTGRES_DB}" 2>/dev/null; then
+    # Use template0 so UTF8 works even if template1 is SQL_ASCII (locale C
+    # initdb without an explicit encoding).
+    if ! su - "$POSTGRES_USER" -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 --template=template0 --owner=${POSTGRES_USER} ${POSTGRES_DB}" 2>/dev/null; then
         # Might already exist if the check failed for a transient reason.
         if su - "$POSTGRES_USER" -c "psql -d template1 -p ${POSTGRES_PORT} -tAc \
             \"SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB';\"" 2>/dev/null | grep -q 1; then
