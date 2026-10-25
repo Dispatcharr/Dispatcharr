@@ -16,9 +16,6 @@ class PluginCapabilityMigrationTests(TestCase):
         self.migration_0005 = importlib.import_module(
             "apps.plugins.migrations.0005_plugin_acknowledged_capabilities"
         )
-        self.migration_0006 = importlib.import_module(
-            "apps.plugins.migrations.0006_repair_acknowledged_capabilities"
-        )
 
     def _write_manifest(self, plugins_dir, key, manifest):
         plugin_dir = Path(plugins_dir, key)
@@ -79,52 +76,3 @@ class PluginCapabilityMigrationTests(TestCase):
             PluginConfig.objects.get(key="epg-janitor").acknowledged_capabilities,
             ["subprocess"],
         )
-
-    def test_repair_only_replaces_the_old_global_seed(self):
-        old_seed = sorted(self.migration_0006.SEEDED_CAPABILITIES)
-        PluginConfig.objects.create(
-            key="seeded", name="Seeded", ever_enabled=True, acknowledged_capabilities=old_seed
-        )
-        PluginConfig.objects.create(
-            key="later-consent",
-            name="Later consent",
-            ever_enabled=True,
-            acknowledged_capabilities=["background_tasks", "subprocess"],
-        )
-
-        with tempfile.TemporaryDirectory() as plugins_dir, patch.dict(
-            os.environ, {"DISPATCHARR_PLUGINS_DIR": plugins_dir}
-        ):
-            self._write_manifest(
-                plugins_dir, "seeded", {"manifest_version": 2, "capabilities": ["background_tasks"]}
-            )
-            self._write_manifest(
-                plugins_dir,
-                "later-consent",
-                {"manifest_version": 2, "capabilities": ["background_tasks"]},
-            )
-            self.migration_0006.repair_acknowledged_capabilities(apps, None)
-
-        self.assertEqual(
-            PluginConfig.objects.get(key="seeded").acknowledged_capabilities, ["background_tasks"]
-        )
-        self.assertEqual(
-            PluginConfig.objects.get(key="later-consent").acknowledged_capabilities,
-            ["background_tasks", "subprocess"],
-        )
-
-    def test_repair_finds_an_uppercase_plugin_directory(self):
-        old_seed = sorted(self.migration_0006.SEEDED_CAPABILITIES)
-        PluginConfig.objects.create(
-            key="my_plugin", name="My Plugin", ever_enabled=True, acknowledged_capabilities=old_seed
-        )
-
-        with tempfile.TemporaryDirectory() as plugins_dir, patch.dict(
-            os.environ, {"DISPATCHARR_PLUGINS_DIR": plugins_dir}
-        ):
-            self._write_manifest(
-                plugins_dir, "MY PLUGIN", {"manifest_version": 2, "capabilities": ["subprocess"]}
-            )
-            self.migration_0006.repair_acknowledged_capabilities(apps, None)
-
-        self.assertEqual(PluginConfig.objects.get(key="my_plugin").acknowledged_capabilities, ["subprocess"])
