@@ -290,7 +290,9 @@ export default function PluginsPage() {
           withCloseButton: false,
         });
         try {
-          const resp = await importPlugin(importFile, overwrite, /* silent */ true, acknowledgeCapabilities);
+          const resp = acknowledgeCapabilities.length
+            ? await importPlugin(importFile, overwrite, /* silent */ true, acknowledgeCapabilities)
+            : await importPlugin(importFile, overwrite, /* silent */ true);
           if (resp?.success && resp.plugin) {
             setImported({ ...resp.plugin, was_managed: resp.was_managed, was_overwrite: overwrite });
             usePluginStore.getState().invalidatePlugins();

@@ -28,7 +28,10 @@ export const importPlugin = async (
   silent = false,
   acknowledgeCapabilities = []
 ) => {
-  return await API.importPlugin(importFile, overwrite, silent, acknowledgeCapabilities);
+  if (acknowledgeCapabilities.length) {
+    return await API.importPlugin(importFile, overwrite, silent, acknowledgeCapabilities);
+  }
+  return await API.importPlugin(importFile, overwrite, silent);
 };
 export const reloadPlugins = async () => {
   return await API.reloadPlugins();
