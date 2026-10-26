@@ -88,6 +88,7 @@ export default function PluginDetail() {
 function PluginDetailForKey({ routeKey: key }) {
   const navigate = useNavigate();
   const appVersion = useSettingsStore((s) => s.version?.version || '');
+  const appVersionTimestamp = useSettingsStore((s) => s.version?.timestamp);
   const plugins = usePluginStore((s) => s.plugins);
   const pluginsLoading = usePluginStore((s) => s.loading);
   const installPlugin = usePluginStore((s) => s.installPlugin);
@@ -608,6 +609,7 @@ function PluginDetailForKey({ routeKey: key }) {
                     installedVersion={plugin.version}
                     installedVersionIsPrerelease={!!plugin.installed_version_is_prerelease}
                     appVersion={appVersion}
+                    appVersionTimestamp={appVersionTimestamp}
                     installing={installing}
                     uninstalling={uninstalling}
                     onInstall={handleDetailInstall}

@@ -271,25 +271,78 @@ def max_app_version_for_manifest_version(manifest_version: int) -> Optional[str]
     return manifest_schema_policy(manifest_version)["max_app_version"]
 
 
+def _parse_numeric_version(version: str) -> Optional[tuple[int, int, int]]:
+    if not isinstance(version, str):
+        return None
+    parts = version.removeprefix("v").split(".")
+    if len(parts) != 3 or any(not part.isdigit() for part in parts):
+        return None
+    return tuple(map(int, parts))
+
+
+def _development_target_version(
+    app_version: str, min_version: Optional[str]
+) -> Optional[str]:
+    """Return the immediate unreleased version targeted by a dev build."""
+    current = _parse_numeric_version(app_version)
+    if current is None:
+        return None
+    major, minor, patch = current
+    candidates = {
+        (major, minor, patch + 1),
+        (major, minor + 1, 0),
+        (major + 1, 0, 0),
+    }
+    if min_version is None:
+        target = (major, minor, patch + 1)
+    else:
+        target = _parse_numeric_version(min_version)
+        if target is None:
+            return None
+        if target <= current:
+            target = (major, minor, patch + 1)
+        elif target not in candidates:
+            return None
+    return ".".join(map(str, target))
+
+
 def app_version_meets_minimum(app_version: str, min_version: Optional[str], *, is_dev_build: bool = False) -> bool:
-    return is_dev_build or min_version is None or compare_versions(app_version, min_version) >= 0
+    if min_version is None:
+        return True
+    if is_dev_build:
+        return _development_target_version(app_version, min_version) is not None
+    return compare_versions(app_version, min_version) >= 0
 
 
-def app_version_meets_maximum(app_version: str, max_version: Optional[str], *, is_dev_build: bool = False) -> bool:
-    return max_version is None or (
-        not is_dev_build and compare_versions(app_version, max_version) <= 0
-    )
+def app_version_meets_maximum(
+    app_version: str,
+    max_version: Optional[str],
+    *,
+    min_version: Optional[str] = None,
+    is_dev_build: bool = False,
+) -> bool:
+    if max_version is None:
+        return True
+    if is_dev_build:
+        target_version = _development_target_version(app_version, min_version)
+        return target_version is not None and compare_versions(target_version, max_version) <= 0
+    return compare_versions(app_version, max_version) <= 0
 
 
 def manifest_version_supported(manifest_version: int, app_version: str, *, is_dev_build: bool = False) -> bool:
     """True if `app_version` is within the manifest compatibility bounds.
 
-    Timestamped dev images contain unreleased code. They satisfy lower bounds,
-    but do not satisfy an explicit upper bound for a released version.
+    Timestamped dev images represent an immediate unreleased patch, minor, or
+    major successor. Their bounds are evaluated against that successor.
     """
     min_app_version = min_app_version_for_manifest_version(manifest_version)
     max_app_version = max_app_version_for_manifest_version(manifest_version)
     return (
         app_version_meets_minimum(app_version, min_app_version, is_dev_build=is_dev_build)
-        and app_version_meets_maximum(app_version, max_app_version, is_dev_build=is_dev_build)
+        and app_version_meets_maximum(
+            app_version,
+            max_app_version,
+            min_version=min_app_version,
+            is_dev_build=is_dev_build,
+        )
     )

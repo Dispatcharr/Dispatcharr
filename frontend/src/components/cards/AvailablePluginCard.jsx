@@ -41,6 +41,8 @@ import {
 } from '../PluginHeader.jsx';
 import {
   buildCompatibilityTooltip,
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
   compareVersions,
   getInstallInfo,
 } from '../../utils/components/pluginUtils.js';
@@ -165,18 +167,24 @@ const AvailablePluginCardHeader = ({
 const AvailablePluginCard = ({
   plugin,
   appVersion,
+  appVersionTimestamp,
   autoOpenDetail = false,
   onDetailClose,
   onInstalled,
   onUninstalled,
   onBeforeInstall,
 }) => {
-  const meetsMinVersion =
-    !plugin.min_dispatcharr_version ||
-    compareVersions(appVersion, plugin.min_dispatcharr_version) >= 0;
-  const meetsMaxVersion =
-    !plugin.max_dispatcharr_version ||
-    compareVersions(appVersion, plugin.max_dispatcharr_version) <= 0;
+  const meetsMinVersion = appVersionMeetsMinimum(
+    appVersion,
+    plugin.min_dispatcharr_version,
+    appVersionTimestamp
+  );
+  const meetsMaxVersion = appVersionMeetsMaximum(
+    appVersion,
+    plugin.max_dispatcharr_version,
+    appVersionTimestamp,
+    plugin.min_dispatcharr_version
+  );
   const meetsVersion = meetsMinVersion && meetsMaxVersion;
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -652,6 +660,7 @@ const AvailablePluginCard = ({
             !!plugin.installed_version_is_prerelease
           }
           appVersion={appVersion}
+          appVersionTimestamp={appVersionTimestamp}
           installing={installing}
           uninstalling={uninstalling}
           onInstall={doInstall}
