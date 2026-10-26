@@ -36,7 +36,7 @@ import {
   reloadPlugins,
   setPluginEnabled,
 } from '../utils/pages/PluginsUtils.js';
-import { RefreshCw, RotateCw, Search } from 'lucide-react';
+import { RotateCw, Search, Upload } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   PluginRestartWarning,
@@ -46,6 +46,9 @@ import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx
 import ConfirmationDialog from '../components/ConfirmationDialog.jsx';
 import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
 import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
+import ManageReposModal from '../components/modals/ManageReposModal.jsx';
+import PluginPageActions from '../components/PluginPageActions.jsx';
+import PluginListOnboarding from '../components/PluginListOnboarding.jsx';
 const PluginCard = React.lazy(
   () => import('../components/cards/PluginCard.jsx')
 );
@@ -59,7 +62,12 @@ const FILTER_OPTIONS = [
   { value: 'unmanaged', label: 'Unmanaged' },
 ];
 
-const PluginsList = ({ onRequestDelete, onRequireTrust }) => {
+const PluginsList = ({
+  onRequestDelete,
+  onRequireTrust,
+  onInstallPlugin,
+  onReloadAllPlugins,
+}) => {
   const plugins = usePluginStore((state) => state.plugins);
   const loading = usePluginStore((state) => state.loading);
   const hasFetchedRef = useRef(false);
@@ -145,6 +153,24 @@ const PluginsList = ({ onRequestDelete, onRequireTrust }) => {
           allowDeselect={false}
           style={{ width: 170 }}
         />
+        <Group gap="xs">
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<Upload size={14} />}
+            onClick={onInstallPlugin}
+          >
+            Install Plugin
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<RotateCw size={14} />}
+            onClick={onReloadAllPlugins}
+          >
+            Reload All Plugins
+          </Button>
+        </Group>
       </Group>
 
       {filteredPlugins.length > 0 && (
@@ -175,12 +201,10 @@ const PluginsList = ({ onRequestDelete, onRequireTrust }) => {
       )}
 
       {plugins.length === 0 && (
-        <Box>
-          <Text c="dimmed">
-            No plugins found. Drop a plugin into <code>/data/plugins</code> and
-            reload.
-          </Text>
-        </Box>
+        <PluginListOnboarding
+          onInstallPlugin={onInstallPlugin}
+          onReloadAllPlugins={onReloadAllPlugins}
+        />
       )}
     </>
   );
@@ -198,6 +222,7 @@ export default function PluginsPage() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [repoModalOpen, setRepoModalOpen] = useState(false);
   const [reloadAllOpen, setReloadAllOpen] = useState(false);
   const [reloadingAll, setReloadingAll] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -210,16 +235,9 @@ export default function PluginsPage() {
   // Check for updates: re-fetch repo manifests + the installed/available
   // lists. Does NOT touch running plugin code (see handleReloadAllPlugins).
   const handleRefresh = async () => {
-    const { repos, refreshRepo, fetchAvailablePlugins, fetchPlugins } = usePluginStore.getState();
     setRefreshing(true);
     try {
-      for (const repo of repos) {
-        try { await refreshRepo(repo.id); } catch {
-          console.error(`Failed to refresh repo ${repo.name} (${repo.id})`);
-        }
-      }
-      await fetchAvailablePlugins();
-      await fetchPlugins();
+      await usePluginStore.getState().checkForUpdates();
       showNotification({
         title: 'Refreshed',
         message: 'Checked for plugin updates',
@@ -441,29 +459,11 @@ export default function PluginsPage() {
             <Badge variant="light" color="gray" size="sm">{plugins.length} Plugins Installed</Badge>
           )}
         </Group>
-        <Group>
-          <Button size="xs" variant="light" onClick={showImportForm}>
-            Import Plugin
-          </Button>
-          <Button
-            size="xs"
-            variant="default"
-            leftSection={<RefreshCw size={14} />}
-            onClick={handleRefresh}
-            loading={refreshing}
-            disabled={refreshing}
-          >
-            Check for Updates
-          </Button>
-          <Button
-            size="xs"
-            variant="default"
-            leftSection={<RotateCw size={14} />}
-            onClick={() => setReloadAllOpen(true)}
-          >
-            Reload All Plugins
-          </Button>
-        </Group>
+        <PluginPageActions
+          onManageRepos={() => setRepoModalOpen(true)}
+          onCheckForUpdates={handleRefresh}
+          checkingForUpdates={refreshing}
+        />
       </Group>
 
       <PluginManifestMessages />
@@ -471,13 +471,20 @@ export default function PluginsPage() {
       <PluginsList
         onRequestDelete={handleRequestDelete}
         onRequireTrust={requireTrust}
+        onInstallPlugin={showImportForm}
+        onReloadAllPlugins={() => setReloadAllOpen(true)}
       />
 
-      {/* Import Plugin Modal */}
+      <ManageReposModal
+        opened={repoModalOpen}
+        onClose={() => setRepoModalOpen(false)}
+      />
+
+      {/* Install Plugin Modal */}
       <Modal
         opened={importOpen}
         onClose={() => setImportOpen(false)}
-        title="Import Plugin"
+        title="Install Plugin"
         centered
       >
         <Stack>

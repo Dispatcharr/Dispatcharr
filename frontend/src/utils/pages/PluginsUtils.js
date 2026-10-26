@@ -39,9 +39,6 @@ export const reloadPlugins = async () => {
 export const reloadPlugin = async (key) => {
   return await API.reloadPlugin(key);
 };
-export const refreshSinglePlugin = async (repoId, slug) => {
-  return await API.refreshSinglePlugin(repoId, slug);
-};
 export const deletePluginByKey = (key) => {
   return API.deletePlugin(key);
 };

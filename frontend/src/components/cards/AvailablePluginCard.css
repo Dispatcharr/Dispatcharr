@@ -7,7 +7,7 @@
   min-width: 0;
 }
 
-@container (max-width: 30rem) {
+@container (max-width: 24rem) {
   .available-plugin-card__updated,
   .available-plugin-card__action-separator {
     display: none;

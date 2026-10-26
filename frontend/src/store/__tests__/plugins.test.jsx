@@ -71,6 +71,30 @@ describe('usePluginStore', () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it('refreshes every root manifest and both plugin lists when checking for updates', async () => {
+    const repos = [
+      { id: 1, name: 'First repo' },
+      { id: 2, name: 'Second repo' },
+    ];
+    API.getPluginRepos.mockResolvedValue(repos);
+    API.refreshPluginRepo.mockImplementation(async (id) =>
+      repos.find((repo) => repo.id === id)
+    );
+    API.getAvailablePlugins.mockResolvedValue([]);
+    API.getPlugins.mockResolvedValue([]);
+
+    const { result } = renderHook(() => usePluginStore());
+
+    await act(async () => {
+      await result.current.checkForUpdates();
+    });
+
+    expect(API.refreshPluginRepo).toHaveBeenCalledWith(1);
+    expect(API.refreshPluginRepo).toHaveBeenCalledWith(2);
+    expect(API.getAvailablePlugins).toHaveBeenCalled();
+    expect(API.getPlugins).toHaveBeenCalled();
+  });
+
   it('should set loading state during fetch', async () => {
     let resolvePromise;
     const promise = new Promise((resolve) => {

@@ -4,7 +4,7 @@ import PluginDetail from '../PluginDetail';
 import { usePluginStore } from '../../store/plugins';
 import useSettingsStore from '../../store/settings';
 import useAuthStore from '../../store/auth';
-import { reloadPlugin, refreshSinglePlugin } from '../../utils/pages/PluginsUtils';
+import { reloadPlugin } from '../../utils/pages/PluginsUtils';
 import { useMediaQuery } from '@mantine/hooks';
 
 vi.mock('@mantine/hooks', async (importOriginal) => {
@@ -50,7 +50,6 @@ vi.mock('../../store/auth');
 vi.mock('../../utils/pages/PluginsUtils', () => ({
   deletePluginByKey: vi.fn(),
   reloadPlugin: vi.fn(),
-  refreshSinglePlugin: vi.fn(),
   runPluginAction: vi.fn(),
   setPluginEnabled: vi.fn(),
   updatePluginSettings: vi.fn(),
@@ -158,14 +157,16 @@ describe('PluginDetail', () => {
         plugins: [mockPlugin],
         loading: false,
         installPlugin: vi.fn(),
+        checkForUpdates: vi.fn(),
         ...enableConfirmDefaults,
       })
     );
     usePluginStore.getState = vi.fn(() => ({
       plugins: [mockPlugin],
       loading: false,
-      fetchPlugins: vi.fn(),
-      fetchAvailablePlugins: vi.fn(),
+        fetchPlugins: vi.fn(),
+        fetchAvailablePlugins: vi.fn(),
+        checkForUpdates: vi.fn(),
       availablePlugins: [],
       updatePlugin: vi.fn(),
       removePlugin: vi.fn(),
@@ -224,13 +225,22 @@ describe('PluginDetail', () => {
   });
 
   it('checks for updates when the button is clicked', async () => {
-    refreshSinglePlugin.mockResolvedValue({ success: true });
+    const checkForUpdates = vi.fn().mockResolvedValue(undefined);
+    usePluginStore.mockImplementation((selector) =>
+      selector({
+        plugins: [mockPlugin],
+        loading: false,
+        installPlugin: vi.fn(),
+        checkForUpdates,
+        ...enableConfirmDefaults,
+      })
+    );
     render(<PluginDetail />);
 
     fireEvent.click(screen.getByText('Check for Updates'));
 
     await waitFor(() => {
-      expect(refreshSinglePlugin).toHaveBeenCalledWith(1, 'test-plugin');
+      expect(checkForUpdates).toHaveBeenCalled();
     });
   });
 

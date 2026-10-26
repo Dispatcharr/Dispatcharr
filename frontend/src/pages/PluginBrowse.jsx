@@ -3,7 +3,6 @@ import {
   AppShellMain,
   Badge,
   Box,
-  Button,
   Group,
   Loader,
   NativeSelect,
@@ -13,7 +12,7 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { Package, RefreshCw, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
@@ -26,6 +25,7 @@ import {
 } from '../utils/components/pluginUtils.js';
 import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
 import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
+import PluginPageActions from '../components/PluginPageActions.jsx';
 
 export default function PluginBrowsePage() {
   usePluginPageScrollbarGutter();
@@ -34,7 +34,7 @@ export default function PluginBrowsePage() {
   const availableLoading = usePluginStore((s) => s.availableLoading);
   const fetchRepos = usePluginStore((s) => s.fetchRepos);
   const fetchAvailablePlugins = usePluginStore((s) => s.fetchAvailablePlugins);
-  const refreshRepo = usePluginStore((s) => s.refreshRepo);
+  const checkForUpdates = usePluginStore((s) => s.checkForUpdates);
 
   const appVersion = useSettingsStore((s) => s.version?.version || '');
   const appVersionTimestamp = useSettingsStore((s) => s.version?.timestamp);
@@ -77,11 +77,7 @@ export default function PluginBrowsePage() {
   const handleRefreshAll = useCallback(async () => {
     setRefreshingAll(true);
     try {
-      for (const repo of usePluginStore.getState().repos) {
-        await refreshRepo(repo.id);
-      }
-      await fetchAvailablePlugins();
-      usePluginStore.getState().invalidatePlugins();
+      await checkForUpdates();
       showNotification({
         title: 'Refreshed',
         message: 'All plugin repos refreshed',
@@ -96,7 +92,7 @@ export default function PluginBrowsePage() {
     } finally {
       setRefreshingAll(false);
     }
-  }, [refreshRepo, fetchAvailablePlugins]);
+  }, [checkForUpdates]);
 
   const loading = availableLoading && availablePlugins.length === 0;
 
@@ -267,36 +263,11 @@ export default function PluginBrowsePage() {
               </Badge>
             )}
           </Group>
-          <Group>
-            <Button
-              size="xs"
-              variant="light"
-              color="blue"
-              component="a"
-              href="https://github.com/Dispatcharr/Plugins?tab=contributing-ov-file"
-              target="_blank"
-              rel="noopener noreferrer"
-              leftSection={<Package size={14} />}
-            >
-              Publish Your Plugin
-            </Button>
-            <Button
-              size="xs"
-              variant="light"
-              onClick={() => setRepoModalOpen(true)}
-            >
-              Manage Repos
-            </Button>
-            <Button
-              size="xs"
-              variant="default"
-              leftSection={<RefreshCw size={14} />}
-              onClick={handleRefreshAll}
-              loading={refreshingAll}
-            >
-              Check for Updates
-            </Button>
-          </Group>
+          <PluginPageActions
+            onManageRepos={() => setRepoModalOpen(true)}
+            onCheckForUpdates={handleRefreshAll}
+            checkingForUpdates={refreshingAll}
+          />
         </Group>
 
         <PluginManifestMessages />

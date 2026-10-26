@@ -548,6 +548,23 @@ def _save_fetched_manifest_to_repo(repo, data, verified):
     return None
 
 
+def _refresh_plugin_repo_manifest(repo):
+    """Fetch and persist a repo root manifest, invalidating plugin details.
+
+    The page-level and plugin-detail update checks share this exact root
+    manifest refresh. Detail callers then fetch their selected plugin manifest
+    after its cache entry has been invalidated here.
+    """
+    key_text = repo.public_key if not repo.is_official else None
+    data, verified = _fetch_manifest(repo.url, public_key_text=key_text)
+    err = _save_fetched_manifest_to_repo(repo, data, verified)
+    if err:
+        return err
+    _unmanage_dropped_slugs(repo, data)
+    _invalidate_plugin_detail_cache(repo.id, data)
+    return None
+
+
 def _resolve_manifest_base_urls(manifest: dict) -> tuple[str, str]:
     """Return (download_base_url, metadata_base_url) from a manifest dict.
 
@@ -1517,95 +1534,16 @@ class PluginRepoRefreshAPIView(PluginAuthMixin, APIView):
                 {"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND
             )
         try:
-            key_text = repo.public_key if not repo.is_official else None
-            data, verified = _fetch_manifest(repo.url, public_key_text=key_text)
-        except Exception as e:
-            logger.exception("Manifest fetch failed for %s", repo.url)
-            return Response(
-                {"error": "Failed to fetch manifest. Check the URL and try again."},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        err = _save_fetched_manifest_to_repo(repo, data, verified)
-        if err:
-            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
-        _unmanage_dropped_slugs(repo, data)
-        _invalidate_plugin_detail_cache(repo.id, data)
-        return Response(PluginRepoSerializer(repo).data)
-
-
-class PluginRepoRefreshSinglePluginAPIView(PluginAuthMixin, APIView):
-    """Check-for-updates for one plugin, scoped to a single repo entry.
-
-    The repo's manifest is one JSON blob covering every plugin it lists, so
-    there's no way to fetch just one plugin's summary data (latest_version,
-    deprecated) without re-fetching that whole blob, so this always does a
-    live, uncached HTTP fetch of the repo manifest (same as the bulk
-    refresh), but unlike the bulk "Refresh all repos" action it: only touches
-    one repo (not every enabled repo), never triggers a full Python plugin
-    reload, and only evaluates/creates an update notification for the one
-    requested plugin rather than sweeping every managed plugin.
-    """
-
-    @extend_schema(
-        description="Refresh one plugin's update-available status by re-fetching its repo's manifest (always a live fetch, never cached).",
-        request=None,
-        responses={200: inline_serializer(name="PluginRepoRefreshSingleResponse", fields={
-            "success": serializers.BooleanField(),
-            "install_status": serializers.CharField(),
-            "latest_version": serializers.CharField(allow_blank=True),
-        }), 404: inline_serializer(name="PluginRepoRefreshSingleNotFound", fields={"error": serializers.CharField()})},
-    )
-    def post(self, request, pk, slug):
-        try:
-            repo = PluginRepo.objects.get(pk=pk)
-        except PluginRepo.DoesNotExist:
-            return Response({"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            key_text = repo.public_key if not repo.is_official else None
-            data, verified = _fetch_manifest(repo.url, public_key_text=key_text)
+            err = _refresh_plugin_repo_manifest(repo)
         except Exception:
             logger.exception("Manifest fetch failed for %s", repo.url)
             return Response(
                 {"error": "Failed to fetch manifest. Check the URL and try again."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        err = _save_fetched_manifest_to_repo(repo, data, verified)
         if err:
             return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
-        _unmanage_dropped_slugs(repo, data)
-        _invalidate_plugin_detail_cache(repo.id, data)
-
-        manifest = data.get("manifest", data)
-        plugin_data = next(
-            (p for p in manifest.get("plugins", []) if p.get("slug") == slug),
-            None,
-        )
-        if not plugin_data:
-            return Response({"error": f"Plugin '{slug}' not found in repo manifest"}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            cfg = PluginConfig.objects.get(slug=slug, source_repo_id=repo.id)
-        except PluginConfig.DoesNotExist:
-            cfg = None
-
-        latest_version = plugin_data.get("latest_version", "")
-        install_status = get_plugin_status(
-            cfg.version if cfg else None,
-            latest_version,
-            is_prerelease=bool(cfg and cfg.installed_version_is_prerelease),
-            is_managed=bool(cfg and cfg.source_repo_id),
-        )
-
-        if cfg:
-            from .tasks import evaluate_plugin_update_notification
-            evaluate_plugin_update_notification(cfg.key, cfg.name, cfg.version, latest_version, install_status)
-
-        return Response({
-            "success": True,
-            "install_status": install_status,
-            "latest_version": latest_version,
-        })
+        return Response(PluginRepoSerializer(repo).data)
 
 
 class AvailablePluginsAPIView(PluginAuthMixin, APIView):
