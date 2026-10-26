@@ -1338,6 +1338,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     stream_hashes = {}
 
     name_max_length = Stream._meta.get_field('name').max_length
+    url_max_length = Stream._meta.get_field('url').max_length
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
     if compiled_filters:
@@ -1349,9 +1350,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
         try:
             name, url = stream_info["name"], stream_info["url"]
 
-            # Validate URL length - maximum of 4096 characters
-            if url and len(url) > 4096:
-                logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
+            if url and len(url) > url_max_length:
+                logger.warning(
+                    f"Skipping stream '{name}': URL too long "
+                    f"({len(url)} characters, max {url_max_length})"
+                )
                 continue
 
             name = truncate_with_warning(

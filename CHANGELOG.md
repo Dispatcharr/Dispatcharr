@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Docker base image uses a first-party redistributable FFmpeg build.** The base was pinned to `linuxserver/ffmpeg:version-8.1.2-cli` (Ubuntu 24.04, FFmpeg 8.1.2) because `linuxserver/ffmpeg:latest` moved to FFmpeg 9 and NVENC API 13.1, which needs driver 610 and does not run on Pascal / driver 580. It now uses `ghcr.io/dispatcharr/ffmpeg:latest` from [`Dispatcharr/FFmpeg`](https://github.com/Dispatcharr/FFmpeg): Ubuntu 26.04, GPL v3, GnuTLS (not OpenSSL), fdk-aac-stripped (not full Fraunhofer FDK), no `--enable-nonfree`, and NVENC API 13.0 so Pascal / driver 580 still works. IPTV-oriented enables include libx264/libx265, libzvbi, libsrt (GnuTLS), librist, and the usual subtitle/audio stack. Comskip still links distro libav (Ubuntu 26.04 SONAMEs). The entrypoint no longer forces linuxserver's `LIBVA_DRIVERS_PATH` / `LD_LIBRARY_PATH`; libva uses its default driver path, and those variables are only kept if the user sets them.
+- **Stream URL limit raised from 4096 to 8192 characters.** M3U import and the stream API now accept provider URLs that embed long JWTs, such as Pluto TV stitcher links around 4194 characters. URLs longer than 8192 are still skipped on import. (Closes #1872)
 
 ### Fixed
 

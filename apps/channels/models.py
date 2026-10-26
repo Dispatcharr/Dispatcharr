@@ -96,7 +96,7 @@ class Stream(models.Model):
     """
 
     name = models.CharField(max_length=512, default="Default Stream", db_index=True)
-    url = models.URLField(max_length=4096, blank=True, null=True)
+    url = models.URLField(max_length=8192, blank=True, null=True)
     m3u_account = models.ForeignKey(
         M3UAccount,
         on_delete=models.CASCADE,
