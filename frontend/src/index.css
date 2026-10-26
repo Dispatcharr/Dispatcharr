@@ -127,6 +127,13 @@ html.plugin-page-scrollbar-gutter {
   scrollbar-gutter: stable;
 }
 
+/* Plugin pages reserve scrollbar space before a modal opens. Mantine's
+   scroll lock also adds that space as a body margin, which double-compensates
+   and shifts the page content horizontally. */
+html.plugin-page-scrollbar-gutter body[data-scroll-locked] {
+  margin-right: 0 !important;
+}
+
 .custom-multiselect .mantine-MultiSelect-input {
   min-height: 30px;
   max-height: 30px;

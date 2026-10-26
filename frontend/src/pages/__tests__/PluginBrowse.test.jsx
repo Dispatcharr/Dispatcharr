@@ -56,6 +56,7 @@ vi.mock('../../utils/components/pluginUtils.js', () => ({
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   Package: () => <svg data-testid="icon-package" />,
+  GitFork: () => <svg data-testid="icon-git-fork" />,
   RefreshCw: () => <svg data-testid="icon-refresh" />,
   Search: () => <svg data-testid="icon-search" />,
 }));
@@ -177,6 +178,7 @@ let mockFetchRepos;
 let mockFetchAvailablePlugins;
 let mockRefreshRepo;
 let mockInvalidatePlugins;
+let mockCheckForUpdates;
 
 const setupStore = ({
   repos = [],
@@ -187,6 +189,7 @@ const setupStore = ({
   mockFetchAvailablePlugins = vi.fn();
   mockRefreshRepo = vi.fn().mockResolvedValue(undefined);
   mockInvalidatePlugins = vi.fn();
+  mockCheckForUpdates = vi.fn().mockResolvedValue(undefined);
 
   vi.mocked(usePluginStore).mockImplementation((sel) =>
     sel({
@@ -196,6 +199,7 @@ const setupStore = ({
       fetchRepos: mockFetchRepos,
       fetchAvailablePlugins: mockFetchAvailablePlugins,
       refreshRepo: mockRefreshRepo,
+      checkForUpdates: mockCheckForUpdates,
       enableConfirm: { opened: false, plugin: null, resolve: null },
       resolveEnableConfirmation: vi.fn(),
     })
@@ -394,32 +398,21 @@ describe('PluginBrowsePage', () => {
   // ── Refresh all ────────────────────────────────────────────────────────────
 
   describe('handleRefreshAll', () => {
-    it('calls refreshRepo for each repo in the store', async () => {
-      const repos = [makeRepo({ id: 1 }), makeRepo({ id: 2 })];
-      setupStore({ repos });
-      vi.mocked(usePluginStore).getState.mockReturnValue({
-        repos,
-        invalidatePlugins: mockInvalidatePlugins,
-      });
+    it('uses the shared update-check action', async () => {
+      setupStore({ repos: [makeRepo({ id: 1 }), makeRepo({ id: 2 })] });
       render(<PluginBrowsePage />);
       fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
-        expect(mockRefreshRepo).toHaveBeenCalledWith(1);
-        expect(mockRefreshRepo).toHaveBeenCalledWith(2);
+        expect(mockCheckForUpdates).toHaveBeenCalled();
       });
     });
 
-    it('calls fetchAvailablePlugins and invalidatePlugins after refresh, without reloading plugin code', async () => {
+    it('does not reload plugin code', async () => {
       setupStore({ repos: [makeRepo()] });
-      vi.mocked(usePluginStore).getState.mockReturnValue({
-        repos: [makeRepo()],
-        invalidatePlugins: mockInvalidatePlugins,
-      });
       render(<PluginBrowsePage />);
       fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
-        expect(mockFetchAvailablePlugins).toHaveBeenCalled();
-        expect(mockInvalidatePlugins).toHaveBeenCalled();
+        expect(mockCheckForUpdates).toHaveBeenCalled();
       });
       expect(reloadPlugins).not.toHaveBeenCalled();
     });
@@ -435,7 +428,7 @@ describe('PluginBrowsePage', () => {
     });
 
     it('shows error notification when refresh fails', async () => {
-      mockRefreshRepo = vi.fn().mockRejectedValue(new Error('Network error'));
+      mockCheckForUpdates = vi.fn().mockRejectedValue(new Error('Network error'));
       vi.mocked(usePluginStore).mockImplementation((sel) =>
         sel({
           repos: [makeRepo()],
@@ -443,7 +436,7 @@ describe('PluginBrowsePage', () => {
           availableLoading: false,
           fetchRepos: vi.fn(),
           fetchAvailablePlugins: vi.fn(),
-          refreshRepo: mockRefreshRepo,
+          checkForUpdates: mockCheckForUpdates,
           enableConfirm: { opened: false, plugin: null, resolve: null },
           resolveEnableConfirmation: vi.fn(),
         })

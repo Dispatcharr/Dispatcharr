@@ -38,6 +38,10 @@ vi.mock('../../utils/notificationUtils.js', () => ({
 vi.mock('../../components/PluginManifestMessages.jsx', () => ({
   default: () => <div data-testid="plugin-manifest-messages" />,
 }));
+vi.mock('../../components/modals/ManageReposModal.jsx', () => ({
+  default: ({ opened, onClose }) =>
+    opened ? <button onClick={onClose}>Close repositories</button> : null,
+}));
 
 vi.mock('@mantine/core', async () => {
   return {
@@ -218,6 +222,7 @@ describe('PluginsPage', () => {
     invalidatePlugins: vi.fn(),
     refreshRepo: vi.fn(),
     fetchAvailablePlugins: vi.fn(),
+    checkForUpdates: vi.fn(),
     enableConfirm: { opened: false, plugin: null, resolve: null },
     resolveEnableConfirmation: vi.fn(),
     requestEnableConfirmation: vi.fn().mockResolvedValue(true),
@@ -245,7 +250,7 @@ describe('PluginsPage', () => {
     it('renders import button', () => {
       render(<PluginsPage />);
 
-      expect(screen.getByText('Import Plugin')).toBeInTheDocument();
+      expect(screen.getByText('Install Plugin')).toBeInTheDocument();
     });
 
     it('renders check-for-updates and reload-all buttons', () => {
@@ -290,26 +295,29 @@ describe('PluginsPage', () => {
 
       render(<PluginsPage />);
 
-      expect(screen.getByText(/No plugins found/)).toBeInTheDocument();
+      expect(screen.getByText('No plugins installed yet')).toBeInTheDocument();
+      expect(screen.getByText('Browse Plugins')).toBeInTheDocument();
+      expect(screen.getAllByText('Install Plugin')).toHaveLength(2);
+      expect(screen.getByText('Reload Plugins')).toBeInTheDocument();
     });
   });
 
-  describe('Import Plugin', () => {
+  describe('Install Plugin', () => {
     it('opens import modal when import button is clicked', () => {
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
 
       expect(screen.getByTestId('modal')).toBeInTheDocument();
       expect(screen.getByTestId('modal-title')).toHaveTextContent(
-        'Import Plugin'
+        'Install Plugin'
       );
     });
 
     it('shows dropzone and file input in import modal', () => {
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
 
       expect(screen.getByTestId('dropzone')).toBeInTheDocument();
       expect(
@@ -320,7 +328,7 @@ describe('PluginsPage', () => {
     it('closes import modal when close button is clicked', () => {
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
       expect(screen.getByTestId('modal')).toBeInTheDocument();
 
       fireEvent.click(screen.getByText('Close Modal'));
@@ -340,7 +348,7 @@ describe('PluginsPage', () => {
 
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
       const dropzone = screen.getByTestId('dropzone');
       fireEvent.click(dropzone);
 
@@ -366,7 +374,7 @@ describe('PluginsPage', () => {
 
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
       const file = new File(['content'], 'plugin.zip', {
@@ -394,7 +402,7 @@ describe('PluginsPage', () => {
 
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
       const file = new File(['content'], 'plugin.zip', {
@@ -432,7 +440,7 @@ describe('PluginsPage', () => {
 
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
       const file = new File(['content'], 'plugin.zip', {
@@ -467,7 +475,7 @@ describe('PluginsPage', () => {
 
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
       const file = new File(['content'], 'plugin.zip', {
@@ -520,7 +528,7 @@ describe('PluginsPage', () => {
     const importAndToggleEnableNow = async () => {
       render(<PluginsPage />);
 
-      fireEvent.click(screen.getByText('Import Plugin'));
+      fireEvent.click(screen.getByText('Install Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
       const file = new File(['content'], 'plugin.zip', {
@@ -586,13 +594,10 @@ describe('PluginsPage', () => {
 
   describe('Refresh', () => {
     it('checks for updates without reloading plugin code', async () => {
-      const fetchPlugins = vi.fn().mockResolvedValue(undefined);
-      const fetchAvailablePlugins = vi.fn().mockResolvedValue(undefined);
+      const checkForUpdates = vi.fn().mockResolvedValue(undefined);
       usePluginStore.getState = vi.fn(() => ({
         ...mockPluginStoreState,
-        fetchPlugins,
-        fetchAvailablePlugins,
-        repos: [],
+        checkForUpdates,
       }));
 
       render(<PluginsPage />);
@@ -600,8 +605,7 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Check for Updates'));
 
       await waitFor(() => {
-        expect(fetchAvailablePlugins).toHaveBeenCalled();
-        expect(fetchPlugins).toHaveBeenCalled();
+        expect(checkForUpdates).toHaveBeenCalled();
       });
       expect(reloadPlugins).not.toHaveBeenCalled();
     });
