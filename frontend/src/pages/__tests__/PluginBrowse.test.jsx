@@ -49,7 +49,8 @@ vi.mock('../../utils/pages/PluginsUtils.js', () => ({
 }));
 
 vi.mock('../../utils/components/pluginUtils.js', () => ({
-  compareVersions: vi.fn(() => 0),
+  appVersionMeetsMaximum: vi.fn(() => true),
+  appVersionMeetsMinimum: vi.fn(() => true),
 }));
 
 // ── lucide-react ───────────────────────────────────────────────────────────────

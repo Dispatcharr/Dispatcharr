@@ -20,7 +20,10 @@ import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
 import ManageReposModal from '../components/modals/ManageReposModal.jsx';
 import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import { showNotification } from '../utils/notificationUtils.js';
-import { compareVersions } from '../utils/components/pluginUtils.js';
+import {
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
+} from '../utils/components/pluginUtils.js';
 import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
 import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
 
@@ -34,6 +37,7 @@ export default function PluginBrowsePage() {
   const refreshRepo = usePluginStore((s) => s.refreshRepo);
 
   const appVersion = useSettingsStore((s) => s.version?.version || '');
+  const appVersionTimestamp = useSettingsStore((s) => s.version?.timestamp);
 
   const [repoModalOpen, setRepoModalOpen] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -147,11 +151,17 @@ export default function PluginBrowsePage() {
     } else if (filterStatus === 'compatible') {
       list = list.filter((p) => {
         const meetsMin =
-          !p.min_dispatcharr_version ||
-          compareVersions(appVersion, p.min_dispatcharr_version) >= 0;
-        const meetsMax =
-          !p.max_dispatcharr_version ||
-          compareVersions(appVersion, p.max_dispatcharr_version) <= 0;
+          appVersionMeetsMinimum(
+            appVersion,
+            p.min_dispatcharr_version,
+            appVersionTimestamp
+          );
+        const meetsMax = appVersionMeetsMaximum(
+          appVersion,
+          p.max_dispatcharr_version,
+          appVersionTimestamp,
+          p.min_dispatcharr_version
+        );
         return meetsMin && meetsMax;
       });
     }
@@ -166,11 +176,17 @@ export default function PluginBrowsePage() {
         if (recentlyInstalledSlugs.current.has(p.slug)) return 0;
         if (recentlyUninstalledSlugs.current.has(p.slug)) return 2;
         const meetsMin =
-          !p.min_dispatcharr_version ||
-          compareVersions(appVersion, p.min_dispatcharr_version) >= 0;
-        const meetsMax =
-          !p.max_dispatcharr_version ||
-          compareVersions(appVersion, p.max_dispatcharr_version) <= 0;
+          appVersionMeetsMinimum(
+            appVersion,
+            p.min_dispatcharr_version,
+            appVersionTimestamp
+          );
+        const meetsMax = appVersionMeetsMaximum(
+          appVersion,
+          p.max_dispatcharr_version,
+          appVersionTimestamp,
+          p.min_dispatcharr_version
+        );
         if (p.deprecated) return 1;
         if (p.installed) return 2;
         if (!meetsMin || !meetsMax) return 3;
@@ -211,6 +227,7 @@ export default function PluginBrowsePage() {
     filterStatus,
     sortBy,
     appVersion,
+    appVersionTimestamp,
   ]);
 
   // Reset to page 1 when filters/search/page-size change
@@ -365,6 +382,7 @@ export default function PluginBrowsePage() {
                 key={`${p.repo_id}-${p.slug}`}
                 plugin={p}
                 appVersion={appVersion}
+                appVersionTimestamp={appVersionTimestamp}
                 onBeforeInstall={(slug) => {
                   if (slug) {
                     if (p.install_status === 'update_available') {

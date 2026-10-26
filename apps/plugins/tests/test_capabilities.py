@@ -139,12 +139,24 @@ class ManifestVersionTests(SimpleTestCase):
         self.assertTrue(manifest_version_supported(2, "0.34.0"))
         self.assertFalse(manifest_version_supported(2, "0.28.2"))
 
-    def test_dev_builds_satisfy_lower_compatibility_bounds(self):
+    def test_dev_builds_satisfy_next_minor_compatibility_bounds(self):
         self.assertTrue(manifest_version_supported(2, "0.33.0", is_dev_build=True))
 
     def test_dev_build_compatibility_helpers(self):
         self.assertTrue(app_version_meets_minimum("0.33.0", "0.34.0", is_dev_build=True))
-        self.assertFalse(app_version_meets_maximum("0.33.0", "0.34.0", is_dev_build=True))
+        self.assertTrue(app_version_meets_minimum("0.33.0", "0.33.1", is_dev_build=True))
+        self.assertTrue(app_version_meets_minimum("0.33.0", "1.0.0", is_dev_build=True))
+        self.assertTrue(app_version_meets_minimum("0.33.0", "0.30.0", is_dev_build=True))
+        self.assertFalse(app_version_meets_minimum("0.33.0", "0.35.0", is_dev_build=True))
+        self.assertFalse(app_version_meets_minimum("0.33.0", "2.0.0", is_dev_build=True))
+        self.assertTrue(
+            app_version_meets_maximum(
+                "0.33.0", "0.34.0", min_version="0.34.0", is_dev_build=True
+            )
+        )
+        self.assertFalse(
+            app_version_meets_maximum("0.33.0", "0.33.0", is_dev_build=True)
+        )
 
     def test_manifest_version_respects_an_upper_compatibility_bound(self):
         with patch.dict(MANIFEST_SCHEMA_POLICIES, {
@@ -158,7 +170,7 @@ class ManifestVersionTests(SimpleTestCase):
             self.assertTrue(manifest_version_supported(3, "0.30.99"))
             self.assertFalse(manifest_version_supported(3, "0.29.99"))
             self.assertFalse(manifest_version_supported(3, "0.31.0"))
-            self.assertFalse(manifest_version_supported(3, "0.30.0", is_dev_build=True))
+            self.assertTrue(manifest_version_supported(3, "0.30.0", is_dev_build=True))
 
     def test_only_version_two_and_later_enforce_the_sandbox(self):
         self.assertFalse(manifest_version_enforces_sandbox(0))

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Timestamped development builds can install compatible next-release plugins.** Plugin marketplace compatibility and managed-plugin installation now treat a development build as compatible with plugins that support the current stable release or its immediate next patch, minor, or major release. Farther-future minimum versions and incompatible maximum versions remain blocked.
 - **AIO PostgreSQL no longer initializes as `SQL_ASCII` when the container locale is `C`.** Fresh `initdb` on minimal/CI images (including Ubuntu 26-based runners) defaulted to `SQL_ASCII`, so creating the app database with `--encoding=UTF8` failed against `template1` and backend CI could not start. `initdb` now requests UTF-8 explicitly while leaving the environment locale alone, and `ensure_app_database` creates the app DB from `template0` (same pattern as `ensure_utf8_encoding`) so UTF-8 still works if an older cluster's `template1` is ASCII. Existing data directories are unchanged.
 
 ### Added

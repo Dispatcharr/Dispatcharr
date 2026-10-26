@@ -86,6 +86,8 @@ vi.mock('../../PluginHeader.jsx', () => ({
 
 // ── pluginUtils ────────────────────────────────────────────────────────────────
 vi.mock('../../../utils/components/pluginUtils.js', () => ({
+  appVersionMeetsMaximum: vi.fn(),
+  appVersionMeetsMinimum: vi.fn(),
   buildCompatibilityTooltip: vi.fn(),
   compareVersions: vi.fn(),
   getInstallInfo: vi.fn(),
@@ -206,6 +208,8 @@ vi.mock('lucide-react', () => ({
 import { useNavigate, useLocation } from 'react-router-dom';
 import { usePluginStore } from '../../../store/plugins';
 import {
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
   buildCompatibilityTooltip,
   compareVersions,
   getInstallInfo,
@@ -268,6 +272,8 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
   });
 
   // Default: versions are compatible, no downgrade, no bad signature
+  vi.mocked(appVersionMeetsMinimum).mockReturnValue(true);
+  vi.mocked(appVersionMeetsMaximum).mockReturnValue(true);
   vi.mocked(compareVersions).mockReturnValue(0);
   vi.mocked(buildCompatibilityTooltip).mockReturnValue('1.0.0 or newer');
   vi.mocked(getInstallInfo).mockReturnValue({
@@ -680,6 +686,7 @@ describe('AvailablePluginCard', () => {
     it('shows compatibility warning when min version is not met', () => {
       // compareVersions returns negative → appVersion < min → meetsMinVersion = false
       vi.mocked(compareVersions).mockReturnValue(-1);
+      vi.mocked(appVersionMeetsMinimum).mockReturnValue(false);
       render(
         <AvailablePluginCard
           plugin={makePlugin({ min_dispatcharr_version: '2.0.0' })}
@@ -691,6 +698,7 @@ describe('AvailablePluginCard', () => {
 
     it('disables install button when version is incompatible', () => {
       vi.mocked(compareVersions).mockReturnValue(-1);
+      vi.mocked(appVersionMeetsMinimum).mockReturnValue(false);
       render(
         <AvailablePluginCard
           plugin={makePlugin({ min_dispatcharr_version: '2.0.0' })}
@@ -838,6 +846,18 @@ describe('AvailablePluginCard', () => {
       expect(screen.getAllByTestId('modal-title').at(-1)).toHaveTextContent(
         'Uninstall Plugin'
       );
+    });
+
+    it('allows a timestamped development build to install a next-release plugin', () => {
+      setupMocks();
+      vi.mocked(appVersionMeetsMinimum).mockReturnValue(true);
+      render(
+        <AvailablePluginCard
+          plugin={makePlugin({ min_dispatcharr_version: '0.34.0' })}
+          appVersion="v0.33.0-20261025232733"
+        />
+      );
+      expect(screen.getByTestId('sized-install-button')).not.toBeDisabled();
     });
   });
 

@@ -26,6 +26,8 @@ import {
 import {
   buildCompatibilityTooltip,
   buildVersionSelectItems,
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
   compareVersions,
 } from '../utils/components/pluginUtils.js';
 import { formatKB } from '../utils/networkUtils.js';
@@ -97,6 +99,7 @@ const PluginDetailPanel = ({
   installedVersion,
   installedVersionIsPrerelease = false,
   appVersion,
+  appVersionTimestamp,
   installing = false,
   uninstalling = false,
   onInstall,
@@ -146,14 +149,17 @@ const PluginDetailPanel = ({
     compareVersions(selectedVersion, installedVersion) < 0;
   const isInstalled = !!installedVersion;
 
-  const selMeetsMin =
-    !selectedVersionData?.min_dispatcharr_version ||
-    compareVersions(appVersion, selectedVersionData.min_dispatcharr_version) >=
-      0;
-  const selMeetsMax =
-    !selectedVersionData?.max_dispatcharr_version ||
-    compareVersions(appVersion, selectedVersionData.max_dispatcharr_version) <=
-      0;
+  const selMeetsMin = appVersionMeetsMinimum(
+    appVersion,
+    selectedVersionData?.min_dispatcharr_version,
+    appVersionTimestamp
+  );
+  const selMeetsMax = appVersionMeetsMaximum(
+    appVersion,
+    selectedVersionData?.max_dispatcharr_version,
+    appVersionTimestamp,
+    selectedVersionData?.min_dispatcharr_version
+  );
   const selCompatible = selMeetsMin && selMeetsMax;
 
   const isOverwrite =

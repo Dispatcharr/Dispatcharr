@@ -1866,7 +1866,12 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                         {"error": f"This plugin version requires Dispatcharr {min_version} or newer (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                if not app_version_meets_maximum(app_version, max_version, is_dev_build=is_dev_build):
+                if not app_version_meets_maximum(
+                    app_version,
+                    max_version,
+                    min_version=min_version,
+                    is_dev_build=is_dev_build,
+                ):
                     return Response(
                         {"error": f"This plugin version requires Dispatcharr {max_version} or older (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,

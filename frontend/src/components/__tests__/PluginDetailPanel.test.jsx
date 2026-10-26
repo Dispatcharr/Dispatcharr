@@ -4,6 +4,8 @@ import PluginDetailPanel from '../PluginDetailPanel';
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../utils/components/pluginUtils.js', () => ({
+  appVersionMeetsMaximum: vi.fn(),
+  appVersionMeetsMinimum: vi.fn(),
   compareVersions: vi.fn(),
   buildCompatibilityTooltip: vi.fn(),
   buildVersionSelectItems: vi.fn(),
@@ -151,6 +153,8 @@ vi.mock('@mantine/core', async () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import {
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
   compareVersions,
   buildCompatibilityTooltip,
   buildVersionSelectItems,
@@ -219,6 +223,8 @@ describe('PluginDetailPanel', () => {
     vi.clearAllMocks();
     // default: every compareVersions call returns 0 (versions equal) unless
     // individual tests override it
+    vi.mocked(appVersionMeetsMinimum).mockReturnValue(true);
+    vi.mocked(appVersionMeetsMaximum).mockReturnValue(true);
     vi.mocked(compareVersions).mockReturnValue(0);
     vi.mocked(buildCompatibilityTooltip).mockReturnValue('1.0.0 or newer');
     // default: buildVersionSelectItems returns two standard items so that
@@ -612,6 +618,7 @@ describe('PluginDetailPanel', () => {
         if (a === '1.5.0' && b === '2.0.0') return -1;
         return 0;
       });
+      vi.mocked(appVersionMeetsMinimum).mockReturnValue(false);
       const detail = makeDetail({
         versions: [makeVersion('2.0.0', { min_dispatcharr_version: '2.0.0' })],
         latest: { version: '2.0.0' },
@@ -631,6 +638,7 @@ describe('PluginDetailPanel', () => {
         if (a === '1.5.0' && b === '2.0.0') return -1;
         return 0;
       });
+      vi.mocked(appVersionMeetsMinimum).mockReturnValue(false);
       vi.mocked(buildCompatibilityTooltip).mockReturnValue('2.0.0 or newer');
       const detail = makeDetail({
         versions: [makeVersion('2.0.0', { min_dispatcharr_version: '2.0.0' })],
