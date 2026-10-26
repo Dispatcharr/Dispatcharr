@@ -200,6 +200,17 @@ export const usePluginStore = create((set, get) => ({
     return updated;
   },
 
+  checkForUpdates: async () => {
+    await get().fetchRepos();
+    const results = await Promise.allSettled(
+      get().repos.map((repo) => get().refreshRepo(repo.id))
+    );
+    await Promise.all([get().fetchAvailablePlugins(), get().fetchPlugins()]);
+    if (results.some((result) => result.status === 'rejected')) {
+      throw new Error('Some plugin repositories failed to refresh');
+    }
+  },
+
   fetchAvailablePlugins: async () => {
     set({ availableLoading: true, availableError: null });
     try {

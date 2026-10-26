@@ -15,7 +15,6 @@ from .api_views import (
     PluginRepoPreviewAPIView,
     PluginRepoDetailAPIView,
     PluginRepoRefreshAPIView,
-    PluginRepoRefreshSinglePluginAPIView,
     AvailablePluginsAPIView,
     PluginDetailManifestAPIView,
     PluginInstallFromRepoAPIView,
@@ -49,5 +48,4 @@ urlpatterns = [
     path("repos/preview/", PluginRepoPreviewAPIView.as_view(), name="repo-preview"),
     path("repos/<int:pk>/", PluginRepoDetailAPIView.as_view(), name="repo-detail"),
     path("repos/<int:pk>/refresh/", PluginRepoRefreshAPIView.as_view(), name="repo-refresh"),
-    path("repos/<int:pk>/plugins/<str:slug>/refresh/", PluginRepoRefreshSinglePluginAPIView.as_view(), name="repo-refresh-single-plugin"),
 ]

@@ -27,7 +27,6 @@ import {
   computeResetSettings,
   deletePluginByKey,
   reloadPlugin,
-  refreshSinglePlugin,
   runPluginAction,
   setPluginEnabled,
   updatePluginSettings,
@@ -92,6 +91,7 @@ function PluginDetailForKey({ routeKey: key }) {
   const plugins = usePluginStore((s) => s.plugins);
   const pluginsLoading = usePluginStore((s) => s.loading);
   const installPlugin = usePluginStore((s) => s.installPlugin);
+  const checkForUpdates = usePluginStore((s) => s.checkForUpdates);
   const pinnedPlugins = useAuthStore(
     (s) => s.user?.custom_properties?.pinnedPlugins || EMPTY_PINNED_PLUGINS
   );
@@ -437,9 +437,7 @@ function PluginDetailForKey({ routeKey: key }) {
     if (!plugin.source_repo || !plugin.slug) return;
     setCheckingUpdate(true);
     try {
-      await refreshSinglePlugin(plugin.source_repo, plugin.slug);
-      await usePluginStore.getState().fetchPlugins();
-      await usePluginStore.getState().fetchAvailablePlugins();
+      await checkForUpdates();
       await fetchDetail();
     } finally {
       setCheckingUpdate(false);

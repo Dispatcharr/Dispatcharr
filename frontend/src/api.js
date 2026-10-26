@@ -2564,17 +2564,6 @@ export default class API {
     }
   }
 
-  static async refreshSinglePlugin(repoId, slug) {
-    try {
-      return await request(
-        `${host}/api/plugins/repos/${repoId}/plugins/${slug}/refresh/`,
-        { method: 'POST' }
-      );
-    } catch (e) {
-      errorNotification('Failed to refresh plugin', e);
-    }
-  }
-
   static async getAvailablePlugins() {
     try {
       const response = await request(`${host}/api/plugins/repos/available/`);
