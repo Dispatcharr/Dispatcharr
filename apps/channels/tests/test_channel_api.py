@@ -940,6 +940,43 @@ class ChannelListEffectiveFilterTests(TestCase):
         self.assertEqual(self._ids(epg="Filter Src"), {self.overridden.id})
         self.assertEqual(self._ids(epg="null"), {self.plain.id})
 
+    def test_epg_filter_name_is_exact_not_prefix(self):
+        from apps.epg.models import EPGData, EPGSource
+
+        base = EPGSource.objects.create(
+            name="7-day Gracenote", source_type="xmltv"
+        )
+        us = EPGSource.objects.create(
+            name="7-day Gracenote US", source_type="xmltv"
+        )
+        uk = EPGSource.objects.create(
+            name="7-day Gracenote UK", source_type="xmltv"
+        )
+        base_epg = EPGData.objects.create(
+            tvg_id="base.epg", name="Base", epg_source=base
+        )
+        us_epg = EPGData.objects.create(
+            tvg_id="us.epg", name="US", epg_source=us
+        )
+        uk_epg = EPGData.objects.create(
+            tvg_id="uk.epg", name="UK", epg_source=uk
+        )
+        ch_base = Channel.objects.create(
+            channel_number=10.0, name="Base Ch", epg_data=base_epg
+        )
+        ch_us = Channel.objects.create(
+            channel_number=11.0, name="US Ch", epg_data=us_epg
+        )
+        ch_uk = Channel.objects.create(
+            channel_number=12.0, name="UK Ch", epg_data=uk_epg
+        )
+
+        self.assertEqual(self._ids(epg="7-day Gracenote"), {ch_base.id})
+        self.assertEqual(
+            self._ids(epg="7-day Gracenote US,7-day Gracenote UK"),
+            {ch_us.id, ch_uk.id},
+        )
+
     def test_unassigned_epg_flag_ignores_override_only_assignment(self):
         self.plain.epg_data = self.epg
         self.plain.save(update_fields=["epg_data"])

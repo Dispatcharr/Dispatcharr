@@ -1091,6 +1091,9 @@ class ChannelPagination(PageNumberPagination):
 class EPGFilter(django_filters.Filter):
     """
     Filter channels by effective EPG source name or null (unlinked).
+
+    Comma-separated tokens are exact source names. ``null`` selects
+    channels with no effective EPG.
     """
     def filter(self, queryset, value):
         if not value:
@@ -1107,7 +1110,10 @@ class EPGFilter(django_filters.Filter):
                 query |= Q(override__epg_data__isnull=True, epg_data__isnull=True)
             else:
                 query |= effective_related_name_lookup_q(
-                    "epg_data", val, name_path="epg_source__name"
+                    "epg_data",
+                    val,
+                    lookup="exact",
+                    name_path="epg_source__name",
                 )
 
         return queryset.filter(query)
@@ -1116,7 +1122,12 @@ class EPGFilter(django_filters.Filter):
 class ChannelFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(method="filter_effective_name")
     channel_group = django_filters.CharFilter(method="filter_effective_channel_group")
-    epg = EPGFilter()
+    epg = EPGFilter(
+        help_text=(
+            "Comma-separated exact EPG source names. "
+            "Use null for channels with no effective EPG."
+        )
+    )
 
     class Meta:
         model = Channel
