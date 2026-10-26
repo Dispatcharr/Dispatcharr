@@ -7,7 +7,6 @@ import React, {
   useState,
 } from 'react';
 import {
-  ActionIcon,
   Alert,
   AppShellMain,
   Badge,
@@ -30,22 +29,26 @@ import {
   showNotification,
   updateNotification,
 } from '../utils/notificationUtils.js';
-import { usePluginStore } from '../store/plugins.jsx';
+import { usePluginStore, needsCapabilityAck } from '../store/plugins.jsx';
 import {
   deletePluginByKey,
   importPlugin,
   reloadPlugins,
-  runPluginAction,
   setPluginEnabled,
-  updatePluginSettings,
 } from '../utils/pages/PluginsUtils.js';
-import { RefreshCcw, Search } from 'lucide-react';
+import { RotateCw, Search, Upload } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   PluginRestartWarning,
-  PluginSecurityWarning,
   PluginSupportDisclaimer,
 } from '../components/PluginWarnings.jsx';
+import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
+import ConfirmationDialog from '../components/ConfirmationDialog.jsx';
+import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
+import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
+import ManageReposModal from '../components/modals/ManageReposModal.jsx';
+import PluginPageActions from '../components/PluginPageActions.jsx';
+import PluginListOnboarding from '../components/PluginListOnboarding.jsx';
 const PluginCard = React.lazy(
   () => import('../components/cards/PluginCard.jsx')
 );
@@ -59,7 +62,12 @@ const FILTER_OPTIONS = [
   { value: 'unmanaged', label: 'Unmanaged' },
 ];
 
-const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
+const PluginsList = ({
+  onRequestDelete,
+  onRequireTrust,
+  onInstallPlugin,
+  onReloadAllPlugins,
+}) => {
   const plugins = usePluginStore((state) => state.plugins);
   const loading = usePluginStore((state) => state.loading);
   const hasFetchedRef = useRef(false);
@@ -109,8 +117,8 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
     return result;
   }, [plugins, searchQuery, filterStatus]);
 
-  const handleTogglePluginEnabled = async (key, next) => {
-    const resp = await setPluginEnabled(key, next);
+  const handleTogglePluginEnabled = async (key, next, acknowledgeCapabilities = []) => {
+    const resp = await setPluginEnabled(key, next, acknowledgeCapabilities);
 
     if (resp?.success) {
       const updates = resp?.plugin || {
@@ -145,6 +153,24 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
           allowDeselect={false}
           style={{ width: 170 }}
         />
+        <Group gap="xs">
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<Upload size={14} />}
+            onClick={onInstallPlugin}
+          >
+            Install Plugin
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<RotateCw size={14} />}
+            onClick={onReloadAllPlugins}
+          >
+            Reload All Plugins
+          </Button>
+        </Group>
       </Group>
 
       {filteredPlugins.length > 0 && (
@@ -158,12 +184,9 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
                 <PluginCard
                   key={p.key}
                   plugin={p}
-                  onSaveSettings={updatePluginSettings}
-                  onRunAction={runPluginAction}
                   onToggleEnabled={handleTogglePluginEnabled}
                   onRequireTrust={onRequireTrust}
                   onRequestDelete={onRequestDelete}
-                  onRequestConfirm={onRequestConfirm}
                 />
               ))}
             </Suspense>
@@ -178,30 +201,30 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
       )}
 
       {plugins.length === 0 && (
-        <Box>
-          <Text c="dimmed">
-            No plugins found. Drop a plugin into <code>/data/plugins</code> and
-            reload.
-          </Text>
-        </Box>
+        <PluginListOnboarding
+          onInstallPlugin={onInstallPlugin}
+          onReloadAllPlugins={onReloadAllPlugins}
+        />
       )}
     </>
   );
 };
 
 export default function PluginsPage() {
+  usePluginPageScrollbarGutter();
   const plugins = usePluginStore((state) => state.plugins);
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(null);
   const [enableAfterImport, setEnableAfterImport] = useState(false);
-  const [trustOpen, setTrustOpen] = useState(false);
-  const [trustResolve, setTrustResolve] = useState(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [reloading, setReloading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [repoModalOpen, setRepoModalOpen] = useState(false);
+  const [reloadAllOpen, setReloadAllOpen] = useState(false);
+  const [reloadingAll, setReloadingAll] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmConfig, setConfirmConfig] = useState({
     title: '',
@@ -209,21 +232,15 @@ export default function PluginsPage() {
     resolve: null,
   });
 
-  const handleReload = async () => {
-    const { repos, refreshRepo, fetchAvailablePlugins, fetchPlugins } = usePluginStore.getState();
-    setReloading(true);
+  // Check for updates: re-fetch repo manifests + the installed/available
+  // lists. Does NOT touch running plugin code (see handleReloadAllPlugins).
+  const handleRefresh = async () => {
+    setRefreshing(true);
     try {
-      for (const repo of repos) {
-        try { await refreshRepo(repo.id); } catch {
-          console.error(`Failed to refresh repo ${repo.name} (${repo.id})`);
-        }
-      }
-      await fetchAvailablePlugins();
-      await reloadPlugins();
-      await fetchPlugins();
+      await usePluginStore.getState().checkForUpdates();
       showNotification({
         title: 'Refreshed',
-        message: 'Plugin repos and registry reloaded',
+        message: 'Checked for plugin updates',
         color: 'green',
       });
     } catch {
@@ -233,7 +250,26 @@ export default function PluginsPage() {
         color: 'red',
       });
     } finally {
-      setReloading(false);
+      setRefreshing(false);
+    }
+  };
+
+  // Full Python reload of every plugin: stops and re-imports all plugin
+  // code. Disruptive, so it's a separate, explicitly-confirmed action
+  // rather than a side effect of checking for updates.
+  const handleReloadAllPlugins = async () => {
+    setReloadingAll(true);
+    try {
+      await reloadPlugins();
+      await usePluginStore.getState().fetchPlugins();
+      showNotification({
+        title: 'Reloaded',
+        message: 'All plugins were stopped and reloaded',
+        color: 'green',
+      });
+    } finally {
+      setReloadingAll(false);
+      setReloadAllOpen(false);
     }
   };
 
@@ -242,12 +278,8 @@ export default function PluginsPage() {
     setDeleteOpen(true);
   }, []);
 
-  // eslint-disable-next-line no-unused-vars
   const requireTrust = useCallback((plugin) => {
-    return new Promise((resolve) => {
-      setTrustResolve(() => resolve);
-      setTrustOpen(true);
-    });
+    return usePluginStore.getState().requestEnableConfirmation(plugin);
   }, []);
 
   const showImportForm = useCallback(() => {
@@ -266,7 +298,7 @@ export default function PluginsPage() {
 
   const handleImportPlugin = () => {
     return async () => {
-      const run = async (overwrite) => {
+      const run = async (overwrite, acknowledgeCapabilities = []) => {
         setImporting(true);
         const notifId = showNotification({
           title: 'Uploading plugin',
@@ -276,7 +308,9 @@ export default function PluginsPage() {
           withCloseButton: false,
         });
         try {
-          const resp = await importPlugin(importFile, overwrite, /* silent */ true);
+          const resp = acknowledgeCapabilities.length
+            ? await importPlugin(importFile, overwrite, /* silent */ true, acknowledgeCapabilities)
+            : await importPlugin(importFile, overwrite, /* silent */ true);
           if (resp?.success && resp.plugin) {
             setImported({ ...resp.plugin, was_managed: resp.was_managed, was_overwrite: overwrite });
             usePluginStore.getState().invalidatePlugins();
@@ -318,6 +352,23 @@ export default function PluginsPage() {
             if (confirmed) {
               await run(true);
             }
+          } else if (
+            overwrite &&
+            e?.body?.error_code === 'capability_confirmation_required'
+          ) {
+            const confirmed = await usePluginStore
+              .getState()
+              .requestEnableConfirmation(
+                {
+                  key: 'plugin',
+                  name: 'Plugin update',
+                  capabilities: e.body.capabilities || [],
+                },
+                'update'
+              );
+            if (confirmed) {
+              await run(true, (e.body.capabilities || []).map((capability) => capability.id));
+            }
           } else {
             updateNotification({
               id: notifId,
@@ -340,9 +391,13 @@ export default function PluginsPage() {
     return async () => {
       if (!imported) return;
 
-      const proceed = imported.ever_enabled || (await requireTrust(imported));
+      const proceed = !needsCapabilityAck(imported) || (await requireTrust(imported));
       if (proceed) {
-        const resp = await setPluginEnabled(imported.key, true);
+        const resp = await setPluginEnabled(
+          imported.key,
+          true,
+          (imported.capabilities || []).map((capability) => capability.id)
+        );
         if (resp?.success) {
           const updates = resp?.plugin || { enabled: true, ever_enabled: true };
           usePluginStore.getState().updatePlugin(imported.key, updates);
@@ -404,27 +459,32 @@ export default function PluginsPage() {
             <Badge variant="light" color="gray" size="sm">{plugins.length} Plugins Installed</Badge>
           )}
         </Group>
-        <Group>
-          <Button size="xs" variant="light" onClick={showImportForm}>
-            Import Plugin
-          </Button>
-          <ActionIcon variant="light" onClick={handleReload} title="Reload" loading={reloading} disabled={reloading}>
-            <RefreshCcw size={18} />
-          </ActionIcon>
-        </Group>
+        <PluginPageActions
+          onManageRepos={() => setRepoModalOpen(true)}
+          onCheckForUpdates={handleRefresh}
+          checkingForUpdates={refreshing}
+        />
       </Group>
+
+      <PluginManifestMessages />
 
       <PluginsList
         onRequestDelete={handleRequestDelete}
         onRequireTrust={requireTrust}
-        onRequestConfirm={requestConfirm}
+        onInstallPlugin={showImportForm}
+        onReloadAllPlugins={() => setReloadAllOpen(true)}
       />
 
-      {/* Import Plugin Modal */}
+      <ManageReposModal
+        opened={repoModalOpen}
+        onClose={() => setRepoModalOpen(false)}
+      />
+
+      {/* Install Plugin Modal */}
       <Modal
         opened={importOpen}
         onClose={() => setImportOpen(false)}
-        title="Import Plugin"
+        title="Install Plugin"
         centered
       >
         <Stack>
@@ -526,114 +586,43 @@ export default function PluginsPage() {
         </Stack>
       </Modal>
 
-      {/* Trust Warning Modal */}
-      <Modal
-        opened={trustOpen}
-        onClose={() => {
-          setTrustOpen(false);
-          trustResolve && trustResolve(false);
-        }}
-        title="Enable third-party plugins?"
-        centered
-        zIndex={300}
-      >
-        <Stack>
-          <PluginSecurityWarning>
-            Plugins run server-side code with full access to your Dispatcharr
-            instance and its data. Only enable plugins from developers you
-            trust. Malicious plugins could read or modify data, call internal
-            APIs, or perform unwanted actions. Review the source or trust the
-            author before enabling.
-          </PluginSecurityWarning>
-          <PluginSupportDisclaimer />
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => {
-                setTrustOpen(false);
-                trustResolve && trustResolve(false);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              onClick={() => {
-                setTrustOpen(false);
-                trustResolve && trustResolve(true);
-              }}
-            >
-              I understand, enable
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-
-      {/* Delete Plugin Modal */}
-      <Modal
+      <ConfirmationDialog
         opened={deleteOpen}
         onClose={() => {
           setDeleteOpen(false);
           setDeleteTarget(null);
         }}
-        title={deleteTarget ? `Delete ${deleteTarget.name}?` : 'Delete Plugin'}
-        centered
+        onConfirm={handleDeletePlugin()}
         zIndex={300}
-      >
-        <Stack>
-          <Text size="sm">
-            This will remove the plugin files and its configuration. This action
-            cannot be undone.
-          </Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => {
-                setDeleteOpen(false);
-                setDeleteTarget(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              loading={deleting}
-              onClick={handleDeletePlugin()}
-            >
-              Delete
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        title={deleteTarget ? `Delete ${deleteTarget.name}?` : 'Delete Plugin'}
+        message="This will remove the plugin files and its configuration. This action cannot be undone."
+        confirmLabel="Delete"
+        loading={deleting}
+      />
 
-      {/* Confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={confirmOpen}
         onClose={() => handleConfirm(false)}
-        title={confirmConfig.title}
-        centered
+        onConfirm={() => handleConfirm(true)}
         zIndex={300}
-      >
-        <Stack>
-          <Text size="sm">{confirmConfig.message}</Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => handleConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button size="xs" onClick={() => handleConfirm(true)}>
-              Confirm
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        confirmColor="blue"
+      />
+
+      <ConfirmationDialog
+        opened={reloadAllOpen}
+        onClose={() => setReloadAllOpen(false)}
+        onConfirm={handleReloadAllPlugins}
+        zIndex={300}
+        title="Reload all plugins?"
+        message="This stops and re-imports the Python code for every plugin. Any plugin currently running an action will be interrupted. This does not affect saved settings."
+        confirmLabel="Reload All"
+        confirmColor="blue"
+        loading={reloadingAll}
+      />
+
+      <PluginEnableConfirmModal />
     </AppShellMain>
   );
 }

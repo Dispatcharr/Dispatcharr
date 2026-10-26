@@ -142,6 +142,7 @@ class StreamSerializer(serializers.ModelSerializer):
         required=False,
         allow_blank=True,
         allow_null=True,
+        max_length=Stream._meta.get_field("url").max_length,
         validators=[validate_flexible_url]
     )
     stream_profile_id = serializers.PrimaryKeyRelatedField(

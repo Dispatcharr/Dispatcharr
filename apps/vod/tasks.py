@@ -1406,12 +1406,28 @@ def parse_date(date_string):
             return None  # Return None if parsing fails
 
 
+def _coerce_provider_info(info_raw):
+    """Return a dict from XC info, which is sometimes a one-element list."""
+    if isinstance(info_raw, dict):
+        return info_raw
+    if isinstance(info_raw, list):
+        if info_raw and isinstance(info_raw[0], dict):
+            return info_raw[0]
+        return {}
+    return {}
+
+
 # Episode processing and other advanced features
 
 def refresh_series_episodes(account, series, external_series_id, episodes_data=None):
     """Refresh episodes for a series - only called on-demand"""
     try:
+        # None means this call did not ask the provider for series info.
+        # False means it did, and the body was missing or not an object.
+        # True means the body was an object, even when info itself is blank.
+        has_details = None
         if not episodes_data:
+            has_details = False
             # Fetch detailed series info including episodes
             with XtreamCodesClient(
                 account.server_url,
@@ -1420,9 +1436,25 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 account.get_user_agent_string()
             ) as client:
                 series_info = client.get_series_info(external_series_id)
-                if series_info:
-                    # Update series with detailed info
-                    info = series_info.get('info', {})
+                if isinstance(series_info, dict):
+                    has_details = True
+                    raw_info = series_info.get('info')
+                    if isinstance(raw_info, list):
+                        logger.warning(
+                            "Series info for %s (external_id=%s) returned list "
+                            "instead of dict, using first item",
+                            series.name,
+                            external_series_id,
+                        )
+                    elif raw_info is not None and not isinstance(raw_info, dict):
+                        logger.warning(
+                            "Series info for %s (external_id=%s) returned unexpected "
+                            "info type %s",
+                            series.name,
+                            external_series_id,
+                            type(raw_info).__name__,
+                        )
+                    info = _coerce_provider_info(raw_info)
                     if info:
                         # Only update fields if new value is non-empty and either no existing value or existing value is empty
                         updated = False
@@ -1445,26 +1477,66 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                         if updated:
                             series.save()
 
-                    episodes_data = series_info.get('episodes', {})
+                    episodes_data = series_info.get('episodes') or {}
                 else:
                     episodes_data = {}
+                    logger.info(
+                        "Provider returned no series details for series %s "
+                        "(external_id=%s); clearing detailed_fetched for retry",
+                        series.name,
+                        external_series_id,
+                    )
 
-        # Fetch the series relation once — used both to pass into batch_process_episodes
+        # Fetch the series relation once, used both to pass into batch_process_episodes
         # (so episode relations get the FK set) and to update metadata afterwards.
         series_relation = M3USeriesRelation.objects.filter(
             m3u_account=account,
             external_series_id=external_series_id
         ).first()
 
-        # Process all episodes in batch
-        batch_process_episodes(account, series, episodes_data, series_relation=series_relation)
+        # Count comes from the same flatten batch_process_episodes uses.
+        episode_count = batch_process_episodes(
+            account, series, episodes_data, series_relation=series_relation,
+        )
 
         if series_relation:
-            custom_props = series_relation.custom_properties or {}
-            custom_props['episodes_fetched'] = True
-            custom_props['detailed_fetched'] = True
+            custom_props = dict(series_relation.custom_properties or {})
+            # A real series_info object completes the detail attempt, including
+            # a blank info key. Only a missing or non-object body stays retryable.
+            # Episode completion still requires episode dicts. An empty episode
+            # list does not clear episodes_fetched when this series relation
+            # already has rows, or provider-info would hide episodes that are
+            # still stored.
+            if has_details is not None:
+                custom_props['detailed_fetched'] = has_details
+            if episode_count > 0:
+                custom_props['episodes_fetched'] = True
+            else:
+                has_stored_episodes = M3UEpisodeRelation.objects.filter(
+                    series_relation=series_relation,
+                ).exists()
+                if has_stored_episodes:
+                    custom_props['episodes_fetched'] = True
+                    logger.info(
+                        "Provider returned no episodes for series %s "
+                        "(external_id=%s); keeping stored episode relations",
+                        series.name,
+                        external_series_id,
+                    )
+                else:
+                    custom_props['episodes_fetched'] = False
+                    logger.info(
+                        "Provider returned no episodes for series %s "
+                        "(external_id=%s); clearing episodes_fetched for retry",
+                        series.name,
+                        external_series_id,
+                    )
+            # Stamp the attempt so the 24h batch picks up empty fetches later.
+            # Client opens still retry immediately while either flag is false.
+            # Never-opened relations keep a null timestamp and stay out of that batch.
+            if has_details is not None or episode_count > 0:
+                series_relation.last_episode_refresh = timezone.now()
             series_relation.custom_properties = custom_props
-            series_relation.last_episode_refresh = timezone.now()
             series_relation.save()
 
     except Exception as e:
@@ -1483,9 +1555,12 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
     that CASCADE correctly removes episode relations when their parent series relation
     is deleted, and so that stale-stream cleanup is scoped precisely to relations that
     came from this specific provider query.
+
+    Returns the number of episode dicts in the payload. Zero means there was
+    nothing to process, including empty, missing, and unexpected shapes.
     """
     if not episodes_data:
-        return
+        return 0
 
     # XC panels encode seasons as a PHP array keyed by season number. When keys are
     # contiguous from 0 (common with Season 0 specials), json_encode emits a JSON
@@ -1500,7 +1575,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             f"Unexpected episodes_data type {type(episodes_data).__name__} "
             f"for series {series.name}; skipping"
         )
-        return
+        return 0
 
     # Flatten episodes data
     all_episodes_data = []
@@ -1514,7 +1589,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             all_episodes_data.append(episode_data)
 
     if not all_episodes_data:
-        return
+        return 0
 
     logger.info(f"Batch processing {len(all_episodes_data)} episodes for series {series.name}")
 
@@ -1764,6 +1839,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
 
     logger.info(f"Batch processed episodes: {len(episodes_to_create)} new, {len(episodes_to_update)} updated, "
                 f"{len(relations_to_create)} new relations, {len(relations_to_update)} updated relations")
+    return len(all_episodes_data)
 
 
 @shared_task
@@ -1786,33 +1862,30 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
                 series__id__in=series_ids
             ).select_related('series')
         else:
-            # Refresh series that haven't been refreshed in the last 24 hours
+            # Refresh series last fetched more than 24 hours ago. Never-opened
+            # series keep a null timestamp and stay on-demand. Empty attempts
+            # still stamp last_episode_refresh, so they re-enter after the
+            # interval instead of a null check pulling in the whole catalog.
             cutoff_time = timezone.now() - timezone.timedelta(hours=24)
             series_relations = M3USeriesRelation.objects.filter(
                 m3u_account=account,
-                last_episode_refresh__lt=cutoff_time
+                last_episode_refresh__lt=cutoff_time,
             ).select_related('series')
 
         logger.info(f"Batch refreshing episodes for {series_relations.count()} series")
 
-        with XtreamCodesClient(
-            account.server_url,
-            account.username,
-            account.password,
-            account.get_user_agent_string()
-        ) as client:
-
-            refreshed_count = 0
-            for relation in series_relations:
-                try:
-                    refresh_series_episodes(
-                        account,
-                        relation.series,
-                        relation.external_series_id
-                    )
-                    refreshed_count += 1
-                except Exception as e:
-                    logger.error(f"Error refreshing episodes for series {relation.series.name}: {str(e)}")
+        # refresh_series_episodes opens its own provider client per series.
+        refreshed_count = 0
+        for relation in series_relations:
+            try:
+                refresh_series_episodes(
+                    account,
+                    relation.series,
+                    relation.external_series_id
+                )
+                refreshed_count += 1
+            except Exception as e:
+                logger.error(f"Error refreshing episodes for series {relation.series.name}: {str(e)}")
 
         logger.info(f"Batch episode refresh completed for {refreshed_count} series")
         return f"Batch episode refresh completed for {refreshed_count} series"

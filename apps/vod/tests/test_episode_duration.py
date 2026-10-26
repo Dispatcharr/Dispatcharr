@@ -103,7 +103,7 @@ class EpisodeDurationTests(TestCase):
         with patch('apps.vod.tasks.XtreamCodesClient') as provider:
             get_series_info = provider.return_value.__enter__.return_value.get_series_info
             get_series_info.return_value = {
-                'info': {},
+                'info': {'plot': 'Duration test plot'},
                 'episodes': {'1': [episode_data(1, 2605442460), episode_data(2, 1800)]},
             }
             response = client.get(url)

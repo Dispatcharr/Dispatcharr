@@ -7,7 +7,8 @@ from redis.exceptions import WatchError
 
 from apps.m3u.connection_pool import (
     RELEASE_MAX_ATTEMPTS,
-    extract_credentials_from_stream_url,
+    extract_short_form_xc_credentials,
+    extract_typed_xc_credentials,
     get_credential_connection_count,
     get_enforced_server_group_for_profile,
     get_profile_connection_count,
@@ -141,11 +142,237 @@ class FakeRedisPipeline:
 
 
 class ExtractCredentialsTests(TestCase):
-    def test_extract_credentials_from_xc_style_url(self):
+    def test_extract_typed_xc_credentials(self):
         url = "http://example.com/live/alice/secret123/99999.ts"
-        user, password = extract_credentials_from_stream_url(url)
+        user, password = extract_typed_xc_credentials(url)
         self.assertEqual(user, "alice")
         self.assertEqual(password, "secret123")
+
+    def test_extract_short_form_xc_credentials(self):
+        """Short-form stream URLs embed creds as /user/pass/streamId."""
+        cases = [
+            "https://provider.example/alice/secret123/99999",
+            "https://provider.example/alice/secret123/99999.ts",
+            "http://host:8080/alice/secret123/42.m3u8",
+            "https://provider.example/alice/secret123/99999?token=abc",
+            # M3U providers may use non-numeric ids and uncommon extensions.
+            "https://provider.example/alice/secret123/channel-abc",
+            "https://provider.example/alice/secret123/espn1",
+            "https://provider.example/alice/secret123/99999.flv",
+        ]
+        for url in cases:
+            with self.subTest(url=url):
+                user, password = extract_short_form_xc_credentials(url)
+                self.assertEqual(user, "alice")
+                self.assertEqual(password, "secret123")
+
+    def test_extract_short_form_rejects_ambiguous_paths(self):
+        """Reject non-short-form paths and XC/panel roots used as the first segment."""
+        rejected = [
+            "https://cdn.example.com/a/b/c/12345.ts",
+            "https://provider.example/live/alice/99999",
+            "https://provider.example/movie/alice/99999.mkv",
+            # Empty path segments (trailing slash or "//") are not collapsed.
+            "https://provider.example/alice/secret123/99999/",
+            "https://provider.example/alice/secret123/99999.ts/",
+            "https://provider.example/alice/secret123/",
+            "https://provider.example//alice/secret123/99999",
+            "https://provider.example/alice//secret123/99999",
+            "",
+            None,
+        ]
+        for url in rejected:
+            with self.subTest(url=url):
+                user, password = extract_short_form_xc_credentials(url)
+                self.assertEqual((user, password), (None, None))
+
+
+class ShortFormServerGroupPoolTests(TestCase):
+    """
+    STD M3U accounts whose provider uses short-form Xtream URLs
+    (/user/pass/id, no /live/ segment) must still participate in ServerGroup
+    credential pooling when a stream limit is set.
+    """
+
+    def setUp(self):
+        from apps.channels.models import Stream
+
+        self.Stream = Stream
+        self.redis = FakeRedis()
+        self.group = ServerGroup.objects.create(name="short-form-pool")
+
+    def _std_account_with_short_form_stream(
+        self, name, url, *, max_streams=2, username="", password=""
+    ):
+        account = M3UAccount.objects.create(
+            name=name,
+            account_type="STD",
+            username=username,
+            password=password,
+            server_group=self.group,
+            max_streams=5,
+        )
+        profile = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        profile.max_streams = max_streams
+        profile.save()
+        self.Stream.objects.create(
+            name=f"{name}-stream",
+            url=url,
+            m3u_account=account,
+        )
+        return account, profile
+
+    def test_std_short_form_url_with_limit_reserves_in_server_group(self):
+        """
+        Reproduction for the short-form ServerGroup regression: an STD account
+        with no account-level username/password, short-form stream URLs, a
+        ServerGroup assignment, and max_streams > 0 must be able to reserve.
+        """
+        _account, profile = self._std_account_with_short_form_stream(
+            "Short Form STD",
+            "https://provider.example/alice/secret123/99999",
+            max_streams=2,
+        )
+
+        fingerprint = get_profile_credential_fingerprint(profile)
+        self.assertIsNotNone(fingerprint)
+        self.assertTrue(group_has_capacity_for_profile(profile, self.redis))
+
+        reserved, count, reason = reserve_profile_slot(profile, self.redis)
+        self.assertTrue(reserved, f"expected reserve to succeed, got reason={reason}")
+        self.assertIsNone(reason)
+        self.assertEqual(count, 1)
+        self.assertEqual(get_credential_connection_count(profile, self.redis), 1)
+
+        # Limit is 2, so a second stream on the same login still fits.
+        reserved_again, count_again, reason_again = reserve_profile_slot(
+            profile, self.redis
+        )
+        self.assertTrue(reserved_again)
+        self.assertIsNone(reason_again)
+        self.assertEqual(count_again, 2)
+        self.assertEqual(get_credential_connection_count(profile, self.redis), 2)
+
+        self.assertTrue(release_profile_slot(profile.id, self.redis))
+        self.assertEqual(get_credential_connection_count(profile, self.redis), 1)
+        self.assertEqual(get_profile_connection_count(profile, self.redis), 1)
+
+    def test_std_short_form_accounts_share_credential_pool(self):
+        """Two STD accounts with the same short-form login share one group limit."""
+        _a1, profile1 = self._std_account_with_short_form_stream(
+            "STD A",
+            "https://provider.example/alice/secret123/111",
+            max_streams=1,
+        )
+        _a2, profile2 = self._std_account_with_short_form_stream(
+            "STD B",
+            "https://provider.example/alice/secret123/222.ts",
+            max_streams=1,
+        )
+
+        self.assertEqual(
+            get_profile_credential_fingerprint(profile1),
+            get_profile_credential_fingerprint(profile2),
+        )
+
+        self.assertTrue(reserve_profile_slot(profile1, self.redis)[0])
+        reserved2, _, reason2 = reserve_profile_slot(profile2, self.redis)
+        self.assertFalse(reserved2)
+        self.assertEqual(reason2, "credential_full")
+        self.assertFalse(group_has_capacity_for_profile(profile2, self.redis))
+
+    def test_different_short_form_logins_do_not_share_a_pool(self):
+        """Same group, different /user/pass/id logins, keep independent limits."""
+        _a1, profile1 = self._std_account_with_short_form_stream(
+            "STD Alice",
+            "https://provider.example/alice/secret123/111",
+            max_streams=1,
+        )
+        _a2, profile2 = self._std_account_with_short_form_stream(
+            "STD Bob",
+            "https://provider.example/bob/otherpass/111",
+            max_streams=1,
+        )
+
+        self.assertNotEqual(
+            get_profile_credential_fingerprint(profile1),
+            get_profile_credential_fingerprint(profile2),
+        )
+        self.assertTrue(reserve_profile_slot(profile1, self.redis)[0])
+        reserved2, _, reason2 = reserve_profile_slot(profile2, self.redis)
+        self.assertTrue(reserved2)
+        self.assertIsNone(reason2)
+
+    def test_account_credentials_preferred_over_short_form_url(self):
+        """
+        Explicit STD username/password beat a short-form URL that carries a
+        different login. An XC account with the same stored login must share
+        that pool, which is what keeps XC+STD ServerGroup pairing intact.
+        """
+        from apps.m3u.connection_pool import compute_credential_fingerprint
+
+        _account, profile = self._std_account_with_short_form_stream(
+            "STD With Stored Login",
+            "https://provider.example/urluser/urlpass/99999",
+            max_streams=1,
+            username="realuser",
+            password="realpass",
+        )
+        xc = M3UAccount.objects.create(
+            name="Matching XC",
+            account_type="XC",
+            username="realuser",
+            password="realpass",
+            server_url="http://xc.example.com",
+            server_group=self.group,
+            max_streams=5,
+        )
+        xc_profile = M3UAccountProfile.objects.get(m3u_account=xc, is_default=True)
+        xc_profile.max_streams = 1
+        xc_profile.save()
+
+        fingerprint = get_profile_credential_fingerprint(profile)
+        self.assertEqual(fingerprint, compute_credential_fingerprint("realuser", "realpass"))
+        self.assertNotEqual(
+            fingerprint, compute_credential_fingerprint("urluser", "urlpass")
+        )
+        self.assertEqual(fingerprint, get_profile_credential_fingerprint(xc_profile))
+
+        self.assertTrue(reserve_profile_slot(profile, self.redis)[0])
+        reserved_xc, _, reason = reserve_profile_slot(xc_profile, self.redis)
+        self.assertFalse(reserved_xc)
+        self.assertEqual(reason, "credential_full")
+
+    def test_profile_rewrite_is_fingerprinted_and_failed_rewrite_fails_closed(self):
+        """
+        STD playback uses the rewritten stream URL, so the pool fingerprint
+        follows that rewrite. A pattern that does not match must not fall
+        back to the raw URL.
+        """
+        from apps.m3u.connection_pool import compute_credential_fingerprint
+
+        _account, profile = self._std_account_with_short_form_stream(
+            "Rewritten STD",
+            "https://provider.example/alice/secret123/99999",
+            max_streams=1,
+        )
+        profile.search_pattern = "alice/secret123"
+        profile.replace_pattern = "bob/otherpass"
+        profile.save()
+
+        self.assertEqual(
+            get_profile_credential_fingerprint(profile),
+            compute_credential_fingerprint("bob", "otherpass"),
+        )
+        self.assertTrue(reserve_profile_slot(profile, self.redis)[0])
+
+        profile.search_pattern = "no/match/here"
+        profile.replace_pattern = "bob/otherpass"
+        profile.save()
+        self.assertIsNone(get_profile_credential_fingerprint(profile))
+        reserved, _, reason = reserve_profile_slot(profile, FakeRedis())
+        self.assertFalse(reserved)
+        self.assertEqual(reason, "credential_full")
 
 
 class ManualServerGroupTests(TestCase):

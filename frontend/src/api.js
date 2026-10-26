@@ -2377,11 +2377,26 @@ export default class API {
     }
   }
 
-  static async importPlugin(file, overwrite = false, silent = false) {
+  static async reloadPlugin(key) {
+    try {
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/reload/`,
+        { method: 'POST' }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reload plugin', e);
+    }
+  }
+
+  static async importPlugin(file, overwrite = false, silent = false, acknowledgeCapabilities = []) {
     try {
       const form = new FormData();
       form.append('file', file);
       if (overwrite) form.append('overwrite', 'true');
+      for (const capability of acknowledgeCapabilities) {
+        form.append('acknowledge_capabilities', capability);
+      }
       const response = await request(`${host}/api/plugins/plugins/import/`, {
         method: 'POST',
         body: form,
@@ -2433,6 +2448,26 @@ export default class API {
     }
   }
 
+  static async uploadPluginField(key, fieldId, file) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      return await request(
+        `${host}/api/plugins/plugins/${key}/fields/${fieldId}/upload/`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+    } catch (e) {
+      errorNotification('Failed to upload file', e);
+      throw e;
+    }
+  }
+
+  // Response is either {success, result} (synchronous) or
+  // {success, status: 'started', task_id} (async; see plugin_task_progress/
+  // plugin_task_complete in WebSocket.jsx).
   static async runPluginAction(key, action, params = {}) {
     try {
       const response = await request(
@@ -2448,13 +2483,25 @@ export default class API {
     }
   }
 
-  static async setPluginEnabled(key, enabled) {
+  // Bounded, best-effort history of past async task runs for this plugin
+  // (see apps/plugins/task_history.py), used to rehydrate the Tasks panel
+  // on page load / in a second tab, not just tasks started in this session.
+  static async getPluginTaskHistory(key) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/tasks/`);
+      return response?.tasks || [];
+    } catch {
+      return [];
+    }
+  }
+
+  static async setPluginEnabled(key, enabled, acknowledge_capabilities = []) {
     try {
       const response = await request(
         `${host}/api/plugins/plugins/${key}/enabled/`,
         {
           method: 'POST',
-          body: { enabled },
+          body: { enabled, acknowledge_capabilities },
         }
       );
       return response;
@@ -2527,6 +2574,22 @@ export default class API {
     }
   }
 
+  static async getPluginManifestMessages() {
+    try {
+      const response = await request(`${host}/api/plugins/repos/messages/`);
+      return response.messages || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin messages', e);
+      return [];
+    }
+  }
+
+  static async dismissPluginManifestMessage(messageId) {
+    return request(`${host}/api/plugins/repos/messages/${messageId}/dismiss/`, {
+      method: 'POST',
+    });
+  }
+
   static async getPluginDetailManifest(repoId, manifestUrl) {
     try {
       const response = await request(
@@ -2571,8 +2634,10 @@ export default class API {
         body: data,
       });
     } catch (e) {
+      if (e.status === 409 && e.body?.error_code === 'capability_confirmation_required') {
+        return e.body;
+      }
       errorNotification('Failed to install plugin', e);
-      return null;
     }
   }
 

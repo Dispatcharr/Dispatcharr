@@ -28,7 +28,7 @@ jobs:
       branch_tag: ${{ steps.meta.outputs.branch_tag }}
       timestamp: ${{ steps.timestamp.outputs.timestamp }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -74,7 +74,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -142,6 +142,7 @@ jobs:
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
             TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
+            FFMPEG_IMAGE=ghcr.io/${{ needs.prepare.outputs.repo_owner }}/ffmpeg:latest
 
   create-manifest:
     needs: [prepare, docker]

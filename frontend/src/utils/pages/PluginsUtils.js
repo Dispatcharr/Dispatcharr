@@ -3,21 +3,41 @@ import API from '../../api.js';
 export const updatePluginSettings = async (key, settings) => {
   return await API.updatePluginSettings(key, settings);
 };
+export const uploadPluginFieldFile = async (key, fieldId, file) => {
+  return await API.uploadPluginField(key, fieldId, file);
+};
+export const computeResetSettings = (fields) => {
+  const result = {};
+  for (const field of fields || []) {
+    if (field.type === 'info' || field.type === 'section') continue;
+    if ('default' in field) {
+      result[field.id] = field.default;
+    }
+  }
+  return result;
+};
 export const runPluginAction = async (key, actionId) => {
   return await API.runPluginAction(key, actionId);
 };
-export const setPluginEnabled = async (key, next) => {
-  return await API.setPluginEnabled(key, next);
+export const setPluginEnabled = async (key, next, acknowledgeCapabilities = []) => {
+  return await API.setPluginEnabled(key, next, acknowledgeCapabilities);
 };
 export const importPlugin = async (
   importFile,
   overwrite = false,
-  silent = false
+  silent = false,
+  acknowledgeCapabilities = []
 ) => {
+  if (acknowledgeCapabilities.length) {
+    return await API.importPlugin(importFile, overwrite, silent, acknowledgeCapabilities);
+  }
   return await API.importPlugin(importFile, overwrite, silent);
 };
 export const reloadPlugins = async () => {
   return await API.reloadPlugins();
+};
+export const reloadPlugin = async (key) => {
+  return await API.reloadPlugin(key);
 };
 export const deletePluginByKey = (key) => {
   return API.deletePlugin(key);

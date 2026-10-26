@@ -32,6 +32,13 @@ vi.mock('../../components/modals/ManageReposModal.jsx', () => ({
     ) : null,
 }));
 
+vi.mock('../../components/PluginEnableConfirmModal.jsx', () => ({
+  default: () => null,
+}));
+vi.mock('../../components/PluginManifestMessages.jsx', () => ({
+  default: () => <div data-testid="plugin-manifest-messages" />,
+}));
+
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
@@ -42,28 +49,20 @@ vi.mock('../../utils/pages/PluginsUtils.js', () => ({
 }));
 
 vi.mock('../../utils/components/pluginUtils.js', () => ({
-  compareVersions: vi.fn(() => 0),
+  appVersionMeetsMaximum: vi.fn(() => true),
+  appVersionMeetsMinimum: vi.fn(() => true),
 }));
 
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   Package: () => <svg data-testid="icon-package" />,
-  RefreshCcw: () => <svg data-testid="icon-refresh" />,
+  GitFork: () => <svg data-testid="icon-git-fork" />,
+  RefreshCw: () => <svg data-testid="icon-refresh" />,
   Search: () => <svg data-testid="icon-search" />,
 }));
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, loading, title }) => (
-    <button
-      data-testid="action-icon"
-      data-loading={loading}
-      title={title}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  ),
   AppShellMain: ({ children }) => <main>{children}</main>,
   Badge: ({ children, color, variant }) => (
     <span data-testid="badge" data-color={color} data-variant={variant}>
@@ -179,6 +178,7 @@ let mockFetchRepos;
 let mockFetchAvailablePlugins;
 let mockRefreshRepo;
 let mockInvalidatePlugins;
+let mockCheckForUpdates;
 
 const setupStore = ({
   repos = [],
@@ -189,6 +189,7 @@ const setupStore = ({
   mockFetchAvailablePlugins = vi.fn();
   mockRefreshRepo = vi.fn().mockResolvedValue(undefined);
   mockInvalidatePlugins = vi.fn();
+  mockCheckForUpdates = vi.fn().mockResolvedValue(undefined);
 
   vi.mocked(usePluginStore).mockImplementation((sel) =>
     sel({
@@ -198,6 +199,9 @@ const setupStore = ({
       fetchRepos: mockFetchRepos,
       fetchAvailablePlugins: mockFetchAvailablePlugins,
       refreshRepo: mockRefreshRepo,
+      checkForUpdates: mockCheckForUpdates,
+      enableConfirm: { opened: false, plugin: null, resolve: null },
+      resolveEnableConfirmation: vi.fn(),
     })
   );
 
@@ -336,6 +340,33 @@ describe('PluginBrowsePage', () => {
       render(<PluginBrowsePage />);
       expect(screen.queryByTestId('plugin-card')).not.toBeInTheDocument();
     });
+
+    it('shows the download count sort option only when counts are available', () => {
+      setupStore({ availablePlugins: [makePlugin({ download_count: 42 })] });
+      render(<PluginBrowsePage />);
+      expect(screen.getByTestId('sort-select')).toHaveTextContent(
+        'Download Count'
+      );
+    });
+
+    it('sorts plugins by download count descending', () => {
+      setupStore({
+        availablePlugins: [
+          makePlugin({ slug: 'low', name: 'Low', download_count: 10 }),
+          makePlugin({ slug: 'missing', name: 'Missing' }),
+          makePlugin({ slug: 'high', name: 'High', download_count: 100 }),
+        ],
+      });
+      render(<PluginBrowsePage />);
+      fireEvent.change(screen.getByTestId('sort-select'), {
+        target: { value: 'downloads' },
+      });
+      expect(screen.getAllByTestId('plugin-card').map((card) => card.dataset.slug)).toEqual([
+        'high',
+        'low',
+        'missing',
+      ]);
+    });
   });
 
   // ── Manage Repos modal ─────────────────────────────────────────────────────
@@ -367,39 +398,28 @@ describe('PluginBrowsePage', () => {
   // ── Refresh all ────────────────────────────────────────────────────────────
 
   describe('handleRefreshAll', () => {
-    it('calls refreshRepo for each repo in the store', async () => {
-      const repos = [makeRepo({ id: 1 }), makeRepo({ id: 2 })];
-      setupStore({ repos });
-      vi.mocked(usePluginStore).getState.mockReturnValue({
-        repos,
-        invalidatePlugins: mockInvalidatePlugins,
-      });
+    it('uses the shared update-check action', async () => {
+      setupStore({ repos: [makeRepo({ id: 1 }), makeRepo({ id: 2 })] });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
-        expect(mockRefreshRepo).toHaveBeenCalledWith(1);
-        expect(mockRefreshRepo).toHaveBeenCalledWith(2);
+        expect(mockCheckForUpdates).toHaveBeenCalled();
       });
     });
 
-    it('calls fetchAvailablePlugins, reloadPlugins, and invalidatePlugins after refresh', async () => {
+    it('does not reload plugin code', async () => {
       setupStore({ repos: [makeRepo()] });
-      vi.mocked(usePluginStore).getState.mockReturnValue({
-        repos: [makeRepo()],
-        invalidatePlugins: mockInvalidatePlugins,
-      });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
-        expect(mockFetchAvailablePlugins).toHaveBeenCalled();
-        expect(reloadPlugins).toHaveBeenCalled();
-        expect(mockInvalidatePlugins).toHaveBeenCalled();
+        expect(mockCheckForUpdates).toHaveBeenCalled();
       });
+      expect(reloadPlugins).not.toHaveBeenCalled();
     });
 
     it('shows success notification on successful refresh', async () => {
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'Refreshed', color: 'green' })
@@ -408,7 +428,7 @@ describe('PluginBrowsePage', () => {
     });
 
     it('shows error notification when refresh fails', async () => {
-      mockRefreshRepo = vi.fn().mockRejectedValue(new Error('Network error'));
+      mockCheckForUpdates = vi.fn().mockRejectedValue(new Error('Network error'));
       vi.mocked(usePluginStore).mockImplementation((sel) =>
         sel({
           repos: [makeRepo()],
@@ -416,7 +436,9 @@ describe('PluginBrowsePage', () => {
           availableLoading: false,
           fetchRepos: vi.fn(),
           fetchAvailablePlugins: vi.fn(),
-          refreshRepo: mockRefreshRepo,
+          checkForUpdates: mockCheckForUpdates,
+          enableConfirm: { opened: false, plugin: null, resolve: null },
+          resolveEnableConfirmation: vi.fn(),
         })
       );
       vi.mocked(usePluginStore).getState.mockReturnValue({
@@ -424,7 +446,7 @@ describe('PluginBrowsePage', () => {
         invalidatePlugins: vi.fn(),
       });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'Error', color: 'red' })
