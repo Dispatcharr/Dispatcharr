@@ -6,11 +6,13 @@ disable/reload; see the "Takedown/cleanup hardening" section of the plan
 this implements.
 """
 
+import threading
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, override_settings
 
 from apps.plugins.loader import LoadedPlugin, PluginManager
+from apps.plugins.service_runner import _native_threading_type
 
 
 def _plugin_with_leader_hooks(
@@ -188,6 +190,34 @@ class LeaderElectionTransitionTests(SimpleTestCase):
 
         self.assertEqual(instance.on_leader_acquired.call_count, 2)
         self.assertEqual(instance.on_leader_lost.call_count, 1)
+
+    def test_losing_leadership_stops_service_before_lost_hook(self):
+        pm = PluginManager()
+        lp, instance = _plugin_with_leader_hooks()
+        native_event = _native_threading_type("Event")
+        started = native_event()
+        stopped = native_event()
+        hook_observations = []
+
+        def target(stop_event):
+            started.set()
+            stop_event.wait()
+            stopped.set()
+
+        def acquired(context):
+            context["start_service"](target)
+
+        def lost(_context):
+            hook_observations.append(stopped.is_set())
+
+        instance.on_leader_acquired.side_effect = acquired
+        instance.on_leader_lost.side_effect = lost
+        pm._transition_to_leader(lp.key, lp)
+        self.assertTrue(started.wait(1))
+        pm._transition_to_follower(lp.key, lp)
+
+        self.assertTrue(stopped.is_set())
+        self.assertEqual(hook_observations, [True])
 
 
 class LeadershipContextTests(SimpleTestCase):

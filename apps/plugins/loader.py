@@ -31,6 +31,7 @@ from .capabilities import (
 from .context import running_as_plugin
 from .keys import normalize_plugin_key
 from .sandbox import plugin_builtins, stable_plugin_data_path
+from .service_runner import PluginServiceRunner
 from .models import PluginConfig
 from .version_utils import get_plugin_status
 from version import __timestamp__, __version__
@@ -189,6 +190,7 @@ class PluginManager:
         self._leadership_state: Dict[str, str] = {}
         self._leadership_lock = threading.RLock()
         self._leadership_thread_started = False
+        self._service_runner = PluginServiceRunner(logger)
         # Keys already warned about missing the persistent_service capability,
         # so _leadership_tick logs once per plugin instead of every tick.
         self._leadership_capability_warned: set = set()
@@ -1376,7 +1378,20 @@ class PluginManager:
             "report_progress": self._make_progress_reporter(lp.key, task_id=None),
             "dispatch_task": self._make_task_dispatcher(lp),
             "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
+            "start_service": self._make_service_starter(lp),
         }
+
+    def _make_service_starter(self, lp: LoadedPlugin):
+        """Return the host-owned runner for this plugin's leader hook only."""
+        def start_service(target, *, name=None):
+            with self._leadership_lock:
+                is_leader = self._leadership_state.get(lp.key) == "leader"
+            if not is_leader:
+                raise RuntimeError(
+                    f"Plugin '{lp.key}' cannot start a persistent service without leadership"
+                )
+            return self._service_runner.start(lp.key, target, name=name)
+        return start_service
 
     def _transition_to_leader(self, key: str, lp: LoadedPlugin) -> None:
         hook = getattr(lp.instance, "on_leader_acquired", None)
@@ -1392,6 +1407,7 @@ class PluginManager:
             ):
                 hook(self._build_leadership_context(lp))
         except Exception:
+            self._service_runner.stop(key)
             logger.exception(
                 "Plugin '%s' on_leader_acquired() failed; releasing leadership so "
                 "another process can take over", key,
@@ -1404,6 +1420,7 @@ class PluginManager:
         with self._leadership_lock:
             was_leader = self._leadership_state.get(key) == "leader"
             self._leadership_state[key] = "follower"
+        self._service_runner.stop(key)
         if not was_leader:
             return
         if lp is not None and lp.instance is not None:
@@ -1440,6 +1457,9 @@ class PluginManager:
                 self._release_plugin_leadership(key)
             except Exception:
                 logger.exception("Failed to release leadership for '%s' on shutdown", key)
+        # A partially initialized leader may have registered a service before
+        # its state was recorded. Never leave it behind during graceful exit.
+        self._service_runner.stop_all()
 
     def _leadership_tick(self) -> None:
         with self._lock:
