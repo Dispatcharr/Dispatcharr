@@ -25,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **UI date format supports ISO 8601.** Settings → UI Settings → Date format now includes `YYYY-MM-DD`, which displays dates in year-first order across tables, the Guide, DVR views, date pickers, and System Events. (Closes #1375) - Thanks [@LarsSimonsen](https://github.com/LarsSimonsen)
 - **Plugin manifests can declare capabilities that require administrator approval.** Enabling a plugin now shows the access it requests, including background work, persistent services, network listeners, outbound connections, subprocesses, filesystem writes, approved internal tasks, proxy internals, and user data. An update that adds a capability asks for approval again before it can run with the new access.
 - **Plugins can run asynchronous actions with progress and task history.** Manifest actions can dispatch background work, report progress to the UI, and retain recent run status across page loads. (Closes #699)
-- **Plugins can run leader-elected persistent services.** A plugin can register long-running lifecycle work that runs on one eligible process at a time.
+- **Plugins can run leader-elected persistent services.** A plugin can register long-running lifecycle work that runs on one eligible process at a time. Persistent plugins start one service through `context["start_service"]`; Dispatcharr provides its stop event and stops the service when leadership is lost, the plugin is disabled or reloaded, or the worker exits. This avoids relying on a gevent scheduler in plugin workers.
 - **Plugin settings support richer field types.** Plugin authors can provide multiselects, collapsible sections, editable tables, file uploads, and reset-to-default controls. (Closes #1474, #1476, #1477, #1478, #1479)
 - **Plugins have a dedicated detail page and richer marketplace controls.** Users can view versions, changelogs, download counts, capability requirements, update state, task activity, and pin installed plugins in the sidebar.
 - **Official plugin registries can show trusted manifest messages.** Signed official registry manifests can provide targeted informational, warning, and critical notices that users can dismiss.
