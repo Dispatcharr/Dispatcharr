@@ -9,6 +9,7 @@ import {
 } from '../../../utils/components/FloatingVideoUtils.js';
 import {
   buildTimeZoneOptions,
+  DATE_FORMAT_OPTIONS,
   getDefaultTimeZone,
 } from '../../../utils/dateTimeUtils.js';
 import React, {
@@ -163,16 +164,7 @@ const UiSettingsForm = React.memo(() => {
         label="Date format"
         value={dateFormat}
         onChange={(val) => onUISettingsChange('date-format', val)}
-        data={[
-          {
-            value: 'mdy',
-            label: 'MM/DD/YYYY',
-          },
-          {
-            value: 'dmy',
-            label: 'DD/MM/YYYY',
-          },
-        ]}
+        data={DATE_FORMAT_OPTIONS}
       />
       <Select
         label="Time zone"
