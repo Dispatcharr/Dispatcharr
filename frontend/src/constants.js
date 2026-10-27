@@ -432,6 +432,7 @@ export const SUBSCRIPTION_EVENTS = {
   channel_buffering: 'Channel Buffering',
   channel_failover: 'Channel Failover',
   stream_switch: 'Stream Switch',
+  channels_updated: 'Channels Updated',
   recording_start: 'Recording Started',
   recording_end: 'Recording Ended',
   epg_refresh: 'EPG Refreshed',
