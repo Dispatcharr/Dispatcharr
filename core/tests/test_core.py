@@ -963,3 +963,35 @@ class GetHostAndPortTrustedProxyTests(SimpleTestCase):
             self.assertEqual(port, "8443")
             uri = build_absolute_uri_with_port(request, "/output/m3u")
             self.assertEqual(uri, "https://tv.example.com:8443/output/m3u")
+
+
+class FsPathEncodingTests(SimpleTestCase):
+    """to_fs_path and from_fs_path handle non-ASCII filenames under ASCII filesystem encoding."""
+
+    def test_ascii_path_remains_unchanged(self):
+        from core.utils import to_fs_path, from_fs_path
+
+        p = "/data/recordings/Normal_Path/video.mkv"
+        self.assertEqual(to_fs_path(p), p)
+        self.assertEqual(from_fs_path(p), p)
+
+    def test_non_ascii_path_with_utf8_encoding(self):
+        from core.utils import to_fs_path, from_fs_path
+
+        p = "/data/recordings/Café_München_España/20260101_120000.mkv"
+        with patch("sys.getfilesystemencoding", return_value="utf-8"):
+            self.assertEqual(to_fs_path(p), p)
+            self.assertEqual(from_fs_path(p), p)
+
+    def test_non_ascii_path_with_ascii_filesystem_encoding(self):
+        from core.utils import to_fs_path, from_fs_path
+
+        p = "/data/recordings/Café_München_España/20260101_120000.mkv"
+        with patch("sys.getfilesystemencoding", return_value="ascii"):
+            fs_path = to_fs_path(p)
+            # Must be encodable with ascii via surrogateescape without error
+            fs_path.encode("ascii", "surrogateescape")
+            # Restores original UTF-8 text cleanly
+            restored = from_fs_path(fs_path)
+            self.assertEqual(restored, p)
+
