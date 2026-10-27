@@ -366,12 +366,17 @@ class Plugin:
     version = "1.0.0"
 
     def on_leader_acquired(self, context):
-        """Called once, in one process cluster-wide. Start your service here."""
-        self._server = self._start_my_server()
+        """Called once, in one process cluster-wide."""
+        context["start_service"](self._run_service, name="exporter")
+
+    def _run_service(self, stop_event):
+        while not stop_event.is_set():
+            self._publish_metrics()
+            stop_event.wait(10)
 
     def on_leader_lost(self, context):
-        """Called when this process's lease is released or expires. Stop your service here."""
-        self._stop_my_server()
+        """Called after Dispatcharr signals and joins the service thread."""
+        self._close_plugin_resources()
 ```
 
 ```json
@@ -384,6 +389,10 @@ class Plugin:
 **Manifest version 2 and later require the capability.** Unlike `background_tasks`, nothing about `on_leader_acquired` can be inferred from the rest of the manifest, so version `2` plugins without `persistent_service` are skipped by leader election: `on_leader_acquired` is never called. Versions `0` and `1` remain non-enforcing during the transition period. Declaring the capability shows users an itemized capability prompt the first time they enable your plugin, the same as `background_tasks` (see `manifest_version` and `capabilities`, above).
 
 Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read), `code_dir`, `data_dir`, and `logger`, with no `actions`.
+
+Use `context["start_service"](target, name=None)` to start exactly one persistent service. Dispatcharr owns its native OS thread and gives `target` one argument, a `threading.Event` named `stop_event`. Check or wait on that event frequently and release sockets and external resources promptly when it is set. Dispatcharr signals it and waits briefly for the thread whenever leadership is lost, the plugin is disabled or reloaded, or the worker shuts down.
+
+Do not call `gevent.spawn`, `gevent.spawn_later`, or instantiate `threading.Thread` for persistent plugin work. Celery processes can have gevent monkey-patching without a running gevent hub. `start_service` is available only in leadership hooks. For finite background work, use an `async: true` action or `context["dispatch_task"]` instead.
 
 Things every service plugin must handle:
 - **Bind failures on takeover.** The previous leader's socket may still be closing (`TIME_WAIT`) when a new leader binds. Set `SO_REUSEADDR`, and give `on_leader_acquired` its own short bind retry.
