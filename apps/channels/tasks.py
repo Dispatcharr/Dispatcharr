@@ -32,7 +32,13 @@ from apps.epg.models import EPGData
 from core.models import CoreSettings
 from core.utils import acquire_task_lock, release_task_lock
 
-from django.db import InterfaceError, OperationalError, close_old_connections
+from django.db import (
+    DataError,
+    InterfaceError,
+    OperationalError,
+    close_old_connections,
+    transaction,
+)
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import tempfile
@@ -523,6 +529,7 @@ def _evaluate_series_rules_locked(tvg_id, result):
         with_effective_values,
     )
     from apps.epg.models import ProgramData
+    from apps.epg.query_utils import parse_text_query
 
     rules = CoreSettings.get_dvr_series_rules()
     if not isinstance(rules, list) or not rules:
@@ -664,8 +671,6 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 start_time__lte=horizon,
             )
 
-        from apps.epg.query_utils import parse_text_query
-
         if series_title:
             if title_mode == "exact":
                 programs_qs = programs_qs.filter(title__iexact=series_title)
@@ -683,7 +688,25 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 parse_text_query("description", description, use_regex=use_regex, whole_words=whole_words)
             )
 
-        programs = list(programs_qs.distinct().order_by("start_time"))
+        # A bad regex (or any other DataError) must not abort the whole
+        # evaluation run. Use a savepoint so later rules still evaluate.
+        try:
+            with transaction.atomic():
+                programs = list(programs_qs.distinct().order_by("start_time"))
+        except DataError as exc:
+            logger.warning(
+                "Series rule skipped (invalid query): tvg_id=%s title=%s error=%s",
+                rv_tvg,
+                series_title,
+                exc,
+            )
+            result["details"].append({
+                "tvg_id": rv_tvg,
+                "title": series_title,
+                "status": "invalid_query",
+                "error": str(exc),
+            })
+            continue
         # Current EPG listings for this rule, used so the identity-less time
         # window can tell "this recording's original slot is still listed"
         # (a nearby programme is a different airing) from "the slot is gone"

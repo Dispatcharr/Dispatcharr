@@ -11,7 +11,7 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.core.paginator import Paginator
-from django.db import connection, transaction
+from django.db import DataError, connection, transaction
 from django.db.models import (
     Count,
     Exists,
@@ -4445,6 +4445,33 @@ class SeriesRulesAPIView(APIView):
         if not title.strip() and not description.strip():
             return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        from apps.epg.query_utils import validate_program_text_query
+
+        if title.strip() and title_mode != "exact":
+            title_error = validate_program_text_query(
+                "title",
+                title,
+                use_regex=(title_mode == "regex"),
+                whole_words=(title_mode == "search"),
+            )
+            if title_error:
+                return Response(
+                    {"error": f"Invalid title pattern: {title_error}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        if description.strip():
+            description_error = validate_program_text_query(
+                "description",
+                description,
+                use_regex=(description_mode == "regex"),
+                whole_words=(description_mode == "search"),
+            )
+            if description_error:
+                return Response(
+                    {"error": f"Invalid description pattern: {description_error}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         # Coerce / validate optional pinned channel
         pinned_channel_id = None
         if channel_id not in (None, ""):
@@ -4665,7 +4692,15 @@ class SeriesRulePreviewAPIView(APIView):
 
         # Apply "new" filter in Python (custom_properties JSON lookup), but only
         # over the bounded result set we already filtered down to.
-        candidates = list(qs[:limit * 4])  # small overshoot to allow new-only filtering
+        try:
+            with transaction.atomic():
+                # Small overshoot so mode=new filtering still has room to trim.
+                candidates = list(qs[:limit * 4])
+        except DataError as exc:
+            return Response(
+                {"error": f"Invalid search pattern: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         untagged_is_new = mode == "new" and bool(data.get("untagged_is_new"))
         if mode == "new":
             candidates = [
