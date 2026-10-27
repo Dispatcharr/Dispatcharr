@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **ISO 8601 (`YYYY-MM-DD`) is available as a UI date format.** Settings → UI Settings → Date format now offers `YYYY-MM-DD` alongside `MM/DD/YYYY` and `DD/MM/YYYY`. With it selected, every date the UI renders from the preference uses the same year-first form: tables and log timestamps (`2026-10-07`), the Guide header and DVR cards/modals (`Wednesday, 2026-10-07`), date pickers, and System Events. (Closes #1375)
+- **UI date format supports ISO 8601.** Settings → UI Settings → Date format now includes `YYYY-MM-DD`, which displays dates in year-first order across tables, the Guide, DVR views, date pickers, and System Events. (Closes #1375) - Thanks [@LarsSimonsen](https://github.com/LarsSimonsen)
 - **Plugin manifests can declare capabilities that require administrator approval.** Enabling a plugin now shows the access it requests, including background work, persistent services, network listeners, outbound connections, subprocesses, filesystem writes, approved internal tasks, proxy internals, and user data. An update that adds a capability asks for approval again before it can run with the new access.
 - **Plugins can run asynchronous actions with progress and task history.** Manifest actions can dispatch background work, report progress to the UI, and retain recent run status across page loads. (Closes #699)
 - **Plugins can run leader-elected persistent services.** A plugin can register long-running lifecycle work that runs on one eligible process at a time.
