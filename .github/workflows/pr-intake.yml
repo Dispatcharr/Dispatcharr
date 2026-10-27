@@ -1,10 +1,8 @@
 name: "PR: Intake"
 
 on:
-  pull_request_target:
-    types: [opened, closed]
-  pull_request_review:
-    types: [submitted]
+  schedule:
+    - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -28,6 +26,7 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           dry-run: ${{ inputs.dry_run || 'false' }}
           review-label: In Review
+          closed-lookback-days: 7
           intake-comment: |
             ## Pull request received
 
