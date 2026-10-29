@@ -25,8 +25,29 @@ from apps.m3u.models import M3UAccount
 from apps.m3u.connection_pool import (
     pool_has_capacity_for_profile,
     release_profile_slot,
+    release_ua_slot,
     reserve_profile_slot,
+    reserve_ua_slot,
 )
+
+
+def _release_stream_ua_slot(redis_client, profile_id, stream_id):
+    """Return a stream's per-connection UA slot number to its free list.
+
+    No-op when the stream never had one (vary_user_agent off, or the account
+    changed after the connection started).
+    """
+    if stream_id is None:
+        return
+    ua_slot_key = f"stream_ua_slot:{stream_id}"
+    ua_slot_bytes = redis_client.get(ua_slot_key)
+    if ua_slot_bytes is None:
+        return
+    try:
+        release_ua_slot(profile_id, int(ua_slot_bytes), redis_client)
+    except (TypeError, ValueError):
+        pass
+    redis_client.delete(ua_slot_key)
 
 
 # Add fallback functions if Redis isn't available
@@ -349,6 +370,9 @@ class Stream(models.Model):
             )
             if reserved:
                 redis_client.set(scoped_key, preferred_profile_id)
+                if m3u_account.vary_user_agent:
+                    ua_slot = reserve_ua_slot(profile.id, redis_client)
+                    redis_client.set(f"stream_ua_slot:{self.id}", ua_slot)
                 return self.id, preferred_profile_id, None, True
             return (
                 None,
@@ -404,6 +428,9 @@ class Stream(models.Model):
                 # Preview-owned key only. Never write channel_stream or the bare
                 # stream_profile key used by live channel assignments.
                 redis_client.set(preview_key, profile.id)
+                if m3u_account.vary_user_agent:
+                    ua_slot = reserve_ua_slot(profile.id, redis_client)
+                    redis_client.set(f"stream_ua_slot:{self.id}", ua_slot)
                 return self.id, profile.id, None, True
 
         return None, None, "All active M3U profiles have reached maximum connection limits", False
@@ -486,6 +513,7 @@ class Stream(models.Model):
                     f"Stream {stream_id}: no profile found in {scoped_key}"
                 )
                 return False
+            _release_stream_ua_slot(redis_client, m3u_profile_id, stream_id)
             return claim_and_release_profile_slot(
                 redis_client,
                 metadata_key,
@@ -509,6 +537,7 @@ class Stream(models.Model):
         logger.debug(
             f"Stream {stream_id}: found preview profile_id={profile_id}"
         )
+        _release_stream_ua_slot(redis_client, profile_id, stream_id)
         return claim_and_release_profile_slot(
             redis_client,
             metadata_key,
@@ -1044,6 +1073,9 @@ class Channel(models.Model):
                     # Slot reserved — assign stream to this channel
                     redis_client.set(f"channel_stream:{self.id}", stream.id)
                     redis_client.set(f"stream_profile:{stream.id}", profile.id)
+                    if m3u_account.vary_user_agent:
+                        ua_slot = reserve_ua_slot(profile.id, redis_client)
+                        redis_client.set(f"stream_ua_slot:{stream.id}", ua_slot)
                     logger.info(
                         f"Channel {self.uuid}: assigned stream {stream.id} "
                         f"profile {profile.id} ({profile.name})"
@@ -1126,6 +1158,7 @@ class Channel(models.Model):
                 # Clean up any remaining keys
                 redis_client.delete(f"channel_stream:{self.id}")
                 redis_client.delete(f"stream_profile:{stream_id}")
+                _release_stream_ua_slot(redis_client, profile_id, stream_id)
                 return claim_and_release_profile_slot(
                     redis_client,
                     metadata_key,
@@ -1169,6 +1202,7 @@ class Channel(models.Model):
             f"stream {stream_id}"
         )
 
+        _release_stream_ua_slot(redis_client, profile_id, stream_id)
         return claim_and_release_profile_slot(
             redis_client,
             metadata_key,

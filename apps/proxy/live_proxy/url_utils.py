@@ -20,6 +20,32 @@ import requests
 logger = get_logger()
 
 
+def _get_stream_ua_slot(stream_id, m3u_account):
+    """Return the per-connection UA slot number reserved for this stream.
+
+    Only looked up when the account has vary_user_agent on (see
+    M3UAccount.get_user_agent_string), so accounts that don't use the
+    feature pay no extra Redis round trip. The slot itself is reserved in
+    Channel.get_stream() at connection time and released on teardown (see
+    apps/channels/models.py's _release_stream_ua_slot and server.py's
+    stop_channel cleanup).
+    """
+    if not m3u_account.vary_user_agent:
+        return None
+    from core.utils import RedisClient
+
+    redis_client = RedisClient.get_client()
+    if not redis_client:
+        return None
+    ua_slot_bytes = redis_client.get(f"stream_ua_slot:{stream_id}")
+    if ua_slot_bytes is None:
+        return None
+    try:
+        return int(ua_slot_bytes)
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_live_stream_url(stream, m3u_account, m3u_profile):
     """
     Build the upstream URL for live playback.
@@ -221,7 +247,9 @@ def generate_stream_url(
                 # Prefer the profile's account so select_related populates the UA.
                 m3u_account = m3u_profile.m3u_account or stream.m3u_account
 
-                stream_user_agent = m3u_account.get_user_agent_string()
+                stream_user_agent = m3u_account.get_user_agent_string(
+                    connection_index=_get_stream_ua_slot(stream.id, m3u_account)
+                )
 
                 stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
                 if not stream_url:
@@ -297,7 +325,9 @@ def generate_stream_url(
                 ).get(id=profile_id)
 
             m3u_account = m3u_profile.m3u_account
-            stream_user_agent = m3u_account.get_user_agent_string()
+            stream_user_agent = m3u_account.get_user_agent_string(
+                connection_index=_get_stream_ua_slot(stream.id, m3u_account)
+            )
 
             stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
             if not stream_url:
