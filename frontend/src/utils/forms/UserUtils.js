@@ -91,9 +91,11 @@ export const userToFormValues = (user) => {
     dvr_access:
       customProps.dvr_access === DVR_ACCESS.NONE ||
       customProps.dvr_access === DVR_ACCESS.VIEW ||
+      customProps.dvr_access === DVR_ACCESS.REQUEST ||
       customProps.dvr_access === DVR_ACCESS.MANAGE
         ? customProps.dvr_access
         : DVR_ACCESS.VIEW,
+    dvr_quota_mb: customProps.dvr_quota_mb || 0,
     epg_days: storedEpgDay(customProps.epg_days),
     epg_prev_days: storedEpgDay(customProps.epg_prev_days),
     allowed_ips: [
@@ -163,7 +165,9 @@ export const formValuesToPayload = (values, existingUser) => {
   } else {
     const level = payload.dvr_access;
     customProps.dvr_access =
-      level === DVR_ACCESS.NONE || level === DVR_ACCESS.MANAGE
+      level === DVR_ACCESS.NONE ||
+      level === DVR_ACCESS.REQUEST ||
+      level === DVR_ACCESS.MANAGE
         ? level
         : DVR_ACCESS.VIEW;
   }
@@ -171,6 +175,12 @@ export const formValuesToPayload = (values, existingUser) => {
   // Drop any leftover dual-flag keys from earlier drafts of this feature.
   delete customProps.dvr_view_enabled;
   delete customProps.dvr_manage_enabled;
+
+  // Per-user DVR storage quota in MB; 0/blank = unlimited.
+  const quotaRaw = payload.dvr_quota_mb;
+  const quota = typeof quotaRaw === 'number' ? quotaRaw : parseInt(quotaRaw, 10) || 0;
+  customProps.dvr_quota_mb = quota > 0 ? quota : 0;
+  delete payload.dvr_quota_mb;
 
   writeEpgDay(customProps, 'epg_days', payload.epg_days, existingUser);
   delete payload.epg_days;
@@ -216,6 +226,7 @@ export const getFormInitialValues = () => {
     vod_movies_enabled: true,
     vod_series_enabled: true,
     dvr_access: DVR_ACCESS.VIEW,
+    dvr_quota_mb: 0,
     epg_days: '',
     epg_prev_days: '',
     allowed_ips: [],

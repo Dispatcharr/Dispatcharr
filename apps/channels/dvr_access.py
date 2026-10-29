@@ -6,10 +6,11 @@ _DVR_ACCESS = "dvr_access"
 
 DVR_ACCESS_NONE = "none"
 DVR_ACCESS_VIEW = "view"
+DVR_ACCESS_REQUEST = "request"
 DVR_ACCESS_MANAGE = "manage"
 
 _VALID_LEVELS = frozenset(
-    {DVR_ACCESS_NONE, DVR_ACCESS_VIEW, DVR_ACCESS_MANAGE}
+    {DVR_ACCESS_NONE, DVR_ACCESS_VIEW, DVR_ACCESS_REQUEST, DVR_ACCESS_MANAGE}
 )
 
 
@@ -47,16 +48,48 @@ def is_dvr_manage_enabled(*, user=None):
     return get_dvr_access(user=user) == DVR_ACCESS_MANAGE
 
 
+def is_dvr_request_enabled(*, user=None):
+    """Return whether *user* may request/own their own recordings.
+
+    True for ``request`` and ``manage`` (manage implies request); admins are
+    always ``manage``. Distinct from full DVR management: a request-only
+    user may schedule and delete recordings they own, but not touch other
+    users' recordings, DVR settings, or recurring rules.
+    """
+    return get_dvr_access(user=user) in (DVR_ACCESS_REQUEST, DVR_ACCESS_MANAGE)
+
+
 def is_dvr_view_enabled(*, user=None):
     """Return whether *user* may list and play DVR recordings."""
-    return get_dvr_access(user=user) in (DVR_ACCESS_VIEW, DVR_ACCESS_MANAGE)
+    return get_dvr_access(user=user) in (
+        DVR_ACCESS_VIEW,
+        DVR_ACCESS_REQUEST,
+        DVR_ACCESS_MANAGE,
+    )
 
 
 def recordings_queryset_for_user(queryset, user):
-    """Scope *queryset* of Recording rows to channels *user* may access.
+    """Scope *queryset* of Recording rows to what *user* may see.
 
     Admins see every recording. Everyone else, DVR managers included, is
     limited to recordings on channels within their ``user_level``, the
-    hide-adult-content preference, and their assigned channel profiles.
+    hide-adult-content preference, and their assigned channel profiles --
+    all handled centrally by ``scope_by_channel_access``.
+
+    Request-tier users are further scoped to only their own recordings (a
+    RecordingRequest row for them) -- they can schedule/own recordings, so
+    "their own" is meaningful for them, and this is what makes per-user DVR
+    privacy real rather than everyone with request access seeing everyone
+    else's requests. View-only and manage-tier users keep the existing
+    shared-library behavior: everything on channels they can access, same
+    as before this tier existed.
     """
-    return scope_by_channel_access(queryset, user)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return queryset.none()
+
+    queryset = scope_by_channel_access(queryset, user)
+
+    if get_dvr_access(user=user) == DVR_ACCESS_REQUEST:
+        queryset = queryset.filter(requests__user=user).distinct()
+
+    return queryset
