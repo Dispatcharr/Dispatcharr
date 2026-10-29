@@ -4,8 +4,10 @@ the ownership lock is held, and failed inits must tear down Redis/local state
 immediately instead of leaving a dead session behind.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import gevent
 from django.http import StreamingHttpResponse
 from django.test import RequestFactory, SimpleTestCase
 
@@ -50,6 +52,58 @@ def _configure_init_lock_mocks(proxy_server):
         lambda channel_id: proxy_server._channels_setting_up.discard(channel_id)
     )
     return lock
+
+
+CLIENT_WAIT_TIMEOUT_TARGET = (
+    "apps.proxy.live_proxy.config_helper.ConfigHelper.client_wait_timeout"
+)
+
+
+class WaitLocalChannelReadyTests(SimpleTestCase):
+    """A same-worker follower waits on the leader's in-memory setup state only."""
+
+    def setUp(self):
+        self.proxy = SimpleNamespace(
+            stream_buffers={},
+            client_managers={},
+            _channels_setting_up={CHANNEL_ID},
+        )
+
+    def _wait(self, timeout=2):
+        from apps.proxy.live_proxy.views import _wait_for_local_channel_ready
+
+        with patch(CLIENT_WAIT_TIMEOUT_TARGET, return_value=timeout):
+            return _wait_for_local_channel_ready(self.proxy, CHANNEL_ID)
+
+    def test_ready_when_leader_publishes_resources_and_clears_claim_together(self):
+        def leader():
+            gevent.sleep(0.02)
+            self.proxy.stream_buffers[CHANNEL_ID] = object()
+            self.proxy.client_managers[CHANNEL_ID] = object()
+            self.proxy._channels_setting_up.discard(CHANNEL_ID)
+
+        gevent.spawn(leader)
+
+        self.assertTrue(self._wait())
+
+    def test_ready_as_soon_as_resources_exist_while_claim_is_held(self):
+        def leader():
+            gevent.sleep(0.02)
+            self.proxy.stream_buffers[CHANNEL_ID] = object()
+            self.proxy.client_managers[CHANNEL_ID] = object()
+
+        gevent.spawn(leader)
+
+        self.assertTrue(self._wait())
+        self.assertIn(CHANNEL_ID, self.proxy._channels_setting_up)
+
+    def test_not_ready_when_claim_ends_without_resources(self):
+        gevent.spawn_later(0.02, self.proxy._channels_setting_up.discard, CHANNEL_ID)
+
+        self.assertFalse(self._wait())
+
+    def test_not_ready_when_wait_timeout_elapses(self):
+        self.assertFalse(self._wait(timeout=0.1))
 
 
 class CleanupFailedInitTests(SimpleTestCase):
@@ -133,6 +187,41 @@ class InitializeChannelOwnershipOrderTests(SimpleTestCase):
             )
             if isinstance(mapping, dict):
                 self.assertNotEqual(mapping.get("state"), "initializing")
+
+    def test_no_url_while_setting_up_does_not_tear_down_leader(self):
+        """Follower initialize_channel(None) must not clean up the leader's setup."""
+        redis = MagicMock()
+        redis.exists.return_value = True
+        # temp_init metadata: stream_id present, no state, no url yet
+        redis.hgetall.return_value = {"stream_id": "23799", "temp_init": "1"}
+        redis.get.return_value = "test-host:1"
+        server = make_proxy_server(redis)
+        server._channel_unavailable_for_new_clients = MagicMock(return_value=False)
+        server._has_local_upstream_activity = MagicMock(return_value=True)
+        server._stop_local_stream_activity = MagicMock()
+        server.get_channel_owner = MagicMock(return_value=server.worker_id)
+        leader_buffer = object()
+        leader_clients = object()
+        server.stream_buffers[CHANNEL_ID] = leader_buffer
+        server.client_managers[CHANNEL_ID] = leader_clients
+        server._channels_setting_up.add(CHANNEL_ID)
+
+        with patch("apps.proxy.live_proxy.server.StreamBuffer") as mock_buffer, \
+                patch("apps.proxy.live_proxy.server.ClientManager") as mock_clients, \
+                patch("apps.proxy.live_proxy.server.RedisClient"), \
+                patch("apps.proxy.live_proxy.server.close_old_connections"), \
+                patch.object(server, "_cleanup_failed_init") as mock_cleanup:
+            result = server.initialize_channel(None, CHANNEL_ID)
+
+        self.assertFalse(result)
+        mock_cleanup.assert_not_called()
+        server._has_local_upstream_activity.assert_not_called()
+        server._stop_local_stream_activity.assert_not_called()
+        mock_buffer.assert_not_called()
+        mock_clients.assert_not_called()
+        self.assertIs(server.stream_buffers.get(CHANNEL_ID), leader_buffer)
+        self.assertIs(server.client_managers.get(CHANNEL_ID), leader_clients)
+        self.assertIn(CHANNEL_ID, server._channels_setting_up)
 
     def test_writes_initializing_only_after_ownership(self):
         redis = MagicMock()
@@ -381,6 +470,153 @@ class StreamTsEarlyOwnershipTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.get_stream_object")
     @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
     @patch("apps.proxy.live_proxy.views.ProxyServer")
+    def test_same_worker_follower_waits_when_local_resources_missing(
+        self,
+        mock_proxy_cls,
+        _network_ok,
+        mock_get_stream_object,
+        mock_channel_service,
+        mock_generate_url,
+        _output_profile,
+        _output_format,
+        mock_create_generator,
+        _mock_close,
+    ):
+        """Follower must wait for the leader's buffers instead of init-with-no-URL.
+
+        Leader has claimed `_channels_setting_up` and written temp Redis metadata
+        without a URL. The follower attaches, finds no local resources, and must
+        not call initialize_channel(None): that path used to tear down the leader
+        via _cleanup_failed_init.
+        """
+        channel = MagicMock()
+        channel.id = 1
+        channel.uuid = self.channel_id
+        channel.name = "Test Channel"
+        channel.get_stream_profile.return_value.is_redirect.return_value = False
+        mock_get_stream_object.return_value = channel
+        mock_channel_service.is_channel_unavailable_for_new_clients.return_value = False
+
+        proxy_server = MagicMock()
+        proxy_server.redis_client.exists.return_value = True
+        proxy_server.redis_client.hgetall.return_value = {
+            "stream_id": "23799",
+            "temp_init": "1",
+        }
+        proxy_server.redis_client.hmget.return_value = (None, None, None)
+        proxy_server.check_if_channel_exists.return_value = True
+        _configure_init_lock_mocks(proxy_server)
+        proxy_server._channels_setting_up.add(self.channel_id)
+        # Leader has not created local resources yet
+        proxy_server.stream_buffers = {}
+        proxy_server.client_managers = {}
+        proxy_server.am_i_owner.return_value = False
+        proxy_server.get_buffer.return_value = MagicMock()
+        proxy_server.ensure_output_profile.return_value = True
+        mock_proxy_cls.get_instance.return_value = proxy_server
+        mock_create_generator.return_value = lambda: iter([b"chunk"])
+
+        leader_buffer = MagicMock()
+        leader_clients = MagicMock()
+
+        def publish_leader_resources():
+            gevent.sleep(0.02)
+            proxy_server.stream_buffers[self.channel_id] = leader_buffer
+            proxy_server.client_managers[self.channel_id] = leader_clients
+            proxy_server._channels_setting_up.discard(self.channel_id)
+
+        from apps.proxy.live_proxy.views import stream_ts
+
+        with patch(
+            "apps.proxy.live_proxy.views._channel_setup_needed",
+            return_value=(True, None, False),
+        ), patch(CLIENT_WAIT_TIMEOUT_TARGET, return_value=2):
+            gevent.spawn(publish_leader_resources)
+            response = stream_ts(
+                self.factory.get(f"/proxy/ts/stream/{self.channel_id}/"),
+                self.channel_id,
+            )
+
+        self.assertIsInstance(response, StreamingHttpResponse)
+        proxy_server.try_acquire_ownership.assert_not_called()
+        mock_generate_url.assert_not_called()
+        mock_channel_service.initialize_channel.assert_not_called()
+        proxy_server.initialize_channel.assert_not_called()
+        self.assertIs(proxy_server.stream_buffers[self.channel_id], leader_buffer)
+        self.assertIs(proxy_server.client_managers[self.channel_id], leader_clients)
+
+    @patch("apps.proxy.live_proxy.views.close_old_connections")
+    @patch("apps.proxy.live_proxy.views.create_stream_generator")
+    @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
+    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views.generate_stream_url")
+    @patch("apps.proxy.live_proxy.views.ChannelService")
+    @patch("apps.proxy.live_proxy.views.get_stream_object")
+    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.ProxyServer")
+    def test_same_worker_follower_errors_when_leader_setup_fails(
+        self,
+        mock_proxy_cls,
+        _network_ok,
+        mock_get_stream_object,
+        mock_channel_service,
+        mock_generate_url,
+        _output_profile,
+        _output_format,
+        mock_create_generator,
+        _mock_close,
+    ):
+        """If the leader clears setting_up without resources, follower must not hang."""
+        from django.http import JsonResponse
+
+        channel = MagicMock()
+        channel.id = 1
+        channel.uuid = self.channel_id
+        channel.name = "Test Channel"
+        channel.get_stream_profile.return_value.is_redirect.return_value = False
+        mock_get_stream_object.return_value = channel
+        mock_channel_service.is_channel_unavailable_for_new_clients.return_value = False
+
+        proxy_server = MagicMock()
+        proxy_server.redis_client.exists.return_value = False
+        proxy_server.redis_client.hgetall.return_value = {}
+        proxy_server.check_if_channel_exists.return_value = False
+        _configure_init_lock_mocks(proxy_server)
+        proxy_server._channels_setting_up.add(self.channel_id)
+        proxy_server.stream_buffers = {}
+        proxy_server.client_managers = {}
+        mock_proxy_cls.get_instance.return_value = proxy_server
+
+        def abandon_setup():
+            gevent.sleep(0.02)
+            proxy_server._channels_setting_up.discard(self.channel_id)
+
+        from apps.proxy.live_proxy.views import stream_ts
+
+        with patch(
+            "apps.proxy.live_proxy.views._channel_setup_needed",
+            return_value=(True, None, False),
+        ), patch(CLIENT_WAIT_TIMEOUT_TARGET, return_value=2):
+            gevent.spawn(abandon_setup)
+            response = stream_ts(
+                self.factory.get(f"/proxy/ts/stream/{self.channel_id}/"),
+                self.channel_id,
+            )
+
+        self.assertIsInstance(response, JsonResponse)
+        self.assertEqual(response.status_code, 503)
+        proxy_server.initialize_channel.assert_not_called()
+        mock_create_generator.assert_not_called()
+
+    @patch("apps.proxy.live_proxy.views.close_old_connections")
+    @patch("apps.proxy.live_proxy.views.create_stream_generator")
+    @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
+    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views.generate_stream_url")
+    @patch("apps.proxy.live_proxy.views.ChannelService")
+    @patch("apps.proxy.live_proxy.views.get_stream_object")
+    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_claim_lock_released_before_stream_url_fetch(
         self,
         mock_proxy_cls,
@@ -601,3 +837,76 @@ class CheckIfChannelExistsOwnerWithoutMetadataTests(SimpleTestCase):
 
         self.assertFalse(server.check_if_channel_exists(CHANNEL_ID))
         server._clean_redis_keys.assert_not_called()
+
+
+class CheckOrphanedMetadataMidInitTests(SimpleTestCase):
+    """Initial metadata has no owner field yet; the owner lock decides."""
+
+    OTHER_WORKER = "other-host:2"
+    INITIAL_METADATA = {"stream_id": "233", "temp_init": "1792260823.709"}
+
+    def _server(self, metadata, owner=None, live_workers=(), client_count=0):
+        """Server over a fake Redis holding one channel's metadata and owner lock."""
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+        metadata_key = RedisKeys.channel_metadata(CHANNEL_ID)
+        owner_key = RedisKeys.channel_owner(CHANNEL_ID)
+        heartbeats = {RedisKeys.worker_heartbeat(w) for w in live_workers}
+
+        redis = MagicMock()
+        redis.keys.return_value = [metadata_key]
+        redis.hgetall.return_value = dict(metadata)
+        redis.get.side_effect = lambda key: owner if key == owner_key else None
+        redis.exists.side_effect = lambda key: key in heartbeats
+        redis.scard.return_value = client_count
+        server = make_proxy_server(redis)
+        server._stop_upstream_before_redis_cleanup = MagicMock()
+        server._clean_redis_keys = MagicMock()
+        return server
+
+    def test_initializing_channel_owned_by_live_worker_is_not_cleaned(self):
+        server = self._server(
+            self.INITIAL_METADATA,
+            owner=self.OTHER_WORKER,
+            live_workers=[self.OTHER_WORKER],
+        )
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_not_called()
+        server._stop_upstream_before_redis_cleanup.assert_not_called()
+
+    def test_initializing_channel_owned_by_this_worker_is_not_cleaned(self):
+        # No heartbeat key: the sweeping worker owns the channel it is starting.
+        server = self._server(self.INITIAL_METADATA, owner="test-host:1")
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_not_called()
+        server._stop_upstream_before_redis_cleanup.assert_not_called()
+
+    def test_metadata_without_owner_field_or_lock_is_cleaned(self):
+        server = self._server(self.INITIAL_METADATA)
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)
+
+    def test_metadata_with_lock_of_dead_worker_is_cleaned(self):
+        server = self._server(self.INITIAL_METADATA, owner=self.OTHER_WORKER)
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)
+
+    def test_metadata_owner_field_of_dead_worker_is_still_cleaned(self):
+        # The lock fallback only applies when the metadata has no owner field.
+        server = self._server(
+            {**self.INITIAL_METADATA, "owner": "dead-host:9", "state": "active"},
+            owner=self.OTHER_WORKER,
+            live_workers=[self.OTHER_WORKER],
+        )
+
+        server._check_orphaned_metadata()
+
+        server._clean_redis_keys.assert_called_once_with(CHANNEL_ID)

@@ -35,6 +35,14 @@ const errorNotification = (message, error) => {
   throw error;
 };
 
+const hasChannelGroupChange = (update) =>
+  Object.prototype.hasOwnProperty.call(update, 'channel_group_id') ||
+  update.override === null ||
+  Object.prototype.hasOwnProperty.call(
+    update.override ?? {},
+    'channel_group_id'
+  );
+
 // FormData cannot encode null. Empty string clears hash_key so the account
 // inherits the global M3U Hash Key (same as JSON body sending null).
 const appendPlaylistFormData = (body, values) => {
@@ -187,7 +195,7 @@ export default class API {
         }
       );
 
-      return response;
+      return response ?? true;
     } catch (e) {
       // Setup IP policy blocks are explained inline on SuperuserForm.
       if (e?.status === 403 && e?.body?.setup_allowed === false) {
@@ -205,7 +213,7 @@ export default class API {
         body: { username, password },
       });
 
-      return response;
+      return response ?? true;
     } catch (e) {
       errorNotification('Login failed', e);
     }
@@ -578,7 +586,9 @@ export default class API {
 
   static async getChannelGroups() {
     try {
-      const response = await request(`${host}/api/channels/groups/`);
+      const response = await request(`${host}/api/channels/groups/`, {
+        cache: 'no-store',
+      });
 
       return response;
     } catch (e) {
@@ -622,35 +632,68 @@ export default class API {
       });
 
       if (response.id) {
-        useChannelsStore.getState().updateChannelGroup(response);
+        const { demoted_group: demotedGroup, ...updatedGroup } = response;
+        const processGroup = (group) => ({
+          ...group,
+          hasChannels: group.channel_count > 0,
+          hasM3UAccounts: group.m3u_account_count > 0,
+          canEdit: group.m3u_account_count === 0 || group.is_custom,
+          canDelete:
+            group.channel_count === 0 && group.m3u_account_count === 0,
+        });
+        if (demotedGroup) {
+          useChannelsStore
+            .getState()
+            .updateChannelGroup(processGroup(demotedGroup));
+        }
+        useChannelsStore.getState().updateChannelGroup(processGroup(updatedGroup));
+        if (!demotedGroup) {
+          await useChannelsStore.getState().fetchChannelGroups();
+        }
       }
 
       return response;
     } catch (e) {
       errorNotification('Failed to update channel group', e);
+      throw e;
     }
   }
 
   static async deleteChannelGroup(id) {
     try {
-      await request(`${host}/api/channels/groups/${id}/`, {
+      const response = await request(`${host}/api/channels/groups/${id}/`, {
         method: 'DELETE',
       });
 
-      // Remove from store after successful deletion
+      // DELETE returns 204 with no response body, so remove it directly.
       useChannelsStore.getState().removeChannelGroup(id);
 
-      return true;
+      return response ?? true;
     } catch (e) {
       errorNotification('Failed to delete channel group', e);
       throw e;
     }
   }
 
-  static async cleanupUnusedChannelGroups() {
+  static async unclaimChannelGroup(id) {
+    try {
+      const response = await request(
+        `${host}/api/channels/groups/${id}/unclaim-custom/`,
+        { method: 'POST' }
+      );
+      await useChannelsStore.getState().fetchChannelGroups();
+      return response;
+    } catch (e) {
+      errorNotification('Failed to unclaim channel group', e);
+      throw e;
+    }
+  }
+
+  static async cleanupUnusedChannelGroups(includeCustom = false) {
     try {
       const response = await request(`${host}/api/channels/groups/cleanup/`, {
         method: 'POST',
+        body: { include_custom: includeCustom },
       });
 
       // Refresh channel groups to update the UI
@@ -660,6 +703,23 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to cleanup unused channel groups', e);
       throw e;
+    }
+  }
+
+  static async claimChannelGroupAsCustom(id) {
+    try {
+      const response = await request(
+        `${host}/api/channels/groups/${id}/claim-custom/`,
+        {
+          method: 'POST',
+        }
+      );
+      if (response.id) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
+      return response;
+    } catch (e) {
+      errorNotification('Failed to claim channel group as custom', e);
     }
   }
 
@@ -801,6 +861,9 @@ export default class API {
       );
 
       useChannelsStore.getState().updateChannel(response);
+      if (hasChannelGroupChange(payload)) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
       if (Object.prototype.hasOwnProperty.call(payload, 'streams')) {
         await API.requeryStreams();
       }
@@ -909,6 +972,10 @@ export default class API {
         });
       }
 
+      if (hasChannelGroupChange(values)) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
+
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
@@ -925,6 +992,10 @@ export default class API {
           body: updates,
         }
       );
+
+      if (updates.some(hasChannelGroupChange)) {
+        await useChannelsStore.getState().fetchChannelGroups();
+      }
 
       return response;
     } catch (e) {
@@ -2306,11 +2377,26 @@ export default class API {
     }
   }
 
-  static async importPlugin(file, overwrite = false, silent = false) {
+  static async reloadPlugin(key) {
+    try {
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/reload/`,
+        { method: 'POST' }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reload plugin', e);
+    }
+  }
+
+  static async importPlugin(file, overwrite = false, silent = false, acknowledgeCapabilities = []) {
     try {
       const form = new FormData();
       form.append('file', file);
       if (overwrite) form.append('overwrite', 'true');
+      for (const capability of acknowledgeCapabilities) {
+        form.append('acknowledge_capabilities', capability);
+      }
       const response = await request(`${host}/api/plugins/plugins/import/`, {
         method: 'POST',
         body: form,
@@ -2362,6 +2448,26 @@ export default class API {
     }
   }
 
+  static async uploadPluginField(key, fieldId, file) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      return await request(
+        `${host}/api/plugins/plugins/${key}/fields/${fieldId}/upload/`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+    } catch (e) {
+      errorNotification('Failed to upload file', e);
+      throw e;
+    }
+  }
+
+  // Response is either {success, result} (synchronous) or
+  // {success, status: 'started', task_id} (async; see plugin_task_progress/
+  // plugin_task_complete in WebSocket.jsx).
   static async runPluginAction(key, action, params = {}) {
     try {
       const response = await request(
@@ -2377,13 +2483,25 @@ export default class API {
     }
   }
 
-  static async setPluginEnabled(key, enabled) {
+  // Bounded, best-effort history of past async task runs for this plugin
+  // (see apps/plugins/task_history.py), used to rehydrate the Tasks panel
+  // on page load / in a second tab, not just tasks started in this session.
+  static async getPluginTaskHistory(key) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/tasks/`);
+      return response?.tasks || [];
+    } catch {
+      return [];
+    }
+  }
+
+  static async setPluginEnabled(key, enabled, acknowledge_capabilities = []) {
     try {
       const response = await request(
         `${host}/api/plugins/plugins/${key}/enabled/`,
         {
           method: 'POST',
-          body: { enabled },
+          body: { enabled, acknowledge_capabilities },
         }
       );
       return response;
@@ -2456,6 +2574,22 @@ export default class API {
     }
   }
 
+  static async getPluginManifestMessages() {
+    try {
+      const response = await request(`${host}/api/plugins/repos/messages/`);
+      return response.messages || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin messages', e);
+      return [];
+    }
+  }
+
+  static async dismissPluginManifestMessage(messageId) {
+    return request(`${host}/api/plugins/repos/messages/${messageId}/dismiss/`, {
+      method: 'POST',
+    });
+  }
+
   static async getPluginDetailManifest(repoId, manifestUrl) {
     try {
       const response = await request(
@@ -2500,8 +2634,10 @@ export default class API {
         body: data,
       });
     } catch (e) {
+      if (e.status === 409 && e.body?.error_code === 'capability_confirmation_required') {
+        return e.body;
+      }
       errorNotification('Failed to install plugin', e);
-      return null;
     }
   }
 
@@ -3523,6 +3659,43 @@ export default class API {
       method: 'PATCH',
       body: data,
     });
+  }
+
+  static _userAppDataPath(userId, key = null) {
+    const base =
+      userId == null || userId === 'me'
+        ? `${host}/api/accounts/users/me/app-data/`
+        : `${host}/api/accounts/users/${userId}/app-data/`;
+    if (!key) {
+      return base;
+    }
+    return `${base}${encodeURIComponent(key)}/`;
+  }
+
+  static async getUserAppData(userId) {
+    try {
+      return await request(API._userAppDataPath(userId));
+    } catch (e) {
+      errorNotification('Failed to fetch app data', e);
+    }
+  }
+
+  static async getUserAppDataValue(userId, key) {
+    try {
+      return await request(API._userAppDataPath(userId, key));
+    } catch (e) {
+      errorNotification('Failed to fetch app data', e);
+    }
+  }
+
+  static async clearUserAppData(userId, key = null) {
+    try {
+      return await request(API._userAppDataPath(userId, key), {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to clear app data', e);
+    }
   }
 
   static async getUsers() {

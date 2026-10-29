@@ -4,6 +4,8 @@ import PluginDetailPanel from '../PluginDetailPanel';
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../utils/components/pluginUtils.js', () => ({
+  appVersionMeetsMaximum: vi.fn(),
+  appVersionMeetsMinimum: vi.fn(),
   compareVersions: vi.fn(),
   buildCompatibilityTooltip: vi.fn(),
   buildVersionSelectItems: vi.fn(),
@@ -31,9 +33,11 @@ vi.mock('lucide-react', () => ({
   ),
   Ban: ({ size }) => <svg data-testid="icon-ban" data-size={size} />,
   Download: ({ size }) => <svg data-testid="icon-download" data-size={size} />,
+  Info: ({ size }) => <svg data-testid="icon-info" data-size={size} />,
   RefreshCw: ({ size }) => (
     <svg data-testid="icon-refresh-cw" data-size={size} />
   ),
+  Scale: ({ size }) => <svg data-testid="icon-scale" data-size={size} />,
   ShieldAlert: ({ size }) => (
     <svg data-testid="icon-shield-alert" data-size={size} />
   ),
@@ -41,6 +45,7 @@ vi.mock('lucide-react', () => ({
     <svg data-testid="icon-shield-check" data-size={size} />
   ),
   Trash2: ({ size }) => <svg data-testid="icon-trash2" data-size={size} />,
+  User: ({ size }) => <svg data-testid="icon-user" data-size={size} />,
 }));
 
 // ── Mantine core mock ──────────────────────────────────────────────────────────
@@ -104,6 +109,13 @@ vi.mock('@mantine/core', async () => ({
   ),
   Group: ({ children }) => <div>{children}</div>,
   Loader: ({ size }) => <span data-testid="loader" data-size={size} />,
+  Popover: Object.assign(
+    ({ children }) => <div>{children}</div>,
+    {
+      Target: ({ children }) => <div>{children}</div>,
+      Dropdown: ({ children }) => <div>{children}</div>,
+    }
+  ),
   Select: ({ label, value, onChange, data, disabled }) => (
     <select
       data-testid="version-select"
@@ -141,6 +153,8 @@ vi.mock('@mantine/core', async () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import {
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
   compareVersions,
   buildCompatibilityTooltip,
   buildVersionSelectItems,
@@ -209,6 +223,8 @@ describe('PluginDetailPanel', () => {
     vi.clearAllMocks();
     // default: every compareVersions call returns 0 (versions equal) unless
     // individual tests override it
+    vi.mocked(appVersionMeetsMinimum).mockReturnValue(true);
+    vi.mocked(appVersionMeetsMaximum).mockReturnValue(true);
     vi.mocked(compareVersions).mockReturnValue(0);
     vi.mocked(buildCompatibilityTooltip).mockReturnValue('1.0.0 or newer');
     // default: buildVersionSelectItems returns two standard items so that
@@ -267,17 +283,25 @@ describe('PluginDetailPanel', () => {
       );
       expect(screen.queryByText('A useful plugin.')).not.toBeInTheDocument();
     });
+
+    it('keeps the description while hiding duplicate header metadata', () => {
+      render(<PluginDetailPanel {...defaultProps({ hideMetadata: true })} />);
+      expect(screen.getByText('A useful plugin.')).toBeInTheDocument();
+      expect(screen.queryByText('Test Author')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'MIT' })).not.toBeInTheDocument();
+    });
   });
 
-  // ── Author & license badges ────────────────────────────────────────────────
+  // ── Author & license metadata ──────────────────────────────────────────────
 
-  describe('author and license badges', () => {
-    it('renders author badge', () => {
+  describe('author and license metadata', () => {
+    it('renders author metadata without an information badge', () => {
       render(<PluginDetailPanel {...defaultProps()} />);
       expect(screen.getByText('Test Author')).toBeInTheDocument();
+      expect(screen.queryByText('AUTHOR')).not.toBeInTheDocument();
     });
 
-    it('does not render author badge when author is absent', () => {
+    it('does not render author metadata when author is absent', () => {
       render(
         <PluginDetailPanel
           {...defaultProps({ detail: makeDetail({ author: null }) })}
@@ -286,132 +310,20 @@ describe('PluginDetailPanel', () => {
       expect(screen.queryByText('Test Author')).not.toBeInTheDocument();
     });
 
-    it('renders license badge as a link to spdx.org', () => {
+    it('renders license metadata as a link to spdx.org', () => {
       render(<PluginDetailPanel {...defaultProps()} />);
-      const badge = screen
-        .getAllByTestId('badge')
-        .find((el) => el.tagName === 'A' && el.href?.includes('spdx.org'));
-      expect(badge).toBeTruthy();
-      expect(badge.href).toContain('MIT');
+      const link = screen.getByRole('link', { name: 'MIT' });
+      expect(link.href).toContain('spdx.org');
+      expect(link.href).toContain('MIT');
     });
 
-    it('does not render license badge when license is absent', () => {
+    it('does not render license metadata when license is absent', () => {
       render(
         <PluginDetailPanel
           {...defaultProps({ detail: makeDetail({ license: null }) })}
         />
       );
-      const badges = screen.getAllByTestId('badge');
-      expect(badges.find((b) => b.href?.includes('spdx.org'))).toBeUndefined();
-    });
-  });
-
-  // ── Signature badges ───────────────────────────────────────────────────────
-
-  describe('signature badge', () => {
-    it('shows "Verified Signature" badge when signature_verified is true', () => {
-      render(<PluginDetailPanel {...defaultProps()} />);
-      expect(screen.getByText('Verified Signature')).toBeInTheDocument();
-      expect(screen.getByTestId('icon-shield-check')).toBeInTheDocument();
-    });
-
-    it('shows "Unverified" badge when signature_verified is false', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({}, { signature_verified: false }),
-          })}
-        />
-      );
-      expect(screen.getByText('Unverified')).toBeInTheDocument();
-      expect(screen.getByTestId('icon-shield-alert')).toBeInTheDocument();
-    });
-
-    it('renders no signature badge when signature_verified is null', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({}, { signature_verified: null }),
-          })}
-        />
-      );
-      expect(screen.queryByText('Verified Signature')).not.toBeInTheDocument();
-      expect(screen.queryByText('Unverified')).not.toBeInTheDocument();
-    });
-  });
-
-  // ── GitHub link ────────────────────────────────────────────────────────────
-
-  describe('GitHub link', () => {
-    it('renders GitHub icon linking to repo_url', () => {
-      render(<PluginDetailPanel {...defaultProps()} />);
-      expect(screen.getByTestId('github-icon')).toBeInTheDocument();
-      const link = screen
-        .getAllByTestId('action-icon')
-        .find((el) => el.href?.includes('github.com'));
-      expect(link).toBeTruthy();
-    });
-
-    it('does not render GitHub icon when repo_url is absent', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({ detail: makeDetail({ repo_url: null }) })}
-        />
-      );
-      expect(screen.queryByTestId('github-icon')).not.toBeInTheDocument();
-    });
-  });
-
-  // ── Discord link ───────────────────────────────────────────────────────────
-
-  describe('Discord link', () => {
-    it('renders Discord icon when discord_thread is set', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({
-              discord_thread: 'https://example.com/discord',
-            }),
-          })}
-        />
-      );
-      expect(screen.getByTestId('discord-icon')).toBeInTheDocument();
-    });
-
-    it('does not render Discord icon when discord_thread is null', () => {
-      render(<PluginDetailPanel {...defaultProps()} />);
-      expect(screen.queryByTestId('discord-icon')).not.toBeInTheDocument();
-    });
-
-    it('rewrites discord.com/channels URL to discord:// protocol', () => {
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({
-              discord_thread: 'https://discord.com/channels/123/456',
-            }),
-          })}
-        />
-      );
-      const link = screen
-        .getAllByTestId('action-icon')
-        .find((el) => el.href?.startsWith('discord://'));
-      expect(link).toBeTruthy();
-    });
-
-    it('keeps non-discord.com/channels URL unchanged', () => {
-      const url = 'https://discord.gg/invite/abc';
-      render(
-        <PluginDetailPanel
-          {...defaultProps({
-            detail: makeDetail({ discord_thread: url }),
-          })}
-        />
-      );
-      const link = screen
-        .getAllByTestId('action-icon')
-        .find((el) => el.href === url);
-      expect(link).toBeTruthy();
+      expect(screen.queryByRole('link', { name: 'MIT' })).not.toBeInTheDocument();
     });
   });
 
@@ -706,6 +618,7 @@ describe('PluginDetailPanel', () => {
         if (a === '1.5.0' && b === '2.0.0') return -1;
         return 0;
       });
+      vi.mocked(appVersionMeetsMinimum).mockReturnValue(false);
       const detail = makeDetail({
         versions: [makeVersion('2.0.0', { min_dispatcharr_version: '2.0.0' })],
         latest: { version: '2.0.0' },
@@ -725,6 +638,7 @@ describe('PluginDetailPanel', () => {
         if (a === '1.5.0' && b === '2.0.0') return -1;
         return 0;
       });
+      vi.mocked(appVersionMeetsMinimum).mockReturnValue(false);
       vi.mocked(buildCompatibilityTooltip).mockReturnValue('2.0.0 or newer');
       const detail = makeDetail({
         versions: [makeVersion('2.0.0', { min_dispatcharr_version: '2.0.0' })],
@@ -764,6 +678,68 @@ describe('PluginDetailPanel', () => {
       });
       render(<PluginDetailPanel {...defaultProps({ detail })} />);
       expect(screen.queryByText('File Size')).not.toBeInTheDocument();
+    });
+
+    it('renders a formatted version download count', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { download_count: 12345 })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText('Downloads')).toBeInTheDocument();
+      expect(screen.getByText('12,345')).toBeInTheDocument();
+    });
+
+    it('does not render a version download count when absent', () => {
+      render(<PluginDetailPanel {...defaultProps()} />);
+      expect(screen.queryByText('Downloads')).not.toBeInTheDocument();
+    });
+
+    it('links numeric changelogs to the Dispatcharr Plugins pull request', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog: 459 })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText('Changelog')).toBeInTheDocument();
+      expect(screen.getByText('PR #459').closest('a')).toHaveAttribute(
+        'href',
+        'https://github.com/Dispatcharr/Plugins/pull/459'
+      );
+    });
+
+    it('links numeric-string changelogs to the Dispatcharr Plugins pull request', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog: '459' })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText('PR #459').closest('a')).toHaveAttribute(
+        'href',
+        'https://github.com/Dispatcharr/Plugins/pull/459'
+      );
+    });
+
+    it('links URL changelogs to their supplied URL', () => {
+      const changelog = 'https://example.com/changelog';
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.getByText(changelog).closest('a')).toHaveAttribute(
+        'href',
+        changelog
+      );
+    });
+
+    it('omits unsupported changelog values', () => {
+      const detail = makeDetail({
+        versions: [makeVersion('2.0.0', { changelog: 'javascript:alert(1)' })],
+        latest: { version: '2.0.0' },
+      });
+      render(<PluginDetailPanel {...defaultProps({ detail })} />);
+      expect(screen.queryByText('Changelog')).not.toBeInTheDocument();
     });
 
     it('renders min version row when present', () => {

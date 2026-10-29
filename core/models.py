@@ -845,6 +845,8 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "stream_startup_timeout": 8,
+            "connection_timeout": 10,
             "validate_redirect_urls": True,
         })
 
@@ -981,6 +983,7 @@ class SystemNotification(models.Model):
         ANNOUNCEMENT = 'announcement', 'System Announcement'
         WARNING = 'warning', 'Warning'
         INFO = 'info', 'Information'
+        PLUGIN_UPDATE = 'plugin_update', 'Plugin Update Available'
 
     class Priority(models.TextChoices):
         LOW = 'low', 'Low'
@@ -991,6 +994,7 @@ class SystemNotification(models.Model):
     class Source(models.TextChoices):
         SYSTEM = 'system', 'System Generated'
         DEVELOPER = 'developer', 'Developer Notification'
+        PLUGIN_MANIFEST = 'plugin_manifest', 'Plugin System Notification'
 
     # Unique identifier for the notification (e.g., 'version-0.19.0', 'setting-proxy-buffer')
     # This allows deduplication and targeted dismissals

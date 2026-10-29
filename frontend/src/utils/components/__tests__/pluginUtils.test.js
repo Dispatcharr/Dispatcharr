@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   compareVersions,
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
   buildCompatibilityTooltip,
   buildVersionSelectItems,
+  isDevelopmentBuild,
   getInstallInfo,
 } from '../pluginUtils.js';
 
@@ -97,6 +100,72 @@ describe('pluginUtils', () => {
       it('returns 0 when b is undefined', () => {
         expect(compareVersions('1.0.0', undefined)).toBe(0);
       });
+    });
+  });
+
+  describe('application compatibility', () => {
+    it('recognizes a timestamped development version', () => {
+      expect(isDevelopmentBuild('v0.33.0-20261025232733')).toBe(true);
+    });
+
+    it('recognizes a development build from the API timestamp', () => {
+      expect(isDevelopmentBuild('0.33.0', '20261025232733')).toBe(true);
+    });
+
+    it('lets development builds satisfy immediate patch, minor, and major minimums', () => {
+      expect(
+        [
+          '0.33.1',
+          '0.34.0',
+          '1.0.0',
+        ].every((minVersion) =>
+          appVersionMeetsMinimum(
+            'v0.33.0-20261025232733',
+            minVersion
+          )
+        )
+      ).toBe(true);
+    });
+
+    it('keeps already-supported minimums compatible for development builds', () => {
+      expect(
+        appVersionMeetsMinimum('v0.33.0-20261025232733', '0.30.0')
+      ).toBe(true);
+      expect(
+        appVersionMeetsMaximum(
+          '0.33.0',
+          '0.34.0',
+          '20261025232733',
+          '0.30.0'
+        )
+      ).toBe(true);
+    });
+
+    it('does not let development builds satisfy farther future minimums', () => {
+      expect(
+        appVersionMeetsMinimum('v0.33.0-20261025232733', '0.35.0')
+      ).toBe(false);
+      expect(
+        appVersionMeetsMinimum('v0.33.0-20261025232733', '2.0.0')
+      ).toBe(false);
+    });
+
+    it('keeps stable builds subject to the minimum', () => {
+      expect(appVersionMeetsMinimum('0.33.0', '0.34.0')).toBe(false);
+    });
+
+    it('evaluates maximum version constraints against the development target', () => {
+      expect(
+        appVersionMeetsMaximum(
+          '0.33.0',
+          '0.34.0',
+          '20261025232733',
+          '0.34.0'
+        )
+      ).toBe(true);
+      expect(
+        appVersionMeetsMaximum('0.33.0', '0.33.0', '20261025232733')
+      ).toBe(false);
     });
   });
 

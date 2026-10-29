@@ -11,8 +11,17 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.core.paginator import Paginator
-from django.db import connection, transaction
-from django.db.models import Count, Prefetch, Q
+from django.db import DataError, connection, transaction
+from django.db.models import (
+    Count,
+    Exists,
+    IntegerField,
+    OuterRef,
+    Prefetch,
+    Q,
+    Subquery,
+    Value,
+)
 from django.db.models.functions import Coalesce
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
@@ -40,6 +49,7 @@ from apps.channels.dvr_access import (
     recordings_queryset_for_user,
 )
 from apps.channels.dvr_quota import user_dvr_quota_exceeded
+from apps.m3u.models import M3UAccount
 
 from core.models import CoreSettings
 from core.utils import (
@@ -59,6 +69,8 @@ from .models import (
     Stream,
     Channel,
     ChannelGroup,
+    ChannelGroupM3UAccount,
+    ChannelOverride,
     ChannelStream,
     Logo,
     ChannelProfile,
@@ -696,11 +708,42 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return permissions_for_action(self)
 
+    @staticmethod
+    def _has_effective_channels(group):
+        return Channel.objects.annotate(
+            effective_group_id=Coalesce(
+                "override__channel_group_id",
+                "channel_group_id",
+            )
+        ).filter(effective_group_id=group.id).exists()
+
+    @staticmethod
+    def _with_effective_channel_count(queryset):
+        """Annotate groups with their override-aware channel totals."""
+        effective_channel_count = (
+            Channel.objects.annotate(
+                effective_group_id=Coalesce(
+                    "override__channel_group_id",
+                    "channel_group_id",
+                )
+            )
+            .filter(effective_group_id=OuterRef("pk"))
+            .order_by()
+            .values("effective_group_id")
+            .annotate(count=Count("id"))
+            .values("count")[:1]
+        )
+        return queryset.annotate(
+            channel_count=Coalesce(
+                Subquery(effective_channel_count),
+                Value(0),
+                output_field=IntegerField(),
+            )
+        )
+
     def get_queryset(self):
-        # Annotate both counts at the SQL level so the serializer methods
-        # can read them from the object rather than issuing a COUNT per row.
-        # `distinct=True` is required when multiple reverse-FK annotations
-        # share the same queryset to avoid row-multiplication artifacts.
+        # Annotate group metadata for serializer access. List channel totals
+        # are computed separately with one effective-group aggregation query.
         # m3u_accounts is still prefetched for the nested serializer data.
         user = getattr(self.request, 'user', None)
         self._visible_group_counts = None
@@ -728,14 +771,38 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             }
             return ChannelGroup.objects.filter(
                 pk__in=self._visible_group_counts.keys()
+            ).annotate(
+                is_custom=Exists(
+                    ChannelGroupM3UAccount.objects.filter(
+                        channel_group_id=OuterRef('pk'),
+                        m3u_account__locked=True,
+                    )
+                )
             ).only('id', 'name')
 
         return (
             ChannelGroup.objects.annotate(
-                channel_count=Count('channels', distinct=True),
-                m3u_account_count=Count('m3u_accounts', distinct=True),
+                is_custom=Exists(
+                    ChannelGroupM3UAccount.objects.filter(
+                        channel_group_id=OuterRef('pk'),
+                        m3u_account__locked=True,
+                    )
+                ),
+                m3u_account_count=Count(
+                    'm3u_accounts',
+                    filter=Q(m3u_accounts__m3u_account__locked=False),
+                    distinct=True,
+                ),
             )
-            .prefetch_related('m3u_accounts')
+            .prefetch_related(
+                Prefetch(
+                    'm3u_accounts',
+                    queryset=ChannelGroupM3UAccount.objects.exclude(
+                        m3u_account__locked=True
+                    ),
+                    to_attr='_provider_m3u_account_relations',
+                )
+            )
         )
 
     def list(self, request, *args, **kwargs):
@@ -756,6 +823,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
                         'id': g.id,
                         'name': g.name,
                         'channel_count': counts.get(g.id, 0),
+                        'is_custom': g.is_custom,
                         'm3u_account_count': 0,
                         'm3u_accounts': [],
                     }
@@ -764,6 +832,25 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             )
 
         group_ids = [g.id for g in groups]
+
+        # Count effective groups in one GROUP BY query rather than using a
+        # correlated count subquery for every group in the list query.
+        effective_group_counts = {
+            row['gid']: row['c']
+            for row in (
+                Channel.objects.annotate(
+                    gid=Coalesce(
+                        'override__channel_group_id',
+                        'channel_group_id',
+                    )
+                )
+                .filter(gid__in=group_ids)
+                .values('gid')
+                .annotate(c=Count('id'))
+            )
+        }
+        for group in groups:
+            group.channel_count = effective_group_counts.get(group.id, 0)
 
         # Pre-aggregate stream counts for all (account, group) pairs in a
         # single query so the nested ChannelGroupM3UAccountSerializer never
@@ -793,34 +880,52 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     def update(self, request, *args, **kwargs):
-        """Override update to check M3U associations"""
-        instance = self.get_object()
-
-        # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
-            return Response(
-                {"error": "Cannot edit group with M3U account associations"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        return super().update(request, *args, **kwargs)
+        return self._update_group(request, partial=False)
 
     def partial_update(self, request, *args, **kwargs):
-        """Override partial_update to check M3U associations"""
-        instance = self.get_object()
+        return self._update_group(request, partial=True)
 
-        # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
+    def _update_group(self, request, partial):
+        """Rename claimed provider groups without changing their provider identity."""
+        instance = self.get_object()
+        has_provider_accounts = instance.provider_m3u_accounts().exists()
+        is_custom = instance.m3u_accounts.filter(m3u_account__locked=True).exists()
+
+        if has_provider_accounts and not is_custom:
             return Response(
                 {"error": "Cannot edit group with M3U account associations"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return super().partial_update(request, *args, **kwargs)
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial,
+        )
+        serializer.is_valid(raise_exception=True)
+        name = serializer.validated_data.get("name", instance.name)
+
+        if has_provider_accounts and name != instance.name:
+            with transaction.atomic():
+                renamed_group = ChannelGroup.objects.create_manual(name=name)
+                instance.channels.filter(auto_created=False).update(
+                    channel_group=renamed_group
+                )
+                instance.m3u_accounts.filter(m3u_account__locked=True).delete()
+                demoted_group = ChannelGroup.objects.get(pk=instance.pk)
+            response_data = self.get_serializer(renamed_group).data
+            response_data["demoted_group"] = self.get_serializer(demoted_group).data
+            return Response(response_data)
+
+        serializer.save()
+        return Response(serializer.data)
 
     @extend_schema(
         methods=["POST"],
-        description="Delete all channel groups that have no associations (no channels or M3U accounts)",
+        description=(
+            "Delete unused provider-only channel groups. Set include_custom=true "
+            "to also delete unused custom groups."
+        ),
     )
     @action(
         detail=False,
@@ -829,22 +934,37 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         permission_classes=[IsAdmin],
     )
     def cleanup_unused_groups(self, request):
-        """Delete all channel groups with no channels or M3U account associations"""
-        from django.db.models import Q, Exists, OuterRef
-
-        # Find groups with no channels and no M3U account associations using Exists subqueries
+        """Delete unused provider-only groups, optionally including custom groups."""
+        # Find groups with no channels or provider associations using Exists subqueries.
         from .models import Channel, ChannelGroupM3UAccount
 
-        has_channels = Channel.objects.filter(channel_group_id=OuterRef('pk'))
-        has_accounts = ChannelGroupM3UAccount.objects.filter(channel_group_id=OuterRef('pk'))
+        has_channels = Channel.objects.annotate(
+            effective_group_id=Coalesce(
+                "override__channel_group_id",
+                "channel_group_id",
+            )
+        ).filter(effective_group_id=OuterRef("pk"))
+        has_provider_accounts = ChannelGroupM3UAccount.objects.filter(
+            channel_group_id=OuterRef('pk'),
+            m3u_account__locked=False,
+        )
+        has_custom_account = ChannelGroupM3UAccount.objects.filter(
+            channel_group_id=OuterRef('pk'),
+            m3u_account__locked=True,
+        )
+        include_custom = request.data.get("include_custom", False)
+        include_custom = str(include_custom).lower() in {"1", "true", "yes"}
 
         unused_groups = ChannelGroup.objects.annotate(
             has_channels=Exists(has_channels),
-            has_accounts=Exists(has_accounts)
+            has_provider_accounts=Exists(has_provider_accounts),
+            has_custom_account=Exists(has_custom_account),
         ).filter(
             has_channels=False,
-            has_accounts=False
+            has_provider_accounts=False,
         )
+        if not include_custom:
+            unused_groups = unused_groups.filter(has_custom_account=False)
 
         deleted_count = unused_groups.count()
         group_names = list(unused_groups.values_list('name', flat=True))
@@ -858,19 +978,60 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             "deleted_groups": group_names
         })
 
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="claim-custom",
+        permission_classes=[IsAdmin],
+    )
+    def claim_custom(self, request, *args, **kwargs):
+        """Mark a group as custom so provider cleanup cannot remove it."""
+        instance = self.get_object()
+        ChannelGroup.objects.mark_custom(instance)
+        return Response(
+            self.get_serializer(
+                self._with_effective_channel_count(
+                    ChannelGroup.objects.filter(pk=instance.pk)
+                ).get()
+            ).data
+        )
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="unclaim-custom",
+        permission_classes=[IsAdmin],
+    )
+    def unclaim_custom(self, request, *args, **kwargs):
+        """Remove custom ownership from a group with no assigned channels."""
+        instance = self.get_object()
+        if self._has_effective_channels(instance):
+            return Response(
+                {"error": "Cannot unclaim group with associated channels"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.m3u_accounts.filter(m3u_account__locked=True).delete()
+        return Response(
+            self.get_serializer(
+                self._with_effective_channel_count(
+                    ChannelGroup.objects.filter(pk=instance.pk)
+                ).get()
+            ).data
+        )
+
     def destroy(self, request, *args, **kwargs):
         """Override destroy to check for associations before deletion"""
         instance = self.get_object()
 
         # Check if group has associated channels
-        if instance.channels.exists():
+        if self._has_effective_channels(instance):
             return Response(
                 {"error": "Cannot delete group with associated channels"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
+        if instance.provider_m3u_accounts().exists():
             return Response(
                 {"error": "Cannot delete group with M3U account associations"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -935,6 +1096,9 @@ class ChannelPagination(PageNumberPagination):
 class EPGFilter(django_filters.Filter):
     """
     Filter channels by effective EPG source name or null (unlinked).
+
+    Comma-separated tokens are exact source names. ``null`` selects
+    channels with no effective EPG.
     """
     def filter(self, queryset, value):
         if not value:
@@ -951,7 +1115,10 @@ class EPGFilter(django_filters.Filter):
                 query |= Q(override__epg_data__isnull=True, epg_data__isnull=True)
             else:
                 query |= effective_related_name_lookup_q(
-                    "epg_data", val, name_path="epg_source__name"
+                    "epg_data",
+                    val,
+                    lookup="exact",
+                    name_path="epg_source__name",
                 )
 
         return queryset.filter(query)
@@ -960,7 +1127,12 @@ class EPGFilter(django_filters.Filter):
 class ChannelFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(method="filter_effective_name")
     channel_group = django_filters.CharFilter(method="filter_effective_channel_group")
-    epg = EPGFilter()
+    epg = EPGFilter(
+        help_text=(
+            "Comma-separated exact EPG source names. "
+            "Use null for channels with no effective EPG."
+        )
+    )
 
     class Meta:
         model = Channel
@@ -1423,6 +1595,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # Apply all updates in a transaction
         with transaction.atomic():
             streams_updates = []
+            manual_groups_to_mark = set()
             for channel, validated_data in validated_updates:
                 # Streams (M2M) and override (reverse OneToOne) cannot
                 # ride the setattr loop; handle each separately below.
@@ -1430,6 +1603,11 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 if streams is not None:
                     streams_updates.append((channel, streams))
                 validated_data.pop("override", None)
+                if (
+                    not channel.auto_created
+                    and validated_data.get("channel_group") is not None
+                ):
+                    manual_groups_to_mark.add(validated_data["channel_group"])
                 for key, value in validated_data.items():
                     setattr(channel, key, value)
 
@@ -1448,6 +1626,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         fields=list(all_fields),
                         batch_size=100
                     )
+
+            for group in manual_groups_to_mark:
+                try:
+                    ChannelGroup.objects.mark_custom(group)
+                except M3UAccount.DoesNotExist:
+                    # The locked account is created by a data migration and
+                    # can be absent from isolated test fixtures.
+                    continue
 
             # On unhide under compact mode, assign a number so the
             # channel is immediately addressable by clients.
@@ -3176,7 +3362,9 @@ class GetChannelStreamsAPIView(APIView):
         )
         # Order the streams by channelstream__order to match the order in the channel view
         streams = channel.streams.all().order_by("channelstream__order")
-        serializer = StreamSerializer(streams, many=True)
+        serializer = StreamSerializer(
+            streams, many=True, context={"request": request}
+        )
         return Response(serializer.data)
 
 
@@ -3434,14 +3622,14 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
 def _stop_dvr_clients(channel_uuid, recording_id=None):
     """Stop DVR recording clients for a channel.
 
-    If recording_id is provided, only the client whose User-Agent contains that
-    recording ID is stopped (safe for simultaneous recordings on the same channel).
-    If recording_id is None, all Dispatcharr-DVR clients for the channel are stopped
-    (used by destroy() when deleting a recording whose task_id is unknown).
+    If recording_id is provided, only the client whose User-Agent exactly matches
+    dispatcharr_dvr_user_agent(recording_id) is stopped (safe for simultaneous
+    recordings on the same channel; recording-4 must not also match recording-42).
+    If recording_id is None, all Dispatcharr-DVR clients for the channel are stopped.
 
     Returns the number of DVR clients stopped.
     """
-    from core.utils import RedisClient
+    from core.utils import RedisClient, dispatcharr_dvr_user_agent
     from apps.proxy.live_proxy.redis_keys import RedisKeys
     from apps.proxy.live_proxy.services.channel_service import ChannelService
 
@@ -3462,7 +3650,8 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
             # When a recording_id is specified, only stop the client for that recording.
             # Each run_recording task connects with User-Agent "Dispatcharr-DVR/recording-{id}",
             # so we can safely target just this recording without affecting others on the channel.
-            if recording_id is not None and f"recording-{recording_id}" not in ua_s:
+            # Exact match: recording-4 must not also match recording-42.
+            if recording_id is not None and ua_s != dispatcharr_dvr_user_agent(recording_id):
                 continue
             try:
                 ChannelService.stop_client(channel_uuid, cid)
@@ -4336,10 +4525,11 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 logger.debug(f"Unable to prune empty parents for {path}: {ex}")
 
         def _background_cancel():
-            # Only stop the DVR client if the recording was actively streaming.
-            # Stopping for completed/upcoming recordings would kill an unrelated
-            # in-progress recording on the same channel.
-            if rec_status == "recording":
+            # Stop this recording's DVR client when it was streaming or was just
+            # stopped (stop() writes "stopped" before its background teardown
+            # finishes). Completed/upcoming deletes have no client to tear down;
+            # _stop_dvr_clients exact-matches by recording id either way.
+            if rec_status in ("recording", "stopped"):
                 try:
                     stopped = _stop_dvr_clients(channel_uuid, recording_id=recording_id)
                     if stopped:
@@ -4485,6 +4675,33 @@ class SeriesRulesAPIView(APIView):
             return Response({"error": "description_mode must be one of contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
         if not title.strip() and not description.strip():
             return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.epg.query_utils import validate_program_text_query
+
+        if title.strip() and title_mode != "exact":
+            title_error = validate_program_text_query(
+                "title",
+                title,
+                use_regex=(title_mode == "regex"),
+                whole_words=(title_mode == "search"),
+            )
+            if title_error:
+                return Response(
+                    {"error": f"Invalid title pattern: {title_error}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        if description.strip():
+            description_error = validate_program_text_query(
+                "description",
+                description,
+                use_regex=(description_mode == "regex"),
+                whole_words=(description_mode == "search"),
+            )
+            if description_error:
+                return Response(
+                    {"error": f"Invalid description pattern: {description_error}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         # Coerce / validate optional pinned channel
         pinned_channel_id = None
@@ -4706,7 +4923,15 @@ class SeriesRulePreviewAPIView(APIView):
 
         # Apply "new" filter in Python (custom_properties JSON lookup), but only
         # over the bounded result set we already filtered down to.
-        candidates = list(qs[:limit * 4])  # small overshoot to allow new-only filtering
+        try:
+            with transaction.atomic():
+                # Small overshoot so mode=new filtering still has room to trim.
+                candidates = list(qs[:limit * 4])
+        except DataError as exc:
+            return Response(
+                {"error": f"Invalid search pattern: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         untagged_is_new = mode == "new" and bool(data.get("untagged_is_new"))
         if mode == "new":
             candidates = [

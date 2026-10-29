@@ -225,6 +225,35 @@ class ProgramSearchAPIViewTests(TestCase):
         for program in response.json()["results"]:
             self.assertTrue(program["title"].startswith("Premier"))
 
+    def test_title_regex_lookahead_is_one_pattern(self):
+        """A lookahead stays in the regex instead of being split into a 500."""
+        for title in ("Devils at the Garden", "upcoming Devils preview"):
+            ProgramData.objects.create(
+                epg=self.epg,
+                title=title,
+                start_time=self.now,
+                end_time=self.now + timedelta(hours=1),
+            )
+        response = self.client.get(
+            SEARCH_URL,
+            {"title": r"^(?!.*upcoming).*Devils", "title_regex": "true"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = {r["title"] for r in response.json()["results"]}
+        self.assertIn("Devils at the Garden", titles)
+        self.assertNotIn("upcoming Devils preview", titles)
+
+    def test_title_regex_or_is_still_boolean(self):
+        """title_regex still ORs terms. It does not treat OR as literal text."""
+        response = self.client.get(
+            SEARCH_URL, {"title": "Premier OR Newcastle", "title_regex": "true"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = {r["title"] for r in response.json()["results"]}
+        self.assertIn("Premier League Football", titles)
+        self.assertIn("Newcastle vs Villa", titles)
+        self.assertNotIn("BBC News at Ten", titles)
+
     def test_title_parenthetical_grouping(self):
         """Parenthetical groups with AND/OR are evaluated correctly."""
         # (Newcastle OR Football) AND (Villa OR League) should match both seeded programs:
@@ -239,6 +268,26 @@ class ProgramSearchAPIViewTests(TestCase):
         self.assertIn("Newcastle vs Villa", titles)
         self.assertNotIn("BBC News at Ten", titles)
         self.assertNotIn("Nature Documentary", titles)
+
+    def test_title_invalid_regex_returns_400(self):
+        response = self.client.get(
+            SEARCH_URL, {"title": r"(?<league>x)", "title_regex": "true"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid search pattern", response.json()["error"])
+
+    def test_title_quoted_phrase_next_to_text_does_not_return_500(self):
+        response = self.client.get(SEARCH_URL, {"title": '"Premier" League'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(
+            response.json()["results"][0]["title"], "Premier League Football"
+        )
+
+    def test_title_unbalanced_paren_matches_nothing(self):
+        response = self.client.get(SEARCH_URL, {"title": "Premier ("})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()["count"], 0)
 
     # ------------------------------------------------------------------
     # Description search

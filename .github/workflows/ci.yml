@@ -25,7 +25,7 @@ jobs:
       timestamp: ${{ steps.timestamp.outputs.timestamp }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -83,7 +83,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # no per-job outputs here; shared metadata comes from the `prepare` job
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}

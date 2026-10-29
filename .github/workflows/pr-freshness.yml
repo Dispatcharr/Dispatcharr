@@ -9,10 +9,10 @@ jobs:
   freshness:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v3
         id: app-token
         with:
-          app-id: ${{ secrets.BOT_APP_ID }}
+          client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
       - uses: Dispatcharr/repo-bot/actions/pr-freshness@v1
@@ -26,8 +26,10 @@ jobs:
           check-maintainer-responded-stale: true
           check-compliance: true
           compliance-marker: repo-bot:pr-compliance
+          check-drafts: true
           enforcement: close
           bypass-for-members: true
+          bypass-labels: On Hold
           stale-message: |
             ## PR needs attention
 
@@ -44,3 +46,17 @@ jobs:
             > **To continue:**
             > 1. Address the outstanding feedback or merge conflicts
             > 2. Reopen this PR when it is ready to continue
+          draft-stale-message: |
+            ## Draft PR needs attention
+
+            This draft PR has been open for {inactive-days} days.
+
+            > **To keep this PR open:**
+            > 1. Mark it ready for review, or close it until you are ready to bring it to a merge decision and code review
+          draft-close-message: |
+            ## Draft PR closed due to inactivity
+
+            This draft PR remained open after its warning period elapsed.
+
+            > **To continue:**
+            > 1. Reopen this PR when it is ready for review

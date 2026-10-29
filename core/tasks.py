@@ -41,6 +41,18 @@ LOG_THROTTLE_SECONDS = 300  # 5 minutes
 # Track if this is the first scan since startup
 _first_scan_completed = False
 
+
+def parse_build_timestamp(value):
+    """Parse compact CI and ISO-8601 image build timestamps as UTC."""
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
 def throttled_log(logger_method, message, key=None, *args, **kwargs):
     """Only log messages with the same key once per throttle period"""
     if key is None:
@@ -1068,7 +1080,7 @@ def check_for_version_update():
                 return
 
             # Parse timestamps for comparison
-            local_dt = datetime.strptime(__timestamp__, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            local_dt = parse_build_timestamp(__timestamp__)
             docker_dt = datetime.fromisoformat(docker_last_updated.replace('Z', '+00:00'))
 
             # Calculate difference in minutes
@@ -1263,4 +1275,3 @@ def create_setting_recommendation(setting_key, recommended_value, reason, curren
         send_websocket_notification(notification)
 
     return notification
-

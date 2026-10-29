@@ -1,4 +1,5 @@
 import { USER_LEVEL_LABELS } from '../../constants';
+import { getPublicBaseUrl } from '../networkUtils';
 
 // Shared by the Name cell, sort, and search so they cannot disagree on what
 // "name" means (there is no backing model field).
@@ -59,4 +60,29 @@ export const getFilteredUsers = (users, search) => {
   if (!query) return users;
 
   return users.filter((user) => getSearchableText(user).includes(query));
+};
+
+// XC URLs are the only output links scoped to a user (credentials +
+// permissions). Profile M3U/EPG/HDHR links live on the Channels page.
+export const buildUserXcUrls = (user, envMode) => {
+  const xcPassword = user.custom_properties?.xc_password;
+  if (!xcPassword) return null;
+
+  const server = getPublicBaseUrl(envMode);
+  const credentials = new URLSearchParams({
+    username: user.username,
+    password: xcPassword,
+  }).toString();
+
+  return {
+    server,
+    m3u: `${server}/get.php?${credentials}`,
+    epg: `${server}/xmltv.php?${credentials}`,
+    // Multi-line blob for XC clients that take server + username + password.
+    details: [
+      `Server: ${server}`,
+      `Username: ${user.username}`,
+      `Password: ${xcPassword}`,
+    ].join('\n'),
+  };
 };

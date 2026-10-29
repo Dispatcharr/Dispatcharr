@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActionIcon,
   AppShellMain,
   Badge,
   Box,
-  Button,
   Group,
   Loader,
   NativeSelect,
@@ -14,24 +12,32 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { Package, RefreshCcw, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
 import ManageReposModal from '../components/modals/ManageReposModal.jsx';
+import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import { showNotification } from '../utils/notificationUtils.js';
-import { reloadPlugins } from '../utils/pages/PluginsUtils.js';
-import { compareVersions } from '../utils/components/pluginUtils.js';
+import {
+  appVersionMeetsMaximum,
+  appVersionMeetsMinimum,
+} from '../utils/components/pluginUtils.js';
+import PluginManifestMessages from '../components/PluginManifestMessages.jsx';
+import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
+import PluginPageActions from '../components/PluginPageActions.jsx';
 
 export default function PluginBrowsePage() {
+  usePluginPageScrollbarGutter();
   const repos = usePluginStore((s) => s.repos);
   const availablePlugins = usePluginStore((s) => s.availablePlugins);
   const availableLoading = usePluginStore((s) => s.availableLoading);
   const fetchRepos = usePluginStore((s) => s.fetchRepos);
   const fetchAvailablePlugins = usePluginStore((s) => s.fetchAvailablePlugins);
-  const refreshRepo = usePluginStore((s) => s.refreshRepo);
+  const checkForUpdates = usePluginStore((s) => s.checkForUpdates);
 
   const appVersion = useSettingsStore((s) => s.version?.version || '');
+  const appVersionTimestamp = useSettingsStore((s) => s.version?.timestamp);
 
   const [repoModalOpen, setRepoModalOpen] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -64,15 +70,14 @@ export default function PluginBrowsePage() {
     }
   }, [fetchRepos, fetchAvailablePlugins]);
 
+  // Checks every enabled repo for updates. Deliberately does NOT trigger a
+  // full Python reload of installed plugins (that's a separate, disruptive
+  // action on the My Plugins page); this only refreshes manifest/version
+  // data.
   const handleRefreshAll = useCallback(async () => {
     setRefreshingAll(true);
     try {
-      for (const repo of usePluginStore.getState().repos) {
-        await refreshRepo(repo.id);
-      }
-      await fetchAvailablePlugins();
-      await reloadPlugins();
-      usePluginStore.getState().invalidatePlugins();
+      await checkForUpdates();
       showNotification({
         title: 'Refreshed',
         message: 'All plugin repos refreshed',
@@ -87,7 +92,7 @@ export default function PluginBrowsePage() {
     } finally {
       setRefreshingAll(false);
     }
-  }, [refreshRepo, fetchAvailablePlugins]);
+  }, [checkForUpdates]);
 
   const loading = availableLoading && availablePlugins.length === 0;
 
@@ -104,6 +109,15 @@ export default function PluginBrowsePage() {
       ...Array.from(seen, ([id, name]) => ({ value: String(id), label: name })),
     ];
   }, [availablePlugins]);
+
+  const hasDownloadCounts = React.useMemo(
+    () =>
+      availablePlugins.some(
+        (plugin) =>
+          Number.isFinite(plugin.download_count) && plugin.download_count >= 0
+      ),
+    [availablePlugins]
+  );
 
   // Filter and sort plugins
   const filteredPlugins = React.useMemo(() => {
@@ -133,11 +147,17 @@ export default function PluginBrowsePage() {
     } else if (filterStatus === 'compatible') {
       list = list.filter((p) => {
         const meetsMin =
-          !p.min_dispatcharr_version ||
-          compareVersions(appVersion, p.min_dispatcharr_version) >= 0;
-        const meetsMax =
-          !p.max_dispatcharr_version ||
-          compareVersions(appVersion, p.max_dispatcharr_version) <= 0;
+          appVersionMeetsMinimum(
+            appVersion,
+            p.min_dispatcharr_version,
+            appVersionTimestamp
+          );
+        const meetsMax = appVersionMeetsMaximum(
+          appVersion,
+          p.max_dispatcharr_version,
+          appVersionTimestamp,
+          p.min_dispatcharr_version
+        );
         return meetsMin && meetsMax;
       });
     }
@@ -152,11 +172,17 @@ export default function PluginBrowsePage() {
         if (recentlyInstalledSlugs.current.has(p.slug)) return 0;
         if (recentlyUninstalledSlugs.current.has(p.slug)) return 2;
         const meetsMin =
-          !p.min_dispatcharr_version ||
-          compareVersions(appVersion, p.min_dispatcharr_version) >= 0;
-        const meetsMax =
-          !p.max_dispatcharr_version ||
-          compareVersions(appVersion, p.max_dispatcharr_version) <= 0;
+          appVersionMeetsMinimum(
+            appVersion,
+            p.min_dispatcharr_version,
+            appVersionTimestamp
+          );
+        const meetsMax = appVersionMeetsMaximum(
+          appVersion,
+          p.max_dispatcharr_version,
+          appVersionTimestamp,
+          p.min_dispatcharr_version
+        );
         if (p.deprecated) return 1;
         if (p.installed) return 2;
         if (!meetsMin || !meetsMax) return 3;
@@ -175,6 +201,15 @@ export default function PluginBrowsePage() {
           return (a.author || '').localeCompare(b.author || '');
         case 'updated':
           return (b.last_updated || '').localeCompare(a.last_updated || '');
+        case 'downloads': {
+          const aDownloads = Number.isFinite(a.download_count)
+            ? a.download_count
+            : -1;
+          const bDownloads = Number.isFinite(b.download_count)
+            ? b.download_count
+            : -1;
+          return bDownloads - aDownloads;
+        }
         default:
           return 0;
       }
@@ -188,6 +223,7 @@ export default function PluginBrowsePage() {
     filterStatus,
     sortBy,
     appVersion,
+    appVersionTimestamp,
   ]);
 
   // Reset to page 1 when filters/search/page-size change
@@ -227,36 +263,14 @@ export default function PluginBrowsePage() {
               </Badge>
             )}
           </Group>
-          <Group>
-            <Button
-              size="xs"
-              variant="light"
-              color="teal"
-              component="a"
-              href="https://github.com/Dispatcharr/Plugins?tab=contributing-ov-file"
-              target="_blank"
-              rel="noopener noreferrer"
-              leftSection={<Package size={14} />}
-            >
-              Publish Your Plugin
-            </Button>
-            <Button
-              size="xs"
-              variant="light"
-              onClick={() => setRepoModalOpen(true)}
-            >
-              Manage Repos
-            </Button>
-            <ActionIcon
-              variant="light"
-              onClick={handleRefreshAll}
-              title="Refresh all repos"
-              loading={refreshingAll}
-            >
-              <RefreshCcw size={18} />
-            </ActionIcon>
-          </Group>
+          <PluginPageActions
+            onManageRepos={() => setRepoModalOpen(true)}
+            onCheckForUpdates={handleRefreshAll}
+            checkingForUpdates={refreshingAll}
+          />
         </Group>
+
+        <PluginManifestMessages />
 
         {loading && <Loader />}
 
@@ -280,6 +294,9 @@ export default function PluginBrowsePage() {
                 { value: 'name-desc', label: 'Name Z-A' },
                 { value: 'author', label: 'Author' },
                 { value: 'updated', label: 'Recently Updated' },
+                ...(hasDownloadCounts
+                  ? [{ value: 'downloads', label: 'Download Count' }]
+                  : []),
               ]}
               style={{ width: 170 }}
             />
@@ -336,7 +353,7 @@ export default function PluginBrowsePage() {
                 key={`${p.repo_id}-${p.slug}`}
                 plugin={p}
                 appVersion={appVersion}
-                multiRepo={repos.length > 1}
+                appVersionTimestamp={appVersionTimestamp}
                 onBeforeInstall={(slug) => {
                   if (slug) {
                     if (p.install_status === 'update_available') {
@@ -398,6 +415,8 @@ export default function PluginBrowsePage() {
         opened={repoModalOpen}
         onClose={() => setRepoModalOpen(false)}
       />
+
+      <PluginEnableConfirmModal />
     </AppShellMain>
   );
 }

@@ -14,16 +14,30 @@ class PluginActionSerializer(serializers.Serializer):
         child=serializers.CharField(), required=False, allow_empty=True
     )
 
+    def get_fields(self):
+        # "async" is a Python keyword, so it can't be a class attribute above;
+        # add it here where the field name is just a dict key.
+        fields = super().get_fields()
+        fields["async"] = serializers.BooleanField(required=False, default=False)
+        return fields
+
 
 class PluginFieldOptionSerializer(serializers.Serializer):
     value = serializers.CharField()
     label = serializers.CharField()
 
 
+class PluginTableColumnSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    label = serializers.CharField(required=False, allow_blank=True)
+    type = serializers.ChoiceField(choices=["string", "number", "boolean", "select"])
+    options = PluginFieldOptionSerializer(many=True, required=False)
+
+
 class PluginFieldSerializer(serializers.Serializer):
     id = serializers.CharField()
     label = serializers.CharField(required=False, allow_blank=True)
-    type = serializers.ChoiceField(choices=["string", "number", "boolean", "select", "text", "info"])
+    type = serializers.ChoiceField(choices=["string", "number", "boolean", "select", "multiselect", "text", "info", "section", "table", "file"])
     default = serializers.JSONField(required=False)
     help_text = serializers.CharField(required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
@@ -34,6 +48,19 @@ class PluginFieldSerializer(serializers.Serializer):
     step = serializers.FloatField(required=False)
     value = serializers.CharField(required=False, allow_blank=True)
     options = PluginFieldOptionSerializer(many=True, required=False)
+    section = serializers.CharField(required=False, allow_blank=True)
+    collapsed = serializers.BooleanField(required=False, default=False)
+    columns = PluginTableColumnSerializer(many=True, required=False)
+    accept = serializers.CharField(required=False, allow_blank=True)
+    max_size = serializers.IntegerField(required=False)
+
+
+class PluginCapabilitySerializer(serializers.Serializer):
+    id = serializers.CharField()
+    group = serializers.DictField(required=False)
+    label = serializers.CharField()
+    description = serializers.CharField(required=False, allow_blank=True)
+    requires_restart = serializers.BooleanField(required=False, default=False)
 
 
 class PluginSerializer(serializers.Serializer):
@@ -47,6 +74,8 @@ class PluginSerializer(serializers.Serializer):
     fields = PluginFieldSerializer(many=True)
     settings = serializers.JSONField()
     actions = PluginActionSerializer(many=True)
+    capabilities = PluginCapabilitySerializer(many=True, required=False)
+    manifest_version = serializers.IntegerField(required=False, default=0)
     source_repo = serializers.IntegerField(required=False, allow_null=True)
     slug = serializers.CharField(required=False, allow_blank=True)
     is_managed = serializers.BooleanField(required=False)

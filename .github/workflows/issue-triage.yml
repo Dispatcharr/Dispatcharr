@@ -16,10 +16,10 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: app-token
         with:
-          app-id: ${{ secrets.BOT_APP_ID }}
+          client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
       - uses: Dispatcharr/repo-bot/actions/issue-triage@v1
@@ -30,11 +30,10 @@ jobs:
           provider-key: ${{ secrets.OPENROUTER_API_KEY }}
           provider-base-url: https://openrouter.ai/api/v1
           provider-model: ${{ vars.TRIAGE_MODEL }}
-          # context-repository: Dispatcharr/Dispatcharr
           context-branch: dev
           context-files: README.md,CHANGELOG.md,pyproject.toml
+          inference-timeout-seconds: 900
           max-context-bytes: 8000
           max-context-total-bytes: 24000
           max-related-issues: 5
-          # allow-retriage: true
           dry-run: false

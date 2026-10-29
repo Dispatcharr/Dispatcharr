@@ -18,6 +18,7 @@ import psutil  # Add import for memory tracking
 import zipfile
 
 from celery import shared_task
+from apps.plugins.internal_tasks import plugin_callable_task
 from django.conf import settings
 from django.db import connection, transaction
 from django.db.models import Q
@@ -307,6 +308,69 @@ class _PrependStream:
         self.close()
 
 
+# Only the last few KB are needed to confirm the root </tv> closed. Keeps
+# multi-hundred-MB guide checks constant-memory and cheap on I/O.
+_XMLTV_COMPLETENESS_TAIL_BYTES = 8192
+
+
+def _xmltv_file_is_complete(file_path: str) -> bool:
+    """Return True when file_path looks like a finished XMLTV document.
+
+    XMLTV uses a single <tv> root. A truncated download almost never ends with
+    </tv>, while recover=True would otherwise treat a partial file as success.
+    Reads only a small tail so large guides do not inflate memory use.
+    """
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        return False
+    if size <= 0:
+        return False
+    try:
+        with open(file_path, 'rb') as f:
+            f.seek(max(0, size - _XMLTV_COMPLETENESS_TAIL_BYTES))
+            tail = f.read()
+    except OSError:
+        return False
+    return tail.rstrip().endswith(b'</tv>')
+
+
+def _unlink_quiet(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError as e:
+        logger.warning(f"Failed to remove {path}: {e}")
+
+
+def _reject_incomplete_xmltv(source, file_path: str, *, ws_action: str) -> bool:
+    """Log, status-update, and return False when file_path is truncated XMLTV."""
+    size = 0
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        pass
+    logger.error(
+        f"Incomplete XMLTV for source {source.name}: {file_path} "
+        f"({size} bytes) does not end with </tv>"
+    )
+    msg = (
+        f"EPG file appears incomplete (missing closing </tv>). "
+        f"Keeping previous data when available; will retry on next refresh."
+    )
+    _set_epg_source_status(
+        source.id,
+        EPGSource.STATUS_ERROR,
+        msg,
+        source_name=source.name,
+        notify_error=True,
+        ws_action=ws_action,
+    )
+    return False
+
+
 def _open_xmltv_file(file_path: str):
     """Open an XMLTV file for lxml iterparse, injecting an HTML entity DOCTYPE.
 
@@ -432,6 +496,7 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
+@plugin_callable_task
 @shared_task(time_limit=14400)
 def refresh_epg_data(source_id, force=False, _file_defer_retry=0):
     if not acquire_task_lock('refresh_epg_data', source_id):
@@ -585,6 +650,15 @@ def fetch_xmltv(source):
                 logger.error(f"Failed to extract existing compressed file: {e}")
                 # Continue with the original file if extraction fails
 
+        check_path = source.extracted_file_path or source.file_path
+        if (
+            check_path
+            and check_path.endswith('.xml')
+            and os.path.exists(check_path)
+            and not _xmltv_file_is_complete(check_path)
+        ):
+            return _reject_incomplete_xmltv(source, check_path, ws_action="downloading")
+
         # Set the status to success in the database
         source.status = 'success'
         source.save(update_fields=['status'])
@@ -611,6 +685,9 @@ def fetch_xmltv(source):
         return False
 
     logger.info(f"Fetching XMLTV data from source: {source.name}")
+    temp_download_path = None
+    incoming_xml_path = None
+    incoming_compressed_path = None
     try:
         # Get default user agent from settings
         stream_settings = CoreSettings.get_stream_settings()
@@ -716,9 +793,12 @@ def fetch_xmltv(source):
             # Create temporary download file with .tmp extension
             temp_download_path = os.path.join(cache_dir, f"{source.id}.tmp")
 
-            # Check if we have content length for progress tracking
+            # Content-Length is the on-the-wire body size. iter_content yields
+            # decoded bytes when Content-Encoding is present, so progress and the
+            # completeness check use response.raw.tell() (wire bytes) against it.
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
+            wire_bytes = 0
             start_time = time.time()
             last_update_time = start_time
             update_interval = 0.5  # Only update every 0.5 seconds
@@ -729,20 +809,24 @@ def fetch_xmltv(source):
                     f.write(chunk)
 
                     downloaded += len(chunk)
+                    wire_bytes = response.raw.tell()
                     elapsed_time = time.time() - start_time
 
-                    # Calculate download speed in KB/s
+                    # Speed display uses decoded bytes written. ETA uses wire
+                    # bytes when Content-Length is present so units match.
                     speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
 
-                    # Calculate progress percentage
                     if total_size and total_size > 0:
-                        progress = min(100, int((downloaded / total_size) * 100))
+                        progress = min(100, int((wire_bytes / total_size) * 100))
+                        wire_speed = wire_bytes / elapsed_time / 1024 if elapsed_time > 0 else 0
+                        time_remaining = (
+                            (total_size - wire_bytes) / (wire_speed * 1024)
+                            if wire_speed > 0 else 0
+                        )
                     else:
-                        # If no content length header, estimate progress
+                        # No Content-Length: estimate progress from decoded size.
                         progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
-
-                    # Time remaining (in seconds)
-                    time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
+                        time_remaining = 0
 
                     # Only send updates at specified intervals to avoid flooding
                     current_time = time.time()
@@ -761,8 +845,26 @@ def fetch_xmltv(source):
                     # Explicitly delete the chunk to free memory immediately
                     del chunk
 
-            # Send completion notification
-            send_epg_update(source.id, "downloading", 100)
+            wire_bytes = response.raw.tell()
+            # Chunked responses omit Content-Length; those rely on the </tv> check.
+            if total_size > 0 and wire_bytes != total_size:
+                logger.error(
+                    f"Incomplete download for {source.name}: got {wire_bytes} wire bytes, "
+                    f"expected {total_size}"
+                )
+                msg = (
+                    f"EPG download incomplete ({wire_bytes} of {total_size} bytes). "
+                    f"Keeping previous data when available; will retry on next refresh."
+                )
+                _set_epg_source_status(
+                    source.id,
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=source.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                )
+                return False
 
             # Determine the appropriate file extension based on content detection
             with open(temp_download_path, 'rb') as f:
@@ -779,78 +881,111 @@ def fetch_xmltv(source):
             # Ensure consistent final paths
             compressed_path = os.path.join(cache_dir, f"{source.id}{file_extension}" if is_compressed else f"{source.id}.compressed")
             xml_path = os.path.join(cache_dir, f"{source.id}.xml")
+            # Stage into *.incoming* first so a bad pull never deletes a good cache.
+            # The finally below removes these if they are still on disk.
+            incoming_xml_path = os.path.join(cache_dir, f"{source.id}.incoming.xml")
 
-            # Clean up old files before saving new ones
-            if os.path.exists(compressed_path):
-                try:
-                    os.remove(compressed_path)
-                    logger.debug(f"Removed old compressed file: {compressed_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to remove old compressed file: {e}")
-
-            if os.path.exists(xml_path):
-                try:
-                    os.remove(xml_path)
-                    logger.debug(f"Removed old XML file: {xml_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to remove old XML file: {e}")
-
-            # Rename the temp file to appropriate final path
             if is_compressed:
+                incoming_compressed_path = os.path.join(
+                    cache_dir, f"{source.id}.incoming{file_extension}"
+                )
                 try:
-                    os.rename(temp_download_path, compressed_path)
-                    logger.debug(f"Renamed temp file to compressed file: {compressed_path}")
-                    current_file_path = compressed_path
+                    os.replace(temp_download_path, incoming_compressed_path)
                 except OSError as e:
-                    logger.error(f"Failed to rename temp file to compressed file: {e}")
-                    current_file_path = temp_download_path  # Fall back to using temp file
-            else:
-                try:
-                    os.rename(temp_download_path, xml_path)
-                    logger.debug(f"Renamed temp file to XML file: {xml_path}")
-                    current_file_path = xml_path
-                except OSError as e:
-                    logger.error(f"Failed to rename temp file to XML file: {e}")
-                    current_file_path = temp_download_path  # Fall back to using temp file
+                    logger.error(f"Failed to stage compressed download: {e}")
+                    msg = f"Failed to stage downloaded EPG file: {e}"
+                    _set_epg_source_status(
+                        source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=source.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                    )
+                    return False
 
-            # Now extract the file if it's compressed
-            if is_compressed:
                 try:
-                    logger.info(f"Extracting compressed file {current_file_path}")
+                    logger.info(f"Extracting compressed file {incoming_compressed_path}")
                     send_epg_update(source.id, "extracting", 0, message="Extracting downloaded file")
-
-                    # Always extract to the standard XML path - set delete_original to True to clean up
-                    extracted = extract_compressed_file(current_file_path, xml_path, delete_original=True)
-
-                    if extracted:
-                        logger.info(f"Successfully extracted to {xml_path}, compressed file deleted")
-                        send_epg_update(source.id, "extracting", 100, message=f"File extracted successfully, temporary file removed")
-                        # Update to store only the extracted file path since the compressed file is now gone
-                        source.file_path = xml_path
-                        source.extracted_file_path = None
-                    else:
-                        logger.error("Extraction failed, using compressed file")
-                        send_epg_update(source.id, "extracting", 100, status="error", message="Extraction failed, using compressed file")
-                        # Use the compressed file
-                        source.file_path = current_file_path
-                        source.extracted_file_path = None
+                    extracted = extract_compressed_file(
+                        incoming_compressed_path, incoming_xml_path, delete_original=True
+                    )
+                    if not extracted:
+                        logger.error("Extraction failed for downloaded EPG file")
+                        msg = "Failed to extract downloaded EPG file"
+                        _set_epg_source_status(
+                            source.id,
+                            EPGSource.STATUS_ERROR,
+                            msg,
+                            source_name=source.name,
+                            notify_error=True,
+                            ws_action="extracting",
+                        )
+                        return False
                 except Exception as e:
                     logger.error(f"Error extracting file: {str(e)}", exc_info=True)
-                    send_epg_update(source.id, "extracting", 100, status="error", message=f"Error during extraction: {str(e)}")
-                    # Use the compressed file if extraction fails
-                    source.file_path = current_file_path
-                    source.extracted_file_path = None
+                    msg = f"Error during extraction: {str(e)}"
+                    _set_epg_source_status(
+                        source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=source.name,
+                        notify_error=True,
+                        ws_action="extracting",
+                    )
+                    return False
             else:
-                # It's already an XML file
-                source.file_path = current_file_path
-                source.extracted_file_path = None
+                try:
+                    os.replace(temp_download_path, incoming_xml_path)
+                except OSError as e:
+                    logger.error(f"Failed to stage XML download: {e}")
+                    msg = f"Failed to stage downloaded EPG file: {e}"
+                    _set_epg_source_status(
+                        source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=source.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                    )
+                    return False
 
-            # Update the source's file paths
+            if not _xmltv_file_is_complete(incoming_xml_path):
+                return _reject_incomplete_xmltv(
+                    source, incoming_xml_path, ws_action="downloading"
+                )
+
+            try:
+                os.replace(incoming_xml_path, xml_path)
+            except OSError as e:
+                logger.error(f"Failed to install cached EPG XML: {e}")
+                msg = f"Failed to save downloaded EPG file: {e}"
+                _set_epg_source_status(
+                    source.id,
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=source.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                )
+                return False
+
+            # Leftover compressed cache from older builds; XML is the source of truth.
+            _unlink_quiet(compressed_path)
+
+            source.file_path = xml_path
+            source.extracted_file_path = None
+            source.status = 'parsing'
             source.save(update_fields=['file_path', 'status', 'extracted_file_path'])
 
-            # Update status to parsing
-            source.status = 'parsing'
-            source.save(update_fields=['status'])
+            # Progress 100 with no error status is treated as success by the UI,
+            # so only fire it after the new file has passed validation and replaced
+            # the cache.
+            if is_compressed:
+                send_epg_update(
+                    source.id, "extracting", 100, message="File extracted successfully"
+                )
+            send_epg_update(source.id, "downloading", 100)
 
             logger.info(f"Cached EPG file saved to {source.file_path}")
 
@@ -979,6 +1114,12 @@ def fetch_xmltv(source):
             ws_error=msg,
         )
         return False
+    finally:
+        # Success has already renamed these onto the cache path, so this only
+        # removes a partial download or a rejected staged file.
+        _unlink_quiet(temp_download_path)
+        _unlink_quiet(incoming_xml_path)
+        _unlink_quiet(incoming_compressed_path)
 
 
 def extract_compressed_file(file_path, output_path=None, delete_original=False):
@@ -1259,24 +1400,11 @@ def parse_channels_only(source):
             should_log_memory = False
             logger.warning("psutil not available for memory tracking")
 
-        # Replace full dictionary load with more efficient lookup set
-        existing_tvg_ids = set()
+        existing_tvg_ids = set(
+            EPGData.objects.filter(epg_source=source).values_list('tvg_id', flat=True)
+        )
         existing_epgs = {}
         scanned_tvg_ids = set()  # Track tvg_ids seen in the current scan for stale cleanup
-        last_id = 0
-        chunk_size = 5000
-
-        while True:
-            tvg_id_chunk = set(EPGData.objects.filter(
-                epg_source=source,
-                id__gt=last_id
-            ).order_by('id').values_list('tvg_id', flat=True)[:chunk_size])
-
-            if not tvg_id_chunk:
-                break
-
-            existing_tvg_ids.update(tvg_id_chunk)
-            last_id = EPGData.objects.filter(tvg_id__in=tvg_id_chunk).order_by('-id')[0].id
         # Update progress to show file read starting
         send_epg_update(source.id, "parsing_channels", 10)
 
@@ -1787,6 +1915,10 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # Use streaming parsing to reduce memory usage
             # No need to check file type anymore since it's always XML
             logger.debug(f"Parsing programs for tvg_id={epg.tvg_id} from {file_path}")
+
+            if not _xmltv_file_is_complete(file_path):
+                _reject_incomplete_xmltv(epg_source, file_path, ws_action="parsing_programs")
+                return
     
             # Memory usage tracking
             if process:
@@ -2436,6 +2568,13 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                     ws_error="No URL provided",
                 )
                 return False
+
+        # Cheap tail check before any staging/swap. Truncated files with
+        # recover=True otherwise look like a successful short catalogue.
+        if not _xmltv_file_is_complete(file_path):
+            return _reject_incomplete_xmltv(
+                epg_source, file_path, ws_action="parsing_programs"
+            )
 
         # Stream parsed rows into a session temp table, then swap in a short transaction.
         # This bounds Python memory (batched staging inserts) and Postgres memory (no

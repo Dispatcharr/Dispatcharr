@@ -1,0 +1,33 @@
+.available-plugin-card {
+  container-type: inline-size;
+}
+
+.available-plugin-card__author {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+@container (max-width: 24rem) {
+  .available-plugin-card__updated,
+  .available-plugin-card__action-separator {
+    display: none;
+  }
+}
+
+@container (max-width: 24rem) {
+  .available-plugin-card__author {
+    flex: 1 1 auto;
+  }
+
+  .available-plugin-card__license,
+  .available-plugin-card__license-separator {
+    display: none;
+  }
+}
+
+@container (max-width: 20rem) {
+  .available-plugin-card__downloads,
+  .available-plugin-card__action-separator {
+    display: none;
+  }
+}

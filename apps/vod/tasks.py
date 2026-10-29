@@ -1212,34 +1212,67 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         return f"Series batch processing failed: {str(e)}"
 
 
-# Helper functions for year and date extraction
+# Cap for provider duration_secs. Well above normal episodes and features
+# (scripted episodes rarely exceed ~3 hours; cinematic outliers top out around
+# 15 hours) and still rejects junk that would overflow a DB integer.
+MAX_DURATION_SECS = 48 * 60 * 60
+
+
+def normalize_duration_secs(value):
+    """Return positive whole seconds within MAX_DURATION_SECS, else None.
+
+    Zero is missing. Providers send it when they have no runtime.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # Reject non-integral floats (1.5); allow whole values like 1800.0.
+    if isinstance(value, float) and value != seconds:
+        return None
+    if seconds <= 0 or seconds > MAX_DURATION_SECS:
+        return None
+    return seconds
+
 
 def extract_duration_from_data(movie_data):
-    """Extract duration in seconds from movie data"""
-    duration_secs = None
+    """Extract duration in seconds from movie data.
 
-    # Try to extract duration from various possible fields
-    if movie_data.get('duration_secs'):
-        duration_secs = int(movie_data.get('duration_secs'))
-    elif movie_data.get('duration'):
-        # Handle duration that might be in different formats
-        duration_str = str(movie_data.get('duration'))
+    A usable duration_secs wins. Missing, zero, or unusable duration_secs
+    falls through to duration, where a bare number is minutes.
+    """
+    raw_seconds = movie_data.get('duration_secs')
+    if raw_seconds is not None and raw_seconds != '':
+        seconds = normalize_duration_secs(raw_seconds)
+        if seconds is not None:
+            return seconds
+
+    raw_duration = movie_data.get('duration')
+    if raw_duration is None or raw_duration == '':
+        return None
+
+    duration_str = str(raw_duration)
+    try:
         if duration_str.isdigit():
-            duration_secs = int(duration_str) * 60  # Assume minutes if just a number
+            # Assume minutes if just a number. isdigit() accepts some
+            # characters int() rejects, so this stays inside the try.
+            parsed = int(duration_str) * 60
         else:
-            # Try to parse time format like "01:30:00"
-            try:
-                time_parts = duration_str.split(':')
-                if len(time_parts) == 3:
-                    hours, minutes, seconds = map(int, time_parts)
-                    duration_secs = (hours * 3600) + (minutes * 60) + seconds
-                elif len(time_parts) == 2:
-                    minutes, seconds = map(int, time_parts)
-                    duration_secs = minutes * 60 + seconds
-            except (ValueError, AttributeError):
-                pass
+            time_parts = duration_str.split(':')
+            if len(time_parts) == 3:
+                hours, minutes, seconds = map(int, time_parts)
+                parsed = (hours * 3600) + (minutes * 60) + seconds
+            elif len(time_parts) == 2:
+                minutes, seconds = map(int, time_parts)
+                parsed = minutes * 60 + seconds
+            else:
+                return None
+    except (ValueError, TypeError, OverflowError, AttributeError):
+        return None
 
-    return duration_secs
+    return normalize_duration_secs(parsed)
 
 
 def normalize_rating(rating_value):
@@ -1268,6 +1301,8 @@ def normalize_rating(rating_value):
         logger.debug(f"Invalid rating value discarded: {rating_value}")
         return None
 
+
+# Helper functions for year and date extraction
 
 def extract_year(date_string):
     """Extract year from date string"""
@@ -1371,12 +1406,28 @@ def parse_date(date_string):
             return None  # Return None if parsing fails
 
 
+def _coerce_provider_info(info_raw):
+    """Return a dict from XC info, which is sometimes a one-element list."""
+    if isinstance(info_raw, dict):
+        return info_raw
+    if isinstance(info_raw, list):
+        if info_raw and isinstance(info_raw[0], dict):
+            return info_raw[0]
+        return {}
+    return {}
+
+
 # Episode processing and other advanced features
 
 def refresh_series_episodes(account, series, external_series_id, episodes_data=None):
     """Refresh episodes for a series - only called on-demand"""
     try:
+        # None means this call did not ask the provider for series info.
+        # False means it did, and the body was missing or not an object.
+        # True means the body was an object, even when info itself is blank.
+        has_details = None
         if not episodes_data:
+            has_details = False
             # Fetch detailed series info including episodes
             with XtreamCodesClient(
                 account.server_url,
@@ -1385,9 +1436,25 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 account.get_user_agent_string()
             ) as client:
                 series_info = client.get_series_info(external_series_id)
-                if series_info:
-                    # Update series with detailed info
-                    info = series_info.get('info', {})
+                if isinstance(series_info, dict):
+                    has_details = True
+                    raw_info = series_info.get('info')
+                    if isinstance(raw_info, list):
+                        logger.warning(
+                            "Series info for %s (external_id=%s) returned list "
+                            "instead of dict, using first item",
+                            series.name,
+                            external_series_id,
+                        )
+                    elif raw_info is not None and not isinstance(raw_info, dict):
+                        logger.warning(
+                            "Series info for %s (external_id=%s) returned unexpected "
+                            "info type %s",
+                            series.name,
+                            external_series_id,
+                            type(raw_info).__name__,
+                        )
+                    info = _coerce_provider_info(raw_info)
                     if info:
                         # Only update fields if new value is non-empty and either no existing value or existing value is empty
                         updated = False
@@ -1410,26 +1477,66 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                         if updated:
                             series.save()
 
-                    episodes_data = series_info.get('episodes', {})
+                    episodes_data = series_info.get('episodes') or {}
                 else:
                     episodes_data = {}
+                    logger.info(
+                        "Provider returned no series details for series %s "
+                        "(external_id=%s); clearing detailed_fetched for retry",
+                        series.name,
+                        external_series_id,
+                    )
 
-        # Fetch the series relation once — used both to pass into batch_process_episodes
+        # Fetch the series relation once, used both to pass into batch_process_episodes
         # (so episode relations get the FK set) and to update metadata afterwards.
         series_relation = M3USeriesRelation.objects.filter(
             m3u_account=account,
             external_series_id=external_series_id
         ).first()
 
-        # Process all episodes in batch
-        batch_process_episodes(account, series, episodes_data, series_relation=series_relation)
+        # Count comes from the same flatten batch_process_episodes uses.
+        episode_count = batch_process_episodes(
+            account, series, episodes_data, series_relation=series_relation,
+        )
 
         if series_relation:
-            custom_props = series_relation.custom_properties or {}
-            custom_props['episodes_fetched'] = True
-            custom_props['detailed_fetched'] = True
+            custom_props = dict(series_relation.custom_properties or {})
+            # A real series_info object completes the detail attempt, including
+            # a blank info key. Only a missing or non-object body stays retryable.
+            # Episode completion still requires episode dicts. An empty episode
+            # list does not clear episodes_fetched when this series relation
+            # already has rows, or provider-info would hide episodes that are
+            # still stored.
+            if has_details is not None:
+                custom_props['detailed_fetched'] = has_details
+            if episode_count > 0:
+                custom_props['episodes_fetched'] = True
+            else:
+                has_stored_episodes = M3UEpisodeRelation.objects.filter(
+                    series_relation=series_relation,
+                ).exists()
+                if has_stored_episodes:
+                    custom_props['episodes_fetched'] = True
+                    logger.info(
+                        "Provider returned no episodes for series %s "
+                        "(external_id=%s); keeping stored episode relations",
+                        series.name,
+                        external_series_id,
+                    )
+                else:
+                    custom_props['episodes_fetched'] = False
+                    logger.info(
+                        "Provider returned no episodes for series %s "
+                        "(external_id=%s); clearing episodes_fetched for retry",
+                        series.name,
+                        external_series_id,
+                    )
+            # Stamp the attempt so the 24h batch picks up empty fetches later.
+            # Client opens still retry immediately while either flag is false.
+            # Never-opened relations keep a null timestamp and stay out of that batch.
+            if has_details is not None or episode_count > 0:
+                series_relation.last_episode_refresh = timezone.now()
             series_relation.custom_properties = custom_props
-            series_relation.last_episode_refresh = timezone.now()
             series_relation.save()
 
     except Exception as e:
@@ -1448,9 +1555,12 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
     that CASCADE correctly removes episode relations when their parent series relation
     is deleted, and so that stale-stream cleanup is scoped precisely to relations that
     came from this specific provider query.
+
+    Returns the number of episode dicts in the payload. Zero means there was
+    nothing to process, including empty, missing, and unexpected shapes.
     """
     if not episodes_data:
-        return
+        return 0
 
     # XC panels encode seasons as a PHP array keyed by season number. When keys are
     # contiguous from 0 (common with Season 0 specials), json_encode emits a JSON
@@ -1465,7 +1575,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             f"Unexpected episodes_data type {type(episodes_data).__name__} "
             f"for series {series.name}; skipping"
         )
-        return
+        return 0
 
     # Flatten episodes data
     all_episodes_data = []
@@ -1479,7 +1589,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             all_episodes_data.append(episode_data)
 
     if not all_episodes_data:
-        return
+        return 0
 
     logger.info(f"Batch processing {len(all_episodes_data)} episodes for series {series.name}")
 
@@ -1538,7 +1648,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             description = info.get('plot') or info.get('overview', '') if info else ''
             rating = normalize_rating(info.get('rating')) if info else None
             air_date = extract_date_from_data(info) if info else None
-            duration_secs = info.get('duration_secs') if info else None
+            duration_secs = normalize_duration_secs(
+                info.get('duration_secs') if info else None
+            )
             tmdb_id = info.get('tmdb_id') if info else None
             imdb_id = info.get('imdb_id') if info else None
 
@@ -1579,7 +1691,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 if air_date != episode.air_date:
                     episode.air_date = air_date
                     updated = True
-                if duration_secs != episode.duration_secs:
+                # Keep an existing duration when the provider sends missing or
+                # invalid data; only apply a successfully normalized value.
+                if duration_secs is not None and duration_secs != episode.duration_secs:
                     episode.duration_secs = duration_secs
                     updated = True
                 if tmdb_id != episode.tmdb_id:
@@ -1725,6 +1839,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
 
     logger.info(f"Batch processed episodes: {len(episodes_to_create)} new, {len(episodes_to_update)} updated, "
                 f"{len(relations_to_create)} new relations, {len(relations_to_update)} updated relations")
+    return len(all_episodes_data)
 
 
 @shared_task
@@ -1747,33 +1862,30 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
                 series__id__in=series_ids
             ).select_related('series')
         else:
-            # Refresh series that haven't been refreshed in the last 24 hours
+            # Refresh series last fetched more than 24 hours ago. Never-opened
+            # series keep a null timestamp and stay on-demand. Empty attempts
+            # still stamp last_episode_refresh, so they re-enter after the
+            # interval instead of a null check pulling in the whole catalog.
             cutoff_time = timezone.now() - timezone.timedelta(hours=24)
             series_relations = M3USeriesRelation.objects.filter(
                 m3u_account=account,
-                last_episode_refresh__lt=cutoff_time
+                last_episode_refresh__lt=cutoff_time,
             ).select_related('series')
 
         logger.info(f"Batch refreshing episodes for {series_relations.count()} series")
 
-        with XtreamCodesClient(
-            account.server_url,
-            account.username,
-            account.password,
-            account.get_user_agent_string()
-        ) as client:
-
-            refreshed_count = 0
-            for relation in series_relations:
-                try:
-                    refresh_series_episodes(
-                        account,
-                        relation.series,
-                        relation.external_series_id
-                    )
-                    refreshed_count += 1
-                except Exception as e:
-                    logger.error(f"Error refreshing episodes for series {relation.series.name}: {str(e)}")
+        # refresh_series_episodes opens its own provider client per series.
+        refreshed_count = 0
+        for relation in series_relations:
+            try:
+                refresh_series_episodes(
+                    account,
+                    relation.series,
+                    relation.external_series_id
+                )
+                refreshed_count += 1
+            except Exception as e:
+                logger.error(f"Error refreshing episodes for series {relation.series.name}: {str(e)}")
 
         logger.info(f"Batch episode refresh completed for {refreshed_count} series")
         return f"Batch episode refresh completed for {refreshed_count} series"
@@ -3265,11 +3377,12 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                 if info.get('genre') and info.get('genre') != movie.genre:
                     movie.genre = info.get('genre')
                     updated = True
-                if info.get('duration_secs'):
-                    duration_secs = int(info.get('duration_secs'))
-                    if duration_secs != movie.duration_secs:
-                        movie.duration_secs = duration_secs
-                        updated = True
+                # Keep an existing duration when the provider sends missing or
+                # invalid data, including 0. Only apply a successfully extracted value.
+                duration_secs = extract_duration_from_data(info)
+                if duration_secs is not None and duration_secs != movie.duration_secs:
+                    movie.duration_secs = duration_secs
+                    updated = True
                 # Check for releasedate or release_date
                 release_date_value = info.get('releasedate') or info.get('release_date')
                 if release_date_value:

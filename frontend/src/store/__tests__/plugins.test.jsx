@@ -71,6 +71,30 @@ describe('usePluginStore', () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it('refreshes every root manifest and both plugin lists when checking for updates', async () => {
+    const repos = [
+      { id: 1, name: 'First repo' },
+      { id: 2, name: 'Second repo' },
+    ];
+    API.getPluginRepos.mockResolvedValue(repos);
+    API.refreshPluginRepo.mockImplementation(async (id) =>
+      repos.find((repo) => repo.id === id)
+    );
+    API.getAvailablePlugins.mockResolvedValue([]);
+    API.getPlugins.mockResolvedValue([]);
+
+    const { result } = renderHook(() => usePluginStore());
+
+    await act(async () => {
+      await result.current.checkForUpdates();
+    });
+
+    expect(API.refreshPluginRepo).toHaveBeenCalledWith(1);
+    expect(API.refreshPluginRepo).toHaveBeenCalledWith(2);
+    expect(API.getAvailablePlugins).toHaveBeenCalled();
+    expect(API.getPlugins).toHaveBeenCalled();
+  });
+
   it('should set loading state during fetch', async () => {
     let resolvePromise;
     const promise = new Promise((resolve) => {
@@ -232,5 +256,99 @@ describe('usePluginStore', () => {
 
     expect(result.current.plugins).toEqual(mockPlugins);
     expect(API.getPlugins).toHaveBeenCalled();
+  });
+
+  describe('plugin tasks', () => {
+    beforeEach(() => {
+      usePluginStore.setState({ pluginTasks: {} });
+    });
+
+    it('starts a task in the running state', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+      });
+
+      expect(result.current.pluginTasks['task-1']).toEqual({
+        pluginKey: undefined,
+        plugin: 'My Plugin',
+        actionId: undefined,
+        actionLabel: 'Do Work',
+        status: 'running',
+        percent: null,
+        message: null,
+        startedAt: null,
+        updatedAt: null,
+      });
+    });
+
+    it('updates progress for a tracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+        result.current.updatePluginTaskProgress('task-1', { percent: 40, message: 'Halfway' });
+      });
+
+      expect(result.current.pluginTasks['task-1']).toMatchObject({ percent: 40, message: 'Halfway' });
+    });
+
+    it('ignores progress updates for an untracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.updatePluginTaskProgress('unknown-task', { percent: 40, message: 'Halfway' });
+      });
+
+      expect(result.current.pluginTasks).toEqual({});
+    });
+
+    it('completes a tracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+        result.current.completePluginTask('task-1', { status: 'ok', result: { message: 'Done' } });
+      });
+
+      expect(result.current.pluginTasks['task-1']).toMatchObject({
+        status: 'ok',
+        result: { message: 'Done' },
+      });
+    });
+
+    it('ignores completion for an untracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.completePluginTask('unknown-task', { status: 'ok' });
+      });
+
+      expect(result.current.pluginTasks).toEqual({});
+    });
+
+    it('hydrates history for tasks not already tracked locally', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+        result.current.hydratePluginTasks('my-plugin', 'My Plugin', [
+          { task_id: 'task-1', status: 'error', message: 'stale' },
+          { task_id: 'task-2', action_id: 'do_other', action_label: 'Do Other', status: 'ok' },
+        ]);
+      });
+
+      // task-1 was already tracked locally (e.g. a live websocket update) -
+      // the hydration fetch must not clobber it with a stale snapshot.
+      expect(result.current.pluginTasks['task-1']).toMatchObject({ status: 'running' });
+      expect(result.current.pluginTasks['task-2']).toMatchObject({
+        pluginKey: 'my-plugin',
+        plugin: 'My Plugin',
+        actionId: 'do_other',
+        actionLabel: 'Do Other',
+        status: 'ok',
+      });
+    });
   });
 });
