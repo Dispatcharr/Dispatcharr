@@ -16,10 +16,12 @@ from .models import (
     EPG_HISTORY_MIN_DAYS_DEFAULT,
     EPG_SETTINGS_KEY,
     NETWORK_ACCESS_KEY,
+    STREAM_SETTINGS_KEY,
     SYSTEM_SETTINGS_KEY,
     REVERSE_PROXY_AUTH_KEY,
 )
 from .utils import clamp_int
+from apps.m3u.utils import normalize_proxy_url
 
 from dispatcharr.log_collector import (
     DEFAULT_LOG_KEEP,
@@ -124,6 +126,21 @@ def _clamp_epg_history_fields(value):
         )
 
 
+def _validate_stream_settings_fields(value):
+    """Validate and normalize stream_settings fields such as default_proxy."""
+    if not isinstance(value, dict):
+        return
+    if "default_proxy" in value:
+        raw_proxy = value.get("default_proxy")
+        if raw_proxy is None or (isinstance(raw_proxy, str) and not raw_proxy.strip()):
+            value["default_proxy"] = ""
+        else:
+            try:
+                value["default_proxy"] = normalize_proxy_url(raw_proxy, strict=True)
+            except (TypeError, ValueError) as exc:
+                raise serializers.ValidationError({"default_proxy": [str(exc)]})
+
+
 class CoreSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = CoreSettings
@@ -132,9 +149,14 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         if validated_data.get("key") == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))
+        if validated_data.get("key") == STREAM_SETTINGS_KEY:
+            _validate_stream_settings_fields(validated_data.get("value"))
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
+        if instance.key == STREAM_SETTINGS_KEY:
+            _validate_stream_settings_fields(validated_data.get("value"))
+
         if instance.key == NETWORK_ACCESS_KEY:
             errors = False
             invalid = {}

@@ -1049,7 +1049,17 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
         }
 
         logger.info(f"[VOD-HEAD] Making small range GET request to provider: {final_stream_url}")
-        response = requests.get(final_stream_url, headers=headers, timeout=30, allow_redirects=True, stream=True)
+        from apps.m3u.utils import build_requests_proxies, get_account_effective_proxy
+
+        proxies = build_requests_proxies(get_account_effective_proxy(m3u_account))
+        response = requests.get(
+            final_stream_url,
+            headers=headers,
+            timeout=30,
+            allow_redirects=True,
+            stream=True,
+            **({"proxies": proxies} if proxies else {}),
+        )
 
         # Check for range support - should be 206 for partial content
         if response.status_code == 206:

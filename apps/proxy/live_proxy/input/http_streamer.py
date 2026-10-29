@@ -7,6 +7,7 @@ import threading
 import os
 import requests
 from requests.adapters import HTTPAdapter
+from apps.m3u.utils import build_requests_proxies
 from ..utils import get_logger
 
 logger = get_logger()
@@ -15,10 +16,11 @@ logger = get_logger()
 class HTTPStreamReader:
     """Thread-based HTTP stream reader that writes to a pipe"""
 
-    def __init__(self, url, user_agent=None, chunk_size=8192):
+    def __init__(self, url, user_agent=None, chunk_size=8192, proxy=None):
         self.url = url
         self.user_agent = user_agent
         self.chunk_size = chunk_size
+        self.proxy = proxy
         self.session = None
         self.response = None
         self.thread = None
@@ -57,6 +59,9 @@ class HTTPStreamReader:
 
             # Create session
             self.session = requests.Session()
+            proxies = build_requests_proxies(self.proxy)
+            if proxies:
+                self.session.proxies.update(proxies)
 
             # Disable retries for faster failure detection
             adapter = HTTPAdapter(max_retries=0, pool_connections=1, pool_maxsize=1)

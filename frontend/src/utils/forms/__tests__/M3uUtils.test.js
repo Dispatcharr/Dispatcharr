@@ -291,5 +291,31 @@ describe('M3uUtils', () => {
         expect(result.hash_key).toBeUndefined();
       });
     });
+
+    describe('proxy handling', () => {
+      it('keeps a trimmed proxy URL when set', () => {
+        const values = {
+          account_type: 'M3U',
+          proxy: '  http://proxy.local:8080  ',
+        };
+        const result = prepareSubmitValues(values, null);
+        expect(result.proxy).toBe('http://proxy.local:8080');
+      });
+
+      it('sets proxy to null when empty or whitespace (inherit global default)', () => {
+        expect(
+          prepareSubmitValues({ account_type: 'M3U', proxy: '' }, null).proxy
+        ).toBeNull();
+        expect(
+          prepareSubmitValues({ account_type: 'M3U', proxy: '   ' }, null).proxy
+        ).toBeNull();
+      });
+
+      it('leaves proxy untouched when undefined', () => {
+        const values = { account_type: 'M3U', proxy: undefined };
+        const result = prepareSubmitValues(values, null);
+        expect(result.proxy).toBeUndefined();
+      });
+    });
   });
 });

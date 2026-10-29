@@ -83,6 +83,7 @@ describe('SettingsUtils', () => {
         default_output_format: 'fmp4',
         hdhr_output_profile_id: '9',
         m3u_hash_key: ['name', 'url'],
+        default_proxy: '',
       });
       expect(result).not.toHaveProperty('output_profile_id');
       expect(result).not.toHaveProperty('comskip_enabled');

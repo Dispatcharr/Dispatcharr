@@ -2,7 +2,7 @@ from core.utils import validate_flexible_url, ensure_custom_properties_dict
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
-from .utils import parse_m3u_hash_keys
+from .utils import normalize_proxy_url, parse_m3u_hash_keys
 from core.models import UserAgent
 from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
 from apps.channels.serializers import (
@@ -154,6 +154,11 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     hash_key = serializers.CharField(
         required=False, allow_null=True, allow_blank=True, write_only=True
     )
+    # Not a model field - stored under custom_properties["proxy"]. A
+    # missing key means this account inherits the global Default Proxy.
+    proxy = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, write_only=True
+    )
     cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate_hash_key(self, value):
@@ -175,6 +180,19 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 "the global default."
             )
         return ",".join(keys)
+
+    def validate_proxy(self, value):
+        """Normalize and validate the per-account proxy URL override.
+
+        Empty/null clears the override so the account inherits the global
+        default proxy setting.
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "" if value == "" else None
+        try:
+            return normalize_proxy_url(value, strict=True)
+        except (TypeError, ValueError) as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     class Meta:
         model = M3UAccount
@@ -202,6 +220,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "stale_stream_days",
             "priority",
             "hash_key",
+            "proxy",
             "status",
             "last_message",
             "enable_vod",
@@ -257,6 +276,8 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
         # Missing key means this account inherits the global M3U Hash Key.
         data["hash_key"] = custom_props.get("hash_key")
+        # Missing key means this account inherits the global Default Proxy.
+        data["proxy"] = custom_props.get("proxy") or None
 
         # Derive cron_expression from the linked PeriodicTask's crontab (single source of truth)
         # But first check if we have a transient _cron_expression (from create/update before signal runs)
@@ -303,20 +324,24 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
         _HASH_KEY_NOT_SET = object()
         hash_key = validated_data.pop("hash_key", _HASH_KEY_NOT_SET)
+        _PROXY_NOT_SET = object()
+        proxy = validated_data.pop("proxy", _PROXY_NOT_SET)
 
         # Merge client-supplied custom_properties over the existing blob
         # so unrelated keys persist. The dedicated preference fields below
         # overwrite their corresponding keys; clients should set those via
         # the typed top-level fields rather than the custom_properties
-        # payload. Drop hash_key from the incoming blob so a raw write cannot
-        # bypass validation or the lock gate on the typed field.
+        # payload. Drop hash_key and proxy from the incoming blob so a raw write
+        # cannot bypass validation or the lock gate on the typed field.
         incoming_custom = {}
         if "custom_properties" in validated_data:
             incoming_custom = validated_data["custom_properties"] or {}
             if not isinstance(incoming_custom, dict):
                 incoming_custom = ensure_custom_properties_dict(incoming_custom)
             incoming_custom = {
-                k: v for k, v in incoming_custom.items() if k != "hash_key"
+                k: v
+                for k, v in incoming_custom.items()
+                if k not in ("hash_key", "proxy")
             }
         existing_custom = instance.custom_properties or {}
         if not isinstance(existing_custom, dict):
@@ -341,6 +366,12 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 custom_props["hash_key"] = hash_key
             else:
                 custom_props.pop("hash_key", None)
+
+        if proxy is not _PROXY_NOT_SET:
+            if proxy:
+                custom_props["proxy"] = proxy
+            else:
+                custom_props.pop("proxy", None)
 
         validated_data["custom_properties"] = custom_props
 
@@ -402,13 +433,18 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", True)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", True)
         hash_key = validated_data.pop("hash_key", None)
+        proxy = validated_data.pop("proxy", None)
 
-        # Parse existing custom_properties or create new. Drop hash_key from
-        # the incoming blob so only the typed field can set the override.
+        # Parse existing custom_properties or create new. Drop hash_key and proxy
+        # from the incoming blob so only the typed fields can set the overrides.
         custom_props = validated_data.get("custom_properties") or {}
         if not isinstance(custom_props, dict):
             custom_props = ensure_custom_properties_dict(custom_props)
-        custom_props = {k: v for k, v in custom_props.items() if k != "hash_key"}
+        custom_props = {
+            k: v
+            for k, v in custom_props.items()
+            if k not in ("hash_key", "proxy")
+        }
 
         # Set preferences (default to True for auto_enable_new_groups)
         custom_props["enable_vod"] = enable_vod
@@ -420,6 +456,8 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         # only set it when a non-empty override was supplied.
         if hash_key:
             custom_props["hash_key"] = hash_key
+        if proxy:
+            custom_props["proxy"] = proxy
         validated_data["custom_properties"] = custom_props
 
         # Build instance manually so we can attach transient attr before save triggers signal

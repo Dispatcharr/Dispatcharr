@@ -127,13 +127,23 @@ class SchedulesDirectSourceMixin:
             f"Lockout set until {reset_at}."
         )
 
-    def _fetch_sd_countries(self):
+    def _fetch_sd_countries(self, source=None):
         """Fetch the SD country list (token not required; User-Agent is)."""
         try:
+            req_kwargs = {
+                "headers": dispatcharr_http_headers(content_type=None),
+                "timeout": 15,
+            }
+            proxies = (
+                source.get_proxies()
+                if source is not None and hasattr(source, "get_proxies")
+                else None
+            )
+            if proxies and isinstance(proxies, dict):
+                req_kwargs["proxies"] = proxies
             resp = http_requests.get(
                 f"{SD_BASE_URL}/available/countries",
-                headers=dispatcharr_http_headers(content_type=None),
-                timeout=15,
+                **req_kwargs,
             )
             resp.raise_for_status()
             return resp.json()
@@ -160,7 +170,7 @@ class SchedulesDirectSourceMixin:
             return error
 
         if request.method == "GET":
-            countries = self._fetch_sd_countries()
+            countries = self._fetch_sd_countries(source)
             try:
                 resp, token = sd_authorized_request(
                     'GET',

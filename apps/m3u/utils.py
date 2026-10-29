@@ -2,6 +2,7 @@
 import regex
 import threading
 import logging
+from urllib.parse import urlsplit, urlunsplit
 from django.db import models
 
 lock = threading.Lock()
@@ -11,6 +12,102 @@ logger = logging.getLogger(__name__)
 
 # Fields accepted by Stream.generate_hash_key / the M3U Hash Key UI.
 M3U_HASH_KEY_FIELDS = frozenset({"name", "url", "tvg_id", "m3u_id", "group"})
+
+# Schemes accepted for global and per-M3U-account proxy URLs.
+SUPPORTED_PROXY_SCHEMES = frozenset(
+    {"http", "https", "socks4", "socks4a", "socks5", "socks5h"}
+)
+
+
+def normalize_proxy_url(value, *, strict=False):
+    """Validate and normalize a proxy URL string.
+
+    Accepts ``None`` or a string from settings, ``custom_properties``, or API
+    input. Strips surrounding whitespace and returns ``""`` when empty/unset.
+
+    Supported schemes: ``http``, ``https``, ``socks4``, ``socks4a``,
+    ``socks5``, ``socks5h``.
+
+    When ``strict`` is True, invalid URLs raise ``ValueError`` (and non-string
+    types raise ``TypeError``); when False, invalid values return ``""``.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        if strict:
+            raise TypeError(
+                "normalize_proxy_url expects a proxy URL string or None."
+            )
+        return ""
+
+    raw = value.strip()
+    if not raw:
+        return ""
+
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        if strict:
+            raise ValueError(
+                "Invalid proxy URL: whitespace or control characters are not allowed."
+            )
+        return ""
+
+    try:
+        parsed = urlsplit(raw)
+        scheme = (parsed.scheme or "").lower()
+        hostname = parsed.hostname
+        _port = parsed.port  # Validates integer port in 1..65535 when present
+    except ValueError as exc:
+        if strict:
+            raise ValueError(f"Invalid proxy URL: {exc}") from exc
+        return ""
+
+    if scheme not in SUPPORTED_PROXY_SCHEMES:
+        if strict:
+            allowed = ", ".join(sorted(SUPPORTED_PROXY_SCHEMES))
+            raise ValueError(
+                f"Invalid proxy scheme '{parsed.scheme or ''}'. "
+                f"Allowed schemes: {allowed}."
+            )
+        return ""
+
+    if not hostname:
+        if strict:
+            raise ValueError("Invalid proxy URL: hostname is required.")
+        return ""
+
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        if strict:
+            raise ValueError(
+                "Invalid proxy URL: path, query, and fragment are not supported."
+            )
+        return ""
+
+    return urlunsplit((scheme, parsed.netloc, "", "", ""))
+
+
+def build_requests_proxies(proxy_url):
+    """Build a ``requests``-compatible ``proxies`` dict from a proxy URL, or None."""
+    normalized = normalize_proxy_url(proxy_url, strict=False)
+    if not normalized:
+        return None
+    return {"http": normalized, "https": normalized}
+
+
+def get_account_effective_proxy(m3u_account):
+    """Safely resolve the effective proxy URL string for an M3UAccount, or None."""
+    if m3u_account is None:
+        return None
+    getter = getattr(m3u_account, "get_effective_proxy", None)
+    if not callable(getter):
+        return None
+    try:
+        proxy = getter()
+    except Exception:
+        return None
+    if not isinstance(proxy, str):
+        return None
+    normalized = normalize_proxy_url(proxy, strict=False)
+    return normalized or None
 
 
 def parse_m3u_hash_keys(value, *, strict=False):
