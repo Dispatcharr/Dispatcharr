@@ -1,5 +1,6 @@
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Now
 from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
@@ -117,7 +118,44 @@ class VODSourceMetadataMixin(models.Model):
         return effective_source_metadata(self, category_defaults=category_defaults)
 
 
-class Series(models.Model):
+class VODLibraryMetadataMixin(models.Model):
+    """Canonical library annotations, independent of exact provider sources."""
+
+    display_name = models.CharField(
+        max_length=255, blank=True, default="", db_default=""
+    )
+    clean_title = models.CharField(
+        max_length=255, blank=True, default="", db_default=""
+    )
+    tmdb_lookup_excluded = models.BooleanField(
+        default=False, db_default=False, db_index=True
+    )
+    tmdb_metadata = models.JSONField(default=dict, db_default={}, blank=True)
+    tmdb_match_id = models.CharField(
+        max_length=50, blank=True, default="", db_default="", db_index=True
+    )
+    tmdb_imdb_id = models.CharField(
+        max_length=50, blank=True, default="", db_default=""
+    )
+    tmdb_poster_url = models.CharField(
+        max_length=500, blank=True, default="", db_default=""
+    )
+    tmdb_backdrop_url = models.CharField(
+        max_length=500, blank=True, default="", db_default=""
+    )
+    tmdb_status = models.CharField(
+        max_length=16, blank=True, default="", db_default="", db_index=True
+    )
+    tmdb_enriched_at = models.DateTimeField(null=True, blank=True)
+    library_added_at = models.DateTimeField(
+        default=timezone.now, db_default=Now(), db_index=True
+    )
+
+    class Meta:
+        abstract = True
+
+
+class Series(VODLibraryMetadataMixin):
     """Series information for TV shows"""
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     name = models.CharField(max_length=255)
@@ -164,7 +202,7 @@ class Series(models.Model):
         return f"{self.name}{year_str}"
 
 
-class Movie(models.Model):
+class Movie(VODLibraryMetadataMixin):
     """Movie content"""
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     name = models.CharField(max_length=255)
@@ -265,6 +303,9 @@ class M3USeriesRelation(VODSourceMetadataMixin):
 
     # Provider-specific fields - renamed to avoid clash with series ForeignKey
     external_series_id = models.CharField(max_length=255, help_text="External series ID from M3U provider")
+    tmdb_override_id = models.CharField(
+        max_length=50, blank=True, default="", db_default="", db_index=True
+    )
     custom_properties = models.JSONField(blank=True, null=True, help_text="Provider-specific data")
 
     # Timestamps
@@ -291,6 +332,9 @@ class M3UMovieRelation(VODSourceMetadataMixin):
     # Streaming information (provider-specific)
     stream_id = models.CharField(max_length=255, help_text="External stream ID from M3U provider")
     container_extension = models.CharField(max_length=10, blank=True, null=True)
+    tmdb_override_id = models.CharField(
+        max_length=50, blank=True, default="", db_default="", db_index=True
+    )
 
     # Provider-specific data
     custom_properties = models.JSONField(blank=True, null=True, help_text="Provider-specific data like quality, language, etc.")
@@ -469,3 +513,17 @@ class VODContentAlias(models.Model):
         indexes = [
             models.Index(fields=("content_type", "target_id"), name="vod_alias_target_idx"),
         ]
+
+
+class VODMetadataState(models.Model):
+    """Durable selection and progress for an explicit library enrichment job."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    task_id = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=12, default="idle")
+    selection = models.JSONField(default=list, blank=True)
+    progress = models.JSONField(default=dict, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error = models.TextField(blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
