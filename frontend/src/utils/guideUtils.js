@@ -60,6 +60,22 @@ export function buildChannelIdMap(channels, tvgsById, epgs = {}) {
   return map;
 }
 
+const mapProgramTimes = (program, nowMs) => {
+  const startMs = program.startMs ?? convertToMs(program.start_time);
+  const endMs = program.endMs ?? convertToMs(program.end_time);
+
+  return {
+    ...program,
+    startMs,
+    endMs,
+    programStart: initializeTime(startMs),
+    programEnd: initializeTime(endMs),
+    // Precompute live/past status
+    isLive: nowMs >= startMs && nowMs < endMs,
+    isPast: nowMs >= endMs,
+  };
+};
+
 export const mapProgramsByChannel = (programs, channelIdByTvgId) => {
   if (!programs?.length || !channelIdByTvgId?.size) {
     return new Map();
@@ -74,19 +90,7 @@ export const mapProgramsByChannel = (programs, channelIdByTvgId) => {
       return;
     }
 
-    const startMs = program.startMs ?? convertToMs(program.start_time);
-    const endMs = program.endMs ?? convertToMs(program.end_time);
-
-    const programData = {
-      ...program,
-      startMs,
-      endMs,
-      programStart: initializeTime(startMs),
-      programEnd: initializeTime(endMs),
-      // Precompute live/past status
-      isLive: nowMs >= startMs && nowMs < endMs,
-      isPast: nowMs >= endMs,
-    };
+    const programData = mapProgramTimes(program, nowMs);
 
     // Add this program to all channels that share the same TVG ID
     channelIds.forEach((channelId) => {
@@ -127,6 +131,72 @@ export const fetchPrograms = async (params = new URLSearchParams()) => {
       endMs: convertToMs(program.end_time),
     };
   });
+};
+
+export const PROGRAM_SEARCH_MIN_LENGTH = 2;
+export const PROGRAM_SEARCH_PAGE_SIZE = 25;
+export const PROGRAM_SEARCH_FIELDS = [
+  { label: 'Title', value: 'title' },
+  { label: 'Description', value: 'description' },
+];
+export const PROGRAM_SEARCH_WINDOWS = [
+  { label: 'Airing now', value: 'now' },
+  { label: 'Next 24 hours', value: '24h' },
+  { label: 'Next 7 days', value: '7d' },
+];
+// Skips streams and epg_icon_url so the endpoint does not prefetch streams
+const PROGRAM_SEARCH_RESPONSE_FIELDS =
+  'id,title,sub_title,description,start_time,end_time,tvg_id,custom_properties,epg_source,epg_name,channels';
+
+export const buildProgramSearchParams = ({
+  query,
+  field,
+  mode,
+  window,
+  page,
+  anchor,
+}) => {
+  const params = new URLSearchParams({ [field]: query });
+  if (mode === 'regex') {
+    params.set(`${field}_regex`, 'true');
+  } else if (mode === 'search') {
+    params.set(`${field}_whole_words`, 'true');
+  }
+
+  if (window === 'now') {
+    params.set('airing_at', anchor);
+  } else {
+    params.set('end_after', anchor);
+    params.set(
+      'start_before',
+      add(anchor, window === '7d' ? 168 : 24, 'hour').toISOString()
+    );
+  }
+
+  params.set('page', String(page));
+  params.set('page_size', String(PROGRAM_SEARCH_PAGE_SIZE));
+  params.set('fields', PROGRAM_SEARCH_RESPONSE_FIELDS);
+  return params;
+};
+
+export const mapSearchResultToGuideProgram = (result, nowMs) => {
+  const customProperties = result.custom_properties || {};
+
+  // Same flags the grid endpoint derives from custom_properties
+  return mapProgramTimes(
+    {
+      ...result,
+      season: customProperties.season ?? null,
+      episode: customProperties.episode ?? null,
+      is_new: Boolean(customProperties.new),
+      is_live: Boolean(customProperties.live),
+      is_premiere: Boolean(customProperties.premiere),
+      is_finale: String(customProperties.premiere_text ?? '')
+        .toLowerCase()
+        .includes('finale'),
+    },
+    nowMs
+  );
 };
 
 export const sortChannels = (channels) => {

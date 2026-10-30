@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  act,
+} from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
 import API from '../../api';
 import dayjs from 'dayjs';
 import Guide from '../Guide';
+import ProgramSearchPanel from '../../components/ProgramSearchPanel';
 import useChannelsStore from '../../store/channels';
 import useLogosStore from '../../store/logos';
 import useEPGsStore from '../../store/epgs';
@@ -44,6 +52,8 @@ vi.mock('../../api', () => ({
   default: {
     getAllChannelIds: vi.fn(),
     getChannelsSummary: vi.fn(),
+    getChannel: vi.fn(),
+    searchPrograms: vi.fn(),
   },
 }));
 
@@ -58,8 +68,21 @@ vi.mock('@mantine/core', async () => {
   const actual = await vi.importActual('@mantine/core');
   return {
     ...actual,
-    Box: ({ children, style, onClick, className, ref }) => (
-      <div style={style} onClick={onClick} className={className} ref={ref}>
+    Box: ({
+      children,
+      style,
+      onClick,
+      className,
+      ref,
+      'aria-hidden': ariaHidden,
+    }) => (
+      <div
+        style={style}
+        onClick={onClick}
+        className={className}
+        ref={ref}
+        aria-hidden={ariaHidden}
+      >
         {children}
       </div>
     ),
@@ -75,8 +98,8 @@ vi.mock('@mantine/core', async () => {
         {children}
       </div>
     ),
-    Group: ({ children, gap, justify }) => (
-      <div data-gap={gap} data-justify={justify}>
+    Group: ({ children, gap, justify, ref }) => (
+      <div data-gap={gap} data-justify={justify} ref={ref}>
         {children}
       </div>
     ),
@@ -169,6 +192,19 @@ vi.mock('@mantine/core', async () => {
         {children}
       </button>
     ),
+    SegmentedControl: ({ data, value, onChange }) => (
+      <div>
+        {data.map((option) => (
+          <button
+            key={option.value}
+            aria-pressed={option.value === value}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    ),
     Tooltip: ({ children, label }) => <div title={label}>{children}</div>,
     LoadingOverlay: ({ visible }) => (visible ? <div>Loading...</div> : null),
   };
@@ -258,15 +294,59 @@ vi.mock('../../components/forms/SeriesRecordingModal', () => ({
 }));
 vi.mock('../../components/ProgramDetailModal', () => ({
   __esModule: true,
-  default: ({ program, opened, onClose, onRecord }) =>
+  default: ({ program, channel, opened, onClose, onRecord }) =>
     opened ? (
-      <div data-testid="program-detail-modal">
+      <div data-testid="program-detail-modal" data-channel-uuid={channel?.uuid}>
         <div>{program?.title}</div>
         <button onClick={onClose}>Close</button>
-        <button onClick={() => onRecord?.(program)}>Record</button>
+        {onRecord && <button onClick={() => onRecord(program)}>Record</button>}
       </div>
     ) : null,
 }));
+// Stub for the result selection tests. The typing test renders the real panel.
+vi.mock('../../components/ProgramSearchPanel', async () => {
+  const { useState } = await vi.importActual('react');
+  const program = {
+    id: 501,
+    tvg_id: 'tvg-9',
+    title: 'Searched Program',
+    start_time: '2024-01-15T13:00:00Z',
+    end_time: '2024-01-15T14:00:00Z',
+    isLive: false,
+    isPast: false,
+  };
+  const ProgramSearchPanel = ({ visible, onSelect }) => {
+    const [query, setQuery] = useState('');
+    return (
+      <div data-testid="program-search-panel" data-visible={visible}>
+        <input
+          placeholder="Search programs..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button
+          onClick={() =>
+            onSelect(program, { id: 'channel-1', name: 'Test Channel 1' })
+          }
+        >
+          Select loaded channel
+        </button>
+        <button
+          onClick={() =>
+            onSelect(program, { id: 'channel-9', name: 'Other Channel' })
+          }
+        >
+          Select other channel
+        </button>
+        <button onClick={() => onSelect(program, null)}>Select unmapped</button>
+      </div>
+    );
+  };
+  return {
+    __esModule: true,
+    default: vi.fn(ProgramSearchPanel),
+  };
+});
 
 vi.mock('../../utils/guideUtils', async () => {
   const actual = await vi.importActual('../../utils/guideUtils');
@@ -881,6 +961,320 @@ describe('Guide', () => {
       // Allow React StrictMode double-invoke; time-extend must not add channel fetches.
       expect(channelCalls).toBeLessThanOrEqual(2);
       expect(API.getChannelsSummary).toHaveBeenCalledTimes(channelCalls);
+    });
+  });
+
+  describe('Program Search', () => {
+    beforeEach(() => {
+      API.getChannel.mockReset();
+      vi.mocked(ProgramSearchPanel).mockReset();
+    });
+
+    const switchToPrograms = async (user) => {
+      await user.click(screen.getByText('Programs'));
+      return screen.findByPlaceholderText('Search programs...');
+    };
+
+    it('renders the Channels / Programs toggle with Channels selected', () => {
+      render(<Guide />);
+
+      expect(screen.getByText('Channels')).toHaveAttribute(
+        'aria-pressed',
+        'true'
+      );
+      expect(screen.getByText('Programs')).toHaveAttribute(
+        'aria-pressed',
+        'false'
+      );
+      expect(
+        screen.queryByTestId('program-search-panel')
+      ).not.toBeInTheDocument();
+    });
+
+    it('removes channel filters in Programs mode and restores them', async () => {
+      vi.useRealTimers();
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+
+      await user.type(
+        await screen.findByPlaceholderText('Search channels...'),
+        'Test'
+      );
+      await user.selectOptions(
+        screen.getByLabelText('Filter by group'),
+        'group-1'
+      );
+      await user.selectOptions(
+        screen.getByLabelText('Filter by profile'),
+        'profile-1'
+      );
+
+      await switchToPrograms(user);
+
+      expect(
+        screen.queryByPlaceholderText('Search channels...')
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText('Filter by group')
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText('Filter by profile')
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Clear Filters')).not.toBeInTheDocument();
+      expect(screen.getByText('Series Rules')).toBeInTheDocument();
+
+      await user.click(screen.getByText('Channels'));
+
+      expect(screen.getByPlaceholderText('Search channels...')).toHaveValue(
+        'Test'
+      );
+      expect(screen.getByLabelText('Filter by group')).toHaveValue('group-1');
+      expect(screen.getByLabelText('Filter by profile')).toHaveValue(
+        'profile-1'
+      );
+      expect(screen.getAllByText('Clear Filters')[0]).toBeInTheDocument();
+    });
+
+    it('keeps the grid mounted but hidden while Programs is shown', async () => {
+      vi.useRealTimers();
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+
+      await switchToPrograms(user);
+
+      const grid = screen.getByTestId('variable-size-list').parentElement;
+      expect(grid).toHaveStyle({ visibility: 'hidden' });
+      expect(grid).toHaveAttribute('aria-hidden', 'true');
+      expect(screen.getByTestId('program-search-panel')).toHaveAttribute(
+        'data-visible',
+        'true'
+      );
+
+      await user.click(screen.getByText('Channels'));
+
+      expect(grid).toHaveStyle({ visibility: 'visible' });
+      expect(screen.getByTestId('program-search-panel')).toHaveAttribute(
+        'data-visible',
+        'false'
+      );
+    });
+
+    it('does not refetch or re-render the guide while typing a program query', async () => {
+      vi.useRealTimers();
+      const { default: ActualProgramSearchPanel } = await vi.importActual(
+        '../../components/ProgramSearchPanel'
+      );
+      vi.mocked(ProgramSearchPanel).mockImplementation((props) => (
+        <ActualProgramSearchPanel {...props} />
+      ));
+      API.searchPrograms.mockResolvedValue({
+        count: 0,
+        next: null,
+        previous: null,
+        results: [],
+      });
+
+      const user = userEvent.setup({ delay: null });
+      render(
+        <MantineProvider env="test">
+          <Guide />
+        </MantineProvider>
+      );
+      await screen.findAllByTestId('guide-row');
+      const programInput = await switchToPrograms(user);
+
+      API.getChannelsSummary.mockClear();
+      guideUtils.fetchPrograms.mockClear();
+      // Guide reads the channels store on every render
+      useChannelsStore.mockClear();
+
+      await user.type(programInput, 'news');
+      await screen.findByText('No programs match "news" in the next 24 hours');
+
+      expect(programInput).toHaveValue('news');
+      expect(API.searchPrograms).toHaveBeenCalledTimes(1);
+      expect(API.getChannelsSummary).not.toHaveBeenCalled();
+      expect(guideUtils.fetchPrograms).not.toHaveBeenCalled();
+      expect(useChannelsStore).not.toHaveBeenCalled();
+    });
+
+    it('keeps each search when switching modes', async () => {
+      vi.useRealTimers();
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+
+      await user.type(
+        await screen.findByPlaceholderText('Search channels...'),
+        'Test'
+      );
+      await user.type(await switchToPrograms(user), 'news');
+
+      await user.click(screen.getByText('Channels'));
+      expect(screen.getByPlaceholderText('Search channels...')).toHaveValue(
+        'Test'
+      );
+
+      await user.click(screen.getByText('Programs'));
+      expect(screen.getByPlaceholderText('Search programs...')).toHaveValue(
+        'news'
+      );
+    });
+
+    it('opens the detail modal with the loaded channel for a result', async () => {
+      vi.useRealTimers();
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+      await switchToPrograms(user);
+
+      await user.click(screen.getByText('Select loaded channel'));
+
+      const modal = await screen.findByTestId('program-detail-modal');
+      expect(modal).toHaveTextContent('Searched Program');
+      expect(modal).toHaveAttribute('data-channel-uuid', 'uuid-1');
+      expect(API.getChannel).not.toHaveBeenCalled();
+    });
+
+    it('fetches a result channel that is not loaded and records on it', async () => {
+      vi.useRealTimers();
+      API.getChannel.mockResolvedValue({
+        id: 'channel-9',
+        uuid: 'uuid-9',
+        epg_data_id: 3,
+        effective_epg_data_id: 4,
+      });
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+      await switchToPrograms(user);
+
+      await user.click(screen.getByText('Select other channel'));
+
+      const modal = await screen.findByTestId('program-detail-modal');
+      expect(API.getChannel).toHaveBeenCalledWith('channel-9');
+      expect(modal).toHaveAttribute('data-channel-uuid', 'uuid-9');
+
+      await user.click(screen.getByText('Record'));
+      await user.click(await screen.findByText('Record One'));
+
+      await waitFor(() => {
+        expect(guideUtils.createRecording).toHaveBeenCalledWith(
+          expect.objectContaining({
+            channel: 'channel-9',
+            custom_properties: {
+              program: expect.objectContaining({ id: 501 }),
+            },
+          })
+        );
+      });
+    });
+
+    it('opens an unmapped result without a channel or Record', async () => {
+      vi.useRealTimers();
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+      await switchToPrograms(user);
+
+      await user.click(screen.getByText('Select unmapped'));
+
+      const modal = await screen.findByTestId('program-detail-modal');
+      expect(modal).not.toHaveAttribute('data-channel-uuid');
+      expect(screen.queryByText('Record')).not.toBeInTheDocument();
+      expect(API.getChannel).not.toHaveBeenCalled();
+    });
+
+    it('ignores a slow result channel once another result is selected', async () => {
+      vi.useRealTimers();
+      let resolveChannel;
+      API.getChannel.mockReturnValue(
+        new Promise((resolve) => {
+          resolveChannel = resolve;
+        })
+      );
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+      await switchToPrograms(user);
+
+      await user.click(screen.getByText('Select other channel'));
+      await user.click(screen.getByText('Select loaded channel'));
+      const modal = await screen.findByTestId('program-detail-modal');
+      expect(modal).toHaveAttribute('data-channel-uuid', 'uuid-1');
+
+      await act(async () => {
+        resolveChannel({ id: 'channel-9', uuid: 'uuid-9' });
+      });
+
+      expect(screen.getByTestId('program-detail-modal')).toHaveAttribute(
+        'data-channel-uuid',
+        'uuid-1'
+      );
+    });
+
+    it('ignores a slow result channel once a grid program is clicked', async () => {
+      vi.useRealTimers();
+      let resolveChannel;
+      API.getChannel.mockReturnValue(
+        new Promise((resolve) => {
+          resolveChannel = resolve;
+        })
+      );
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+      await switchToPrograms(user);
+
+      await user.click(screen.getByText('Select other channel'));
+      await user.click(screen.getByText('Channels'));
+      await user.click(screen.getAllByTestId('guide-row-select')[0]);
+      const modal = await screen.findByTestId('program-detail-modal');
+      expect(modal).toHaveTextContent('Test Program 1');
+
+      await act(async () => {
+        resolveChannel({ id: 'channel-9', uuid: 'uuid-9' });
+      });
+
+      expect(screen.getByTestId('program-detail-modal')).toHaveTextContent(
+        'Test Program 1'
+      );
+    });
+
+    it('ignores a slow result channel once the detail modal is closed', async () => {
+      vi.useRealTimers();
+      let resolveChannel;
+      API.getChannel.mockReturnValue(
+        new Promise((resolve) => {
+          resolveChannel = resolve;
+        })
+      );
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+      await switchToPrograms(user);
+
+      await user.click(screen.getByText('Select loaded channel'));
+      await screen.findByTestId('program-detail-modal');
+      await user.click(screen.getByText('Select other channel'));
+      await user.click(screen.getByText('Close'));
+
+      await act(async () => {
+        resolveChannel({ id: 'channel-9', uuid: 'uuid-9' });
+      });
+
+      expect(
+        screen.queryByTestId('program-detail-modal')
+      ).not.toBeInTheDocument();
     });
   });
 });
