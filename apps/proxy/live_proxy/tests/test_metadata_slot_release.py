@@ -15,6 +15,12 @@ class _Redis:
         self.strings = {}
         self.hashes = {}
 
+    def get(self, key):
+        return self.strings.get(key)
+
+    def set(self, key, value):
+        self.strings[key] = value
+
     def hget(self, key, field):
         return self.hashes.get(key, {}).get(field)
 

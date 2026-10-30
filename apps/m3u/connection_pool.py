@@ -433,3 +433,43 @@ def release_profile_slot(profile_id: int, redis_client) -> bool:
     return _release_credential_slot_by_profile_id(
         profile_id, redis_client, release_profile=True
     )
+
+
+# -- Per-connection User-Agent numbering ------------------------------------
+#
+# Some providers' middleware mishandles multiple concurrent connections
+# from the same account that present an
+# identical User-Agent string. Giving each concurrently-active stream on the
+# account a distinct, reused-when-free slot number lets the resolved
+# User-Agent vary per connection (M3UAccount.vary_user_agent, see
+# apps/m3u/models.py) without touching the existing profile/credential
+# reservation above. A free-list (not the profile_connections counter, which
+# only tracks a count and can hand the same number to two connections that
+# are simultaneously live -- see UA_SLOT_FREE_LIST_KEY below) guarantees two
+# live connections never share a number.
+
+UA_SLOT_FREE_LIST_KEY = "ua_slot_free:{profile_id}"
+UA_SLOT_COUNTER_KEY = "ua_slot_counter:{profile_id}"
+
+
+def reserve_ua_slot(profile_id: int, redis_client) -> int:
+    """Hand out a per-connection slot number, reusing a released one first.
+
+    Numbers start at 1 and are never reused by two simultaneously-held
+    connections: a release pushes the number back onto a free list, and a
+    reservation pops from that list before minting a new one.
+    """
+    free_list_key = UA_SLOT_FREE_LIST_KEY.format(profile_id=profile_id)
+    popped = redis_client.lpop(free_list_key)
+    if popped is not None:
+        return int(popped)
+    counter_key = UA_SLOT_COUNTER_KEY.format(profile_id=profile_id)
+    return redis_client.incr(counter_key)
+
+
+def release_ua_slot(profile_id: int, slot_index: Optional[int], redis_client) -> None:
+    """Return a per-connection slot number to the free list for reuse."""
+    if slot_index is None:
+        return
+    free_list_key = UA_SLOT_FREE_LIST_KEY.format(profile_id=profile_id)
+    redis_client.rpush(free_list_key, slot_index)

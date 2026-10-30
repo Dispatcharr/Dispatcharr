@@ -2426,6 +2426,18 @@ class ProxyServer:
             else:
                 self.redis_client.delete(Stream.preview_profile_key(stream_id))
 
+        if stream_id is not None:
+            from apps.m3u.connection_pool import release_ua_slot
+
+            ua_slot_key = f"stream_ua_slot:{stream_id}"
+            ua_slot_bytes = self.redis_client.get(ua_slot_key)
+            if ua_slot_bytes is not None:
+                try:
+                    release_ua_slot(profile_id, int(ua_slot_bytes), self.redis_client)
+                except (TypeError, ValueError):
+                    pass
+                self.redis_client.delete(ua_slot_key)
+
         released = claim_and_release_profile_slot(
             self.redis_client,
             metadata_key,
