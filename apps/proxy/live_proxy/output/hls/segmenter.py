@@ -9,8 +9,9 @@ bytes are not rewritten; a new segment may get a few extra TS packets
 (PAT/PMT, and H.264/HEVC parameter sets when the opening keyframe lacks
 them). No subprocess is spawned.
 
-This module is intentionally dependency-free (stdlib only, no Django or
-Redis imports) so the parsing logic is unit-testable in isolation.
+This module is intentionally dependency-free (stdlib only, plus the shared
+``ts_psi`` PAT/PMT helpers; no Django or Redis) so the parsing logic is
+unit-testable in isolation.
 
 Segmentation rules:
 - Video: a segment may only begin on a video keyframe access unit.
@@ -34,26 +35,21 @@ Segmentation rules:
   parameter sets in-band to be independently decodable.
 """
 
-TS_PACKET_SIZE = 188
+from ...constants import TS_PACKET_SIZE
+from ...ts_psi import (
+    AUDIO_STREAM_TYPES,
+    VIDEO_STREAM_TYPES,
+    PsiSectionAssembler,
+    packet_payload_offset,
+    packet_pid,
+    packet_pusi,
+    parse_pat,
+    parse_pmt,
+    parse_pmt_section,
+    parse_pmt_streams,
+)
+
 TS_SYNC_BYTE = 0x47
-
-# ISO 13818-1 / ATSC stream_type values
-VIDEO_STREAM_TYPES = {
-    0x01: "mpeg1",
-    0x02: "mpeg2",
-    0x1B: "h264",
-    0x24: "h265",
-}
-
-# Common audio elementary stream types in live MPEG-TS
-AUDIO_STREAM_TYPES = {
-    0x03: "mpeg1-audio",
-    0x04: "mpeg2-audio",
-    0x0F: "aac-adts",
-    0x11: "aac-latm",
-    0x81: "ac3",
-    0x87: "eac3",
-}
 
 # Parameter-set NAL types needed for an independently decodable TS start.
 _H264_PARAM_TYPES = (7, 8)       # SPS, PPS
@@ -86,31 +82,9 @@ class Segment:
         self.discontinuity = discontinuity
 
 
-def packet_pid(packet):
-    """13-bit PID of a TS packet."""
-    return ((packet[1] & 0x1F) << 8) | packet[2]
-
-
 def packet_continuity_counter(packet):
     """4-bit continuity_counter."""
     return packet[3] & 0x0F
-
-
-def packet_pusi(packet):
-    """payload_unit_start_indicator flag."""
-    return bool(packet[1] & 0x40)
-
-
-def packet_payload_offset(packet):
-    """Byte offset of the payload within the packet, or None if no payload."""
-    afc = (packet[3] >> 4) & 0x03
-    if afc == 0x01:
-        return 4
-    if afc == 0x03:
-        af_len = packet[4]
-        offset = 5 + af_len
-        return offset if offset < TS_PACKET_SIZE else None
-    return None
 
 
 def packet_random_access(packet):
@@ -119,78 +93,6 @@ def packet_random_access(packet):
     if afc in (0x02, 0x03) and packet[4] > 0:
         return bool(packet[5] & 0x40)
     return False
-
-
-def parse_pat(packet):
-    """Return the PMT PID of the first non-zero program, or None."""
-    base = packet_payload_offset(packet)
-    if base is None or base + 1 >= TS_PACKET_SIZE:
-        return None
-    pointer = packet[base]
-    section = base + 1 + pointer
-    # table_id(1) section_length(2) tsid(2) ver(1) sec(1) last(1) = 8 bytes,
-    # then 4-byte program entries.
-    offset = section + 8
-    while offset + 3 < TS_PACKET_SIZE:
-        program_number = (packet[offset] << 8) | packet[offset + 1]
-        pid = ((packet[offset + 2] & 0x1F) << 8) | packet[offset + 3]
-        if program_number != 0:
-            return pid
-        offset += 4
-    return None
-
-
-def parse_pmt_streams(packet):
-    """Return [(stream_type, es_pid), ...] from a PMT packet, or None if unparseable.
-
-    Returns None when the declared section does not fit in this TS packet
-    (multi-packet / truncated PMT). Callers must not treat a partial ES loop
-    as authoritative, or audio descriptors in packet 1 with video in packet 2
-    would look like an audio-only stream.
-    """
-    base = packet_payload_offset(packet)
-    if base is None or base + 1 >= TS_PACKET_SIZE:
-        return None
-    pointer = packet[base]
-    section = base + 1 + pointer
-    if section + 12 >= TS_PACKET_SIZE:
-        return None
-    if packet[section] != 0x02:  # table_id must be PMT
-        return None
-    # section_length: bytes after the length field, including CRC.
-    section_length = ((packet[section + 1] & 0x0F) << 8) | packet[section + 2]
-    if section + 3 + section_length > TS_PACKET_SIZE:
-        return None
-    program_info_length = ((packet[section + 10] & 0x0F) << 8) | packet[section + 11]
-    offset = section + 12 + program_info_length
-    # ES loop ends before the 4-byte CRC.
-    section_end = section + 3 + section_length - 4
-    if offset > section_end:
-        return None
-
-    streams = []
-    while offset + 4 < section_end:
-        stream_type = packet[offset]
-        es_pid = ((packet[offset + 1] & 0x1F) << 8) | packet[offset + 2]
-        es_info_length = ((packet[offset + 3] & 0x0F) << 8) | packet[offset + 4]
-        entry_end = offset + 5 + es_info_length
-        if entry_end > section_end:
-            # Truncated descriptor inside an otherwise sized section: refuse.
-            return None
-        streams.append((stream_type, es_pid))
-        offset = entry_end
-    return streams
-
-
-def parse_pmt(packet):
-    """Return (video_pid, video_stream_type) from a PMT packet, or (None, None)."""
-    streams = parse_pmt_streams(packet)
-    if not streams:
-        return None, None
-    for stream_type, es_pid in streams:
-        if stream_type in VIDEO_STREAM_TYPES:
-            return es_pid, stream_type
-    return None, None
 
 
 def extract_pts(packet):
@@ -492,6 +394,7 @@ class TSSegmenter:
         self._current = bytearray()
         self._pat_packet = None
         self._pmt_packet = None
+        self._pmt_sections = PsiSectionAssembler()
         self._pmt_pid = None
         self._video_pid = None
         self._video_stream_type = None
@@ -594,40 +497,49 @@ class TSSegmenter:
                 self._pmt_pid = parse_pat(packet)
             return None
         if self._pmt_pid is not None and pid == self._pmt_pid:
-            self._pmt_packet = packet
-            streams = parse_pmt_streams(packet)
-            if streams is None:
-                return None
-            video_pid, stream_type = None, None
-            audio_pid = None
-            for st, es_pid in streams:
-                if video_pid is None and st in VIDEO_STREAM_TYPES:
-                    video_pid, stream_type = es_pid, st
-                elif audio_pid is None and st in AUDIO_STREAM_TYPES:
-                    audio_pid = es_pid
-            if video_pid is not None:
-                # Re-learned continuously so PID/codec changes across
-                # provider failovers are tolerated.
-                if (
-                    video_pid != self._video_pid
-                    or stream_type != self._video_stream_type
-                ):
-                    self._param_sets = {}
-                self._video_pid = video_pid
-                self._video_stream_type = stream_type
-                self._audio_only = False
-                self._audio_pid = audio_pid
-            elif audio_pid is not None:
-                # PMT listed elementary streams with no video: audio-only
-                # (radio / music channels). Decide immediately from the table;
-                # do not wait for a video PID that will never arrive.
-                self._audio_pid = audio_pid
-                self._audio_only = True
-                self._video_pid = None
-                self._video_stream_type = None
-                self._param_sets = {}
+            # A PMT section can span packets. Learn the program only from a
+            # complete section, and keep every packet of it so a segment can
+            # be prefixed with the whole table.
+            for section, packets in self._pmt_sections.push(packet):
+                streams = parse_pmt_section(section)
+                if streams is None:
+                    continue
+                self._pmt_packet = b"".join(pkt for pkt, _origin in packets)
+                self._apply_pmt_streams(streams)
             return None
+        return self._handle_media_packet(packet, pid)
 
+    def _apply_pmt_streams(self, streams):
+        video_pid, stream_type = None, None
+        audio_pid = None
+        for st, es_pid, _descriptors in streams:
+            if video_pid is None and st in VIDEO_STREAM_TYPES:
+                video_pid, stream_type = es_pid, st
+            elif audio_pid is None and st in AUDIO_STREAM_TYPES:
+                audio_pid = es_pid
+        if video_pid is not None:
+            # Re-learned continuously so PID/codec changes across
+            # provider failovers are tolerated.
+            if (
+                video_pid != self._video_pid
+                or stream_type != self._video_stream_type
+            ):
+                self._param_sets = {}
+            self._video_pid = video_pid
+            self._video_stream_type = stream_type
+            self._audio_only = False
+            self._audio_pid = audio_pid
+        elif audio_pid is not None:
+            # PMT listed elementary streams with no video: audio-only
+            # (radio / music channels). Decide immediately from the table;
+            # do not wait for a video PID that will never arrive.
+            self._audio_pid = audio_pid
+            self._audio_only = True
+            self._video_pid = None
+            self._video_stream_type = None
+            self._param_sets = {}
+
+    def _handle_media_packet(self, packet, pid):
         if self._video_pid is None and not self._audio_only:
             return None
 

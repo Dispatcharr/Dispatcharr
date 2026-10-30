@@ -171,6 +171,19 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(parse_pmt_streams(bytes(packet)))
         self.assertEqual(parse_pmt(bytes(packet)), (None, None))
 
+    def test_pmt_split_across_packets_is_learned_whole(self):
+        """The ES loop in packet 1 is not the program; the video may be in packet 2."""
+        from apps.proxy.live_proxy.tests.test_ts_pmt_watcher import split_pmt, wide_streams
+        seg = TSSegmenter(target_duration=4)
+        packets = split_pmt(wide_streams(H264))
+        self.assertEqual(seg.feed(make_pat() + packets[0]), [])
+        self.assertIsNone(seg._video_pid)
+        seg.feed(b"".join(packets[1:]))
+        self.assertEqual(seg._video_pid, VIDEO_PID)
+        self.assertEqual(seg._video_stream_type, H264)
+        # A segment is prefixed with every packet of the section, not just the first.
+        self.assertEqual(seg._pmt_packet, b"".join(packets))
+
     def test_pts_roundtrip(self):
         packet = make_video_pes(1234.5, keyframe=True)
         self.assertAlmostEqual(extract_pts(packet), 1234.5, places=3)
