@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TV Guide can search programs.** A Channels / Programs toggle on the Guide switches to program search, which uses `GET /api/epg/programs/search/`. It matches the title or the description for programs airing now, in the next 24 hours, or in the next 7 days, with optional regex and whole-word matching. Results are paginated and list every channel that carries the program. Clicking a result opens the same details and recording options as the grid. (Closes #1846)
 - **UI date format supports ISO 8601.** Settings → UI Settings → Date format now includes `YYYY-MM-DD`, which displays dates in year-first order across tables, the Guide, DVR views, date pickers, and System Events. (Closes #1375) - Thanks [@LarsSimonsen](https://github.com/LarsSimonsen)
 - **Plugin manifests can declare capabilities that require administrator approval.** Enabling a plugin now shows the access it requests, including background work, persistent services, network listeners, outbound connections, subprocesses, filesystem writes, approved internal tasks, proxy internals, and user data. An update that adds a capability asks for approval again before it can run with the new access.
 - **Plugins can run asynchronous actions with progress and task history.** Manifest actions can dispatch background work, report progress to the UI, and retain recent run status across page loads. (Closes #699)
