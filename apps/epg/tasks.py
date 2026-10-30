@@ -713,8 +713,17 @@ def fetch_xmltv(source):
         # Send initial download notification
         send_epg_update(source.id, "downloading", 0)
 
+        proxies = (
+            source.get_proxies()
+            if hasattr(source, "get_proxies")
+            else None
+        )
+        request_kwargs = {"headers": headers, "stream": True, "timeout": 60}
+        if proxies and isinstance(proxies, dict):
+            request_kwargs["proxies"] = proxies
+
         # Use streaming response to track download progress
-        with requests.get(source.url, headers=headers, stream=True, timeout=60) as response:
+        with requests.get(source.url, **request_kwargs) as response:
             # Handle 404 specifically
             if response.status_code == 404:
                 logger.error(f"EPG URL not found (404): {source.url}")

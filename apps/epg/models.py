@@ -133,6 +133,90 @@ class EPGSource(models.Model):
             .first()
         )
 
+    def _get_linked_m3u_proxy_override(self, custom_props: dict) -> str | None:
+        """
+        Return a normalized proxy override from an associated M3UAccount if one
+        exists (matched via custom_properties['m3u_account_id'], matching name,
+        or matching Xtream Codes server_url origin for /xmltv.php URLs).
+        """
+        from urllib.parse import urlparse
+        from apps.m3u.models import M3UAccount
+        from apps.m3u.utils import normalize_proxy_url
+
+        try:
+            account = None
+            m3u_account_id = custom_props.get("m3u_account_id")
+            if m3u_account_id:
+                account = (
+                    M3UAccount.objects.filter(id=int(m3u_account_id))
+                    .only("custom_properties")
+                    .first()
+                )
+            if account is None and self.name:
+                account = (
+                    M3UAccount.objects.filter(name=self.name)
+                    .only("custom_properties")
+                    .first()
+                )
+            if (
+                account is None
+                and self.source_type == "xmltv"
+                and self.url
+                and "/xmltv.php" in self.url
+            ):
+                parsed = urlparse(self.url)
+                if parsed.scheme and parsed.netloc:
+                    origin = f"{parsed.scheme}://{parsed.netloc}"
+                    account = (
+                        M3UAccount.objects.filter(
+                            server_url__startswith=origin
+                        )
+                        .only("custom_properties")
+                        .first()
+                    )
+            if account and isinstance(account.custom_properties, dict):
+                acct_proxy = normalize_proxy_url(
+                    account.custom_properties.get("proxy")
+                )
+                if acct_proxy:
+                    return acct_proxy
+        except Exception:
+            pass
+        return None
+
+    def get_effective_proxy(self) -> str | None:
+        """
+        Resolve the effective proxy URL for this EPG source:
+        1. Explicit per-source override in ``custom_properties['proxy']``
+        2. Proxy override on an associated M3UAccount
+        3. Global ``default_proxy`` in ``CoreSettings`` (stream_settings)
+        4. ``None`` (no proxy)
+        """
+        from apps.m3u.utils import normalize_proxy_url
+        from core.models import CoreSettings
+
+        custom_props = (
+            self.custom_properties
+            if isinstance(self.custom_properties, dict)
+            else {}
+        )
+        source_proxy = normalize_proxy_url(custom_props.get("proxy"))
+        if source_proxy:
+            return source_proxy
+
+        linked_m3u_proxy = self._get_linked_m3u_proxy_override(custom_props)
+        if linked_m3u_proxy:
+            return linked_m3u_proxy
+
+        global_proxy = CoreSettings.get_default_proxy()
+        return global_proxy or None
+
+    def get_proxies(self) -> dict[str, str] | None:
+        """Return a requests-compatible ``proxies`` mapping for this EPG source, or ``None``."""
+        from apps.m3u.utils import build_requests_proxies
+
+        return build_requests_proxies(self.get_effective_proxy())
+
 
 class EPGSourceIndex(models.Model):
     """Byte-offset programme index for an EPGSource, stored in its own table.

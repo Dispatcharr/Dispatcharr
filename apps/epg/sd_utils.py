@@ -445,13 +445,23 @@ def sd_obtain_token(source, username=None, password=None, *, timeout=30):
 
     sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
     token_body = {'username': username, 'password': sha1_password}
+    proxies = (
+        source.get_proxies()
+        if source is not None and hasattr(source, 'get_proxies')
+        else None
+    )
 
     def _post_token():
+        post_kwargs = {
+            'json': token_body,
+            'headers': sd_headers_for_source(source),
+            'timeout': timeout,
+        }
+        if proxies and isinstance(proxies, dict):
+            post_kwargs['proxies'] = proxies
         return requests.post(
             f"{SD_BASE_URL}/token",
-            json=token_body,
-            headers=sd_headers_for_source(source),
-            timeout=timeout,
+            **post_kwargs,
         )
 
     try:
@@ -581,6 +591,13 @@ def sd_authorized_request(
         'HEAD': requests.head,
         'PATCH': requests.patch,
     }.get(method_upper)
+    proxies = (
+        source.get_proxies()
+        if source is not None and hasattr(source, 'get_proxies')
+        else None
+    )
+    if proxies and isinstance(proxies, dict) and 'proxies' not in kwargs:
+        kwargs['proxies'] = proxies
 
     def _once(current_token):
         headers = sd_headers_for_source(

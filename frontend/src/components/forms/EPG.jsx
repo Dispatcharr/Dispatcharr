@@ -701,6 +701,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       refresh_interval: 24,
       cron_expression: '',
       priority: 0,
+      proxy: '',
     },
 
     validate: {
@@ -710,7 +711,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
   });
 
   const onSubmit = async () => {
-    const values = form.getValues();
+    const values = { ...form.getValues() };
 
     const hasCronExpression =
       values.cron_expression && values.cron_expression.trim() !== '';
@@ -719,6 +720,12 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       values.refresh_interval = 0;
     } else {
       values.cron_expression = '';
+    }
+
+    if ('proxy' in values) {
+      const trimmedProxy =
+        typeof values.proxy === 'string' ? values.proxy.trim() : '';
+      values.proxy = trimmedProxy || null;
     }
 
     const existingId = epg?.id || savedEpgId;
@@ -761,6 +768,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
         refresh_interval: storedEpg.refresh_interval,
         cron_expression: storedEpg.cron_expression || '',
         priority: storedEpg.priority ?? 0,
+        proxy: storedEpg.proxy || '',
       };
       form.setValues(values);
       setSourceType(storedEpg.source_type);
@@ -959,6 +967,16 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 description="Priority for EPG matching (higher numbers = higher priority). Used when multiple EPG sources have matching entries for a channel."
                 {...form.getInputProps('priority')}
                 key={form.key('priority')}
+              />
+
+              <TextInput
+                id="proxy"
+                name="proxy"
+                label="Proxy Override"
+                placeholder="Use global default"
+                description="Optional proxy URL for this EPG source (e.g. http://host:port or socks5://host:port). Leave empty to inherit the linked M3U account or global default proxy."
+                {...form.getInputProps('proxy')}
+                key={form.key('proxy')}
               />
 
               {savedEpgId && (

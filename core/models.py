@@ -534,6 +534,7 @@ class CoreSettings(models.Model):
             "default_user_agent": None,
             "default_stream_profile": None,
             "m3u_hash_key": "",
+            "default_proxy": "",
             "default_output_format": "mpegts",
             "hdhr_output_profile_id": None,
         })
@@ -675,6 +676,14 @@ class CoreSettings(models.Model):
     @classmethod
     def get_m3u_hash_key(cls):
         return cls.get_stream_settings().get("m3u_hash_key", "")
+
+    @classmethod
+    def get_default_proxy(cls):
+        """Return the global default proxy URL string, or '' when unset."""
+        value = cls.get_stream_settings().get("default_proxy")
+        if not value or not isinstance(value, str):
+            return ""
+        return value.strip()
 
     @classmethod
     def get_preferred_region(cls):

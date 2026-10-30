@@ -16,7 +16,13 @@ from ..utils import detect_stream_type, get_logger, signal_process_tree
 from ..redis_keys import RedisKeys
 from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from ..config_helper import ConfigHelper
-from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from ..url_utils import (
+    get_alternate_streams,
+    get_proxy_for_stream,
+    get_stream_info_for_switch,
+    get_stream_object,
+)
+from apps.m3u.utils import build_requests_proxies
 from ..utils import resolve_channel_display_name
 
 logger = get_logger()
@@ -43,6 +49,7 @@ class StreamManager:
         stream_id=None,
         worker_id=None,
         channel_name=None,
+        proxy=None,
     ):
         # Basic properties
         self.channel_id = channel_id
@@ -82,6 +89,8 @@ class StreamManager:
 
         # User agent for connection
         self.user_agent = user_agent or Config.DEFAULT_USER_AGENT
+        self.proxy = proxy
+        self._proxy_resolved = proxy is not None
 
         # Stream health monitoring. True until this connection delivers a chunk.
         self.last_data_time = time.time()
@@ -171,6 +180,15 @@ class StreamManager:
         self._bitrate_db_save_interval = 30  # seconds between DB writes
         self._bitrate_warmup_samples = 10   # discard first N samples while EMA stabilizes (~5s)
 
+    def _resolve_proxy(self):
+        """Resolve and cache the effective proxy URL for the current stream."""
+        if self._proxy_resolved:
+            return self.proxy
+        self._proxy_resolved = True
+        if self.current_stream_id:
+            self.proxy = get_proxy_for_stream(stream_id=self.current_stream_id)
+        return self.proxy
+
     def _create_session(self):
         """Create and configure requests session with optimal settings"""
         session = requests.Session()
@@ -180,6 +198,9 @@ class StreamManager:
             'User-Agent': self.user_agent,
             'Connection': 'keep-alive'
         })
+        proxies = build_requests_proxies(self._resolve_proxy())
+        if proxies:
+            session.proxies.update(proxies)
 
         # Set up connection pooling for better performance
         adapter = requests.adapters.HTTPAdapter(
@@ -881,10 +902,25 @@ class StreamManager:
                 # so stop can signal the whole tree (profile scripts that start
                 # ffmpeg/vlc, etc.) without touching Dispatcharr's process group.
                 _executable = _shutil.which(self.transcode_cmd[0]) or self.transcode_cmd[0]
+                _proxy = self._resolve_proxy()
+                if _proxy and not (
+                    hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP
+                ):
+                    _spawn_env = {
+                        **_os.environ,
+                        "http_proxy": _proxy,
+                        "https_proxy": _proxy,
+                        "HTTP_PROXY": _proxy,
+                        "HTTPS_PROXY": _proxy,
+                        "all_proxy": _proxy,
+                        "ALL_PROXY": _proxy,
+                    }
+                else:
+                    _spawn_env = _os.environ
                 _pid = _os.posix_spawn(
                     _executable,
                     self.transcode_cmd,
-                    _os.environ,
+                    _spawn_env,
                     file_actions=[
                         (_os.POSIX_SPAWN_OPEN, 0, '/dev/null', _os.O_RDONLY, 0),
                         (_os.POSIX_SPAWN_DUP2, relay_write, 1),
@@ -1371,10 +1407,12 @@ class StreamManager:
             from .http_streamer import HTTPStreamReader
 
             # Create and start the HTTP stream reader
+            proxy = self._resolve_proxy()
             self.http_reader = HTTPStreamReader(
                 url=self.url,
                 user_agent=self.user_agent,
-                chunk_size=self.chunk_size
+                chunk_size=self.chunk_size,
+                **({"proxy": proxy} if proxy else {}),
             )
 
             # Start the reader thread and get the read end of the pipe
@@ -1536,7 +1574,7 @@ class StreamManager:
                 logger.debug(f"Error flushing final bitrate to DB for channel {self.channel_id}: {e}")
 
     def update_url(self, new_url, stream_id=None, m3u_profile_id=None, reason=None,
-                   previous_stream_name=None, previous_provider_name=None):
+                   previous_stream_name=None, previous_provider_name=None, proxy=None):
         """Update stream URL and reconnect with proper cleanup for both HTTP and transcode sessions.
 
         reason (buffering_timeout, max_retries_exceeded, health_monitor or manual;
@@ -1632,6 +1670,15 @@ class StreamManager:
                 # New stream gets its own buffering_timeout channel_error chance
                 if stream_id != previous_stream_id:
                     self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
+
+            if proxy is not None:
+                self.proxy = proxy
+                self._proxy_resolved = True
+            elif stream_id or m3u_profile_id:
+                self.proxy = get_proxy_for_stream(
+                    stream_id=stream_id, m3u_profile_id=m3u_profile_id
+                )
+                self._proxy_resolved = True
 
             # Reset retry counter to allow immediate reconnect
             self._clear_connection_failure_history()
@@ -2365,6 +2412,9 @@ class StreamManager:
                 # Store the new user agent and transcode settings
                 self.user_agent = new_user_agent
                 self.transcode = new_transcode
+                if 'proxy' in stream_info:
+                    self.proxy = stream_info['proxy']
+                    self._proxy_resolved = True
 
                 # Update stream metadata in Redis - use the profile_id we got from get_alternate_streams
                 if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:

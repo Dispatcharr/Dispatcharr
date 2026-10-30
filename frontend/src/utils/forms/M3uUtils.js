@@ -86,5 +86,11 @@ export const prepareSubmitValues = (values, expDate) => {
       prepared.hash_key.length > 0 ? prepared.hash_key.join(',') : null;
   }
 
+  // An empty proxy string means "inherit the global default" -> send null.
+  if (typeof prepared.proxy === 'string') {
+    const trimmedProxy = prepared.proxy.trim();
+    prepared.proxy = trimmedProxy.length > 0 ? trimmedProxy : null;
+  }
+
   return prepared;
 };

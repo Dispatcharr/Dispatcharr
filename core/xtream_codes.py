@@ -3,6 +3,8 @@ import logging
 import traceback
 import json
 
+from apps.m3u.utils import build_requests_proxies, normalize_proxy_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,11 +30,12 @@ def normalize_server_url(url):
 class Client:
     """Xtream Codes API Client with robust error handling"""
 
-    def __init__(self, server_url, username, password, user_agent=None):
+    def __init__(self, server_url, username, password, user_agent=None, proxy=None):
         self.server_url = self._normalize_url(server_url)
         self.username = username
         self.password = password
         self.user_agent = user_agent
+        self.proxy = normalize_proxy_url(proxy) if isinstance(proxy, str) else None
 
         # Fix: Properly handle all possible user_agent input types
         if user_agent:
@@ -49,6 +52,9 @@ class Client:
         # Create persistent session
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': user_agent_string})
+        proxies = build_requests_proxies(self.proxy)
+        if proxies:
+            self.session.proxies.update(proxies)
 
         # Configure connection pooling
         adapter = requests.adapters.HTTPAdapter(

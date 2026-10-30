@@ -98,6 +98,7 @@ const M3U = ({
       priority: 0,
       enable_vod: false,
       hash_key: [],
+      proxy: '',
     },
 
     validate: {
@@ -136,6 +137,7 @@ const M3U = ({
         hash_key: m3uAccount.hash_key
           ? m3uAccount.hash_key.split(',').filter(Boolean)
           : [],
+        proxy: m3uAccount.proxy || '',
       });
       setHasHashKeyOverride(
         !!(
@@ -178,6 +180,7 @@ const M3U = ({
         api_key: '',
         is_active: true,
         refresh_interval: 24,
+        ...(values.proxy ? { proxy: values.proxy } : {}),
       });
     }
 
@@ -427,6 +430,15 @@ const M3U = ({
                   setHasHashKeyOverride(!!(value && value.length));
                 }}
                 key={form.key('hash_key')}
+              />
+              <TextInput
+                id="proxy"
+                name="proxy"
+                label="Proxy Override"
+                placeholder="Use global default"
+                description="Proxy URL for this M3U account (e.g. http://host:8080 or socks5h://host:1080). Empty inherits the global default."
+                {...form.getInputProps('proxy')}
+                key={form.key('proxy')}
               />
             </Stack>
 

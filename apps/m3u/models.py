@@ -7,7 +7,7 @@ from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
 from core.utils import custom_properties_as_dict
-from .utils import parse_m3u_hash_keys
+from .utils import build_requests_proxies, normalize_proxy_url, parse_m3u_hash_keys
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
 
@@ -119,6 +119,30 @@ class M3UAccount(models.Model):
             if keys:
                 return keys
         return parse_m3u_hash_keys(CoreSettings.get_m3u_hash_key())
+
+    def get_effective_proxy(self):
+        """Return the effective proxy URL string for this account, or None.
+
+        Uses this account's own ``proxy`` override (stored under
+        ``custom_properties["proxy"]``) when set; otherwise falls back to
+        the global ``default_proxy`` CoreSettings value (which defaults to
+        empty/None).
+        """
+        custom_props = self.custom_properties or {}
+        if isinstance(custom_props, dict):
+            override = normalize_proxy_url(custom_props.get("proxy"))
+            if override:
+                return override
+        try:
+            global_proxy = CoreSettings.get_default_proxy()
+        except Exception:
+            global_proxy = ""
+        normalized = normalize_proxy_url(global_proxy)
+        return normalized or None
+
+    def get_proxies(self):
+        """Return a ``requests``-compatible ``proxies`` dict for this account, or None."""
+        return build_requests_proxies(self.get_effective_proxy())
 
     def clean(self):
         if self.max_streams < 0:
