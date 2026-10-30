@@ -8,7 +8,9 @@ instant and touches only stdout, so a dead /data can never back-pressure the
 producers; bounded memory with drop-oldest and an explicit dropped-lines
 marker absorbs disk stalls (markers are file-only: the forwarded stream never
 dropped anything). Every line is rewritten into the canonical
-"stamp [offset] LEVEL source rest" grammar. Owns rotation and pruning.
+"stamp [offset] LEVEL source rest" grammar and swept for provider
+credentials -- which is why uwsgi, postgres, redis and the entrypoint are
+masked here and not by any Python formatter. Owns rotation and pruning.
 Django-free; configured via <logdir>/config/collector.conf from apply_settings().
 """
 
@@ -22,6 +24,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+try:
+    # Started by path, so siblings import but the package does not: importing
+    # it would pull celery and django into a process built to have neither.
+    from log_redaction import redact_text
+except ImportError:
+    from dispatcharr.log_redaction import redact_text
 
 
 def _role_suffix():
@@ -54,6 +63,11 @@ _BATCH_BYTES = 128 * 1024
 _BUFFER_BYTES = 2 * 1024 * 1024
 _MAX_LINE_BYTES = 256 * 1024
 _MAX_RECORD_BYTES = 16 * 1024
+# An oversize line is cut where no mask straddles the cut; the tail carries over.
+_CARRY_MIN_BYTES = 1024
+_CARRY_MAX_BYTES = 16 * 1024
+_CARRY_STEP_BYTES = 1024
+_CARRY_SEP = re.compile(r"[\s&,;]")
 
 _TRUNCATED = b" ... [log_collector truncated this record at %d bytes]\n" % _MAX_RECORD_BYTES
 
@@ -67,6 +81,7 @@ _DEFAULT_CONF = {
     "max_mb": DEFAULT_LOG_MB,
     "keep": DEFAULT_LOG_KEEP,
     "time_zone": "",
+    "redact": True,
 }
 
 # One canonical shape for every source: "stamp [offset] LEVEL source rest".
@@ -152,6 +167,28 @@ def _cap_record(line):
     return line[:cut] + _TRUNCATED
 
 
+def _carry_cut(chunk):
+    """Index to cut an oversize *chunk* at, so masking each side alone loses nothing."""
+    lo = max(len(chunk) - _CARRY_MAX_BYTES, 0)
+    window = chunk[lo:].decode("utf-8", "surrogateescape")
+    try:
+        whole = redact_text(window)
+        # One candidate per step, so a single long secret cannot use up every try.
+        for end in range(len(window) - _CARRY_MIN_BYTES, 0, -_CARRY_STEP_BYTES):
+            last = None
+            for last in _CARRY_SEP.finditer(window, max(end - _CARRY_STEP_BYTES, 0), end):
+                pass
+            if last is None:
+                continue
+            cut = last.end()
+            if redact_text(window[:cut]) + redact_text(window[cut:]) == whole:
+                return lo + len(window[:cut].encode("utf-8", "surrogateescape"))
+    except Exception:
+        pass
+    # No safe cut: carry the whole search window.
+    return lo
+
+
 def _resolve_container_zone():
     # The zone libc-stamping daemons use.
     try:
@@ -189,7 +226,7 @@ def pid_path(log_dir):
     return os.path.join(_config_dir(log_dir), PID_NAME)
 
 
-def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
+def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC", redact=True):
     """Write collector.conf atomically; called from the app (safe contexts only)."""
     if not log_dir:
         return
@@ -203,10 +240,14 @@ def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
                 f"max_mb={int(max_mb)}\n"
                 f"keep={int(keep)}\n"
                 f"time_zone={time_zone}\n"
+                f"redact={1 if redact else 0}\n"
             )
         os.replace(tmp, conf_path(log_dir))
-    except OSError:
-        pass
+    except OSError as exc:
+        # The collector keeps its old settings, which may leave masking off.
+        logging.getLogger(__name__).warning(
+            "Could not write log collector settings to %s: %s", conf_path(log_dir), exc
+        )
 
 
 def apply_settings(log_dir, values, warn_if_absent=False):
@@ -222,6 +263,7 @@ def apply_settings(log_dir, values, warn_if_absent=False):
         values.get("log_max_mb", DEFAULT_LOG_MB) or DEFAULT_LOG_MB,
         values.get("log_keep", DEFAULT_LOG_KEEP) or DEFAULT_LOG_KEEP,
         values.get("time_zone") or "UTC",
+        values.get("log_redact", True) is not False,
     )
     if warn_if_absent and not collector_running(log_dir):
         logging.getLogger(__name__).warning(
@@ -270,6 +312,8 @@ def read_conf(log_dir):
     except OSError:
         return conf
     conf["persist"] = str(conf["persist"]).strip() not in ("0", "false", "")
+    # Only an explicit off disables masking.
+    conf["redact"] = str(conf["redact"]).strip().lower() not in ("0", "false")
     for key, lo, cap in (("max_mb", 1, MAX_LOG_MB), ("keep", 2, MAX_LOG_KEEP)):
         try:
             conf[key] = min(max(int(conf[key]), lo), cap)
@@ -305,6 +349,7 @@ class Collector:
         self._in_traceback = False
         self._pg_level = b"INFO"
         self.conf = dict(_DEFAULT_CONF)
+        self._redact_failed_at = float("-inf")
         self._display_zone = _boot_display_zone()
         self._container_zone = timezone.utc
         self._pid1_zone = timezone.utc
@@ -318,17 +363,23 @@ class Collector:
     def reader(self, stream):
         mid_line = False
         overrun = False
+        carry = b""
         while True:
-            chunk = stream.readline(_MAX_LINE_BYTES)
-            if not chunk:
+            chunk = stream.readline(_MAX_LINE_BYTES - len(carry))
+            if not chunk and not carry:
                 break
+            eof = not chunk
+            chunk, carry = carry + chunk, b""
             more = not chunk.endswith(b"\n")
+            if more and not eof and self.conf["redact"] and len(chunk) > _CARRY_MAX_BYTES:
+                cut = _carry_cut(chunk)
+                chunk, carry = chunk[:cut], chunk[cut:]
             # Continuation chunks of an oversize line must not be stamped.
             tail = mid_line
             if mid_line:
-                line = chunk
+                line = self._filter(chunk)
             else:
-                line = self._normalize(chunk)
+                line = self._filter(self._normalize(chunk))
                 # One runaway record can evict a rotation of history, so only the
                 # file copy is capped; docker logs takes the record whole.
                 overrun = len(line) > _MAX_RECORD_BYTES
@@ -521,6 +572,36 @@ class Collector:
                 view = view[os.write(self.out_fd, view) :]
         except OSError:
             pass
+
+    def _filter(self, raw):
+        """Mask credentials in every line, on the way to both sinks.
+
+        Undecodable bytes round-trip through surrogateescape, so masking
+        changes nothing but the masked values.
+        """
+        if not self.conf["redact"]:
+            return raw
+        try:
+            text = raw.decode("utf-8", "surrogateescape")
+            masked = redact_text(text)
+            if masked == text:
+                return raw
+            return masked.encode("utf-8", "surrogateescape")
+        except Exception as exc:
+            # Redaction must never lose the stream: keep the line, and say so
+            # on stderr at most once a minute.
+            now = time.monotonic()
+            if now - self._redact_failed_at >= 60:
+                self._redact_failed_at = now
+                try:
+                    sys.stderr.write(
+                        f"log collector: masking failed ({type(exc).__name__}); "
+                        "line passed unmasked\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+            return raw
 
     # ── writer thread: batches, markers, rotation ─────────────────────────
 
