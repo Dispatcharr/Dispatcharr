@@ -6,7 +6,7 @@ stream layout, so a long-lived profile FFmpeg can be restarted at that boundary.
 """
 
 from ..constants import TS_PACKET_SIZE
-from .hls.segmenter import PsiSectionAssembler, parse_pat, parse_pmt_section
+from ..ts_psi import PsiSectionAssembler, parse_pat, parse_pmt_section
 
 _SYNC_BYTE = 0x47
 _PAT_PID = 0
