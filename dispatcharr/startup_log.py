@@ -8,13 +8,18 @@ from datetime import datetime, timezone
 
 from dispatcharr.display_timezone import DisplayTimezoneFormatter as _StandaloneFormatter
 from dispatcharr.log_collector import collector_running
+from dispatcharr.log_redaction import redact_log_text
 
 
 def startup_log(message, level="INFO", source="dispatcharr.startup", stream=None):
     """Print in the collector's canonical grammar so the line carries a real source."""
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y-%m-%d %H:%M:%S") + f",{now.microsecond // 1000:03d}"
-    print(f"{stamp} {level} {source} {message}", flush=True, file=stream or sys.stdout)
+    print(
+        f"{stamp} {level} {source} {redact_log_text(str(message))}",
+        flush=True,
+        file=stream or sys.stdout,
+    )
 
 
 class DisplayTimezoneFormatter(_StandaloneFormatter):
@@ -35,7 +40,7 @@ class DisplayTimezoneFormatter(_StandaloneFormatter):
         return super().formatTime(record, datefmt)
 
     def format(self, record):
-        line = logging.Formatter.format(self, record)
+        line = super().format(record)
         if self._fronted:
             # Indent embedded newlines: the collector reads leading whitespace as a continuation.
             return line.replace("\n", "\n ")

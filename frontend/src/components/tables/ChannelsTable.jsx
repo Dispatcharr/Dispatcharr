@@ -68,11 +68,11 @@ import {
   Stack,
   Switch,
   Text,
-  TextInput,
   Tooltip,
   UnstyledButton,
   useMantineTheme,
 } from '@mantine/core';
+import { SensitiveTextInput as TextInput } from '../SensitiveFields.jsx';
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';

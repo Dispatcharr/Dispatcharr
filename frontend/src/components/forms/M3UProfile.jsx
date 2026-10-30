@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import {
@@ -8,15 +8,17 @@ import {
   Flex,
   Grid,
   GridCol,
-  Modal,
   NumberInput,
   Paper,
   SegmentedControl,
   Text,
   Textarea,
-  TextInput,
   Title,
 } from '@mantine/core';
+import {
+  SensitiveTextInput as TextInput,
+  SensitiveValue,
+} from '../SensitiveFields.jsx';
 import { TriangleAlert } from 'lucide-react';
 import { DateTimePicker } from '@mantine/dates';
 import { useWebSocket } from '../../WebSocket';
@@ -35,6 +37,23 @@ import {
   validateXcSimple,
 } from '../../utils/forms/M3uProfileUtils.js';
 import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
+import StackedModal from '../StackedModal.jsx';
+import ConfirmationDialog from '../ConfirmationDialog.jsx';
+
+const profileDraftKey = (values, fields, xcCredentials) =>
+  JSON.stringify({
+    name: values.name || '',
+    notes: values.notes || '',
+    max_streams: Number(values.max_streams || 0),
+    exp_date: values.exp_date ? new Date(values.exp_date).getTime() : null,
+    ...(xcCredentials ? { xcMode: fields.xcMode } : {}),
+    ...(xcCredentials && fields.xcMode === 'simple'
+      ? { newUsername: fields.newUsername, newPassword: fields.newPassword }
+      : {
+          searchPattern: fields.searchPattern,
+          replacePattern: fields.replacePattern,
+        }),
+  });
 
 const RegexFormAndView = ({
   profile = null,
@@ -53,6 +72,8 @@ const RegexFormAndView = ({
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [simpleErrors, setSimpleErrors] = useState({});
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const initialDraft = useRef(null);
   const isDefaultProfile = profile?.is_default;
 
   const isXC = m3u?.account_type === 'XC';
@@ -83,10 +104,30 @@ const RegexFormAndView = ({
     setValue,
     watch,
     setError,
+    getValues,
   } = useForm({
     defaultValues,
     resolver: getResolver(),
   });
+
+  const close = () => {
+    setDiscardOpen(false);
+    onClose();
+  };
+
+  const requestClose = () => {
+    if (isSubmitting || discardOpen) return;
+    const draft = profileDraftKey(
+      getValues(),
+      { searchPattern, replacePattern, xcMode, newUsername, newPassword },
+      isXC && !isDefaultProfile
+    );
+    if (initialDraft.current !== null && draft !== initialDraft.current) {
+      setDiscardOpen(true);
+      return;
+    }
+    close();
+  };
 
   const onSubmit = async (values) => {
     const expDate = prepareExpDate(values.exp_date, isXC);
@@ -104,12 +145,11 @@ const RegexFormAndView = ({
     if (isXC && xcMode === 'advanced' && !isDefaultProfile) {
       if (!searchPattern.trim()) {
         setError('search_pattern', { message: 'Search pattern is required' });
-        return;
       }
       if (!replacePattern.trim()) {
         setError('replace_pattern', { message: 'Replace pattern is required' });
-        return;
       }
+      if (!searchPattern.trim() || !replacePattern.trim()) return;
     }
 
     const submitValues = buildSubmitValues(
@@ -121,14 +161,20 @@ const RegexFormAndView = ({
     );
     if (expDate !== undefined) submitValues.exp_date = expDate;
 
-    profile?.id
-      ? await updateM3UProfile(m3u.id, { ...submitValues, id: profile.id })
-      : await addM3UProfile(m3u.id, submitValues);
+    try {
+      const saved = profile?.id
+        ? await updateM3UProfile(m3u.id, { ...submitValues, id: profile.id })
+        : await addM3UProfile(m3u.id, submitValues);
+      if (!saved) return;
+    } catch {
+      // The API reports the error; keep the profile draft available to retry.
+      return;
+    }
 
     reset();
     setSearchPattern('');
     setReplacePattern('');
-    onClose();
+    close();
   };
 
   useEffect(() => {
@@ -189,28 +235,51 @@ const RegexFormAndView = ({
   };
 
   useEffect(() => {
+    if (!isOpen) return;
     reset(defaultValues);
-    setSearchPattern(profile?.search_pattern || '');
-    setReplacePattern(profile?.replace_pattern || '');
+    setDiscardOpen(false);
+    setSimpleErrors({});
+    let mode = 'simple';
+    let username = '';
+    let password = '';
     if (isXC && !isDefaultProfile) {
       const storedMode = profile?.custom_properties?.xcMode;
-      const detectedMode = getDetectedMode(storedMode, profile, m3u);
-      setXcMode(detectedMode);
-      if (detectedMode === 'simple') {
+      mode = getDetectedMode(storedMode, profile, m3u);
+      if (mode === 'simple') {
         const rp = profile?.replace_pattern || '';
         const idx = rp.indexOf('/');
-        setNewUsername(idx === -1 ? rp : rp.slice(0, idx));
-        setNewPassword(idx === -1 ? '' : rp.slice(idx + 1));
+        username = idx === -1 ? rp : rp.slice(0, idx);
+        password = idx === -1 ? '' : rp.slice(idx + 1);
       }
     }
+    const search = profile?.search_pattern || '';
+    const replace = profile?.replace_pattern || '';
+    setXcMode(mode);
+    setNewUsername(username);
+    setNewPassword(password);
+    setSearchPattern(search);
+    setReplacePattern(replace);
+    initialDraft.current = profileDraftKey(
+      getValues(),
+      {
+        searchPattern: search,
+        replacePattern: replace,
+        xcMode: mode,
+        newUsername: username,
+        newPassword: password,
+      },
+      isXC && !isDefaultProfile
+    );
   }, [
     defaultValues,
     isDefaultProfile,
+    isOpen,
     isXC,
     m3u?.password,
     m3u?.username,
     profile,
     reset,
+    getValues,
   ]);
 
   const handleSampleInputChange = (e) => {
@@ -219,13 +288,16 @@ const RegexFormAndView = ({
 
   const handleXcModeChange = (mode) => {
     if (mode === 'advanced' && xcMode === 'simple') {
-      // Pre-populate regex fields from current simple values
-      const sp = `${m3u?.username || ''}/${m3u?.password || ''}`;
-      const rp = `${newUsername}/${newPassword}`;
-      setSearchPattern(sp);
-      setReplacePattern(rp);
-      setValue('search_pattern', sp);
-      setValue('replace_pattern', rp);
+      // Only transfer complete credentials; an empty pair would become "/".
+      const hasCredentials = newUsername.trim() && newPassword.trim();
+      if (hasCredentials) {
+        const sp = `${m3u?.username || ''}/${m3u?.password || ''}`;
+        const rp = `${newUsername}/${newPassword}`;
+        setSearchPattern(sp);
+        setReplacePattern(rp);
+        setValue('search_pattern', sp);
+        setValue('replace_pattern', rp);
+      }
     } else if (mode === 'simple' && xcMode === 'advanced') {
       // Parse current replace pattern back into username/password
       const idx = replacePattern.indexOf('/');
@@ -255,13 +327,26 @@ const RegexFormAndView = ({
     applyRegex(sampleInput, searchPattern, replacePattern);
 
   return (
-    <Modal
+    <StackedModal
+      stackId="m3u-connection-profile-editor"
+      keepVisibleInStack
       opened={isOpen}
-      onClose={onClose}
+      onClose={requestClose}
+      trapFocus={!discardOpen}
+      closeOnEscape={!discardOpen && !isSubmitting}
       title={isDefaultProfile ? 'Edit Default Profile' : 'M3U Profile'}
       size="lg"
+      closeButtonProps={{
+        'aria-label': 'Close connection profile editor',
+        disabled: isSubmitting,
+      }}
     >
-      <form onSubmit={handleSubmit(onSubmit)}>
+      <form
+        onSubmit={(event) => {
+          event.stopPropagation();
+          return handleSubmit(onSubmit)(event);
+        }}
+      >
         <TextInput
           label="Name"
           description="A label to identify this URL rewrite profile"
@@ -301,6 +386,7 @@ const RegexFormAndView = ({
             </Alert>
             <TextInput
               label="Search Pattern (Regex)"
+              sensitive
               description="A regular expression matching the part of the stream URL you want to replace."
               placeholder="e.g. 10\.0\.0\.10"
               value={searchPattern}
@@ -309,6 +395,7 @@ const RegexFormAndView = ({
             />
             <TextInput
               label="Replace Pattern"
+              sensitive
               description="The value to substitute in place of the matched text. Use $1, $2, etc. to reference regex capture groups."
               placeholder="e.g. 192.168.1.100"
               value={replacePattern}
@@ -361,6 +448,7 @@ const RegexFormAndView = ({
               <>
                 <TextInput
                   label="Search Pattern (Regex)"
+                  sensitive
                   description="A regular expression matching the part of the stream URL you want to replace. For most users, matching just the credentials is enough."
                   placeholder="e.g. username1/password1"
                   value={searchPattern}
@@ -369,6 +457,7 @@ const RegexFormAndView = ({
                 />
                 <TextInput
                   label="Replace Pattern"
+                  sensitive
                   description="The value to substitute in place of the matched text. Use $1, $2, etc. to reference regex capture groups."
                   placeholder="e.g. username2/password2"
                   value={replacePattern}
@@ -447,6 +536,7 @@ const RegexFormAndView = ({
               Sample Text
             </Text>
             <TextInput
+              sensitive
               value={sampleInput}
               onChange={handleSampleInputChange}
               placeholder="Enter a sample URL to test with"
@@ -463,12 +553,12 @@ const RegexFormAndView = ({
                     highlighted
                   </Badge>
                 </Text>
-                <Text
+                <SensitiveValue
                   size="sm"
                   sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
                 >
                   {getHighlightedSearchText()}
-                </Text>
+                </SensitiveValue>
               </Paper>
             </GridCol>
 
@@ -477,18 +567,28 @@ const RegexFormAndView = ({
                 <Text size="sm" weight={500} mb={3}>
                   Result After Replace
                 </Text>
-                <Text
+                <SensitiveValue
                   size="sm"
                   sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
                 >
                   {getLocalReplaceResult()}
-                </Text>
+                </SensitiveValue>
               </Paper>
             </GridCol>
           </Grid>
         </>
       )}
-    </Modal>
+      <ConfirmationDialog
+        opened={discardOpen}
+        onClose={() => setDiscardOpen(false)}
+        onConfirm={close}
+        title="Discard unsaved changes?"
+        message="These profile changes have not been saved. Discard them and close? Previously saved profile and account settings will be kept."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        loading={isSubmitting}
+      />
+    </StackedModal>
   );
 };
 

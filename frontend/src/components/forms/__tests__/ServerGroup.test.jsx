@@ -63,6 +63,7 @@ vi.mock('react-hook-form', async () => {
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  useModalStackContext: () => null,
   Button: ({ children, type, disabled }) => (
     <button type={type} disabled={disabled}>
       {children}

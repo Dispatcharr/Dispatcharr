@@ -3,6 +3,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import M3UProfile from '../M3UProfile';
 import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
 
+vi.mock('../../ConfirmationDialog.jsx', () => ({
+  default: ({ opened, onClose, onConfirm }) =>
+    opened ? (
+      <div role="dialog" aria-label="Discard unsaved changes?">
+        <button onClick={onClose}>Keep editing</button>
+        <button onClick={onConfirm}>Discard</button>
+      </div>
+    ) : null,
+}));
+
 // ── WebSocket mock ─────────────────────────────────────────────────────────────
 vi.mock('../../../WebSocket', () => ({
   useWebSocket: vi.fn(),
@@ -72,6 +82,7 @@ vi.mock('@mantine/dates', () => ({
 
 // ── @mantine/core mock ─────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  useModalStackContext: () => null,
   Alert: ({ children, title }) => (
     <div data-testid="alert">
       <span data-testid="alert-title">{title}</span>
@@ -175,7 +186,7 @@ vi.mock('@mantine/core', () => ({
       <input
         data-testid={`text-input-${label?.toLowerCase?.().replace(/\s+/g, '-') ?? 'text'}`}
         value={value ?? ''}
-        onChange={(e) => onChange?.(e.target.value)}
+        onChange={onChange}
         disabled={disabled}
         placeholder={placeholder}
       />
@@ -279,8 +290,8 @@ describe('M3UProfile', () => {
       timeFormat: 'HH:mm',
       dateYearFormat: 'MMM D, YYYY',
     });
-    vi.mocked(M3uProfileUtils.addM3UProfile).mockResolvedValue(undefined);
-    vi.mocked(M3uProfileUtils.updateM3UProfile).mockResolvedValue(undefined);
+    vi.mocked(M3uProfileUtils.addM3UProfile).mockResolvedValue({ id: 10 });
+    vi.mocked(M3uProfileUtils.updateM3UProfile).mockResolvedValue({ id: 10 });
     vi.mocked(M3uProfileUtils.buildProfileSchema).mockReturnValue({});
     vi.mocked(M3uProfileUtils.buildSubmitValues).mockReturnValue({});
     vi.mocked(M3uProfileUtils.getDetectedMode).mockReturnValue('simple');
@@ -680,13 +691,23 @@ describe('M3UProfile', () => {
       ).toBeInTheDocument();
     });
 
-    it('calls setValue when switching to advanced mode', () => {
+    it('transfers complete simple credentials when switching to advanced mode', () => {
       const formMethods = setupForm();
       render(<M3UProfile {...xcProps()} />);
+      fireEvent.change(screen.getByTestId('text-input-new-username'), {
+        target: { value: 'alternate' },
+      });
+      fireEvent.change(screen.getByTestId('text-input-new-password'), {
+        target: { value: 'synthetic-secret' },
+      });
       fireEvent.click(screen.getByTestId('segment-advanced'));
       expect(formMethods.setValue).toHaveBeenCalledWith(
         'search_pattern',
-        expect.any(String)
+        'user1/pass1'
+      );
+      expect(formMethods.setValue).toHaveBeenCalledWith(
+        'replace_pattern',
+        'alternate/synthetic-secret'
       );
     });
 

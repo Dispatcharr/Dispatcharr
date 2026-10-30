@@ -1,5 +1,6 @@
-from rest_framework import viewsets, status
+from rest_framework import mixins, viewsets, status
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
@@ -26,6 +27,9 @@ from .serializers import (
     VODLogoSerializer,
     M3UMovieRelationSerializer,
     M3USeriesRelationSerializer,
+    M3UEpisodeRelationSerializer,
+    SourceMetadataOptionsSerializer,
+    SourceMetadataPatchSerializer,
     EpisodeWithProvidersSerializer,
     MovieProviderInfoSerializer,
     SeriesProviderInfoSerializer,
@@ -54,6 +58,54 @@ from datetime import timedelta
 from rest_framework.utils.urls import replace_query_param, remove_query_param
 
 logger = logging.getLogger(__name__)
+
+
+class SourceMetadataOptionsView(APIView):
+    permission_classes = [IsAdmin]
+
+    @extend_schema(responses=SourceMetadataOptionsSerializer)
+    def get(self, request):
+        from .media_languages import MEDIA_LANGUAGE_OPTIONS
+        from .metadata import RESOLUTIONS, VIDEO_FEATURES
+        return Response(SourceMetadataOptionsSerializer({
+            "languages": MEDIA_LANGUAGE_OPTIONS,
+            # Keep legacy SD values readable, but offer exact numeric tiers for new defaults.
+            "resolutions": [value for value in RESOLUTIONS if value != "SD"],
+            "video_features": sorted(VIDEO_FEATURES),
+        }).data)
+
+
+class SourceMetadataViewSet(mixins.UpdateModelMixin, viewsets.ReadOnlyModelViewSet):
+    """Admin metadata edits cannot change a source's provider/content identity."""
+    permission_classes = [IsAdmin]
+    http_method_names = ["get", "patch", "head", "options"]
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["m3u_account"]
+
+    @extend_schema(request=SourceMetadataPatchSerializer)
+    def partial_update(self, request, *args, **kwargs):
+        from rest_framework.exceptions import ValidationError
+        if set(request.data) - {"manual_metadata", "locked_fields"}:
+            raise ValidationError("Only manual_metadata and locked_fields may be changed.")
+        from django.db import transaction
+        with transaction.atomic():
+            self.queryset = self.get_queryset().select_for_update(of=("self",))
+            return super().partial_update(request, *args, **kwargs)
+
+
+class MovieSourceViewSet(SourceMetadataViewSet):
+    queryset = M3UMovieRelation.objects.select_related("movie", "category", "m3u_account")
+    serializer_class = M3UMovieRelationSerializer
+
+
+class SeriesSourceViewSet(SourceMetadataViewSet):
+    queryset = M3USeriesRelation.objects.select_related("series", "category", "m3u_account")
+    serializer_class = M3USeriesRelationSerializer
+
+
+class EpisodeSourceViewSet(SourceMetadataViewSet):
+    queryset = M3UEpisodeRelation.objects.select_related("episode", "series_relation", "m3u_account")
+    serializer_class = M3UEpisodeRelationSerializer
 
 
 def _authenticated_user(request):
@@ -804,7 +856,7 @@ class VODCategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
                 if vod_enabled:
                     # Ensure relations exist for this account
-                    auto_enable_new = custom_props.get("auto_enable_new_groups_vod", True)
+                    auto_enable_new = False
 
                     M3UVODCategoryRelation.objects.get_or_create(
                         category=movie_category,
@@ -878,7 +930,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
         from django.db import connection
 
         logger = logging.getLogger(__name__)
-        logger.error("=== UnifiedContentViewSet.list() called ===")
 
         try:
             user = _authenticated_user(request)
@@ -892,8 +943,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             # Get pagination parameters
             page_size = int(request.query_params.get('page_size', 24))
             page_number = int(request.query_params.get('page', 1))
-
-            logger.error(f"Page {page_number}, page_size {page_size}")
 
             # Calculate offset for unified pagination
             offset = (page_number - 1) * page_size
@@ -1010,8 +1059,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
 
             params.extend([page_size, offset])
 
-            logger.error(f"Executing SQL with LIMIT {page_size} OFFSET {offset}")
-
             with connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 columns = [col[0] for col in cursor.description]
@@ -1057,8 +1104,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                         'content_type': item_dict['content_type']
                     }
                     results.append(formatted_item)
-
-            logger.error(f"Retrieved {len(results)} results via SQL")
 
             # Get total count estimate (for pagination info)
             # Use a separate efficient count query

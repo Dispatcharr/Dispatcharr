@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
-import { Button, Flex, Modal, TextInput } from '@mantine/core';
+import { Button, Flex, TextInput } from '@mantine/core';
+import StackedModal from '../StackedModal.jsx';
 import {
   getResolver,
   updateServerGroup,
@@ -47,7 +48,8 @@ const ServerGroupForm = ({ serverGroup = null, isOpen, onClose, onSaved }) => {
   }
 
   return (
-    <Modal
+    <StackedModal
+      stackId="m3u-server-group-editor"
       opened={isOpen}
       onClose={onClose}
       title="Server Group"
@@ -69,7 +71,7 @@ const ServerGroupForm = ({ serverGroup = null, isOpen, onClose, onSaved }) => {
           </Button>
         </Flex>
       </form>
-    </Modal>
+    </StackedModal>
   );
 };
 

@@ -6,6 +6,15 @@ afterEach(() => {
   cleanup();
 });
 
+// JSDOM does not scroll, but Mantine's combobox uses this browser method
+// after moving its active option (including on a deferred callback).
+if (
+  typeof HTMLElement !== 'undefined' &&
+  !HTMLElement.prototype.scrollIntoView
+) {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+}
+
 if (typeof window !== 'undefined' && !window.matchMedia) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
     matches: false,

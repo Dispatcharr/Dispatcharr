@@ -45,6 +45,25 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
+    def validate(self, attrs):
+        instance = self.instance
+        source_fields = {'source_type', 'url', 'file_path'}
+        if instance is None or source_fields.intersection(attrs):
+            source_type = attrs.get(
+                'source_type', getattr(instance, 'source_type', None)
+            )
+            url = attrs.get('url', getattr(instance, 'url', None))
+            file_path = attrs.get(
+                'file_path', getattr(instance, 'file_path', None)
+            )
+            if source_type == 'xmltv' and not (
+                (url or '').strip() or (file_path or '').strip()
+            ):
+                raise serializers.ValidationError({
+                    'url': 'Enter an XMLTV URL or upload a file.',
+                })
+        return attrs
+
     def get_epg_data_count(self, obj):
         """Return the count of EPG data entries instead of all IDs to prevent large payloads"""
         return obj.epgs.count()

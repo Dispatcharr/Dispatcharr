@@ -1,5 +1,6 @@
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
+from django.db import transaction
 from .models import EPGSource, EPGData
 from .tasks import refresh_epg_data, delete_epg_refresh_task_by_id, fetch_schedules_direct_stations
 from core.scheduling import create_or_update_periodic_task, delete_periodic_task
@@ -21,7 +22,10 @@ def trigger_refresh_on_new_epg_source(sender, instance, created, **kwargs):
         if instance.source_type == 'schedules_direct':
             fetch_schedules_direct_stations.apply_async((instance.id,), countdown=3)
         else:
-            refresh_epg_data.delay(instance.id)
+            if getattr(instance, '_defer_initial_refresh', False):
+                transaction.on_commit(lambda: refresh_epg_data.delay(instance.id))
+            else:
+                refresh_epg_data.delay(instance.id)
 
 @receiver(post_save, sender=EPGSource)
 def create_dummy_epg_data(sender, instance, created, **kwargs):

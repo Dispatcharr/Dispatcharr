@@ -10,7 +10,10 @@ import useStreamsStore from './store/streams';
 import useStreamProfilesStore from './store/streamProfiles';
 import useOutputProfilesStore from './store/outputProfiles';
 import useSettingsStore from './store/settings';
-import { notifications } from '@mantine/notifications';
+import {
+  hideNotification,
+  showNotification,
+} from './utils/notificationUtils.js';
 import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
@@ -22,14 +25,15 @@ const host = import.meta.env.DEV
   ? `http://${window.location.hostname}:5656`
   : '';
 
-const errorNotification = (message, error) => {
+const errorNotification = (message, error, options = {}) => {
   const errorMessage = formatApiError(error);
 
-  notifications.show({
+  showNotification({
     title: 'Error',
     message: `${message}: ${errorMessage}`,
     autoClose: 10000,
     color: 'red',
+    ...options,
   });
 
   throw error;
@@ -42,6 +46,15 @@ const hasChannelGroupChange = (update) =>
     update.override ?? {},
     'channel_group_id'
   );
+
+const ruleErrorNotification = (message, error, accountId, kind) => {
+  const id = `account-rules-${accountId}-${kind}-error`;
+  hideNotification(id);
+  return errorNotification(message, error, {
+    id,
+    autoClose: false,
+  });
+};
 
 // FormData cannot encode null. Empty string clears hash_key so the account
 // inherits the global M3U Hash Key (same as JSON body sending null).
@@ -964,7 +977,7 @@ export default class API {
 
       // Show success notification
       if (response.message) {
-        notifications.show({
+        showNotification({
           title: 'Channels Updated',
           message: response.message,
           color: 'green',
@@ -1026,7 +1039,7 @@ export default class API {
 
       // Optional success notification
       if (response?.success) {
-        notifications.show({
+        showNotification({
           title: 'Channel Names Updated',
           message: `Renamed ${response.updated_count} channel(s) via regex`,
           color: 'green',
@@ -1075,7 +1088,7 @@ export default class API {
 
       // Show notification about task status
       if (response.task_status) {
-        notifications.show({
+        showNotification({
           title: 'EPG Status',
           message: response.task_status,
           color: 'blue',
@@ -1098,7 +1111,7 @@ export default class API {
         }
       );
 
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: response.message,
         color: 'blue',
@@ -1121,7 +1134,7 @@ export default class API {
         }
       );
 
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: response.message,
         color: 'blue',
@@ -1144,7 +1157,7 @@ export default class API {
         }
       );
 
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: response.message,
         color: 'blue',
@@ -1572,6 +1585,7 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update M3U group settings', e);
+      throw e;
     }
   }
 
@@ -1599,15 +1613,59 @@ export default class API {
     }
   }
 
-  static async refreshPlaylist(id) {
+  static async advanceM3USetup(id, action) {
+    const response = await request(`${host}/api/m3u/accounts/${id}/setup/`, {
+      method: 'POST',
+      body: { action },
+    });
+    usePlaylistsStore.getState().updatePlaylist(response);
+    return response;
+  }
+
+  static async checkM3UConnection(values) {
+    return await request(`${host}/api/m3u/accounts/check-connection/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static async getM3UEPG(id) {
+    return await request(`${host}/api/m3u/accounts/${id}/epg/`);
+  }
+
+  static async createM3UEPG(id) {
+    return await request(`${host}/api/m3u/accounts/${id}/epg/`, {
+      method: 'POST',
+    });
+  }
+
+  static async refreshPlaylist(id, includeVod) {
     try {
-      const response = await request(`${host}/api/m3u/refresh/${id}/`, {
+      const url = `${host}/api/m3u/refresh/${id}/`;
+      const refreshUrl = includeVod === true ? `${url}?include_vod=true` : url;
+      const response = await request(refreshUrl, {
         method: 'POST',
       });
       return response;
     } catch (e) {
       errorNotification('Failed to refresh M3U account', e);
     }
+  }
+  static async refreshLivePlaylist(id) {
+    try {
+      return await request(`${host}/api/m3u/refresh/${id}/?include_vod=false`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to refresh Live TV', e);
+      throw e;
+    }
+  }
+  static async getM3UStreamFilterAvailability(accountId, groupIds) {
+    return request(
+      `${host}/api/m3u/accounts/${accountId}/filters/availability/`,
+      ...(groupIds ? [{ method: 'POST', body: { group_ids: groupIds } }] : [])
+    );
   }
   static async refreshAllPlaylist() {
     try {
@@ -1631,6 +1689,7 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to refresh VOD content', e);
+      throw e;
     }
   }
 
@@ -1688,18 +1747,11 @@ export default class API {
       // Original implementation for full updates
       let body = null;
       if (payload.file) {
-        delete payload.server_url;
-
         body = new FormData();
-        appendPlaylistFormData(body, values);
+        appendPlaylistFormData(body, payload);
       } else {
         delete payload.file;
-        if (!payload.server_url) {
-          delete payload.sever_url;
-        }
-
         body = { ...payload };
-        delete body.file;
       }
 
       const response = await request(`${host}/api/m3u/accounts/${id}/`, {
@@ -2004,9 +2056,7 @@ export default class API {
   static async getGrid(params = new URLSearchParams()) {
     try {
       const qs = params.toString();
-      const url = qs
-        ? `${host}/api/epg/grid/?${qs}`
-        : `${host}/api/epg/grid/`;
+      const url = qs ? `${host}/api/epg/grid/?${qs}` : `${host}/api/epg/grid/`;
       const response = await request(url);
 
       return response.data;
@@ -2064,13 +2114,17 @@ export default class API {
     const { id, ...payload } = values;
 
     try {
-      await request(`${host}/api/m3u/accounts/${accountId}/profiles/${id}/`, {
-        method: 'PUT',
-        body: payload,
-      });
+      const response = await request(
+        `${host}/api/m3u/accounts/${accountId}/profiles/${id}/`,
+        {
+          method: 'PUT',
+          body: payload,
+        }
+      );
 
       const playlist = await API.getPlaylist(accountId);
       usePlaylistsStore.getState().updatePlaylist(playlist);
+      return response;
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
     }
@@ -2137,6 +2191,193 @@ export default class API {
       );
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
+    }
+  }
+
+  static async getM3URules(accountId, kind, scope) {
+    try {
+      const query = scope ? `?scope=${encodeURIComponent(scope)}` : '';
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/${query}`
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to load account rules',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async getM3UGroupContent(
+    accountId,
+    scope,
+    groupId,
+    page,
+    pageSize,
+    search = ''
+  ) {
+    const query = new URLSearchParams({
+      scope,
+      group_id: groupId,
+      page,
+      page_size: pageSize,
+      search,
+    });
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/content-preview/?${query}`
+    );
+  }
+
+  static async getM3UGroupContentAvailability(accountId) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/content-availability/`
+    );
+  }
+
+  static async loadM3UGroupContent(
+    accountId,
+    scope,
+    groupId,
+    pageSize = 50,
+    search = ''
+  ) {
+    return await request(
+      `${host}/api/m3u/accounts/${accountId}/group-rules/load-content-preview/?page_size=${pageSize}`,
+      { method: 'POST', body: { scope, group_id: groupId, search } }
+    );
+  }
+
+  static async saveM3URule(accountId, kind, ruleId, values) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/${ruleId ? `${ruleId}/` : ''}`,
+        { method: ruleId ? 'PATCH' : 'POST', body: values }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to save account rule',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async deleteM3URule(accountId, kind, ruleId) {
+    try {
+      await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/${ruleId}/`,
+        { method: 'DELETE' }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to delete account rule',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async previewM3URules(
+    accountId,
+    kind,
+    rules,
+    targetId,
+    page,
+    pageSize,
+    { notifyOnError = true, groupIds } = {}
+  ) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/preview-draft/?page=${page}&page_size=${pageSize}`,
+        {
+          method: 'POST',
+          body: {
+            rules,
+            target_id: String(targetId),
+            ...(groupIds ? { group_ids: groupIds } : {}),
+          },
+        }
+      );
+    } catch (error) {
+      if (notifyOnError)
+        ruleErrorNotification(
+          'Failed to preview account rules',
+          error,
+          accountId,
+          kind
+        );
+      throw error;
+    }
+  }
+
+  static async reorderM3URules(accountId, kind, ids, scope, positions) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/${kind}/reorder/`,
+        {
+          method: 'POST',
+          body: { ids, positions, ...(scope ? { scope } : {}) },
+        }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to save rule order',
+        error,
+        accountId,
+        kind
+      );
+      throw error;
+    }
+  }
+
+  static async analyzeM3URules(accountId, kind, rules, options = {}) {
+    return API.previewM3URules(
+      accountId,
+      kind,
+      rules,
+      rules[0].preview_id,
+      1,
+      1,
+      { ...options, notifyOnError: false }
+    );
+  }
+
+  static async applyM3UGroupRule(accountId, ruleId) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/group-rules/${ruleId}/apply/`,
+        { method: 'POST' }
+      );
+    } catch (error) {
+      errorNotification('Failed to apply import rule', error);
+      throw error;
+    }
+  }
+
+  static async saveApplyM3UGroupRules(accountId, rules, targetId) {
+    try {
+      return await request(
+        `${host}/api/m3u/accounts/${accountId}/group-rules/save-apply/`,
+        {
+          method: 'POST',
+          body: { rules, target_id: String(targetId) },
+        }
+      );
+    } catch (error) {
+      ruleErrorNotification(
+        'Failed to save and apply import rules',
+        error,
+        accountId,
+        'group-rules'
+      );
+      throw error;
     }
   }
 
@@ -2408,7 +2649,7 @@ export default class API {
           (e?.body && (e.body.error || e.body.detail)) ||
           e?.message ||
           'Failed to import plugin';
-        notifications.show({
+        showNotification({
           title: 'Import failed',
           message: msg,
           color: 'red',
@@ -3475,7 +3716,7 @@ export default class API {
         method: 'POST',
         body: values,
       });
-      notifications.show({ title: 'Series rule saved' });
+      showNotification({ title: 'Series rule saved' });
       return resp;
     } catch (e) {
       errorNotification('Failed to save series rule', e);
@@ -3492,7 +3733,7 @@ export default class API {
       await request(`${host}/api/channels/series-rules/?${params}`, {
         method: 'DELETE',
       });
-      notifications.show({ title: 'Series rule removed' });
+      showNotification({ title: 'Series rule removed' });
     } catch (e) {
       errorNotification('Failed to remove series rule', e);
       throw e;
@@ -3507,7 +3748,7 @@ export default class API {
           method: 'POST',
         }
       );
-      notifications.show({ title: `Removed ${resp.removed || 0} upcoming` });
+      showNotification({ title: `Removed ${resp.removed || 0} upcoming` });
       useChannelsStore.getState().fetchRecordings();
       return resp;
     } catch (e) {
@@ -3555,7 +3796,7 @@ export default class API {
           },
         }
       );
-      notifications.show({ title: `Removed ${resp.removed || 0} scheduled` });
+      showNotification({ title: `Removed ${resp.removed || 0} scheduled` });
       return resp;
     } catch (e) {
       errorNotification('Failed to bulk-remove scheduled recordings', e);
@@ -3615,7 +3856,7 @@ export default class API {
           message += `, refreshing ${response.programs_refreshed} EPG source${response.programs_refreshed !== 1 ? 's' : ''}`;
         }
 
-        notifications.show({
+        showNotification({
           title: 'EPG Association',
           message: message,
           color: 'blue',
@@ -3971,6 +4212,14 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve VOD categories', e);
+    }
+  }
+
+  static async getVODMetadataOptions() {
+    try {
+      return await request(`${host}/api/vod/source-metadata-options/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve VOD metadata options', e);
     }
   }
 

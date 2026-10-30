@@ -29,16 +29,23 @@ from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
 from apps.vod.utils import validate_category_custom_properties
+from apps.vod.metadata import METADATA_FIELDS, legacy_category_metadata, validate_source_metadata
 
 from .serializers import (
     M3UAccountSerializer,
     M3UFilterSerializer,
     ServerGroupSerializer,
     M3UAccountProfileSerializer,
+    M3USetupActionSerializer,
+    M3UMatchingEPGResponseSerializer,
+    M3UConnectionCheckSerializer,
+    M3UConnectionCheckResultSerializer,
 )
 
 from .tasks import refresh_single_m3u_account, refresh_m3u_accounts, refresh_account_info
 from .utils import hash_key_fields
+from .rule_previews import StreamFilterPreviewMixin
+from .category_selection import category_selection_state
 from core.tasks import (
     rehash_streams,
     release_rehash_locks,
@@ -54,8 +61,9 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for M3U accounts"""
 
     queryset = M3UAccount.objects.select_related(
-        "refresh_task__crontab", "refresh_task__interval"
-    ).prefetch_related("channel_group", "profiles", "filters")
+        "refresh_task__crontab", "refresh_task__interval",
+        "vod_refresh_task__crontab", "vod_refresh_task__interval",
+    ).prefetch_related("channel_group", "profiles", "filters", "group_rules")
     serializer_class = M3UAccountSerializer
 
     def get_permissions(self):
@@ -69,6 +77,80 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return None
+
+    @extend_schema(
+        request=M3UConnectionCheckSerializer,
+        responses={200: M3UConnectionCheckResultSerializer},
+        description=(
+            "Check unsaved M3U/Xtream connection details from the server without "
+            "saving an account, importing content or refreshing account metadata. "
+            "An account ID allows reuse of its password only for the unchanged "
+            "Xtream server URL. Internal network targets are not probed."
+        ),
+    )
+    @action(
+        detail=False, methods=["post"], url_path="check-connection",
+        permission_classes=[IsAdmin],
+    )
+    def check_connection(self, request):
+        from .connection_check import check_account_connection
+
+        serializer = M3UConnectionCheckSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = check_account_connection(serializer.validated_data)
+        return Response(M3UConnectionCheckResultSerializer(result).data)
+
+    @extend_schema(
+        request=M3USetupActionSerializer,
+        responses={200: M3UAccountSerializer},
+        description="Navigate or continue an unfinished guided M3U setup without creating another account.",
+    )
+    @action(
+        detail=True, methods=["post"], url_path="setup",
+        permission_classes=[IsAdmin],
+    )
+    def advance_setup(self, request, pk=None):
+        from .account_setup import advance_account_setup
+
+        account = self.get_object()
+        serializer = M3USetupActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        account = advance_account_setup(
+            account.id, serializer.validated_data["action"]
+        )
+        return Response(self.get_serializer(account).data)
+
+    @extend_schema(
+        methods=["GET"],
+        responses={200: M3UMatchingEPGResponseSerializer},
+        description="Find the matching XMLTV source and list other configured EPG sources without returning URLs or credentials.",
+    )
+    @extend_schema(
+        methods=["POST"], request=None,
+        responses={200: M3UMatchingEPGResponseSerializer},
+        description="Create a matching XMLTV source after setup, or reuse the existing one.",
+    )
+    @action(
+        detail=True, methods=["get", "post"], url_path="epg",
+        permission_classes=[IsAdmin],
+    )
+    def matching_epg(self, request, pk=None):
+        from .account_setup import (
+            can_create_account_epg, create_account_epg, get_matching_epg,
+            get_other_epg_sources,
+        )
+
+        account = self.get_object()
+        source = (
+            create_account_epg(account.id)
+            if request.method == "POST"
+            else get_matching_epg(account)
+        )
+        return Response(M3UMatchingEPGResponseSerializer({
+            "source": source,
+            "can_create": source is None and can_create_account_epg(account),
+            "other_sources": get_other_epg_sources(source),
+        }).data)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -90,18 +172,22 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             (row["m3u_account_id"], row["channel_group_id"]): row["c"]
             for row in counts_qs
         }
+        selection_counts = M3UAccount.get_vod_category_selection_counts(account_ids)
+        context = {
+            **self.get_serializer_context(),
+            "stream_counts": stream_counts,
+            "vod_category_selection_counts": selection_counts,
+        }
 
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(
-                page, many=True,
-                context={**self.get_serializer_context(), "stream_counts": stream_counts},
+                page, many=True, context=context,
             )
             return self.get_paginated_response(serializer.data)
 
         serializer = self.get_serializer(
-            queryset, many=True,
-            context={**self.get_serializer_context(), "stream_counts": stream_counts},
+            queryset, many=True, context=context,
         )
         return Response(serializer.data)
 
@@ -148,6 +234,25 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             'type': 'playlist_created',
             'playlist_id': account_id
         })
+
+        if response.data.get("setup_step"):
+            from rest_framework.exceptions import APIException
+            from .account_setup import queue_setup_categories
+
+            # The account already exists. Discovery failure must not invite
+            # another Create request; its persisted setup can be retried.
+            M3UAccount.objects.filter(pk=account_id).update(
+                status=M3UAccount.Status.FETCHING,
+                last_message="Loading provider categories for setup.",
+            )
+            try:
+                queue_setup_categories(account_id)
+            except APIException:
+                pass
+            response.data = self.get_serializer(
+                self.get_queryset().get(pk=account_id)
+            ).data
+            return response
 
         if account_type == M3UAccount.Types.XC:
             refresh_m3u_groups(account_id)
@@ -244,13 +349,16 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 if "user_agent" in request.data and request.data["user_agent"] == "null":
                     request.data["user_agent"] = None
 
-                # Handle server_url appropriately
-                if "server_url" in request.data and not request.data["server_url"]:
-                    request.data.pop("server_url")
+                # Keep an explicit empty URL so a switch to file input clears
+                # the old remote source instead of continuing to fetch it.
 
                 request.data._mutable = False  # Make the request data immutable again
 
-                if instance.file_path and os.path.exists(instance.file_path):
+                if (
+                    instance.file_path
+                    and instance.file_path != file_path
+                    and os.path.exists(instance.file_path)
+                ):
                     os.remove(instance.file_path)
 
             # Now call super().update() to update the instance
@@ -281,6 +389,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
         if (
             instance.account_type == M3UAccount.Types.XC
+            and not instance.setup_step
             and not old_vod_enabled
             and new_vod_enabled
         ):
@@ -302,8 +411,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             )
 
             # Create relations for both categories (disabled by default until first refresh)
-            account_custom_props = instance.custom_properties or {}
-            auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+            auto_enable_new = False
 
             M3UVODCategoryRelation.objects.get_or_create(
                 category=movie_category,
@@ -555,6 +663,14 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         """Trigger VOD content refresh for XtreamCodes accounts"""
         account = self.get_object()
 
+        if account.setup_step:
+            return Response(
+                {"detail": (
+                    "Continue setup and finish selecting categories before refreshing."
+                )},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         if account.account_type != M3UAccount.Types.XC:
             return Response(
                 {"error": "VOD refresh is only available for XtreamCodes accounts"},
@@ -601,6 +717,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
         try:
             validated_category_props = {}
+            validated_category_defaults = {}
             for setting in category_settings:
                 try:
                     validated_category_props[setting.get("id")] = (
@@ -608,6 +725,10 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                             setting.get("custom_properties")
                         )
                     )
+                    if "metadata_defaults" in setting:
+                        validated_category_defaults[setting.get("id")] = validate_source_metadata(
+                            setting["metadata_defaults"], allow_reset=True
+                        )
                 except ValueError as e:
                     return Response(
                         {"error": f"Category {setting.get('id')}: {e}"},
@@ -615,6 +736,15 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                     )
 
             for setting in group_settings:
+                custom_properties = ensure_custom_properties_dict(
+                    setting.get("custom_properties")
+                )
+                cleanup_mode = custom_properties.get("orphan_channel_cleanup")
+                if cleanup_mode not in (None, "always", "preserve_customized", "never"):
+                    return Response(
+                        {"error": "Invalid auto-sync orphan cleanup mode."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
                 start = setting.get("auto_sync_channel_start")
                 end = setting.get("auto_sync_channel_end")
                 if (start is not None and start < 1) or (
@@ -642,11 +772,18 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                     )
 
             with transaction.atomic():
+                existing_groups = {
+                    row.channel_group_id: row
+                    for row in ChannelGroupM3UAccount.objects.select_for_update().filter(
+                        m3u_account=account,
+                        channel_group_id__in=[row.get("channel_group") for row in group_settings],
+                    )
+                }
                 group_objects = [
                     ChannelGroupM3UAccount(
                         channel_group_id=setting["channel_group"],
                         m3u_account=account,
-                        enabled=setting.get("enabled", True),
+                        **category_selection_state(setting, existing_groups.get(setting["channel_group"])),
                         auto_channel_sync=setting.get("auto_channel_sync", False),
                         auto_sync_channel_start=setting.get("auto_sync_channel_start"),
                         auto_sync_channel_end=setting.get("auto_sync_channel_end"),
@@ -667,6 +804,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         unique_fields=["channel_group", "m3u_account"],
                         update_fields=[
                             "enabled",
+                            "ignored",
                             "auto_channel_sync",
                             "auto_sync_channel_start",
                             "auto_sync_channel_end",
@@ -677,35 +815,56 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 category_ids = [
                     setting["id"] for setting in category_settings if setting.get("id")
                 ]
-                existing_category_props = {
-                    rel.category_id: rel.custom_properties or {}
+                existing_categories = {
+                    rel.category_id: rel
                     for rel in M3UVODCategoryRelation.objects.filter(
                         m3u_account=account, category_id__in=category_ids
-                    )
+                    ).select_for_update()
                 }
 
-                category_objects = [
-                    M3UVODCategoryRelation(
+                category_objects = []
+                metadata_keys = METADATA_FIELDS | {"language", "quality"}
+                for setting in category_settings:
+                    if not setting.get("id"):
+                        continue
+                    existing = existing_categories.get(setting["id"])
+                    incoming = validated_category_props.get(setting["id"], {})
+                    defaults = {
+                        **legacy_category_metadata(existing.custom_properties if existing else {}),
+                        **(existing.metadata_defaults or {} if existing else {}),
+                    }
+                    patch = legacy_category_metadata(incoming)
+                    for key in METADATA_FIELDS:
+                        if key in incoming and incoming[key] is None:
+                            patch[key] = None
+                    if "language" in incoming and incoming["language"] is None:
+                        patch["audio_languages"] = None
+                    if "quality" in incoming and incoming["quality"] is None:
+                        patch["resolution"] = None
+                    patch.update(validated_category_defaults.get(setting["id"], {}))
+                    for key, value in patch.items():
+                        if value is None:
+                            defaults.pop(key, None)
+                        else:
+                            defaults[key] = value
+                    properties = {
+                        **(existing.custom_properties or {} if existing else {}),
+                        **incoming,
+                    }
+                    category_objects.append(M3UVODCategoryRelation(
                         category_id=setting["id"],
                         m3u_account=account,
-                        enabled=setting.get("enabled", True),
-                        # Merged so a partial update (e.g. only `quality`) keeps
-                        # the category's language, which keys its VOD identity
-                        custom_properties={
-                            **existing_category_props.get(setting["id"], {}),
-                            **validated_category_props.get(setting["id"], {}),
-                        },
-                    )
-                    for setting in category_settings
-                    if setting.get("id")
-                ]
+                        **category_selection_state(setting, existing),
+                        custom_properties={key: value for key, value in properties.items() if key not in metadata_keys},
+                        metadata_defaults=defaults,
+                    ))
 
                 if category_objects:
                     M3UVODCategoryRelation.objects.bulk_create(
                         category_objects,
                         update_conflicts=True,
                         unique_fields=["m3u_account", "category"],
-                        update_fields=["enabled", "custom_properties"],
+                        update_fields=["enabled", "ignored", "custom_properties", "metadata_defaults"],
                     )
 
             return Response({"message": "Group settings updated successfully"})
@@ -717,7 +876,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             )
 
 
-class M3UFilterViewSet(viewsets.ModelViewSet):
+class M3UFilterViewSet(StreamFilterPreviewMixin, viewsets.ModelViewSet):
     queryset = M3UFilter.objects.all()
     serializer_class = M3UFilterSerializer
 
@@ -725,21 +884,16 @@ class M3UFilterViewSet(viewsets.ModelViewSet):
         return permissions_for_action(self)
 
     def get_queryset(self):
-        m3u_account_id = self.kwargs["account_id"]
-        return M3UFilter.objects.filter(m3u_account_id=m3u_account_id)
+        m3u_account_id = self.kwargs.get("account_id")
+        if m3u_account_id is None:
+            return self.queryset.none()
+        return M3UFilter.objects.filter(m3u_account_id=m3u_account_id).order_by(
+            "order", "id"
+        )
 
     def perform_create(self, serializer):
-        # Get the account ID from the URL
-        account_id = self.kwargs["account_id"]
-
-        # # Get the M3UAccount instance for the account_id
-        # m3u_account = M3UAccount.objects.get(id=account_id)
-
-        # Save the 'm3u_account' in the serializer context
-        serializer.context["m3u_account"] = account_id
-
-        # Perform the actual save
-        serializer.save(m3u_account_id=account_id)
+        account = get_object_or_404(M3UAccount, pk=self.kwargs["account_id"])
+        serializer.save(m3u_account=account)
 
 
 class ServerGroupViewSet(viewsets.ModelViewSet):
@@ -777,9 +931,37 @@ class RefreshSingleM3UAPIView(APIView):
 
     @extend_schema(
         description="Triggers a refresh of a single M3U account",
+        parameters=[
+            OpenApiParameter(
+                name="include_vod",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Override the account's VOD-after-Live setting; false refreshes Live TV only.",
+            ),
+        ],
     )
     def post(self, request, account_id, format=None):
-        refresh_single_m3u_account.delay(account_id)
+        if M3UAccount.objects.filter(pk=account_id).exclude(setup_step="").exists():
+            return Response(
+                {"detail": (
+                    "Continue setup and finish selecting categories before refreshing."
+                )},
+                status=status.HTTP_409_CONFLICT,
+            )
+        include_vod = request.query_params.get("include_vod")
+        if include_vod is not None:
+            normalized = str(include_vod).strip().lower()
+            if normalized not in {"true", "false", "1", "0"}:
+                return Response(
+                    {"error": "include_vod must be true or false"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            refresh_single_m3u_account.delay(
+                account_id, include_vod=normalized in {"true", "1"}
+            )
+        else:
+            refresh_single_m3u_account.delay(account_id)
         return Response(
             {
                 "success": True,

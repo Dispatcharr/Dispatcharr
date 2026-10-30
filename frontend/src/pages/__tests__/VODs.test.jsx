@@ -4,6 +4,10 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import VODsPage from '../VODs';
 import useAuthStore from '../../store/auth';
 import useVODStore from '../../store/useVODStore';
+import {
+  hideNotification,
+  showNotification,
+} from '../../utils/notificationUtils.js';
 import { USER_LEVELS } from '../../constants';
 import {
   filterCategoriesToEnabled,
@@ -12,6 +16,10 @@ import {
 
 vi.mock('../../store/useVODStore');
 vi.mock('../../store/auth');
+vi.mock('../../utils/notificationUtils.js', () => ({
+  showNotification: vi.fn(),
+  hideNotification: vi.fn(),
+}));
 
 vi.mock('../../components/SeriesModal', () => ({
   default: ({ opened, series, onClose }) =>
@@ -60,9 +68,15 @@ vi.mock('@mantine/core', () => {
     Group: ({ children, ...props }) => <div {...props}>{children}</div>,
     Flex: ({ children, ...props }) => <div {...props}>{children}</div>,
     Title: ({ children, ...props }) => <h2 {...props}>{children}</h2>,
-    TextInput: ({ value, onChange, placeholder, icon }) => (
+    Text: ({ children, role }) => <span role={role}>{children}</span>,
+    Button: ({ children, onClick, disabled }) => (
+      <button onClick={onClick} disabled={disabled}>
+        {children}
+      </button>
+    ),
+    TextInput: ({ value, onChange, placeholder, leftSection }) => (
       <div>
-        {icon}
+        {leftSection}
         <input
           type="text"
           value={value}
@@ -71,13 +85,20 @@ vi.mock('@mantine/core', () => {
         />
       </div>
     ),
-    Select: ({ value, onChange, data, label, placeholder }) => (
+    Select: ({
+      value,
+      onChange,
+      data,
+      label,
+      placeholder,
+      'aria-label': ariaLabel,
+    }) => (
       <div>
         {label && <label>{label}</label>}
         <select
           value={value}
           onChange={(e) => onChange?.(e.target.value)}
-          aria-label={placeholder || label}
+          aria-label={ariaLabel || placeholder || label}
         >
           {data?.map((option) => (
             <option key={option.value} value={option.value}>
@@ -100,7 +121,7 @@ vi.mock('@mantine/core', () => {
         ))}
       </div>
     ),
-    Pagination: ({ page, onChange, total }) => (
+    Pagination: ({ value: page, onChange, total }) => (
       <div data-testid="pagination">
         <button onClick={() => onChange(page - 1)} disabled={page === 1}>
           Prev
@@ -162,6 +183,8 @@ describe('VODsPage', () => {
     setPageSize: mockSetPageSize,
     fetchContent: mockFetchContent,
     fetchCategories: mockFetchCategories,
+    categoriesError: null,
+    categoriesLoading: false,
   };
 
   beforeEach(() => {
@@ -175,11 +198,12 @@ describe('VODsPage', () => {
       selector({ user: mockAdminUser })
     );
     localStorage.clear();
+    useVODStore.getState = vi.fn(() => ({ error: null }));
   });
 
   it('renders the page title', async () => {
     renderVODsPage();
-    await screen.findByText('Video on Demand');
+    await screen.findByText('Library');
   });
 
   it('redirects to channels when VOD access is denied', async () => {
@@ -198,7 +222,7 @@ describe('VODsPage', () => {
     renderVODsPage();
 
     await screen.findByText('Channels page');
-    expect(screen.queryByText('Video on Demand')).not.toBeInTheDocument();
+    expect(screen.queryByText('Library')).not.toBeInTheDocument();
     expect(mockFetchContent).not.toHaveBeenCalled();
   });
 
@@ -223,7 +247,7 @@ describe('VODsPage', () => {
 
     renderVODsPage();
 
-    await screen.findByText('Video on Demand');
+    await screen.findByText('Library');
     expect(screen.queryByTestId('type-control')).not.toBeInTheDocument();
   });
 
@@ -239,7 +263,7 @@ describe('VODsPage', () => {
 
     renderVODsPage();
 
-    await screen.findByText('Video on Demand');
+    await screen.findByText('Library');
     expect(screen.getByTestId('type-control')).toBeInTheDocument();
     expect(screen.getByText('All')).toBeInTheDocument();
     expect(screen.getByText('Movies')).toBeInTheDocument();
@@ -284,9 +308,124 @@ describe('VODsPage', () => {
     });
   });
 
-  it('displays loader during initial load', async () => {
+  it('shows an initial loading status without a spinner or a false zero count', async () => {
+    mockFetchContent.mockImplementationOnce(() => new Promise(() => {}));
     renderVODsPage();
-    await screen.findByTestId('loader');
+    await screen.findByText('Loading library…');
+    expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
+    expect(screen.queryByText('0–0 of 0')).not.toBeInTheDocument();
+  });
+
+  it('explains the empty library', async () => {
+    renderVODsPage();
+    await screen.findByText('No titles found.');
+    expect(
+      screen.getByText('No movies or series have been imported yet.')
+    ).toBeInTheDocument();
+  });
+
+  it('reports load errors as a notification and supports retry', async () => {
+    useVODStore.getState.mockReturnValue({ error: 'Failed to load content.' });
+    renderVODsPage();
+    await screen.findByText('Library could not be loaded.');
+    expect(showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: 'Failed to load content.',
+        autoClose: false,
+      })
+    );
+    useVODStore.getState.mockReturnValue({ error: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('No titles found.');
+    expect(mockFetchContent).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores invalid stored page sizes', async () => {
+    localStorage.setItem('vodsPageSize', '-12');
+    renderVODsPage();
+    await screen.findByLabelText('Items per page');
+    expect(mockSetPageSize).not.toHaveBeenCalled();
+  });
+
+  it('reports category failures independently without hiding successfully loaded titles', async () => {
+    let state = {
+      ...defaultStoreState,
+      currentPageContent: [{ id: 1, name: 'Movie 1', contentType: 'movie' }],
+      totalCount: 1,
+      categoriesError: null,
+    };
+    useVODStore.mockImplementation((selector) => selector(state));
+    const { rerender } = render(
+      <MemoryRouter>
+        <VODsPage />
+      </MemoryRouter>
+    );
+    await screen.findByText('Movie 1');
+    state = { ...state, categoriesError: 'Failed to load categories.' };
+    rerender(
+      <MemoryRouter>
+        <VODsPage />
+      </MemoryRouter>
+    );
+    expect(screen.getByText('Movie 1')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Library could not be loaded.')
+    ).not.toBeInTheDocument();
+    expect(showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'vod-library-categories-error',
+        title: 'Library categories could not be loaded',
+        color: 'red',
+        autoClose: false,
+      })
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Retry categories' }));
+    expect(mockFetchCategories).toHaveBeenCalledTimes(2);
+    expect(mockFetchContent).toHaveBeenCalledTimes(1);
+    state = { ...state, categoriesLoading: true };
+    rerender(
+      <MemoryRouter>
+        <VODsPage />
+      </MemoryRouter>
+    );
+    expect(
+      screen.getByRole('button', { name: 'Retrying categories…' })
+    ).toBeDisabled();
+    state = { ...state, categoriesLoading: false, categoriesError: null };
+    rerender(
+      <MemoryRouter>
+        <VODsPage />
+      </MemoryRouter>
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Retry categories' })
+    ).not.toBeInTheDocument();
+    expect(hideNotification).toHaveBeenCalledWith(
+      'vod-library-categories-error'
+    );
+    expect(screen.getByText('Movie 1')).toBeInTheDocument();
+  });
+
+  it('reports a category failure before content finishes without treating it as a content error', async () => {
+    useVODStore.mockImplementation((selector) =>
+      selector({
+        ...defaultStoreState,
+        categoriesError: 'Failed to load categories.',
+      })
+    );
+    mockFetchContent.mockImplementationOnce(() => new Promise(() => {}));
+    renderVODsPage();
+    await screen.findByText('Loading library…');
+    expect(
+      screen.getByRole('button', { name: 'Retry categories' })
+    ).toBeInTheDocument();
+    expect(showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'vod-library-categories-error' })
+    );
+    expect(showNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'vod-library-load-error' })
+    );
   });
 
   it('displays content after loading', async () => {
@@ -452,7 +591,7 @@ describe('VODsPage', () => {
   it('updates page size and saves to localStorage', async () => {
     renderVODsPage();
 
-    const pageSizeSelect = screen.getByLabelText('Page Size');
+    const pageSizeSelect = await screen.findByLabelText('Items per page');
     fireEvent.change(pageSizeSelect, { target: { value: '24' } });
 
     await waitFor(() => {
@@ -509,7 +648,7 @@ describe('VODsPage', () => {
     });
   });
 
-  it('does not display pagination when total pages <= 1', async () => {
+  it('keeps the count and page size available on a single page', async () => {
     const stateNoPagination = {
       ...defaultStoreState,
       currentPageContent: [{ id: 1, name: 'Movie 1', contentType: 'movie' }],
@@ -521,7 +660,8 @@ describe('VODsPage', () => {
     renderVODsPage();
 
     await waitFor(() => {
-      expect(screen.queryByTestId('pagination')).not.toBeInTheDocument();
+      expect(screen.getByText('1–5 of 5')).toBeInTheDocument();
+      expect(screen.getByLabelText('Items per page')).toBeInTheDocument();
     });
   });
 

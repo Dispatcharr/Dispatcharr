@@ -231,6 +231,7 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
             "m3u_accounts",
             "channel_group",
             "enabled",
+            "ignored",
             "auto_channel_sync",
             "auto_sync_channel_start",
             "auto_sync_channel_end",
@@ -269,6 +270,10 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
         return data
 
     def validate(self, attrs):
+        if attrs.get("ignored") is True:
+            attrs["enabled"] = False
+        elif attrs.get("enabled") is True:
+            attrs["ignored"] = False
         # Partial PATCHes only carry submitted fields; fill missing
         # start/end from the instance so the validator catches a PATCH
         # that lowers end past the existing start.

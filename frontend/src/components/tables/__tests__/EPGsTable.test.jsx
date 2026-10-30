@@ -1,1483 +1,469 @@
-import React from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MantineProvider } from '@mantine/core';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+  act,
+} from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import EPGsTable from '../EPGsTable';
+import useEPGsStore from '../../../store/epgs';
+import useWarningsStore from '../../../store/warnings';
+import * as actions from '../../../utils/tables/EPGsTableUtils';
+import { showNotification } from '../../../utils/notificationUtils';
+import useScreenshotMode from '../../../store/useScreenshotMode.js';
 
-// ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/epgs', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
-
-// ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useBrowserStorage', () => ({
-  readStoredJSON: (key, defaultValue) => defaultValue,
-  writeStoredJSON: vi.fn(),
-  default: vi.fn(() => ['default', vi.fn()]),
+vi.mock('../../../utils/dateTimeUtils', () => ({
+  format: (value) => `formatted:${value}`,
+  useDateTimeFormat: () => ({ fullDateTimeFormat: 'YYYY-MM-DD HH:mm' }),
 }));
-
-// ── Utility mocks ──────────────────────────────────────────────────────────────
-vi.mock('../../../utils/dateTimeUtils.js', () => ({
-  format: vi.fn((val) => `formatted:${val}`),
-  useDateTimeFormat: vi.fn(() => ({ fullDateTimeFormat: 'MM/DD/YYYY HH:mm' })),
-}));
-
-vi.mock('../../../utils/notificationUtils.js', () => ({
+vi.mock('../../../utils/notificationUtils', () => ({
   showNotification: vi.fn(),
 }));
-
-vi.mock('../../../utils/tables/EPGsTableUtils.js', () => ({
-  deleteEpg: vi.fn().mockResolvedValue(undefined),
-  formatStatusText: vi.fn((s) =>
-    s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown'
-  ),
-  getProgressInfo: vi.fn(() => null),
-  getProgressLabel: vi.fn(() => null),
-  getSortedEpgs: vi.fn((epgs) => Object.values(epgs)),
-  refreshEpg: vi.fn().mockResolvedValue(undefined),
+vi.mock('../../../utils/tables/EPGsTableUtils', async (original) => ({
+  ...(await original()),
   updateEpg: vi.fn().mockResolvedValue(undefined),
+  refreshEpg: vi.fn().mockResolvedValue(undefined),
+  deleteEpg: vi.fn().mockResolvedValue(undefined),
 }));
-
-vi.mock('../tableSortingUtils.jsx', () => ({
-  makeHeaderCellRenderer: vi.fn(() => (header) => (
-    <span data-testid={`header-${header.id}`}>
-      {header.column.columnDef.header}
-    </span>
-  )),
-  makeSortingChangeHandler: vi.fn(() => vi.fn()),
-}));
-
-// ── Child component mocks ──────────────────────────────────────────────────────
 vi.mock('../../forms/EPG', () => ({
-  default: ({ isOpen, onClose, epg }) =>
+  default: ({ isOpen, epg, onClose }) =>
     isOpen ? (
-      <div data-testid="epg-form">
-        <span data-testid="epg-form-epg">{epg?.name ?? 'new'}</span>
-        <button data-testid="epg-form-close" onClick={onClose}>
-          Close
-        </button>
+      <div role="dialog" aria-label="EPG editor">
+        {epg?.name || 'New standard EPG'}
+        <button onClick={onClose}>Close editor</button>
       </div>
     ) : null,
 }));
-
 vi.mock('../../forms/DummyEPG', () => ({
-  default: ({ isOpen, onClose, epg }) =>
+  default: ({ isOpen, epg, onClose }) =>
     isOpen ? (
-      <div data-testid="dummy-epg-form">
-        <span data-testid="dummy-epg-form-epg">{epg?.name ?? 'new'}</span>
-        <button data-testid="dummy-epg-form-close" onClick={onClose}>
-          Close
-        </button>
+      <div role="dialog" aria-label="Dummy editor">
+        {epg?.name || 'New dummy EPG'}
+        <button onClick={onClose}>Close editor</button>
       </div>
     ) : null,
 }));
-
 vi.mock('../../ConfirmationDialog', () => ({
   default: ({
     opened,
-    onClose,
-    onConfirm,
     title,
     message,
+    onConfirm,
+    onClose,
     confirmLabel,
-    cancelLabel,
     loading,
   }) =>
     opened ? (
-      <div data-testid="confirmation-dialog">
-        <div data-testid="confirm-title">{title}</div>
-        <div data-testid="confirm-message">
-          {typeof message === 'string' ? message : 'rich-message'}
-        </div>
-        <button
-          data-testid="confirm-cancel"
-          onClick={onClose}
-          disabled={loading}
-        >
-          {cancelLabel}
-        </button>
-        <button data-testid="confirm-ok" onClick={onConfirm} disabled={loading}>
+      <div role="dialog" aria-label={title}>
+        {message}
+        <button disabled={loading} onClick={onConfirm}>
           {confirmLabel}
         </button>
+        <button onClick={onClose}>Cancel</button>
       </div>
     ) : null,
 }));
 
-vi.mock('../CustomTable', () => ({
-  CustomTable: ({ table }) => (
-    <div data-testid="custom-table">
-      {table?.getRowModel?.().rows.map((row) => (
-        <div key={row.id} data-testid="table-row" data-row-id={row.id}>
-          {row.getVisibleCells().map((cell) => (
-            <div key={cell.id} data-testid={`cell-${cell.column.id}`}>
-              {cell.column.id === 'actions'
-                ? table.bodyCellRenderFns?.actions?.({ cell, row })
-                : cell.column.columnDef.cell
-                  ? cell.column.columnDef.cell(cell.getContext())
-                  : cell.getValue?.()}
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  ),
-  useTable: vi.fn(),
-}));
-
-// ── Mantine core ───────────────────────────────────────────────────────────────
-vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, disabled, color }) => (
-    <button
-      data-testid="action-icon"
-      data-color={color}
-      onClick={onClick}
-      disabled={disabled}
-    >
-      {children}
-    </button>
-  ),
-  Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({
-    children,
-    onClick,
-    leftSection,
-    rightSection,
-    disabled,
-    loading,
-    variant,
-    color,
-  }) => (
-    <button
-      data-testid="button"
-      data-variant={variant}
-      data-color={color}
-      onClick={onClick}
-      disabled={disabled || loading}
-    >
-      {leftSection}
-      {children}
-      {rightSection}
-    </button>
-  ),
-  Checkbox: ({ checked, onChange, label, disabled }) => (
-    <label>
-      <input
-        data-testid="checkbox"
-        type="checkbox"
-        checked={checked}
-        onChange={onChange}
-        disabled={disabled}
-      />
-      {label}
-    </label>
-  ),
-  Flex: ({ children, style }) => <div style={style}>{children}</div>,
-  Menu: Object.assign(
-    ({ children }) => <div data-testid="menu">{children}</div>,
-    {
-      Target: ({ children }) => <div>{children}</div>,
-      Dropdown: ({ children }) => (
-        <div data-testid="menu-dropdown">{children}</div>
-      ),
-      Item: ({ children, onClick }) => (
-        <button data-testid="menu-item" onClick={onClick}>
-          {children}
-        </button>
-      ),
-    }
-  ),
-  MenuDivider: () => <hr data-testid="menu-divider" />,
-  MenuDropdown: ({ children }) => (
-    <div data-testid="menu-dropdown">{children}</div>
-  ),
-  MenuItem: ({ children, onClick, disabled }) => (
-    <button data-testid="menu-item" onClick={onClick} disabled={disabled}>
-      {children}
-    </button>
-  ),
-  MenuTarget: ({ children }) => <div>{children}</div>,
-  Modal: ({ children, opened, onClose, title }) =>
-    opened ? (
-      <div data-testid="modal">
-        <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>
-          ×
-        </button>
-        {children}
-      </div>
-    ) : null,
-  Paper: ({ children, style }) => <div style={style}>{children}</div>,
-  Progress: ({ value }) => <div data-testid="progress" data-value={value} />,
-  Stack: ({ children }) => <div>{children}</div>,
-  Switch: ({ checked, onChange, disabled }) => (
-    <input
-      data-testid="switch"
-      type="checkbox"
-      checked={checked}
-      onChange={onChange}
-      disabled={disabled}
-    />
-  ),
-  Text: ({ children, size, c, style }) => (
-    <span data-testid="text" data-size={size} data-color={c} style={style}>
-      {children}
-    </span>
-  ),
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
-  useMantineTheme: vi.fn(() => ({
-    palette: { background: { paper: '#1a1a1a' } },
-    colors: { red: { 6: '#fa5252' }, green: { 6: '#40c057' } },
-  })),
-}));
-
-// ── lucide-react ───────────────────────────────────────────────────────────────
-vi.mock('lucide-react', () => ({
-  ChevronDown: () => <svg data-testid="icon-chevron-down" />,
-  Filter: () => <svg data-testid="icon-filter" />,
-  RefreshCcw: () => <svg data-testid="icon-refresh" />,
-  RotateCcw: () => <svg data-testid="icon-rotate-ccw" />,
-  Square: () => <svg data-testid="icon-square" />,
-  SquareCheck: () => <svg data-testid="icon-square-check" />,
-  SquareMinus: () => <svg data-testid="icon-square-minus" />,
-  SquarePen: () => <svg data-testid="icon-square-pen" />,
-  SquarePlus: () => <svg data-testid="icon-square-plus" />,
-}));
-
-// ── Imports after mocks ────────────────────────────────────────────────────────
-import useEPGsStore from '../../../store/epgs';
-import useWarningsStore from '../../../store/warnings';
-import { showNotification } from '../../../utils/notificationUtils.js';
-import * as EPGsTableUtils from '../../../utils/tables/EPGsTableUtils.js';
-import { useTable, CustomTable } from '../CustomTable';
-import useBrowserStorage from '../../../hooks/useBrowserStorage';
-import { makeSortingChangeHandler } from '../tableSortingUtils.jsx';
-
-// ── Factories ──────────────────────────────────────────────────────────────────
-const makeEpg = (overrides = {}) => ({
-  id: 'epg-1',
-  name: 'Test EPG',
+const source = (overrides = {}) => ({
+  id: 1,
+  name: 'Guide One',
   source_type: 'xmltv',
-  url: 'http://example.com/epg.xml',
-  status: 'idle',
-  last_message: null,
+  url: 'https://example.invalid/guide.xml',
   is_active: true,
-  updated_at: '2024-01-01T12:00:00Z',
+  status: 'success',
+  updated_at: null,
+  last_message: 'Guide imported',
   ...overrides,
 });
-
-const makeDummyEpg = (overrides = {}) =>
-  makeEpg({
-    id: 'epg-dummy',
-    name: 'Dummy EPG',
-    source_type: 'dummy',
-    ...overrides,
-  });
-
-// Captures the useTable options passed by EPGsTable so we can invoke
-// renderBodyCell and renderHeaderCell in tests.
-let capturedTableOptions = null;
-
-/** Wire stores and the useTable spy */
-const setupMocks = ({
-  epgs = { 'epg-1': makeEpg() },
-  refreshProgress = {},
-  isWarningSuppressed = vi.fn(() => false),
-  suppressWarning = vi.fn(),
-  tableSize = 'default',
-  typeFilter = ['xmltv', 'schedules_direct', 'dummy'],
-} = {}) => {
-  vi.mocked(useEPGsStore).mockImplementation((sel) =>
-    sel({ epgs, refreshProgress })
-  );
-
-  vi.mocked(useWarningsStore).mockImplementation((sel) =>
-    sel({ isWarningSuppressed, suppressWarning })
-  );
-
-  const mockSetTypeFilter = vi.fn();
-  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
-    if (key === 'table-size') return [tableSize, vi.fn()];
-    if (key === 'epg-table-type-filter') return [typeFilter, mockSetTypeFilter];
-    return [defaultValue, vi.fn()];
-  });
-
-  // Capture the options EPGsTable passes to useTable so tests can call
-  // renderBodyCell / renderHeaderCell manually.
-  vi.mocked(useTable).mockImplementation((opts) => {
-    capturedTableOptions = opts;
-    return {
-      getRowModel: () => ({ rows: [] }),
-      bodyCellRenderFns: opts.bodyCellRenderFns ?? {},
-      getHeaderGroups: () => [],
-    };
-  });
-
-  return { mockSetTypeFilter };
-};
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-/** Build a minimal row/cell pair like TanStack Table would provide */
-const makeRowContext = (epgObj) => {
-  const row = {
-    id: epgObj.id,
-    original: epgObj,
-    getIsSelected: vi.fn(() => false),
-    getVisibleCells: vi.fn(() => []),
+let state;
+let warnings;
+const setup = (sources = [source()], progress = {}) => {
+  state = {
+    epgs: Object.fromEntries(sources.map((epg) => [epg.id, epg])),
+    refreshProgress: progress,
   };
-  const cell = {
-    column: { id: 'actions', columnDef: {} },
-    getValue: vi.fn(() => epgObj.is_active),
-    row,
-    getContext: vi.fn(() => ({})),
-  };
-  return { row, cell };
+  useEPGsStore.mockImplementation((selector) => selector(state));
 };
+const show = () =>
+  render(
+    <MantineProvider>
+      <EPGsTable />
+    </MantineProvider>
+  );
+const card = (name = 'Guide One') =>
+  within(screen.getByRole('article', { name: `EPG source ${name}` }));
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Tests
-// ══════════════════════════════════════════════════════════════════════════════
-
-describe('EPGsTable', () => {
+describe('EPG source cards', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    capturedTableOptions = null;
-    vi.mocked(EPGsTableUtils.deleteEpg).mockResolvedValue(undefined);
-    vi.mocked(EPGsTableUtils.refreshEpg).mockResolvedValue(undefined);
-    vi.mocked(EPGsTableUtils.updateEpg).mockResolvedValue(undefined);
-    vi.mocked(EPGsTableUtils.getSortedEpgs).mockImplementation((epgs) =>
-      Object.values(epgs)
+    localStorage.clear();
+    sessionStorage.clear();
+    useScreenshotMode.setState({ enabled: false });
+    setup();
+    warnings = {
+      isWarningSuppressed: vi.fn(() => false),
+      suppressWarning: vi.fn(),
+    };
+    useWarningsStore.mockImplementation((selector) => selector(warnings));
+  });
+  it('places the URL under the name and dims Never like the other subtitles', () => {
+    show();
+    const name = card().getByText('Guide One');
+    const url = card().getByText('https://example.invalid/guide.xml');
+    expect(name.parentElement.parentElement).toContainElement(url);
+    expect(url).toHaveStyle({ color: 'var(--mantine-color-dimmed)' });
+    expect(card().getByText('Never')).toHaveStyle({
+      color: 'var(--mantine-color-dimmed)',
+    });
+    act(() => useScreenshotMode.getState().toggle());
+    expect(
+      card().queryByText('https://example.invalid/guide.xml')
+    ).not.toBeInTheDocument();
+    expect(card().getByText('••••••••')).toBeInTheDocument();
+  });
+  it.each(['idle', 'error'])(
+    'does not repeat the missing-source message below Last refresh (%s)',
+    (status) => {
+      setup([
+        source({
+          status,
+          url: '',
+          file_path: '',
+          last_message: 'No URL provided and no valid local file exists',
+        }),
+      ]);
+      show();
+      expect(
+        card().getByText('No URL or local file configured')
+      ).toBeInTheDocument();
+      expect(
+        card().queryByText('No URL provided and no valid local file exists')
+      ).not.toBeInTheDocument();
+      expect(card().getByText('Never')).toBeInTheDocument();
+    }
+  );
+  it('keeps missing-file errors when the source still has a configured path', () => {
+    setup([
+      source({
+        status: 'error',
+        url: '',
+        file_path: '/data/missing.xml',
+        last_message: 'No URL provided and no valid local file exists',
+      }),
+    ]);
+    show();
+    expect(card().getByText('/data/missing.xml')).toBeInTheDocument();
+    expect(
+      card().getByText('No URL provided and no valid local file exists')
+    ).toBeInTheDocument();
+  });
+
+  it('places compact errors by the status and keeps full details out of Last refresh', async () => {
+    const message =
+      'EPG download failed: 403 Client Error: Forbidden for url: https://example.invalid/guide.xml?password=secret';
+    setup([source({ status: 'error', last_message: message })], {
+      1: { action: 'downloading', progress: 42, status: 'error' },
+    });
+    show();
+    const status = card().getByRole('group', { name: 'Error status' });
+    expect(status).toHaveTextContent('EPG download failed');
+    expect(
+      card().getByText('Last refresh').parentElement
+    ).not.toHaveTextContent('EPG download failed');
+    expect(card().queryByText(/42%/)).not.toBeInTheDocument();
+    fireEvent.mouseEnter(status);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(message);
+    act(() => useScreenshotMode.getState().toggle());
+    expect(screen.getByRole('tooltip')).not.toHaveTextContent(
+      'password=secret'
     );
   });
 
-  // ── Header renders ─────────────────────────────────────────────────────────
-
-  describe('header / top toolbar', () => {
-    it('renders the "EPGs" heading', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(screen.getByText('EPGs')).toBeInTheDocument();
-    });
-
-    it('renders the "Add EPG" menu button', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(screen.getByText('Add EPG')).toBeInTheDocument();
-    });
-
-    it('renders both menu items in the Add EPG menu', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(screen.getByText('Standard EPG Source')).toBeInTheDocument();
-      expect(screen.getByText('Dummy EPG Source')).toBeInTheDocument();
-    });
+  it('uses the navigation label for the source overview', () => {
+    show();
+    expect(screen.getByText('EPG Sources')).toBeInTheDocument();
+    expect(screen.queryByText('EPGs')).not.toBeInTheDocument();
   });
 
-  // ── Add EPG modal flows ────────────────────────────────────────────────────
-
-  describe('add EPG modals', () => {
-    it('opens the standard EPG form when "Standard EPG Source" is clicked', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('Standard EPG Source'));
-      expect(screen.getByTestId('epg-form')).toBeInTheDocument();
-    });
-
-    it('passes null epg to EPGForm when creating new standard EPG', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('Standard EPG Source'));
-      expect(screen.getByTestId('epg-form-epg')).toHaveTextContent('new');
-    });
-
-    it('closes the standard EPG form when onClose is called', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('Standard EPG Source'));
-      fireEvent.click(screen.getByTestId('epg-form-close'));
-      expect(screen.queryByTestId('epg-form')).not.toBeInTheDocument();
-    });
-
-    it('opens the dummy EPG form when "Dummy EPG Source" is clicked', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('Dummy EPG Source'));
-      expect(screen.getByTestId('dummy-epg-form')).toBeInTheDocument();
-    });
-
-    it('passes null epg to DummyEPGForm when creating new dummy EPG', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('Dummy EPG Source'));
-      expect(screen.getByTestId('dummy-epg-form-epg')).toHaveTextContent('new');
-    });
-
-    it('closes the dummy EPG form when onClose is called', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('Dummy EPG Source'));
-      fireEvent.click(screen.getByTestId('dummy-epg-form-close'));
-      expect(screen.queryByTestId('dummy-epg-form')).not.toBeInTheDocument();
-    });
-  });
-
-  // ── Edit EPG (RowActions) ──────────────────────────────────────────────────
-
-  describe('edit EPG via RowActions', () => {
-    it('opens the standard EPG form with the correct epg when edit is clicked', () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      // Invoke the actions cell renderer directly
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-pen').closest('button'));
-
-      expect(screen.getByTestId('epg-form')).toBeInTheDocument();
-      expect(screen.getByTestId('epg-form-epg')).toHaveTextContent('Test EPG');
-    });
-
-    it('opens the dummy EPG form when editing a dummy EPG', () => {
-      const epg = makeDummyEpg();
-      setupMocks({ epgs: { 'epg-dummy': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-pen').closest('button'));
-
-      expect(screen.getByTestId('dummy-epg-form')).toBeInTheDocument();
-    });
-  });
-
-  // ── Delete EPG (with confirmation) ────────────────────────────────────────
-
-  describe('delete EPG', () => {
-    it('opens the confirmation dialog when delete is clicked (warning not suppressed)', () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
-
-      expect(screen.getByTestId('confirmation-dialog')).toBeInTheDocument();
-    });
-
-    it('shows the correct title in the confirmation dialog', () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
-
-      expect(screen.getByTestId('confirm-title')).toHaveTextContent(
-        'Confirm EPG Source Deletion'
+  it.each([0, 1234, undefined])(
+    'shows saved EPG channels without confusing missing data with zero (%s)',
+    (count) => {
+      setup([source({ epg_data_count: count })]);
+      show();
+      expect(card().getByText('EPG channels').parentElement).toHaveTextContent(
+        count === undefined ? '—' : String(count)
       );
-    });
-
-    it('calls deleteEpg when delete is confirmed', async () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
-      fireEvent.click(screen.getByTestId('confirm-ok'));
-
-      await waitFor(() => {
-        expect(EPGsTableUtils.deleteEpg).toHaveBeenCalledWith('epg-1');
-      });
-    });
-
-    it('closes the dialog after successful delete', async () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
-      fireEvent.click(screen.getByTestId('confirm-ok'));
-
-      await waitFor(() => {
-        expect(
-          screen.queryByTestId('confirmation-dialog')
-        ).not.toBeInTheDocument();
-      });
-    });
-
-    it('closes the dialog when Cancel is clicked without deleting', () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
-      fireEvent.click(screen.getByTestId('confirm-cancel'));
-
+      expect(actions.refreshEpg).not.toHaveBeenCalled();
+    }
+  );
+  it('uses matching cards and control blocks without a table', () => {
+    show();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(card().getByText('XMLTV')).toBeInTheDocument();
+    expect(card().getByText('Success')).toBeInTheDocument();
+    expect(
+      card().getByRole('group', { name: 'Enabled state for Guide One' })
+        .className
+    ).toBe(
+      card().getByRole('group', { name: 'Actions for Guide One' }).className
+    );
+    expect(
+      card()
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label'))
+    ).toEqual(['Refresh Guide One', 'Edit Guide One', 'Delete Guide One']);
+    expect(
+      card()
+        .getByRole('group', { name: 'Enabled state for Guide One' })
+        .textContent.trim()
+    ).toBe('');
+    const edit = card().getByRole('button', { name: 'Edit Guide One' });
+    expect(edit.querySelector('.lucide-square-pen')).not.toBeNull();
+    expect(edit.getAttribute('style')).toContain('yellow');
+  });
+  it('puts disabled sources last, dims them, and sorts names case-insensitively', () => {
+    setup([
+      source({ name: 'zulu' }),
+      source({ id: 2, name: 'Alpha', is_active: false }),
+      source({ id: 3, name: 'Bravo' }),
+    ]);
+    show();
+    expect(
+      screen
+        .getAllByRole('article')
+        .map((node) => node.getAttribute('aria-label'))
+    ).toEqual(['EPG source Bravo', 'EPG source zulu', 'EPG source Alpha']);
+    expect(
+      screen.getByRole('article', { name: 'EPG source Alpha' })
+    ).toHaveStyle({ opacity: '0.65', filter: 'grayscale(0.75)' });
+  });
+  it('shows an empty state without search or sorting fields', () => {
+    setup([]);
+    show();
+    expect(screen.getByText('No EPG sources yet.')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+  it.each(['Standard EPG Source', 'Dummy EPG Source'])(
+    'creates %s using its existing editor',
+    async (label) => {
+      show();
+      fireEvent.click(screen.getByRole('button', { name: 'Add EPG' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: label }));
+      expect(screen.getByRole('dialog')).toHaveTextContent(
+        label.startsWith('Dummy') ? 'New dummy EPG' : 'New standard EPG'
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Close editor' }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    }
+  );
+  it.each(['xmltv', 'schedules_direct', 'dummy'])(
+    'opens the appropriate editor for %s',
+    (source_type) => {
+      setup([source({ source_type })]);
+      show();
+      fireEvent.click(card().getByRole('button', { name: 'Edit Guide One' }));
       expect(
-        screen.queryByTestId('confirmation-dialog')
-      ).not.toBeInTheDocument();
-      expect(EPGsTableUtils.deleteEpg).not.toHaveBeenCalled();
+        screen.getByRole('dialog', {
+          name: source_type === 'dummy' ? 'Dummy editor' : 'EPG editor',
+        })
+      ).toHaveTextContent('Guide One');
+    }
+  );
+  it('confirms deletion and preserves cancellation', async () => {
+    show();
+    fireEvent.click(card().getByRole('button', { name: 'Delete Guide One' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(actions.deleteEpg).not.toHaveBeenCalled();
+    fireEvent.click(card().getByRole('button', { name: 'Delete Guide One' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(actions.deleteEpg).toHaveBeenCalledWith(1));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('also masks a Schedules Direct username in its deletion confirmation', () => {
+    setup([
+      source({ source_type: 'schedules_direct', username: 'ExampleUser' }),
+    ]);
+    show();
+    act(() => useScreenshotMode.getState().toggle());
+    fireEvent.click(card().getByRole('button', { name: 'Delete Guide One' }));
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.queryByText('ExampleUser')).not.toBeInTheDocument();
+    expect(dialog.getByText('••••••••')).toBeInTheDocument();
+    expect(dialog.getByText(/Username:/)).toBeInTheDocument();
+  });
+  it('respects a suppressed deletion warning', async () => {
+    warnings.isWarningSuppressed.mockReturnValue(true);
+    show();
+    fireEvent.click(card().getByRole('button', { name: 'Delete Guide One' }));
+    await waitFor(() => expect(actions.deleteEpg).toHaveBeenCalledWith(1));
+  });
+  it('refreshes an enabled source and keeps its initiation message', async () => {
+    show();
+    fireEvent.click(card().getByRole('button', { name: 'Refresh Guide One' }));
+    await waitFor(() =>
+      expect(actions.refreshEpg).toHaveBeenCalledWith(1, false)
+    );
+    expect(showNotification).toHaveBeenCalledWith({
+      title: 'EPG refresh initiated',
     });
-
-    it('skips confirmation and calls deleteEpg immediately when warning is suppressed', async () => {
-      const epg = makeEpg();
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        isWarningSuppressed: vi.fn(() => true),
-      });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
-
-      await waitFor(() => {
-        expect(EPGsTableUtils.deleteEpg).toHaveBeenCalledWith('epg-1');
-      });
+  });
+  it.each([{ is_active: false }, { source_type: 'dummy' }])(
+    'preserves refresh restrictions for %j',
+    (overrides) => {
+      setup([source(overrides)]);
+      show();
       expect(
-        screen.queryByTestId('confirmation-dialog')
-      ).not.toBeInTheDocument();
-    });
+        card().getByRole('button', { name: 'Refresh Guide One' })
+      ).toBeDisabled();
+    }
+  );
+  it('toggles only the enabled state', async () => {
+    show();
+    fireEvent.click(card().getByRole('switch', { name: 'Enable Guide One' }));
+    await waitFor(() =>
+      expect(actions.updateEpg).toHaveBeenCalledWith(
+        { is_active: false },
+        source(),
+        true
+      )
+    );
   });
-
-  // ── Refresh EPG ────────────────────────────────────────────────────────────
-
-  describe('refresh EPG', () => {
-    it('calls refreshEpg with the correct id when refresh is clicked', async () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-
-      // refreshEPG passes force=false (the default) through to refreshEpg
-      await waitFor(() => {
-        expect(EPGsTableUtils.refreshEpg).toHaveBeenCalledWith('epg-1', false);
-      });
-    });
-
-    it('shows a notification after refreshEpg resolves', async () => {
-      const epg = makeEpg();
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'EPG refresh initiated' })
-        );
-      });
-    });
-
-    it('disables the refresh button for dummy EPGs', () => {
-      const epg = makeDummyEpg();
-      setupMocks({ epgs: { 'epg-dummy': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      expect(getByTestId('icon-refresh').closest('button')).toBeDisabled();
-    });
-
-    it('disables the refresh button for inactive EPGs', () => {
-      const epg = makeEpg({ is_active: false });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({
-        cell,
-        row,
-      });
-      const { getByTestId } = render(rendered);
-      expect(getByTestId('icon-refresh').closest('button')).toBeDisabled();
-    });
+  it('keeps dummy source enable state read-only and its status idle', () => {
+    setup([source({ source_type: 'dummy', status: 'error' })]);
+    show();
+    expect(card().getByRole('switch')).toBeDisabled();
+    expect(card().getByText('Idle')).toBeInTheDocument();
+    expect(card().queryByText('Guide imported')).not.toBeInTheDocument();
   });
-
-  // ── Toggle active (Switch) ─────────────────────────────────────────────────
-
-  describe('toggle active', () => {
-    it('calls updateEpg with flipped is_active when Switch is toggled', async () => {
-      const epg = makeEpg({ is_active: true });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      // The switch is rendered inside the is_active column cell renderer.
-      // Find the column definition and call its cell renderer.
-      const isActiveCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'is_active'
-      );
-      const row = {
-        original: epg,
-        getIsSelected: vi.fn(() => false),
-      };
-      const cell = { getValue: vi.fn(() => epg.is_active) };
-      const { getByTestId } = render(isActiveCol.cell({ row, cell }));
-      fireEvent.click(getByTestId('switch'));
-
-      await waitFor(() => {
-        expect(EPGsTableUtils.updateEpg).toHaveBeenCalledWith(
-          { is_active: false },
-          epg,
-          true
-        );
-      });
-    });
-
-    it('does not call updateEpg when epg object is invalid', async () => {
-      setupMocks();
-      render(<EPGsTable />);
-
-      const isActiveCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'is_active'
-      );
-      const row = { original: { source_type: 'xmltv', id: undefined, is_active: true }, getIsSelected: vi.fn(() => false) };
-      const cell = { getValue: vi.fn(() => false) };
-
-      // Should not throw even with an invalid (no id) epg, and should not call updateEpg
-      render(isActiveCol.cell({ row, cell }));
-      expect(EPGsTableUtils.updateEpg).not.toHaveBeenCalled();
-    });
-
-    it('disables the Switch for dummy EPGs', () => {
-      const epg = makeDummyEpg();
-      setupMocks({ epgs: { 'epg-dummy': epg } });
-      render(<EPGsTable />);
-
-      const isActiveCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'is_active'
-      );
-      const row = { original: epg, getIsSelected: vi.fn(() => false) };
-      const cell = { getValue: vi.fn(() => true) };
-      const { getByTestId } = render(isActiveCol.cell({ row, cell }));
-      expect(getByTestId('switch')).toBeDisabled();
-    });
-  });
-
-  // ── Status cell ────────────────────────────────────────────────────────────
-
-  describe('status cell', () => {
-    const statuses = ['idle', 'fetching', 'parsing', 'error', 'success'];
-    statuses.forEach((status) => {
-      it(`renders formatted status text for status="${status}"`, () => {
-        const epg = makeEpg({ status });
-        setupMocks({ epgs: { 'epg-1': epg } });
-        render(<EPGsTable />);
-
-        const statusCol = capturedTableOptions.columns.find(
-          (c) => c.accessorKey === 'status'
-        );
-        const row = { original: epg };
-        const { container } = render(statusCol.cell({ row }));
-        expect(container).toBeInTheDocument();
-        expect(EPGsTableUtils.formatStatusText).toHaveBeenCalledWith(status);
-      });
-    });
-
-    it('renders "idle" status for dummy EPG regardless of actual status', () => {
-      const epg = makeDummyEpg({ status: 'fetching' });
-      setupMocks({ epgs: { 'epg-dummy': epg } });
-      render(<EPGsTable />);
-
-      const statusCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'status'
-      );
-      const row = { original: epg };
-      render(statusCol.cell({ row }));
-      expect(EPGsTableUtils.formatStatusText).toHaveBeenCalledWith('idle');
-    });
-  });
-
-  // ── Updated_at cell ────────────────────────────────────────────────────────
-
-  describe('updated_at cell', () => {
-    it('renders "Never" when updated_at is null', () => {
-      const epg = makeEpg({ updated_at: null });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const updatedCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'updated_at'
-      );
-      const cell = { getValue: vi.fn(() => null) };
-      const { getByText } = render(updatedCol.cell({ cell }));
-      expect(getByText('Never')).toBeInTheDocument();
-    });
-
-    it('renders the formatted date when updated_at has a value', () => {
-      setupMocks();
-      render(<EPGsTable />);
-
-      const updatedCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'updated_at'
-      );
-      const cell = { getValue: vi.fn(() => '2024-01-01T12:00:00Z') };
-      const { getByText } = render(updatedCol.cell({ cell }));
-      expect(getByText(/formatted:/)).toBeInTheDocument();
-    });
-  });
-
-  // ── Status message cell ────────────────────────────────────────────────────
-
-  describe('status message cell', () => {
-    it('returns null for dummy EPGs', () => {
-      const epg = makeDummyEpg();
-      setupMocks({ epgs: { 'epg-dummy': epg } });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { container } = render(<div>{msgCol.cell({ row })}</div>);
-      expect(container.firstChild).toBeEmptyDOMElement();
-    });
-
-    it('renders error message when status is error', () => {
-      const epg = makeEpg({ status: 'error', last_message: 'Something broke' });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { getByText } = render(msgCol.cell({ row }));
-      expect(getByText('Something broke')).toBeInTheDocument();
-    });
-
-    it('renders success message when status is success and last_message is set', () => {
-      const epg = makeEpg({ status: 'success', last_message: 'All good' });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { getByText } = render(msgCol.cell({ row }));
-      expect(getByText('All good')).toBeInTheDocument();
-    });
-
-    it('renders fallback success message when status is success and last_message is null', () => {
-      const epg = makeEpg({ status: 'success', last_message: null });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { getByText } = render(msgCol.cell({ row }));
-      expect(getByText('EPG data refreshed successfully')).toBeInTheDocument();
-    });
-
-    it('renders idle last_message when status is idle and message is set', () => {
-      const epg = makeEpg({ status: 'idle', last_message: 'Previous result' });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { getByText } = render(msgCol.cell({ row }));
-      expect(getByText('Previous result')).toBeInTheDocument();
-    });
-
-    it('renders progress display when refreshProgress is active', () => {
-      const epg = makeEpg();
-      vi.mocked(EPGsTableUtils.getProgressLabel).mockReturnValue('Downloading');
-      vi.mocked(EPGsTableUtils.getProgressInfo).mockReturnValue(null);
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        refreshProgress: { 'epg-1': { action: 'downloading', progress: 50 } },
-      });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { getByTestId, getByText } = render(msgCol.cell({ row }));
-      expect(getByText(/Downloading: 50%/)).toBeInTheDocument();
-      expect(getByTestId('progress')).toBeInTheDocument();
-    });
-
-    it('renders speed when progress has speed', () => {
-      const epg = makeEpg();
-      vi.mocked(EPGsTableUtils.getProgressLabel).mockReturnValue('Downloading');
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        refreshProgress: {
-          'epg-1': { action: 'downloading', progress: 30, speed: 512 },
-        },
-      });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { getByText } = render(msgCol.cell({ row }));
-      expect(getByText(/Speed: 512 KB\/s/)).toBeInTheDocument();
-    });
-
-    it('renders additionalInfo when getProgressInfo returns a value', () => {
-      const epg = makeEpg();
-      vi.mocked(EPGsTableUtils.getProgressLabel).mockReturnValue(
-        'Parsing Programs'
-      );
-      vi.mocked(EPGsTableUtils.getProgressInfo).mockReturnValue(
-        '5,000 / 10,000'
-      );
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        refreshProgress: {
-          'epg-1': { action: 'parsing_programs', progress: 50 },
-        },
-      });
-      render(<EPGsTable />);
-
-      const msgCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'last_message'
-      );
-      const row = { original: epg };
-      const { getByText } = render(msgCol.cell({ row }));
-      expect(getByText('5,000 / 10,000')).toBeInTheDocument();
-    });
-  });
-
-  // ── URL cell ───────────────────────────────────────────────────────────────
-
-  describe('URL / api_key / file_path cell', () => {
-    it('renders the url when present', () => {
-      setupMocks();
-      render(<EPGsTable />);
-
-      const urlCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'url'
-      );
-      const row = { original: makeEpg() };
-      const cell = { getValue: vi.fn(() => 'http://example.com/epg.xml') };
-      const { getByText } = render(urlCol.cell({ cell, row }));
-      expect(getByText('http://example.com/epg.xml')).toBeInTheDocument();
-    });
-
-    it('falls back to password when url is empty and password is set', () => {
-      setupMocks();
-      render(<EPGsTable />);
-
-      const urlCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'url'
-      );
-      const row = {
-        original: { ...makeEpg(), url: null, password: 'MY-KEY-123' },
-      };
-      const cell = { getValue: vi.fn(() => null) };
-      const { getByText } = render(urlCol.cell({ cell, row }));
-      expect(getByText('MY-KEY-123')).toBeInTheDocument();
-    });
-
-    it('falls back to file_path when url and api_key are both absent', () => {
-      setupMocks();
-      render(<EPGsTable />);
-
-      const urlCol = capturedTableOptions.columns.find(
-        (c) => c.accessorKey === 'url'
-      );
-      const row = {
-        original: {
-          ...makeEpg(),
-          url: null,
-          api_key: null,
-          file_path: '/data/epg.xml',
-        },
-      };
-      const cell = { getValue: vi.fn(() => null) };
-      const { getByText } = render(urlCol.cell({ cell, row }));
-      expect(getByText('/data/epg.xml')).toBeInTheDocument();
-    });
-  });
-
-  // ── Sorting integration ────────────────────────────────────────────────────
-
-  describe('sorting integration', () => {
-    it('calls getSortedEpgs when sorting handler fires', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      // The real makeSortingChangeHandler is mocked; verify it was called
-      // with sorting state and a setter from the component
-      expect(makeSortingChangeHandler).toHaveBeenCalled();
-    });
-  });
-
-  // ── Data initialization from epgs store ───────────────────────────────────
-
-  describe('data initialization', () => {
-    it('passes the epgs as data to useTable (active-first, then alphabetical)', () => {
-      const epgs = {
-        'epg-2': makeEpg({ id: 'epg-2', name: 'Zebra', is_active: false }),
-        'epg-1': makeEpg({ id: 'epg-1', name: 'Alpha', is_active: true }),
-      };
-      setupMocks({ epgs });
-      render(<EPGsTable />);
-      // Active EPG should come first in the sorted data passed to useTable
-      const data = capturedTableOptions.data;
-      expect(data[0].is_active).toBe(true);
-    });
-
-    it('places inactive EPGs after active ones', () => {
-      const epgs = {
-        'epg-a': makeEpg({ id: 'epg-a', name: 'Active', is_active: true }),
-        'epg-b': makeEpg({ id: 'epg-b', name: 'Inactive', is_active: false }),
-      };
-      setupMocks({ epgs });
-      render(<EPGsTable />);
-      const data = capturedTableOptions.data;
-      expect(data[data.length - 1].is_active).toBe(false);
-    });
-
-    it('sorts two active EPGs alphabetically by name', () => {
-      const epgs = {
-        'epg-z': makeEpg({ id: 'epg-z', name: 'Zebra', is_active: true }),
-        'epg-a': makeEpg({ id: 'epg-a', name: 'Alpha', is_active: true }),
-      };
-      setupMocks({ epgs });
-      render(<EPGsTable />);
-      const data = capturedTableOptions.data;
-      expect(data[0].name).toBe('Alpha');
-      expect(data[1].name).toBe('Zebra');
-    });
-  });
-
-  // ── Source type cell ───────────────────────────────────────────────────────
-
-  describe('source type cell', () => {
-    const getTypeCol = () =>
-      capturedTableOptions.columns.find((c) => c.accessorKey === 'source_type');
-
-    it('renders "XMLTV" for source_type xmltv', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      const { container } = render(
-        getTypeCol().cell({ cell: { getValue: vi.fn(() => 'xmltv') } })
-      );
-      expect(within(container).getByText('XMLTV')).toBeInTheDocument();
-    });
-
-    it('renders "Schedules Direct" for source_type schedules_direct', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      const { container } = render(
-        getTypeCol().cell({ cell: { getValue: vi.fn(() => 'schedules_direct') } })
-      );
-      expect(within(container).getByText('Schedules Direct')).toBeInTheDocument();
-    });
-
-    it('renders "Custom Dummy" for source_type dummy', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      const { getByText } = render(
-        getTypeCol().cell({ cell: { getValue: vi.fn(() => 'dummy') } })
-      );
-      expect(getByText('Custom Dummy')).toBeInTheDocument();
-    });
-
-    it('renders the raw value for an unknown source_type', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      const { getByText } = render(
-        getTypeCol().cell({ cell: { getValue: vi.fn(() => 'unknown_type') } })
-      );
-      expect(getByText('unknown_type')).toBeInTheDocument();
-    });
-  });
-
-  // ── URL cell – schedules_direct scenarios ──────────────────────────────────
-
-  describe('URL cell - schedules_direct', () => {
-    const getUrlCol = () =>
-      capturedTableOptions.columns.find((c) => c.accessorKey === 'url');
-
-    it('shows "User: <username>" for schedules_direct with a username', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      const row = {
-        original: {
-          ...makeEpg(),
-          source_type: 'schedules_direct',
-          username: 'myuser',
-        },
-      };
-      const cell = { getValue: vi.fn(() => null) };
-      const { getByText } = render(getUrlCol().cell({ cell, row }));
-      expect(getByText('User: myuser')).toBeInTheDocument();
-    });
-
-    it('shows "(credentials set)" for schedules_direct with no username', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      const row = {
-        original: {
-          ...makeEpg(),
-          source_type: 'schedules_direct',
-          username: '',
-        },
-      };
-      const cell = { getValue: vi.fn(() => null) };
-      const { getByText } = render(getUrlCol().cell({ cell, row }));
-      expect(getByText('(credentials set)')).toBeInTheDocument();
-    });
-
-    it('falls back to password when url is empty and password is set', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      const row = {
-        original: { ...makeEpg(), url: null, password: 'secret123' },
-      };
-      const cell = { getValue: vi.fn(() => null) };
-      const { getByText } = render(getUrlCol().cell({ cell, row }));
-      expect(getByText('secret123')).toBeInTheDocument();
-    });
-  });
-
-  // ── Schedules Direct early refresh dialog ──────────────────────────────────
-
-  describe('Schedules Direct early refresh', () => {
-    const makeRecentSdEpg = (overrides = {}) =>
-      makeEpg({
-        id: 'sd-1',
-        source_type: 'schedules_direct',
-        // 30 minutes ago — well within the 2-hour window
-        updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-        ...overrides,
-      });
-
-    const makeOldSdEpg = (overrides = {}) =>
-      makeEpg({
-        id: 'sd-1',
-        source_type: 'schedules_direct',
-        // 3 hours ago — outside the 2-hour window
-        updated_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-        ...overrides,
-      });
-
-    it('opens the SD early-refresh confirmation dialog when the EPG was refreshed recently', () => {
-      const epg = makeRecentSdEpg();
-      setupMocks({ epgs: { 'sd-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({ cell, row });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-
-      expect(screen.getByTestId('confirm-title')).toHaveTextContent(
-        'Refresh Schedules Direct Early?'
-      );
-    });
-
-    it('shows "Refresh Anyway" as the confirm label', () => {
-      const epg = makeRecentSdEpg();
-      setupMocks({ epgs: { 'sd-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({ cell, row });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-
-      expect(screen.getByTestId('confirm-ok')).toHaveTextContent('Refresh Anyway');
-    });
-
-    it('skips the SD dialog and calls refreshEpg directly when EPG was refreshed more than 2 hours ago', async () => {
-      const epg = makeOldSdEpg();
-      setupMocks({ epgs: { 'sd-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({ cell, row });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-
-      await waitFor(() => {
-        expect(EPGsTableUtils.refreshEpg).toHaveBeenCalled();
-      });
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
-    });
-
-    it('skips the SD dialog when the SD EPG has no updated_at', async () => {
-      const epg = makeEpg({
-        id: 'sd-1',
-        source_type: 'schedules_direct',
-        updated_at: null,
-      });
-      setupMocks({ epgs: { 'sd-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({ cell, row });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-
-      await waitFor(() => {
-        expect(EPGsTableUtils.refreshEpg).toHaveBeenCalled();
-      });
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
-    });
-
-    it('calls refreshEpg with force=true when "Refresh Anyway" is confirmed', async () => {
-      const epg = makeRecentSdEpg();
-      setupMocks({ epgs: { 'sd-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({ cell, row });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-      fireEvent.click(screen.getByTestId('confirm-ok'));
-
-      await waitFor(() => {
-        expect(EPGsTableUtils.refreshEpg).toHaveBeenCalledWith('sd-1', true);
-      });
-    });
-
-    it('shows a notification after force-refreshing', async () => {
-      const epg = makeRecentSdEpg();
-      setupMocks({ epgs: { 'sd-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({ cell, row });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-      fireEvent.click(screen.getByTestId('confirm-ok'));
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'EPG refresh initiated' })
-        );
-      });
-    });
-
-    it('closes the SD dialog without calling refreshEpg when cancelled', () => {
-      const epg = makeRecentSdEpg();
-      setupMocks({ epgs: { 'sd-1': epg } });
-      render(<EPGsTable />);
-
-      const { row, cell } = makeRowContext(epg);
-      const rendered = capturedTableOptions.bodyCellRenderFns.actions({ cell, row });
-      const { getByTestId } = render(rendered);
-      fireEvent.click(getByTestId('icon-refresh').closest('button'));
-      fireEvent.click(screen.getByTestId('confirm-cancel'));
-
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
-      expect(EPGsTableUtils.refreshEpg).not.toHaveBeenCalled();
-    });
-  });
-
-  // ── Status message cell - progress edge cases ──────────────────────────────
-
-  describe('status message cell - progress edge cases', () => {
-    const getMsgCol = () =>
-      capturedTableOptions.columns.find((c) => c.accessorKey === 'last_message');
-
-    it('renders nothing when getProgressLabel returns null for active progress', () => {
-      const epg = makeEpg();
-      vi.mocked(EPGsTableUtils.getProgressLabel).mockReturnValue(null);
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        refreshProgress: { 'epg-1': { action: 'unknown_action', progress: 50 } },
-      });
-      render(<EPGsTable />);
-
-      const row = { original: epg };
-      const { container } = render(<div>{getMsgCol().cell({ row })}</div>);
-      expect(container.firstChild).toBeEmptyDOMElement();
-    });
-
-    it('shows progress when progress.status is "in_progress" even at 100%', () => {
-      const epg = makeEpg();
-      vi.mocked(EPGsTableUtils.getProgressLabel).mockReturnValue('Processing');
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        refreshProgress: {
-          'epg-1': { action: 'processing', progress: 100, status: 'in_progress' },
-        },
-      });
-      render(<EPGsTable />);
-
-      const row = { original: epg };
-      const { getByText } = render(getMsgCol().cell({ row }));
-      expect(getByText(/Processing: 100%/)).toBeInTheDocument();
-    });
-
-    it('shows progress for parsing_channels action when epg.status is "parsing"', () => {
-      const epg = makeEpg({ status: 'parsing' });
-      vi.mocked(EPGsTableUtils.getProgressLabel).mockReturnValue('Parsing Channels');
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        refreshProgress: {
-          'epg-1': { action: 'parsing_channels', progress: 100 },
-        },
-      });
-      render(<EPGsTable />);
-
-      const row = { original: epg };
-      const { getByText } = render(getMsgCol().cell({ row }));
-      expect(getByText(/Parsing Channels: 100%/)).toBeInTheDocument();
-    });
-
-    it('does not show progress for parsing_channels action when epg.status is not "parsing"', () => {
-      const epg = makeEpg({ status: 'idle' });
-      vi.mocked(EPGsTableUtils.getProgressLabel).mockReturnValue('Parsing Channels');
-      setupMocks({
-        epgs: { 'epg-1': epg },
-        refreshProgress: {
-          'epg-1': { action: 'parsing_channels', progress: 100 },
-        },
-      });
-      render(<EPGsTable />);
-
-      const row = { original: epg };
-      const { container } = render(<div>{getMsgCol().cell({ row })}</div>);
-      // condition fails (100 < 100=false, no in_progress, parsing_channels + idle=false)
-      // falls through to the idle-message branch; no last_message → returns null
-      expect(container.firstChild).toBeEmptyDOMElement();
-    });
-
-    it('renders nothing when there is no active progress and no status message', () => {
-      const epg = makeEpg({ status: 'idle', last_message: null });
-      setupMocks({ epgs: { 'epg-1': epg } });
-      render(<EPGsTable />);
-
-      const row = { original: epg };
-      const { container } = render(<div>{getMsgCol().cell({ row })}</div>);
-      expect(container.firstChild).toBeEmptyDOMElement();
-    });
-  });
-
-  // ── Table structure ────────────────────────────────────────────────────────
-
-  describe('table structure', () => {
-    it('renders the CustomTable component', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(screen.getByTestId('custom-table')).toBeInTheDocument();
-    });
-
-    it('passes enablePagination: false to useTable', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(capturedTableOptions.enablePagination).toBe(false);
-    });
-
-    it('passes enableRowSelection: false to useTable', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(capturedTableOptions.enableRowSelection).toBe(false);
-    });
-
-    it('passes manualSorting: true to useTable', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(capturedTableOptions.manualSorting).toBe(true);
-    });
-
-    it('passes renderTopToolbar: false to useTable', () => {
-      setupMocks();
-      render(<EPGsTable />);
-      expect(capturedTableOptions.renderTopToolbar).toBe(false);
-    });
-
-    it('actions column size is 75 in compact mode', () => {
-      setupMocks({ tableSize: 'compact' });
-      render(<EPGsTable />);
-      const actionsCol = capturedTableOptions.columns.find((c) => c.id === 'actions');
-      expect(actionsCol.size).toBe(75);
-    });
-
-    it('actions column size is 100 in default mode', () => {
-      setupMocks({ tableSize: 'default' });
-      render(<EPGsTable />);
-      const actionsCol = capturedTableOptions.columns.find((c) => c.id === 'actions');
-      expect(actionsCol.size).toBe(100);
-    });
-  });
-
-  // ── Type filter ─────────────────────────────────────────────────────────────
-
-  describe('type filter', () => {
-    const epgs = {
-      'epg-1': makeEpg({ id: 'epg-1', name: 'Alpha', source_type: 'xmltv' }),
-      'epg-dummy': makeDummyEpg({ id: 'epg-dummy', name: 'Dummy' }),
-    };
-
-    it('passes all rows through by default (all types checked)', () => {
-      setupMocks({ epgs });
-      render(<EPGsTable />);
-      expect(capturedTableOptions.data).toHaveLength(2);
-      expect(capturedTableOptions.allRowIds).toEqual(
-        expect.arrayContaining(['epg-1', 'epg-dummy'])
-      );
-    });
-
-    it('shows no rows when every type is unchecked', () => {
-      setupMocks({ epgs, typeFilter: [] });
-      render(<EPGsTable />);
-      expect(capturedTableOptions.data).toHaveLength(0);
-    });
-
-    it('narrows to dummy sources when only Dummy is checked', () => {
-      setupMocks({ epgs, typeFilter: ['dummy'] });
-      render(<EPGsTable />);
-      expect(capturedTableOptions.data).toHaveLength(1);
-      expect(capturedTableOptions.data[0].id).toBe('epg-dummy');
-      expect(capturedTableOptions.allRowIds).toEqual(['epg-dummy']);
-    });
-
-    it('narrows to xmltv sources when only XMLTV is checked', () => {
-      setupMocks({ epgs, typeFilter: ['xmltv'] });
-      render(<EPGsTable />);
-      expect(capturedTableOptions.data).toHaveLength(1);
-      expect(capturedTableOptions.data[0].id).toBe('epg-1');
-    });
-
-    it('narrows to xmltv and schedules_direct sources when both are checked, excluding dummy', () => {
-      const epgsWithSd = {
-        ...epgs,
-        'epg-sd': makeEpg({
-          id: 'epg-sd',
-          name: 'SD',
-          source_type: 'schedules_direct',
-        }),
-      };
-      setupMocks({ epgs: epgsWithSd, typeFilter: ['xmltv', 'schedules_direct'] });
-      render(<EPGsTable />);
-      expect(capturedTableOptions.data).toHaveLength(2);
-      expect(capturedTableOptions.data.map((e) => e.id).sort()).toEqual([
-        'epg-1',
-        'epg-sd',
-      ]);
-    });
-
-    it('shows the "match this filter" empty state when a filter matches nothing', () => {
-      setupMocks({
-        epgs: { 'epg-1': makeEpg({ id: 'epg-1', source_type: 'xmltv' }) },
-        typeFilter: ['dummy'],
-      });
-      render(<EPGsTable />);
-      expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
+  it.each([null, '2026-10-14T12:00:00Z'])(
+    'shows the last refresh date %s',
+    (updated_at) => {
+      setup([source({ updated_at })]);
+      show();
       expect(
-        screen.getByText('No EPG sources match this filter.')
+        card().getByText(updated_at ? `formatted:${updated_at}` : 'Never')
       ).toBeInTheDocument();
+    }
+  );
+  it.each([
+    ['error', 'Upstream failed'],
+    ['idle', 'Waiting'],
+    ['success', 'Import finished'],
+    ['success', null],
+  ])('preserves the %s status message %s', (status, last_message) => {
+    setup([source({ status, last_message })]);
+    show();
+    expect(
+      card().getByText(last_message || 'EPG data refreshed successfully')
+    ).toBeInTheDocument();
+  });
+  it.each([
+    'downloading',
+    'extracting',
+    'parsing_channels',
+    'parsing_programs',
+  ])('shows %s progress and counts', (action) => {
+    setup([source()], {
+      1: { action, progress: 42, speed: 512, processed: 2000, total: 5000 },
     });
-
-    it('unchecking the only checked type clears the filter down to an empty array', () => {
-      const { mockSetTypeFilter } = setupMocks({ epgs, typeFilter: ['dummy'] });
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('Dummy'));
-      expect(mockSetTypeFilter).toHaveBeenCalledWith([]);
-    });
-
-    it('checking a type while none are checked adds just that type', () => {
-      const { mockSetTypeFilter } = setupMocks({ epgs, typeFilter: [] });
-      render(<EPGsTable />);
-      fireEvent.click(screen.getByText('XMLTV'));
-      expect(mockSetTypeFilter).toHaveBeenCalledWith(['xmltv']);
-    });
-
-    it('filter button shows no active indicator when all types are checked (default)', () => {
-      setupMocks({ epgs });
-      render(<EPGsTable />);
-      const filterButton = screen.getByTestId('icon-filter').closest('button');
-      expect(filterButton).toHaveAttribute('data-variant', 'default');
-    });
-
-    it('filter button shows an active indicator when a type is unchecked', () => {
-      setupMocks({ epgs, typeFilter: ['dummy'] });
-      render(<EPGsTable />);
-      const filterButton = screen.getByTestId('icon-filter').closest('button');
-      expect(filterButton).toHaveAttribute('data-variant', 'filled');
-      expect(filterButton).toHaveAttribute('data-color', 'blue');
-    });
-
-    it('Reset menu item is disabled by default and restores all types when clicked', () => {
-      const { mockSetTypeFilter } = setupMocks({ epgs, typeFilter: ['dummy'] });
-      render(<EPGsTable />);
-      const resetButton = screen.getByText('Reset').closest('button');
-      expect(resetButton).not.toBeDisabled();
-      fireEvent.click(resetButton);
-      expect(mockSetTypeFilter).toHaveBeenCalledWith([
-        'xmltv',
-        'schedules_direct',
-        'dummy',
+    show();
+    expect(card().getByText(/42%/)).toBeInTheDocument();
+    expect(card().getByText('Speed: 512 KB/s')).toBeInTheDocument();
+    expect(card().getByText('2,000 / 5,000')).toBeInTheDocument();
+  });
+  it('does not render an unknown progress action', () => {
+    setup([source()], { 1: { action: 'unknown', progress: 10 } });
+    show();
+    expect(card().queryByText(/10%/)).not.toBeInTheDocument();
+  });
+  it('uses the file path without exposing a password fallback', () => {
+    setup([
+      source({
+        url: '',
+        file_path: '/data/guide.xml',
+        password: 'hidden-secret',
+      }),
+    ]);
+    show();
+    expect(card().getByText('/data/guide.xml')).toBeInTheDocument();
+    expect(screen.queryByText('hidden-secret')).not.toBeInTheDocument();
+  });
+  it.each(['tester', ''])(
+    'shows Schedules Direct credentials safely (%s)',
+    (username) => {
+      setup([
+        source({
+          source_type: 'schedules_direct',
+          username,
+          password: 'hidden-secret',
+        }),
       ]);
-    });
-
-    it('Reset menu item is disabled when the filter is already at its default', () => {
-      setupMocks({ epgs });
-      render(<EPGsTable />);
-      expect(screen.getByText('Reset').closest('button')).toBeDisabled();
-    });
+      show();
+      expect(
+        card().getByText(username ? `User: ${username}` : '(credentials set)')
+      ).toBeInTheDocument();
+      act(() => useScreenshotMode.getState().toggle());
+      expect(
+        card().getByText(username ? '••••••••' : '(credentials set)')
+      ).toBeInTheDocument();
+      if (username)
+        expect(card().queryByText(`User: ${username}`)).not.toBeInTheDocument();
+      expect(screen.queryByText('hidden-secret')).not.toBeInTheDocument();
+    }
+  );
+  it('requires confirmation for an early Schedules Direct refresh', async () => {
+    setup([
+      source({
+        source_type: 'schedules_direct',
+        updated_at: new Date().toISOString(),
+      }),
+    ]);
+    show();
+    fireEvent.click(card().getByRole('button', { name: 'Refresh Guide One' }));
+    expect(actions.refreshEpg).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(actions.refreshEpg).not.toHaveBeenCalled();
+    fireEvent.click(card().getByRole('button', { name: 'Refresh Guide One' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh Anyway' }));
+    await waitFor(() =>
+      expect(actions.refreshEpg).toHaveBeenCalledWith(1, true)
+    );
+  });
+  it.each([null, new Date(Date.now() - 3 * 3600000).toISOString()])(
+    'allows an ordinary Schedules Direct refresh (%s)',
+    async (updated_at) => {
+      setup([source({ source_type: 'schedules_direct', updated_at })]);
+      show();
+      fireEvent.click(
+        card().getByRole('button', { name: 'Refresh Guide One' })
+      );
+      await waitFor(() =>
+        expect(actions.refreshEpg).toHaveBeenCalledWith(1, false)
+      );
+    }
+  );
+  it('retains and persists source type filters', async () => {
+    setup([source(), source({ id: 2, name: 'Dummy', source_type: 'dummy' })]);
+    show();
+    fireEvent.click(screen.getByRole('button', { name: 'Filter EPG types' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'XMLTV' }));
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    expect(JSON.parse(sessionStorage.getItem('epg-table-type-filter'))).toEqual(
+      ['schedules_direct', 'dummy']
+    );
+  });
+  it('resets a saved source type filter', async () => {
+    sessionStorage.setItem('epg-table-type-filter', JSON.stringify(['dummy']));
+    setup([source(), source({ id: 2, name: 'Dummy', source_type: 'dummy' })]);
+    show();
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Filter EPG types' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Reset' }));
+    expect(screen.getAllByRole('article')).toHaveLength(2);
   });
 });

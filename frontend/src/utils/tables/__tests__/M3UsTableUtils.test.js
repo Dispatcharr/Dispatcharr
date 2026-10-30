@@ -335,6 +335,22 @@ describe('M3UsTableUtils', () => {
       ).toEqual({ type: 'initializing' });
     });
 
+    it('labels an active VOD refresh without exposing its internal action name', () => {
+      expect(
+        M3UsTableUtils.getStatusContent({
+          progress: 0,
+          action: 'vod_refresh',
+          status: 'processing',
+        })
+      ).toEqual(
+        expect.objectContaining({
+          type: 'vod',
+          phase: 'Refreshing VOD catalog',
+          progress: 0,
+        })
+      );
+    });
+
     describe('downloading', () => {
       it('returns simple label when progress is 0', () => {
         expect(

@@ -2,11 +2,11 @@ import API from '../../api.js';
 import * as Yup from 'yup';
 
 export const updateM3UProfile = async (playlistId, submitValues) => {
-  await API.updateM3UProfile(playlistId, submitValues);
+  return await API.updateM3UProfile(playlistId, submitValues);
 };
 
 export const addM3UProfile = async (playlistId, submitValues) => {
-  await API.addM3UProfile(playlistId, submitValues);
+  return await API.addM3UProfile(playlistId, submitValues);
 };
 
 export const deleteM3UProfile = async (playlistId, id) => {

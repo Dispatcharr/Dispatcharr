@@ -121,7 +121,7 @@ const AboutModal = ({ isOpen, onClose }) => {
           <Box
             style={{
               background: 'var(--mantine-color-dark-6)',
-              borderRadius: 'var(--mantine-radius-sm)',
+              borderRadius: 'var(--mantine-radius-default)',
               borderLeft: '3px solid var(--mantine-color-pink-5)',
               padding: '10px 14px',
               cursor: 'default',

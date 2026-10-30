@@ -201,7 +201,8 @@ class SerializableConnectionState:
                  content_name: str = None, client_ip: str = None,
                  client_user_agent: str = None, utc_start: str = None,
                  utc_end: str = None, offset: str = None,
-                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = "unknown"):
+                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = "unknown",
+                 selection_key: str = ""):
         self.session_id = session_id
         self.stream_url = stream_url
         self.headers = headers
@@ -217,6 +218,7 @@ class SerializableConnectionState:
         # Session metadata (consolidated from vod_session key)
         self.content_obj_type = content_obj_type
         self.content_uuid = content_uuid
+        self.selection_key = selection_key or ""
         self.content_name = content_name
         self.client_ip = client_ip
         self.client_user_agent = client_user_agent
@@ -253,6 +255,7 @@ class SerializableConnectionState:
             # Session metadata
             'content_obj_type': self.content_obj_type or '',
             'content_uuid': self.content_uuid or '',
+            'selection_key': self.selection_key,
             'content_name': self.content_name or '',
             'client_ip': self.client_ip or '',
             'client_user_agent': self.client_user_agent or '',
@@ -287,6 +290,7 @@ class SerializableConnectionState:
             # Session metadata
             content_obj_type=data.get('content_obj_type') or None,
             content_uuid=data.get('content_uuid') or None,
+            selection_key=data.get('selection_key') or '',
             content_name=data.get('content_name') or None,
             client_ip=data.get('client_ip') or None,
             client_user_agent=data.get('client_user_agent') or data.get('user_agent') or None,
@@ -465,7 +469,7 @@ class RedisBackedVODConnection:
                          content_name: str = None, client_ip: str = None,
                          client_user_agent: str = None, utc_start: str = None,
                          utc_end: str = None, offset: str = None,
-                         worker_id: str = None, user=None):
+                         worker_id: str = None, user=None, selection_key: str = ""):
         """Create Redis connection state.
 
         Returns ``"created"`` (hash written with active_streams=1),
@@ -498,6 +502,7 @@ class RedisBackedVODConnection:
                 # Session metadata
                 content_obj_type=content_obj_type,
                 content_uuid=content_uuid,
+                selection_key=selection_key,
                 content_name=content_name,
                 client_ip=client_ip,
                 client_user_agent=client_user_agent,
@@ -1185,6 +1190,7 @@ class MultiWorkerVODConnectionManager:
         # Generate client ID
         content_type = "movie" if isinstance(content_obj, Movie) else "episode"
         content_uuid = str(content_obj.uuid)
+        selection_key = getattr(content_obj, '_vod_selection_key', '')
         content_name = content_obj.name if hasattr(content_obj, 'name') else str(content_obj)
         client_id = session_id
 
@@ -1206,6 +1212,7 @@ class MultiWorkerVODConnectionManager:
             matching_session_id = self.find_matching_idle_session(
                 content_type=content_type,
                 content_uuid=content_uuid,
+                selection_key=selection_key,
                 client_ip=client_ip,
                 client_user_agent=client_user_agent,
                 utc_start=utc_start,
@@ -1241,6 +1248,14 @@ class MultiWorkerVODConnectionManager:
 
             # Check if connection exists, create if not
             existing_state = redis_connection._get_connection_state()
+            if existing_state and (
+                existing_state.content_uuid != content_uuid
+                or getattr(existing_state, 'selection_key', '') != selection_key
+            ):
+                if active_streams_reserved:
+                    redis_connection.decrement_active_streams()
+                    active_streams_reserved = False
+                return HttpResponse("VOD session does not match this selection", status=409)
             if matching_session_id and not existing_state:
                 # Idle INCR succeeded but the hash is unreadable. Do not create
                 # a second active_streams reservation on the same session.
@@ -1289,6 +1304,7 @@ class MultiWorkerVODConnectionManager:
                     # Session metadata (consolidated from separate vod_session key)
                     content_obj_type=content_type,
                     content_uuid=content_uuid,
+                    selection_key=selection_key,
                     content_name=content_name,
                     client_ip=client_ip,
                     client_user_agent=client_user_agent,
@@ -2062,7 +2078,8 @@ class MultiWorkerVODConnectionManager:
 
     def find_matching_idle_session(self, content_type: str, content_uuid: str,
                                  client_ip: str, client_user_agent: str,
-                                 utc_start=None, utc_end=None, offset=None) -> Optional[str]:
+                                 utc_start=None, utc_end=None, offset=None,
+                                 selection_key: str = "") -> Optional[str]:
         """Find existing Redis-backed session that matches criteria using consolidated connection state"""
         if not self.redis_client:
             return None
@@ -2091,6 +2108,8 @@ class MultiWorkerVODConnectionManager:
                         stored_content_uuid = connection_data.get('content_uuid', '')
 
                         if stored_content_type != content_type or stored_content_uuid != content_uuid:
+                            continue
+                        if (connection_data.get('selection_key') or '') != (selection_key or ''):
                             continue
 
                         # Extract session ID

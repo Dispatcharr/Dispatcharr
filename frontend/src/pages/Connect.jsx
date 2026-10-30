@@ -18,6 +18,7 @@ import { SquarePlus, Webhook, FileCode } from 'lucide-react';
 import ConnectionForm from '../components/forms/Connection';
 import ConnectLogsSection from '../components/ConnectLogsSection';
 import { SUBSCRIPTION_EVENTS } from '../constants';
+import { SensitiveValue } from '../components/SensitiveFields.jsx';
 
 const deleteConnectIntegration = (id) => {
   return API.deleteConnectIntegration(id);
@@ -167,17 +168,17 @@ function IntegrationRow({ integration, editConnection, deleteConnection }) {
           <Group gap={5} align="center">
             <Text fw={500}>Target:</Text>
             <Box style={{ flex: 1, minWidth: 0 }}>
-              <Tooltip label={webhookUrl} withArrow multiline>
-                <Text
-                  style={{
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {webhookUrl}
-                </Text>
-              </Tooltip>
+              <SensitiveValue
+                withTooltip
+                tooltipProps={{ withArrow: true, multiline: true }}
+                style={{
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {webhookUrl}
+              </SensitiveValue>
             </Box>
           </Group>
         ) : (

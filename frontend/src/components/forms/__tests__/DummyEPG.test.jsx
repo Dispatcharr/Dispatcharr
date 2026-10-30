@@ -10,6 +10,16 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
 }));
 
+vi.mock('../../ConfirmationDialog.jsx', () => ({
+  default: ({ opened, title, onConfirm, onClose }) =>
+    opened ? (
+      <div role="dialog" aria-label={title}>
+        <button onClick={onConfirm}>Discard</button>
+        <button onClick={onClose}>Keep editing</button>
+      </div>
+    ) : null,
+}));
+
 vi.mock('../../../utils/forms/DummyEpgUtils.js', () => ({
   addEPG: vi.fn(),
   addNormalizedGroups: vi.fn((groups) => {
@@ -354,7 +364,7 @@ describe('DummyEPGForm', () => {
       id: 2,
       name: 'New EPG',
     });
-    vi.mocked(DummyEpgUtils.updateEPG).mockResolvedValue({});
+    vi.mocked(DummyEpgUtils.updateEPG).mockResolvedValue({ id: 1 });
     vi.mocked(DummyEpgUtils.getTimezones).mockResolvedValue({
       timezones: ['US/Eastern', 'US/Pacific', 'UTC'],
     });
@@ -751,6 +761,71 @@ describe('DummyEPGForm', () => {
   // ── Modal close ────────────────────────────────────────────────────────────
 
   describe('modal close', () => {
+    it('closes an unchanged saved source without a false warning', () => {
+      const onClose = vi.fn();
+      render(<DummyEPGForm {...defaultProps({ epg: makeEPG(), onClose })} />);
+      fireEvent.click(screen.getByTestId('modal-close'));
+      expect(onClose).toHaveBeenCalledOnce();
+      expect(
+        screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })
+      ).not.toBeInTheDocument();
+    });
+
+    it.each(['X', 'Cancel'])(
+      'guards %s and keeps the unsaved source until discard',
+      (method) => {
+        const onClose = vi.fn();
+        render(<DummyEPGForm {...defaultProps({ onClose })} />);
+        fireEvent.change(screen.getByPlaceholderText('My Sports EPG'), {
+          target: { value: 'Unsaved guide' },
+        });
+        fireEvent.click(
+          method === 'X'
+            ? screen.getByTestId('modal-close')
+            : screen.getByRole('button', { name: 'Cancel' })
+        );
+        expect(onClose).not.toHaveBeenCalled();
+        expect(
+          screen.getByRole('dialog', { name: 'Discard unsaved changes?' })
+        ).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+        expect(screen.getByPlaceholderText('My Sports EPG')).toHaveValue(
+          'Unsaved guide'
+        );
+        fireEvent.click(screen.getByTestId('modal-close'));
+        fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+        expect(onClose).toHaveBeenCalledOnce();
+        expect(DummyEpgUtils.addEPG).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each([null, makeEPG()])(
+      'retains the draft if the shared API returns no saved source (%j)',
+      async (epg) => {
+        const onClose = vi.fn();
+        DummyEpgUtils.addEPG.mockResolvedValueOnce(undefined);
+        DummyEpgUtils.updateEPG.mockResolvedValueOnce(undefined);
+        render(<DummyEPGForm {...defaultProps({ epg, onClose })} />);
+        fireEvent.change(screen.getByPlaceholderText('My Sports EPG'), {
+          target: { value: 'Unsaved guide' },
+        });
+        fireEvent.submit(document.querySelector('form'));
+        await waitFor(() =>
+          expect(
+            epg ? DummyEpgUtils.updateEPG : DummyEpgUtils.addEPG
+          ).toHaveBeenCalled()
+        );
+        expect(onClose).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('modal-close'));
+        expect(
+          screen.getByRole('dialog', { name: 'Discard unsaved changes?' })
+        ).toBeInTheDocument();
+        expect(showNotification).not.toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'Success' })
+        );
+      }
+    );
+
     it('calls onClose when the modal close button is clicked', () => {
       const onClose = vi.fn();
       render(<DummyEPGForm {...defaultProps({ onClose })} />);

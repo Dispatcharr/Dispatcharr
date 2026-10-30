@@ -38,6 +38,7 @@ import {
   getMovieSubtitle,
 } from '../../utils/cards/VodConnectionCardUtils.js';
 import useUsersStore from '../../store/users.jsx';
+import { SensitiveValue } from '../SensitiveFields.jsx';
 
 const ClientDetails = ({ connection, connectionStartTime }) => {
   return (
@@ -425,9 +426,9 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
                     <Text size="sm" c="dimmed">
                       User:
                     </Text>
-                    <Text size="sm">
+                    <SensitiveValue size="sm">
                       {usersMap[String(connection.user_id)]}
-                    </Text>
+                    </SensitiveValue>
                   </>
                 )}
               </Group>

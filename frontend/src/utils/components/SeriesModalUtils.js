@@ -1,4 +1,5 @@
 import useAuthStore from '../../store/auth';
+import { metadataSummary } from '../vodSourceMetadata.js';
 
 export const imdbUrl = (imdb_id) =>
   imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
@@ -17,6 +18,9 @@ export const formatDuration = (seconds) => {
 export const formatStreamLabel = (relation) => {
   const provider = relation.m3u_account.name;
   const streamId = relation.stream_id;
+  const summary = metadataSummary(relation.effective_metadata?.values);
+  if (summary)
+    return `${provider} - ${summary}${streamId ? ` (Stream ${streamId})` : ''}`;
   const quality = extractQuality(relation);
 
   return `${provider}${quality ?? ''}${streamId ? ` (Stream ${streamId})` : ''}`;

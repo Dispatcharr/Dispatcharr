@@ -3,6 +3,7 @@ import api from '../api';
 import { showNotification } from '../utils/notificationUtils.js';
 import useUsersStore from './users';
 import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
+import { SensitiveValue } from '../components/SensitiveFields.jsx';
 
 const defaultProfiles = { 0: { id: '0', name: 'All', channels: new Set() } };
 const SELECTED_PROFILE_ID_KEY = 'channels-selected-profile-id';
@@ -37,7 +38,16 @@ const getClientIdentity = (client) => {
 // Build a two-line notification message: channel name on top, identity below.
 const clientMessage = (channelName, client) => {
   const { username, ip } = getClientIdentity(client);
-  const identity = username ? `${username} (${ip})` : ip;
+  const identity = username ? (
+    <>
+      <SensitiveValue component="span" inherit>
+        {username}
+      </SensitiveValue>
+      {` (${ip})`}
+    </>
+  ) : (
+    ip
+  );
   return (
     <>
       <div>{channelName}</div>
@@ -97,7 +107,16 @@ const showNotificationIfClientStopped = (
         client?.channel_name ||
         (client?.channel_id ? `Channel (${client.channel_id})` : null);
       const { username, ip } = getClientIdentity(client);
-      const identity = username ? `${username} (${ip})` : ip;
+      const identity = username ? (
+        <>
+          <SensitiveValue component="span" inherit>
+            {username}
+          </SensitiveValue>
+          {` (${ip})`}
+        </>
+      ) : (
+        ip
+      );
       showNotification({
         title: 'Client stopped streaming',
         message: channelName ? (

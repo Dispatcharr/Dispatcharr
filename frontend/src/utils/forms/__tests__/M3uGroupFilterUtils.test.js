@@ -3,6 +3,7 @@ import {
   buildGroupStates,
   prepareCategorySettings,
   saveAndRefreshPlaylist,
+  savePlaylistGroupSettings,
 } from '../M3uGroupFilterUtils.js';
 
 // ── API mock ───────────────────────────────────────────────────────────────────
@@ -20,6 +21,7 @@ vi.mock('../M3uUtils.js', () => ({
 
 import API from '../../../api.js';
 import { refreshPlaylist, updatePlaylist } from '../M3uUtils.js';
+import useVODStore from '../../../store/useVODStore';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const makePlaylist = (overrides = {}) => ({
@@ -56,11 +58,93 @@ const makeCategoryState = (overrides = {}) => ({
 const makeAutoEnableSettings = () => ({ auto_enable: true });
 
 describe('M3uGroupFilterUtils', () => {
+  it.each([
+    'audio_languages',
+    'subtitle_languages',
+    'resolution',
+    'video_features',
+  ])('saves a metadata-only change to %s', (field) => {
+    const value = field === 'resolution' ? '1080p' : ['synthetic-value'];
+    const state = makeCategoryState({
+      enabled: true,
+      original_enabled: true,
+      custom_properties: { [field]: value },
+    });
+    expect(prepareCategorySettings([state], [])).toEqual([
+      {
+        id: state.id,
+        enabled: true,
+        ignored: false,
+        custom_properties: { [field]: value },
+      },
+    ]);
+  });
+
+  it('saves selections without triggering Live or VOD refresh', async () => {
+    await savePlaylistGroupSettings(
+      makePlaylist(),
+      [],
+      [],
+      [],
+      makeAutoEnableSettings()
+    );
+    expect(updatePlaylist).toHaveBeenCalled();
+    expect(API.updateM3UGroupSettings).toHaveBeenCalledWith(
+      'playlist-1',
+      [],
+      []
+    );
+    expect(refreshPlaylist).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(updatePlaylist).mockResolvedValue(undefined);
     vi.mocked(API.updateM3UGroupSettings).mockResolvedValue(undefined);
     vi.mocked(refreshPlaylist).mockResolvedValue(undefined);
+    useVODStore.setState({ categories: {}, categoriesLoaded: false });
+  });
+
+  it('updates the cached selection only after a successful save', async () => {
+    useVODStore.setState({
+      categoriesLoaded: true,
+      categories: {
+        'cat-1': {
+          id: 'cat-1',
+          m3u_accounts: [{ m3u_account: 'playlist-1', enabled: false }],
+        },
+      },
+    });
+    await savePlaylistGroupSettings(
+      makePlaylist(),
+      [],
+      [makeCategoryState()],
+      [],
+      {}
+    );
+    expect(
+      useVODStore.getState().categories['cat-1'].m3u_accounts[0].enabled
+    ).toBe(true);
+  });
+
+  it('keeps cached selections unchanged when saving fails', async () => {
+    const categories = {
+      'cat-1': {
+        id: 'cat-1',
+        m3u_accounts: [{ m3u_account: 'playlist-1', enabled: false }],
+      },
+    };
+    useVODStore.setState({ categories, categoriesLoaded: true });
+    API.updateM3UGroupSettings.mockRejectedValueOnce(new Error('Save failed'));
+    await expect(
+      savePlaylistGroupSettings(
+        makePlaylist(),
+        [],
+        [makeCategoryState()],
+        [],
+        {}
+      )
+    ).rejects.toThrow('Save failed');
+    expect(useVODStore.getState().categories).toBe(categories);
   });
 
   // ── buildGroupStates ───────────────────────────────────────────────────────
@@ -236,6 +320,53 @@ describe('M3uGroupFilterUtils', () => {
 
       expect(refreshPlaylist).toHaveBeenCalledWith(playlist);
     });
+
+    it('includes VOD on the first save and refresh for an active XC account', async () => {
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        enable_vod: true,
+        is_active: true,
+        vod_refresh_after_live: false,
+      });
+
+      await saveAndRefreshPlaylist(
+        playlist,
+        [],
+        [],
+        [],
+        makeAutoEnableSettings(),
+        true
+      );
+
+      expect(refreshPlaylist).toHaveBeenCalledWith(playlist, true);
+    });
+
+    it.each([
+      ['later saves', { account_type: 'XC', enable_vod: true }, false],
+      ['VOD disabled', { account_type: 'XC', enable_vod: false }, true],
+      [
+        'inactive account',
+        { account_type: 'XC', enable_vod: true, is_active: false },
+        true,
+      ],
+      ['standard M3U', { account_type: 'STD', enable_vod: true }, true],
+    ])(
+      'does not override the VOD schedule for %s',
+      async (_case, values, initial) => {
+        const playlist = makePlaylist(values);
+
+        await saveAndRefreshPlaylist(
+          playlist,
+          [],
+          [],
+          [],
+          makeAutoEnableSettings(),
+          initial
+        );
+
+        expect(refreshPlaylist).toHaveBeenCalledWith(playlist);
+      }
+    );
 
     it('calls updatePlaylist, updateM3UGroupSettings, and refreshPlaylist exactly once each', async () => {
       await saveAndRefreshPlaylist(
@@ -499,6 +630,7 @@ describe('M3uGroupFilterUtils', () => {
         expect(categorySettings[0]).toEqual({
           id: 'cat-1',
           enabled: true,
+          ignored: false,
           custom_properties: { language: 'es', quality: '4K' },
         });
       });
@@ -528,7 +660,7 @@ describe('M3uGroupFilterUtils', () => {
   });
 
   describe('prepareCategorySettings', () => {
-    it('returns only id, enabled, and custom_properties', () => {
+    it('returns only category selection and metadata settings', () => {
       const result = prepareCategorySettings(
         [
           makeCategoryState({
@@ -545,6 +677,7 @@ describe('M3uGroupFilterUtils', () => {
         {
           id: 'cat-1',
           enabled: false,
+          ignored: false,
           custom_properties: { language: 'fr' },
         },
       ]);

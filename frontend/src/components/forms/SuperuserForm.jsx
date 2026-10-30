@@ -1,7 +1,6 @@
 // frontend/src/components/forms/SuperuserForm.js
 import React, { useState, useEffect } from 'react';
 import {
-  TextInput,
   Center,
   Button,
   Paper,
@@ -19,6 +18,7 @@ import API from '../../api';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
 import logo from '../../assets/logo.png';
+import { SensitiveTextInput as TextInput } from '../SensitiveFields.jsx';
 
 const createSuperUser = (formData) => {
   return API.createSuperUser({

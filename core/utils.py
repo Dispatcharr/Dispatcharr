@@ -16,6 +16,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
+from dispatcharr.log_redaction import redact_log_data
 import gc
 
 _REDIS_TLS_HINT = " (TLS is enabled — verify certificate paths and that Redis is configured for TLS)"
@@ -949,12 +950,15 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     from django.db import close_old_connections
 
     try:
-        # Create the event
+        # Store diagnostic output only; integrations still receive the original.
+        safe_name = redact_log_data(channel_name)
+        if isinstance(safe_name, str):
+            safe_name = safe_name[:SystemEvent._meta.get_field("channel_name").max_length]
         SystemEvent.objects.create(
             event_type=event_type,
             channel_id=channel_id,
-            channel_name=channel_name,
-            details=details
+            channel_name=safe_name,
+            details=redact_log_data(details)
         )
 
         # Connect integrations and plugin event hooks (non-blocking on gevent uWSGI)

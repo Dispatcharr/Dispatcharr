@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import { createElement } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import {
   PluginSecurityWarning,
@@ -194,6 +195,14 @@ describe('PluginWarnings', () => {
   // ── PluginRestartWarning ─────────────────────────────────────────────────────
 
   describe('PluginRestartWarning', () => {
+    it('preserves the upstream custom restart message', () => {
+      render(<PluginRestartWarning>Permissions changed</PluginRestartWarning>);
+      expect(screen.getByText('Permissions changed')).toBeInTheDocument();
+      expect(
+        screen.queryByText(/Importing a plugin may briefly restart/i)
+      ).not.toBeInTheDocument();
+    });
+
     it('renders the restart warning text', () => {
       render(<PluginRestartWarning />);
       expect(
@@ -232,6 +241,19 @@ describe('PluginWarnings', () => {
   // ── Shared layout structure ──────────────────────────────────────────────────
 
   describe('shared layout structure', () => {
+    it.each([
+      ['security', PluginSecurityWarning],
+      ['support', PluginSupportDisclaimer],
+      ['downgrade', PluginDowngradeWarning],
+      ['info', PluginInfoNote],
+      ['restart', PluginRestartWarning],
+    ])('keeps the shared rounded shell for %s warnings', (tone, Warning) => {
+      const { container } = render(createElement(Warning, null, 'Message'));
+      expect(container.firstElementChild, tone).toHaveStyle({
+        borderRadius: 'var(--mantine-radius-default)',
+      });
+    });
+
     it('PluginSecurityWarning renders xs Text', () => {
       render(<PluginSecurityWarning>msg</PluginSecurityWarning>);
       expect(screen.getByText('msg')).toHaveAttribute('data-size', 'xs');

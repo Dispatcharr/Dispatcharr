@@ -1,15 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import VODSourceMetadata from './VODSourceMetadata.jsx';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Button,
-  Flex,
   Group,
   Image,
   Text,
-  Title,
   Select,
   Badge,
-  Loader,
   Stack,
   Modal,
 } from '@mantine/core';
@@ -32,6 +30,12 @@ import {
   getMovieStreamUrl,
   getTechnicalDetails,
 } from '../utils/components/VODModalUtils.js';
+import {
+  hideNotification,
+  showNotification,
+} from '../utils/notificationUtils.js';
+import classes from './VODLayout.module.css';
+import { vodLogoSrc } from '../utils/cards/VODCardUtils.js';
 
 const Movie = ({
   onClickYouTubeTrailer,
@@ -39,6 +43,7 @@ const Movie = ({
   selectedProvider,
   detailedVOD,
   vod,
+  children,
 }) => {
   const showVideo = useVideoStore((s) => s.showVideo);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
@@ -67,9 +72,7 @@ const Movie = ({
   };
 
   return (
-    <Stack spacing="md" flex={1}>
-      <Title order={3}>{displayVOD.name}</Title>
-
+    <Stack gap="md" className={classes.details}>
       {/* Original name if different */}
       {displayVOD.o_name && displayVOD.o_name !== displayVOD.name && (
         <Text size="sm" c="dimmed" fs="italic">
@@ -77,12 +80,14 @@ const Movie = ({
         </Text>
       )}
 
-      <Group spacing="md">
+      <Group gap="xs">
         {displayVOD.year && <Badge color="blue">{displayVOD.year}</Badge>}
-        {displayVOD.duration_secs && (
+        {displayVOD.duration_secs > 0 && (
           <Badge color="gray">{formatDuration(displayVOD.duration_secs)}</Badge>
         )}
-        {displayVOD.rating && <Badge color="yellow">{displayVOD.rating}</Badge>}
+        {Number(displayVOD.rating) > 0 && (
+          <Badge color="yellow">{displayVOD.rating}</Badge>
+        )}
         {displayVOD.age && <Badge color="orange">{displayVOD.age}</Badge>}
         <Badge color="green">Movie</Badge>
         {/* imdb_id and tmdb_id badges */}
@@ -146,15 +151,16 @@ const Movie = ({
       {/* Description */}
       {displayVOD.description && (
         <Box>
-          <Text size="sm" weight={500} mb={8}>
+          <Text size="sm" fw={500} mb={8}>
             Description
           </Text>
           <Text size="sm">{displayVOD.description}</Text>
         </Box>
       )}
 
-      {/* Play and Watch Trailer buttons */}
-      <Group spacing="xs" mt="sm">
+      {children}
+
+      <Group gap="xs">
         <Button
           leftSection={<Play size={16} />}
           variant="filled"
@@ -205,12 +211,12 @@ const MovieTechnicalDetails = ({ selectedProvider, displayVOD }) => {
     techDetails.audio && Object.keys(techDetails.audio).length > 0;
 
   return (
-    <Stack spacing={4} mt="xs">
-      <Text size="sm" weight={500}>
-        Technical Details:
+    <Stack gap={4} className={classes.section}>
+      <Text size="sm" fw={500}>
+        Technical Details
         {selectedProvider && (
-          <Text size="xs" c="dimmed" weight="normal" span ml={8}>
-            (from {selectedProvider.m3u_account.name}
+          <Text size="xs" c="dimmed" fw="normal" span ml={8}>
+            (from {selectedProvider.m3u_account?.name}
             {selectedProvider.stream_id &&
               ` - Stream ${selectedProvider.stream_id}`}
             )
@@ -247,56 +253,66 @@ const VODModal = ({ vod, opened, onClose }) => {
   const [providers, setProviders] = useState([]);
   const [selectedProvider, setSelectedProvider] = useState(null);
   const [loadingProviders, setLoadingProviders] = useState(false);
+  const detailsRequestIdRef = useRef(0);
 
   const { fetchMovieDetailsFromProvider, fetchMovieProviders } = useVODStore();
 
   useEffect(() => {
-    if (opened && vod) {
-      // Fetch detailed VOD info if not already loaded
-      if (!detailedVOD) {
-        setLoadingDetails(true);
-        fetchMovieDetailsFromProvider(vod.id)
-          .then((details) => {
-            setDetailedVOD(details);
-          })
-          .catch((error) => {
-            console.warn(
-              'Failed to fetch provider details, using basic info:',
-              error
-            );
-            setDetailedVOD(vod); // Fallback to basic data
-          })
-          .finally(() => {
-            setLoadingDetails(false);
-          });
-      }
-
-      // Fetch available providers
-      setLoadingProviders(true);
-      fetchMovieProviders(vod.id)
-        .then((providersData) => {
-          setProviders(providersData);
-          // Set the first provider as default if none selected
-          if (providersData.length > 0 && !selectedProvider) {
-            setSelectedProvider(providersData[0]);
-          }
-        })
-        .catch((error) => {
-          console.error('Failed to fetch providers:', error);
-          setProviders([]);
-        })
-        .finally(() => {
-          setLoadingProviders(false);
+    if (!opened || !vod) return;
+    let cancelled = false;
+    const requestId = ++detailsRequestIdRef.current;
+    setDetailedVOD(null);
+    setProviders([]);
+    setSelectedProvider(null);
+    setLoadingDetails(true);
+    hideNotification('movie-preview-details');
+    hideNotification('movie-preview-providers');
+    fetchMovieDetailsFromProvider(vod.id)
+      .then((details) => {
+        if (detailsRequestIdRef.current === requestId) setDetailedVOD(details);
+      })
+      .catch(() => {
+        if (detailsRequestIdRef.current !== requestId) return;
+        setDetailedVOD(vod);
+        showNotification({
+          id: 'movie-preview-details',
+          title: 'Movie details unavailable',
+          message:
+            'Additional details could not be loaded. Imported movie information is shown instead.',
+          color: 'red',
+          autoClose: false,
         });
-    }
-  }, [
-    opened,
-    vod,
-    detailedVOD,
-    fetchMovieDetailsFromProvider,
-    fetchMovieProviders,
-    selectedProvider,
-  ]);
+      })
+      .finally(() => {
+        if (detailsRequestIdRef.current === requestId) setLoadingDetails(false);
+      });
+
+    setLoadingProviders(true);
+    fetchMovieProviders(vod.id)
+      .then((providersData) => {
+        if (cancelled) return;
+        setProviders(providersData);
+        setSelectedProvider(providersData[0] || null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        showNotification({
+          id: 'movie-preview-providers',
+          title: 'Movie providers unavailable',
+          message:
+            'Available streams could not be loaded. Reopen the preview to retry.',
+          color: 'red',
+          autoClose: false,
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingProviders(false);
+      });
+    return () => {
+      cancelled = true;
+      detailsRequestIdRef.current += 1;
+    };
+  }, [opened, vod, fetchMovieDetailsFromProvider, fetchMovieProviders]);
 
   useEffect(() => {
     if (!opened) {
@@ -319,11 +335,30 @@ const VODModal = ({ vod, opened, onClose }) => {
     const provider = providers.find((p) => p.id.toString() === value);
     setSelectedProvider(provider);
     if (provider) {
+      const requestId = ++detailsRequestIdRef.current;
       setLoadingDetails(true);
+      hideNotification('movie-preview-details');
       fetchMovieDetailsFromProvider(vod.id, provider.id)
-        .then((details) => setDetailedVOD(details))
-        .catch(() => {})
-        .finally(() => setLoadingDetails(false));
+        .then((details) => {
+          if (detailsRequestIdRef.current === requestId)
+            setDetailedVOD(details);
+        })
+        .catch(() => {
+          if (detailsRequestIdRef.current !== requestId) return;
+          setDetailedVOD(vod);
+          showNotification({
+            id: 'movie-preview-details',
+            title: 'Movie details unavailable',
+            message:
+              'Details for the selected stream could not be loaded. Imported movie information is shown instead.',
+            color: 'red',
+            autoClose: false,
+          });
+        })
+        .finally(() => {
+          if (detailsRequestIdRef.current === requestId)
+            setLoadingDetails(false);
+        });
     }
   };
 
@@ -331,6 +366,10 @@ const VODModal = ({ vod, opened, onClose }) => {
 
   // Use detailed data if available, otherwise use basic vod data
   const displayVOD = detailedVOD || vod;
+  const posterSrc =
+    displayVOD.movie_image ||
+    vodLogoSrc(displayVOD.logo) ||
+    vodLogoSrc(vod.logo);
 
   return (
     <>
@@ -338,10 +377,17 @@ const VODModal = ({ vod, opened, onClose }) => {
         opened={opened}
         onClose={onClose}
         title={displayVOD.name}
-        size="xl"
+        size="min(900px, 94vw)"
         centered
+        closeButtonProps={{ 'aria-label': 'Close movie preview' }}
+        classNames={{
+          content: classes.content,
+          body: classes.body,
+          header: classes.header,
+          title: classes.title,
+        }}
       >
-        <Box style={{ position: 'relative', minHeight: 400 }}>
+        <Box pos="relative">
           {/* Backdrop image as background */}
           {displayVOD.backdrop_path && displayVOD.backdrop_path.length > 0 && (
             <>
@@ -379,50 +425,30 @@ const VODModal = ({ vod, opened, onClose }) => {
           )}
           {/* Modal content above backdrop */}
           <Box style={{ position: 'relative', zIndex: 2 }}>
-            <Stack spacing="md">
+            <Stack gap="md">
               {loadingDetails && (
-                <Group spacing="xs" mb={8}>
-                  <Loader size="xs" />
-                  <Text size="xs" color="dimmed">
-                    Loading additional details...
-                  </Text>
-                </Group>
+                <Text size="sm" c="dimmed" role="status">
+                  Loading additional details...
+                </Text>
               )}
 
               {/* Movie poster and basic info */}
-              <Flex gap="md">
+              <div className={classes.summary}>
                 {/* Use movie_image or logo */}
-                {displayVOD.movie_image ||
-                displayVOD.logo?.cache_url ||
-                displayVOD.logo?.url ? (
-                  <Box style={{ flexShrink: 0 }}>
+                {posterSrc ? (
+                  <Box className={classes.poster}>
                     <Image
-                      src={
-                        displayVOD.movie_image ||
-                        displayVOD.logo?.cache_url ||
-                        displayVOD.logo?.url
-                      }
-                      width={200}
-                      height={300}
+                      src={posterSrc}
+                      w="100%"
+                      h="100%"
                       alt={displayVOD.name}
                       fit="contain"
                       style={{ borderRadius: '8px' }}
                     />
                   </Box>
                 ) : (
-                  <Box
-                    style={{
-                      width: 200,
-                      height: 300,
-                      backgroundColor: '#404040',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: '8px',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Play size={48} color="#666" />
+                  <Box className={`${classes.poster} ${classes.placeholder}`}>
+                    <Play size={48} aria-hidden="true" />
                   </Box>
                 )}
 
@@ -432,66 +458,49 @@ const VODModal = ({ vod, opened, onClose }) => {
                   hasMultipleProviders={providers.length > 0}
                   selectedProvider={selectedProvider}
                   onClickYouTubeTrailer={onClickYouTubeTrailer}
-                />
-              </Flex>
-
-              {/* Provider Information & Play Button Row */}
-              <Group spacing="md" align="flex-end" mt="md">
-                {/* Provider Selection */}
-                {providers.length > 0 && (
-                  <Box style={{ minWidth: 200 }}>
-                    <Text size="sm" weight={500} mb={8}>
-                      Stream Selection
-                      {loadingProviders && (
-                        <Loader size="xs" style={{ marginLeft: 8 }} />
-                      )}
-                    </Text>
-                    {providers.length === 1 ? (
-                      <Group spacing="md">
+                >
+                  {(loadingProviders ||
+                    providers.length > 0 ||
+                    vod.m3u_account) && (
+                    <Box className={classes.section}>
+                      <Text size="sm" fw={500} mb="xs">
+                        Stream Selection
+                      </Text>
+                      {loadingProviders ? (
+                        <Text size="sm" c="dimmed" role="status">
+                          Loading streams…
+                        </Text>
+                      ) : providers.length === 1 ? (
                         <Badge color="blue" variant="light">
                           {providers[0].m3u_account.name}
                         </Badge>
-                      </Group>
-                    ) : (
-                      <Select
-                        data={providers.map((provider) => ({
-                          value: provider.id.toString(),
-                          label: formatStreamLabel(provider),
-                        }))}
-                        value={selectedProvider?.id?.toString() || ''}
-                        onChange={(value) => onChangeSelectedProvider(value)}
-                        placeholder="Select stream..."
-                        style={{ minWidth: 250 }}
-                        disabled={loadingProviders}
-                      />
-                    )}
-                  </Box>
-                )}
-
-                {/* Fallback provider info if no providers loaded yet */}
-                {providers.length === 0 &&
-                  !loadingProviders &&
-                  vod?.m3u_account && (
-                    <Box>
-                      <Text size="sm" weight={500} mb={8}>
-                        Stream Selection
-                      </Text>
-                      <Group spacing="md">
+                      ) : providers.length > 1 ? (
+                        <Select
+                          aria-label="Stream Selection"
+                          data={providers.map((provider) => ({
+                            value: provider.id.toString(),
+                            label: formatStreamLabel(provider),
+                          }))}
+                          value={selectedProvider?.id?.toString() || ''}
+                          onChange={(value) => onChangeSelectedProvider(value)}
+                          placeholder="Select stream..."
+                          disabled={loadingProviders}
+                          allowDeselect={false}
+                        />
+                      ) : (
                         <Badge color="blue" variant="light">
-                          {vod.m3u_account.name}
+                          {vod.m3u_account?.name}
                         </Badge>
-                      </Group>
+                      )}
+                      <VODSourceMetadata source={selectedProvider} />
                     </Box>
                   )}
-
-                {/* Play button moved to top next to Watch Trailer */}
-              </Group>
-
-              {/* Technical Details */}
-              <MovieTechnicalDetails
-                selectedProvider={selectedProvider}
-                displayVOD={displayVOD}
-              />
+                  <MovieTechnicalDetails
+                    selectedProvider={selectedProvider}
+                    displayVOD={displayVOD}
+                  />
+                </Movie>
+              </div>
             </Stack>
           </Box>
         </Box>

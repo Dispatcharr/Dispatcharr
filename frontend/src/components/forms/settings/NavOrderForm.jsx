@@ -57,7 +57,7 @@ const DraggableNavItem = ({ item, isHidden, canHide, onToggleVisibility }) => {
         ...style,
         padding: '10px 12px',
         border: '1px solid #444',
-        borderRadius: '6px',
+        borderRadius: 'var(--mantine-radius-default)',
         backgroundColor: isDragging ? '#3A3A3E' : '#2A2A2E',
         marginBottom: 6,
       }}

@@ -234,7 +234,10 @@ const OutputProfiles = () => {
   return (
     <Stack gap={0} style={{ padding: 0 }}>
       <Paper
-        style={{ bgcolor: theme.palette?.background?.paper, borderRadius: 2 }}
+        style={{
+          bgcolor: theme.palette?.background?.paper,
+          borderRadius: 'var(--mantine-radius-default)',
+        }}
       >
         <Box
           style={{ display: 'flex', justifyContent: 'flex-end', padding: 10 }}

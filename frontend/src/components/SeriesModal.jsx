@@ -1,3 +1,4 @@
+import VODSourceMetadata from './VODSourceMetadata.jsx';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
@@ -9,13 +10,12 @@ import {
   Title,
   Select,
   Badge,
-  Loader,
   Stack,
   ActionIcon,
   Modal,
   Tabs,
   Table,
-  Divider,
+  UnstyledButton,
   TableTbody,
   TableTd,
   TableTh,
@@ -25,7 +25,7 @@ import {
   TabsPanel,
   TabsTab,
 } from '@mantine/core';
-import { Play, Copy } from 'lucide-react';
+import { Play, Copy, ChevronDown } from 'lucide-react';
 import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
@@ -44,47 +44,36 @@ import {
   tmdbUrl,
 } from '../utils/components/SeriesModalUtils.js';
 import { YouTubeTrailerModal } from './modals/YouTubeTrailerModal.jsx';
+import {
+  hideNotification,
+  showNotification,
+} from '../utils/notificationUtils.js';
+import classes from './VODLayout.module.css';
+import { vodLogoSrc } from '../utils/cards/VODCardUtils.js';
 
-const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
+const Series = ({ displaySeries, onClickYouTubeTrailer, children }) => {
+  const posterSrc =
+    displaySeries.series_image || vodLogoSrc(displaySeries.logo);
   return (
-    <Flex gap="md">
-      {displaySeries.series_image ||
-      displaySeries.logo?.cache_url ||
-      displaySeries.logo?.url ? (
-        <Box style={{ flexShrink: 0 }}>
+    <div className={classes.summary}>
+      {posterSrc ? (
+        <Box className={classes.poster}>
           <Image
-            src={
-              displaySeries.series_image ||
-              displaySeries.logo?.cache_url ||
-              displaySeries.logo?.url
-            }
-            width={200}
-            height={300}
+            src={posterSrc}
+            w="100%"
+            h="100%"
             alt={displaySeries.name}
             fit="contain"
             bdrs={8}
           />
         </Box>
       ) : (
-        <Box
-          w={200}
-          h={300}
-          display="flex"
-          bdrs={8}
-          style={{
-            backgroundColor: '#404040',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-          }}
-        >
-          <Play size={48} color="#666" />
+        <Box className={`${classes.poster} ${classes.placeholder}`}>
+          <Play size={48} aria-hidden="true" />
         </Box>
       )}
 
-      <Stack spacing="md" flex={1}>
-        <Title order={3}>{displaySeries.name}</Title>
-
+      <Stack gap="md" className={classes.details}>
         {/* Original name if different */}
         {displaySeries.o_name &&
           displaySeries.o_name !== displaySeries.name && (
@@ -93,18 +82,18 @@ const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
             </Text>
           )}
 
-        <Group spacing="md">
+        <Group gap="xs">
           {displaySeries.year && (
             <Badge color="blue">{displaySeries.year}</Badge>
           )}
-          {displaySeries.rating && (
+          {Number(displaySeries.rating) > 0 && (
             <Badge color="yellow">{displaySeries.rating}</Badge>
           )}
           {displaySeries.age && (
             <Badge color="orange">{displaySeries.age}</Badge>
           )}
           <Badge color="purple">Series</Badge>
-          {displaySeries.episode_count && (
+          {displaySeries.episode_count > 0 && (
             <Badge color="gray">{displaySeries.episode_count} episodes</Badge>
           )}
           {/* imdb_id and tmdb_id badges */}
@@ -168,19 +157,19 @@ const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
         {/* Description */}
         {displaySeries.description && (
           <Box>
-            <Text size="sm" weight={500} mb={8}>
+            <Text size="sm" fw={500} mb={8}>
               Description
             </Text>
             <Text size="sm">{displaySeries.description}</Text>
           </Box>
         )}
 
-        {/* Watch Trailer button if available */}
+        {children}
+
         {displaySeries.youtube_trailer && (
           <Button
             variant="outline"
             color="red"
-            mt="auto"
             style={{ alignSelf: 'flex-start' }}
             onClick={onClickYouTubeTrailer}
           >
@@ -188,22 +177,34 @@ const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
           </Button>
         )}
       </Stack>
-    </Flex>
+    </div>
   );
 };
 
 const Episode = ({ episode, displaySeries }) => {
   return (
-    <Stack spacing="sm">
+    <Stack gap="sm" className={classes.details}>
+      <Group gap="md">
+        {episode.duration_secs > 0 && (
+          <Text size="sm" c="dimmed">
+            Duration: {formatDuration(episode.duration_secs)}
+          </Text>
+        )}
+        {getEpisodeAirdate(episode) && (
+          <Text size="sm" c="dimmed">
+            Air date: {getEpisodeAirdate(episode)}
+          </Text>
+        )}
+      </Group>
       {/* Episode Image and Description Row */}
-      <Flex gap="md">
+      <Flex gap="md" wrap="wrap">
         {/* Episode Image */}
         {episode.movie_image && (
           <Box style={{ flexShrink: 0 }}>
             <Image
               src={episode.movie_image}
-              width={120}
-              height={160}
+              w={120}
+              h={160}
               alt={episode.name}
               fit="cover"
               bdrs={4}
@@ -212,7 +213,7 @@ const Episode = ({ episode, displaySeries }) => {
         )}
 
         {/* Episode Description */}
-        <Box flex={1}>
+        <Box flex={1} miw={0}>
           {episode.description && (
             <Box>
               <Text size="sm" weight={500} mb={4}>
@@ -348,6 +349,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
   const [detailedSeries, setDetailedSeries] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [detailsError, setDetailsError] = useState(false);
   const [activeTab, setActiveTab] = useState(null);
   const [expandedEpisode, setExpandedEpisode] = useState(null);
   const [trailerModalOpened, setTrailerModalOpened] = useState(false);
@@ -359,21 +361,33 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
   useEffect(() => {
     if (opened && series) {
+      let cancelled = false;
       const requestId = ++detailsRequestIdRef.current;
-      // Fetch detailed series info which now includes episodes
+      setDetailedSeries(null);
+      setProviders([]);
+      setSelectedProvider(null);
+      setExpandedEpisode(null);
+      setDetailsError(false);
+      hideNotification('series-preview-details');
+      hideNotification('series-preview-providers');
       setLoadingDetails(true);
       fetchSeriesInfo(series.id)
         .then((details) => {
           if (detailsRequestIdRef.current !== requestId) return;
           setDetailedSeries(details);
         })
-        .catch((error) => {
+        .catch(() => {
           if (detailsRequestIdRef.current !== requestId) return;
-          console.warn(
-            'Failed to fetch series details, using basic info:',
-            error
-          );
-          setDetailedSeries(series); // Fallback to basic data
+          setDetailedSeries(series);
+          setDetailsError(true);
+          showNotification({
+            id: 'series-preview-details',
+            title: 'Series details unavailable',
+            message:
+              'Details and episodes could not be loaded. Imported series information is shown instead.',
+            color: 'red',
+            autoClose: false,
+          });
         })
         .finally(() => {
           if (detailsRequestIdRef.current === requestId) {
@@ -385,18 +399,30 @@ const SeriesModal = ({ series, opened, onClose }) => {
       setLoadingProviders(true);
       fetchSeriesProviders(series.id)
         .then((providersData) => {
+          if (cancelled) return;
           setProviders(providersData);
           if (providersData.length > 0) {
             setSelectedProvider(providersData[0]);
           }
         })
-        .catch((error) => {
-          console.error('Failed to fetch series providers:', error);
-          setProviders([]);
+        .catch(() => {
+          if (cancelled) return;
+          showNotification({
+            id: 'series-preview-providers',
+            title: 'Series providers unavailable',
+            message:
+              'Available streams could not be loaded. Reopen the preview to retry.',
+            color: 'red',
+            autoClose: false,
+          });
         })
         .finally(() => {
-          setLoadingProviders(false);
+          if (!cancelled) setLoadingProviders(false);
         });
+      return () => {
+        cancelled = true;
+        detailsRequestIdRef.current += 1;
+      };
     }
   }, [opened, series, fetchSeriesInfo, fetchSeriesProviders]);
 
@@ -408,6 +434,8 @@ const SeriesModal = ({ series, opened, onClose }) => {
       setProviders([]);
       setSelectedProvider(null);
       setLoadingProviders(false);
+      setTrailerModalOpened(false);
+      setTrailerUrl('');
     }
   }, [opened]);
 
@@ -481,6 +509,9 @@ const SeriesModal = ({ series, opened, onClose }) => {
     if (provider) {
       const requestId = ++detailsRequestIdRef.current;
       setLoadingDetails(true);
+      setDetailsError(false);
+      setExpandedEpisode(null);
+      hideNotification('series-preview-details');
       // Clear episodes immediately so the previous provider's list cannot flash
       setDetailedSeries((prev) =>
         prev ? { ...prev, episodesList: [] } : prev
@@ -490,7 +521,19 @@ const SeriesModal = ({ series, opened, onClose }) => {
           if (detailsRequestIdRef.current !== requestId) return;
           setDetailedSeries(details);
         })
-        .catch(() => {})
+        .catch(() => {
+          if (detailsRequestIdRef.current !== requestId) return;
+          setDetailedSeries(series);
+          setDetailsError(true);
+          showNotification({
+            id: 'series-preview-details',
+            title: 'Series details unavailable',
+            message:
+              'Details and episodes for the selected stream could not be loaded. Reopen the preview to retry.',
+            color: 'red',
+            autoClose: false,
+          });
+        })
         .finally(() => {
           if (detailsRequestIdRef.current === requestId) {
             setLoadingDetails(false);
@@ -510,10 +553,17 @@ const SeriesModal = ({ series, opened, onClose }) => {
         opened={opened}
         onClose={onClose}
         title={displaySeries.name}
-        size="xl"
+        size="min(1000px, 94vw)"
         centered
+        closeButtonProps={{ 'aria-label': 'Close series preview' }}
+        classNames={{
+          content: classes.content,
+          body: classes.body,
+          header: classes.header,
+          title: classes.title,
+        }}
       >
-        <Box style={{ position: 'relative', minHeight: 400 }}>
+        <Box pos="relative">
           {/* Backdrop image as background */}
           {displaySeries.backdrop_path &&
             displaySeries.backdrop_path.length > 0 && (
@@ -553,78 +603,73 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
           {/* Modal content above backdrop */}
           <Box style={{ position: 'relative', zIndex: 2 }}>
-            <Stack spacing="md">
+            <Stack gap="md">
               {loadingDetails && (
-                <Group spacing="xs" mb={8}>
-                  <Loader size="xs" />
-                  <Text size="xs" color="dimmed">
-                    Loading series details and episodes...
-                  </Text>
-                </Group>
+                <Text size="sm" c="dimmed" role="status">
+                  Loading series details and episodes...
+                </Text>
               )}
 
               {/* Series poster and basic info */}
               <Series
                 displaySeries={displaySeries}
                 onClickYouTubeTrailer={onClickYouTubeTrailer}
-              />
-
-              {/* Provider Information */}
-              <Box mt="md">
-                <Text size="sm" weight={500} mb={4}>
-                  Stream Selection
-                  {loadingProviders && (
-                    <Loader size="xs" style={{ marginLeft: 8 }} />
-                  )}
-                </Text>
-                {providers.length === 0 &&
-                !loadingProviders &&
-                displaySeries.m3u_account ? (
-                  <Group spacing="md">
-                    <Badge color="blue" variant="light">
-                      {displaySeries.m3u_account.name}
-                    </Badge>
-                  </Group>
-                ) : providers.length === 1 ? (
-                  <Group spacing="md">
-                    <Badge color="blue" variant="light">
-                      {providers[0].m3u_account.name}
-                    </Badge>
-                    {providers[0].stream_id && (
-                      <Badge color="orange" variant="outline" size="xs">
-                        Stream {providers[0].stream_id}
-                      </Badge>
-                    )}
-                  </Group>
-                ) : providers.length > 1 ? (
-                  <Select
-                    data={providers.map((provider) => ({
-                      value: provider.id.toString(),
-                      label: formatStreamLabel(provider),
-                    }))}
-                    value={selectedProvider?.id?.toString() || ''}
-                    onChange={(value) => onChangeSelectedProvider(value)}
-                    placeholder="Select stream..."
-                    style={{ maxWidth: 350 }}
-                    disabled={loadingProviders}
-                  />
-                ) : null}
-              </Box>
-
-              <Divider />
+              >
+                {(loadingProviders ||
+                  providers.length > 0 ||
+                  displaySeries.m3u_account) && (
+                  <Box className={classes.section}>
+                    <Text size="sm" fw={500} mb="xs">
+                      Stream Selection
+                    </Text>
+                    {loadingProviders ? (
+                      <Text size="sm" c="dimmed" role="status">
+                        Loading streams…
+                      </Text>
+                    ) : providers.length === 0 && displaySeries.m3u_account ? (
+                      <Group spacing="md">
+                        <Badge color="blue" variant="light">
+                          {displaySeries.m3u_account.name}
+                        </Badge>
+                      </Group>
+                    ) : providers.length === 1 ? (
+                      <Group spacing="md">
+                        <Badge color="blue" variant="light">
+                          {providers[0].m3u_account.name}
+                        </Badge>
+                        {providers[0].stream_id && (
+                          <Badge color="orange" variant="outline" size="xs">
+                            Stream {providers[0].stream_id}
+                          </Badge>
+                        )}
+                      </Group>
+                    ) : providers.length > 1 ? (
+                      <Select
+                        aria-label="Stream Selection"
+                        data={providers.map((provider) => ({
+                          value: provider.id.toString(),
+                          label: formatStreamLabel(provider),
+                        }))}
+                        value={selectedProvider?.id?.toString() || ''}
+                        onChange={(value) => onChangeSelectedProvider(value)}
+                        placeholder="Select stream..."
+                        disabled={loadingProviders}
+                        allowDeselect={false}
+                      />
+                    ) : null}
+                    <VODSourceMetadata source={selectedProvider} />
+                  </Box>
+                )}
+              </Series>
 
               <Title order={4}>
                 Episodes
                 {seriesEpisodes.length > 0 && <> ({seriesEpisodes.length})</>}
               </Title>
 
-              {loadingDetails ? (
-                <Flex justify="center" py="xl">
-                  <Loader />
-                </Flex>
-              ) : seasons.length > 0 ? (
+              {loadingDetails ? null : seasons.length > 0 ? (
                 <Tabs value={activeTab} onChange={setActiveTab}>
-                  <TabsList>
+                  <TabsList className={classes.seasonTabs}>
                     {seasons.map((season) => (
                       <TabsTab key={season} value={`season-${season}`}>
                         Season {season}
@@ -634,107 +679,154 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
                   {seasons.map((season) => (
                     <TabsPanel key={season} value={`season-${season}`} pt="md">
-                      <Table striped highlightOnHover>
-                        <TableThead>
-                          <TableTr>
-                            <TableTh style={{ width: '60px' }}>Ep</TableTh>
-                            <TableTh>Title</TableTh>
-                            <TableTh style={{ width: '80px' }}>Duration</TableTh>
-                            <TableTh style={{ width: '60px' }}>Date</TableTh>
-                            <TableTh style={{ width: '80px' }}>Action</TableTh>
-                          </TableTr>
-                        </TableThead>
-                        <TableTbody>
-                          {episodesBySeason[season]?.map((episode) => (
-                            <React.Fragment key={episode.id}>
-                              <TableTr
-                                style={{ cursor: 'pointer' }}
-                                onClick={() => handleEpisodeRowClick(episode)}
+                      <div className={classes.tableFrame}>
+                        <Table
+                          striped
+                          highlightOnHover
+                          className={classes.episodes}
+                        >
+                          <TableThead>
+                            <TableTr>
+                              <TableTh w={48}>Ep</TableTh>
+                              <TableTh>Title</TableTh>
+                              <TableTh
+                                w={85}
+                                className={classes.episodeSecondary}
                               >
-                                <TableTd>
-                                  <Badge size="sm" variant="outline">
-                                    {episode.episode_number || '?'}
-                                  </Badge>
-                                </TableTd>
-                                <TableTd>
-                                  <Stack spacing={2}>
-                                    <Text size="sm" weight={500}>
-                                      {episode.name}
+                                Duration
+                              </TableTh>
+                              <TableTh
+                                w={110}
+                                className={classes.episodeSecondary}
+                              >
+                                Date
+                              </TableTh>
+                              <TableTh w={85} ta="center">
+                                Actions
+                              </TableTh>
+                            </TableTr>
+                          </TableThead>
+                          <TableTbody>
+                            {episodesBySeason[season]?.map((episode) => (
+                              <React.Fragment key={episode.id}>
+                                <TableTr
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={() => handleEpisodeRowClick(episode)}
+                                >
+                                  <TableTd>
+                                    <Badge size="sm" variant="outline">
+                                      {episode.episode_number || '?'}
+                                    </Badge>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Stack gap={2}>
+                                      <UnstyledButton
+                                        className={classes.episodeTitle}
+                                        aria-expanded={
+                                          expandedEpisode === episode.id
+                                        }
+                                        aria-controls={`episode-details-${episode.id}`}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          handleEpisodeRowClick(episode);
+                                        }}
+                                      >
+                                        <ChevronDown
+                                          size={14}
+                                          aria-hidden="true"
+                                          style={{
+                                            flexShrink: 0,
+                                            transform:
+                                              expandedEpisode === episode.id
+                                                ? 'rotate(180deg)'
+                                                : undefined,
+                                          }}
+                                        />
+                                        {episode.name}
+                                      </UnstyledButton>
+                                      {episode.genre && (
+                                        <Text size="xs" color="dimmed">
+                                          {episode.genre}
+                                        </Text>
+                                      )}
+                                    </Stack>
+                                  </TableTd>
+                                  <TableTd className={classes.episodeSecondary}>
+                                    <Text size="xs" color="dimmed">
+                                      {formatDuration(episode.duration_secs)}
                                     </Text>
-                                    {episode.genre && (
-                                      <Text size="xs" color="dimmed">
-                                        {episode.genre}
-                                      </Text>
-                                    )}
-                                  </Stack>
-                                </TableTd>
-                                <TableTd>
-                                  <Text size="xs" color="dimmed">
-                                    {formatDuration(episode.duration_secs)}
-                                  </Text>
-                                </TableTd>
-                                <TableTd>
-                                  <Text size="xs" color="dimmed">
-                                    {getEpisodeAirdate(episode)}
-                                  </Text>
-                                </TableTd>
-                                <TableTd>
-                                  <Group spacing="xs">
-                                    <ActionIcon
-                                      variant="filled"
-                                      color="blue"
-                                      size="sm"
-                                      disabled={
-                                        providers.length > 0 &&
-                                        !selectedProvider
-                                      }
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handlePlayEpisode(episode);
-                                      }}
+                                  </TableTd>
+                                  <TableTd className={classes.episodeSecondary}>
+                                    <Text size="xs" color="dimmed">
+                                      {getEpisodeAirdate(episode)}
+                                    </Text>
+                                  </TableTd>
+                                  <TableTd>
+                                    <Group
+                                      gap="xs"
+                                      justify="center"
+                                      wrap="nowrap"
                                     >
-                                      <Play size={12} />
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="outline"
-                                      color="gray"
-                                      size="sm"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleCopyEpisodeLink(episode);
-                                      }}
-                                    >
-                                      <Copy size={12} />
-                                    </ActionIcon>
-                                  </Group>
-                                </TableTd>
-                              </TableTr>
-                              {expandedEpisode === episode.id && (
-                                <TableTr>
-                                  <TableTd
-                                    colSpan={5}
-                                    p={16}
-                                    style={{
-                                      backgroundColor: '#2A2A2E',
-                                    }}
-                                  >
-                                    <Episode
-                                      episode={episode}
-                                      displaySeries={displaySeries}
-                                    />
+                                      <ActionIcon
+                                        variant="filled"
+                                        color="blue"
+                                        size="sm"
+                                        aria-label={`Play ${episode.name}`}
+                                        title={`Play ${episode.name}`}
+                                        disabled={
+                                          providers.length > 0 &&
+                                          !selectedProvider
+                                        }
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handlePlayEpisode(episode);
+                                        }}
+                                      >
+                                        <Play size={12} />
+                                      </ActionIcon>
+                                      <ActionIcon
+                                        variant="outline"
+                                        color="gray"
+                                        size="sm"
+                                        aria-label={`Copy link to ${episode.name}`}
+                                        title={`Copy link to ${episode.name}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleCopyEpisodeLink(episode);
+                                        }}
+                                      >
+                                        <Copy size={12} />
+                                      </ActionIcon>
+                                    </Group>
                                   </TableTd>
                                 </TableTr>
-                              )}
-                            </React.Fragment>
-                          ))}
-                        </TableTbody>
-                      </Table>
+                                {expandedEpisode === episode.id && (
+                                  <TableTr id={`episode-details-${episode.id}`}>
+                                    <TableTd
+                                      colSpan={5}
+                                      p={16}
+                                      className={classes.episodeDetail}
+                                    >
+                                      <Episode
+                                        episode={episode}
+                                        displaySeries={displaySeries}
+                                      />
+                                    </TableTd>
+                                  </TableTr>
+                                )}
+                              </React.Fragment>
+                            ))}
+                          </TableTbody>
+                        </Table>
+                      </div>
                     </TabsPanel>
                   ))}
                 </Tabs>
               ) : (
-                <Text color="dimmed" align="center" py="xl">
-                  No episodes found for this series.
+                <Text c={detailsError ? 'red' : 'dimmed'} ta="center" py="xl">
+                  {detailsError
+                    ? 'Episodes could not be loaded.'
+                    : 'No episodes found for this series.'}
                 </Text>
               )}
             </Stack>

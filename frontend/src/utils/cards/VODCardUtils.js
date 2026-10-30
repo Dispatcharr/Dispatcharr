@@ -13,4 +13,5 @@ export const getSeasonLabel = (vod) => {
 };
 
 /** Prefer proxied cache_url for VOD posters; fall back to the raw provider URL. */
-export const vodLogoSrc = (logo) => logo?.cache_url || logo?.url || null;
+export const vodLogoSrc = (logo) =>
+  typeof logo === 'string' ? logo : logo?.cache_url || logo?.url || null;

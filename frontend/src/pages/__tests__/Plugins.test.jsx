@@ -45,6 +45,7 @@ vi.mock('../../components/modals/ManageReposModal.jsx', () => ({
 
 vi.mock('@mantine/core', async () => {
   return {
+    useModalStackContext: () => null,
     AppShellMain: ({ children }) => <div>{children}</div>,
     Box: ({ children, style }) => <div style={style}>{children}</div>,
     Stack: ({ children, gap }) => <div data-gap={gap}>{children}</div>,

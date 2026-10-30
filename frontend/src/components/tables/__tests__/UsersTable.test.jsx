@@ -1,6 +1,13 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import useScreenshotMode from '../../../store/useScreenshotMode.js';
 
 // ── API mock ───────────────────────────────────────────────────────────────────
 vi.mock('../../../api', () => ({
@@ -181,6 +188,7 @@ import useChannelsStore from '../../../store/channels';
 import useAuthStore from '../../../store/auth';
 import useWarningsStore from '../../../store/warnings';
 import useSettingsStore from '../../../store/settings';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useDateTimeFormat, format } from '../../../utils/dateTimeUtils.js';
 import { useTable } from '../CustomTable';
 import API from '../../../api';
@@ -217,9 +225,11 @@ const setupMocks = ({
   users = [makeUser()],
   authUser = makeAdminUser(),
   profiles = { 10: { id: 10, name: 'HD Profile' } },
+  columnSizing = {},
   isWarningSuppressed = vi.fn(() => false),
   suppressWarning = vi.fn(),
 } = {}) => {
+  const setColumnSizing = vi.fn();
   vi.mocked(useUsersStore).mockImplementation((sel) => sel({ users }));
 
   vi.mocked(useChannelsStore).mockImplementation((sel) => sel({ profiles }));
@@ -238,6 +248,12 @@ const setupMocks = ({
     fullDateFormat: 'MM/DD/YYYY',
     fullDateTimeFormat: 'MM/DD/YYYY HH:mm',
   });
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
+    if (key === 'users-table-column-sizing')
+      return [columnSizing, setColumnSizing];
+    if (key === 'table-size') return ['default', vi.fn()];
+    return [defaultValue, vi.fn()];
+  });
 
   vi.mocked(useTable).mockImplementation((opts) => {
     capturedTableOptions = opts;
@@ -246,6 +262,7 @@ const setupMocks = ({
       getHeaderGroups: () => [],
     };
   });
+  return { setColumnSizing };
 };
 
 const getActionsCell = () =>
@@ -262,6 +279,7 @@ const getCol = (key) =>
 
 describe('UsersTable', () => {
   beforeEach(() => {
+    useScreenshotMode.setState({ enabled: false });
     vi.clearAllMocks();
     capturedTableOptions = null;
     vi.mocked(API.deleteUser).mockResolvedValue(undefined);
@@ -270,6 +288,32 @@ describe('UsersTable', () => {
   // ── Rendering ──────────────────────────────────────────────────────────────
 
   describe('rendering', () => {
+    it('uses paired ratios without carrying over a fixed action-column width', () => {
+      setupMocks({ columnSizing: { username: 400, actions: 700 } });
+      render(<UsersTable />);
+      expect(capturedTableOptions.columnSizing).toEqual({ username: 400 });
+      expect(capturedTableOptions.tableId).toBe('users');
+      for (const { id } of capturedTableOptions.pairedColumnSizing) {
+        expect(
+          capturedTableOptions.columns.find(
+            (column) => (column.id || column.accessorKey) === id
+          )
+        ).toMatchObject({ grow: true, flexRatio: true, minSize: 0 });
+      }
+    });
+    it('restores and persists user-table column widths', () => {
+      const columnSizing = { username: 260 };
+      const { setColumnSizing } = setupMocks({ columnSizing });
+      render(<UsersTable />);
+      expect(useBrowserStorage).toHaveBeenCalledWith(
+        'users-table-column-sizing',
+        {}
+      );
+      expect(capturedTableOptions.columnSizing).toEqual(columnSizing);
+      expect(capturedTableOptions.setColumnSizing).toBe(setColumnSizing);
+      capturedTableOptions.setColumnSizing({ username: 300 });
+      expect(setColumnSizing).toHaveBeenCalledWith({ username: 300 });
+    });
     it('renders the "Users" heading', () => {
       setupMocks();
       render(<UsersTable />);
@@ -356,16 +400,39 @@ describe('UsersTable', () => {
   });
 
   describe('Edit user via actions column', () => {
+    it('names each row action with its target username without invoking it', () => {
+      const users = [
+        makeUser({ id: 1, username: 'alice' }),
+        makeUser({ id: 2, username: 'bob' }),
+      ];
+      setupMocks({ users });
+      render(<UsersTable />);
+
+      const actionsCol = getActionsCell();
+      users.forEach((user) => {
+        render(actionsCol.cell({ row: { original: user } }));
+        expect(
+          screen.getByRole('button', { name: `Edit user ${user.username}` })
+        ).toBeEnabled();
+        expect(
+          screen.getByRole('button', { name: `Delete user ${user.username}` })
+        ).toBeEnabled();
+      });
+
+      expect(screen.queryByTestId('user-form')).not.toBeInTheDocument();
+      expect(API.deleteUser).not.toHaveBeenCalled();
+    });
+
     it('opens the form populated with the user when edit icon is clicked', () => {
       const user = makeUser({ username: 'janedoe' });
       setupMocks({ users: [user] });
       render(<UsersTable />);
 
       const actionsCol = getActionsCell();
-      const { getByTestId } = render(
-        actionsCol.cell({ row: { original: user } })
+      render(actionsCol.cell({ row: { original: user } }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Edit user janedoe' })
       );
-      fireEvent.click(getByTestId('icon-square-pen').closest('button'));
 
       expect(screen.getByTestId('user-form')).toBeInTheDocument();
       expect(screen.getByTestId('form-user-name')).toHaveTextContent('janedoe');
@@ -512,10 +579,10 @@ describe('UsersTable', () => {
       render(<UsersTable />);
 
       const actionsCol = getActionsCell();
-      const { getByTestId } = render(
-        actionsCol.cell({ row: { original: user } })
+      render(actionsCol.cell({ row: { original: user } }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Delete user testuser' })
       );
-      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
 
       expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
       expect(screen.getByTestId('confirm-title')).toHaveTextContent(
@@ -629,6 +696,19 @@ describe('UsersTable', () => {
 
   // ── XCPasswordCell ─────────────────────────────────────────────────────────
 
+  it('masks the username column without changing its source value', () => {
+    setupMocks();
+    render(<UsersTable />);
+    const UsernameCell = getCol('username').cell;
+    const getValue = () => 'ExampleUser';
+    render(<UsernameCell getValue={getValue} />);
+    expect(screen.getByText('ExampleUser')).toBeInTheDocument();
+    act(() => useScreenshotMode.getState().toggle());
+    expect(screen.queryByText('ExampleUser')).not.toBeInTheDocument();
+    expect(screen.getByText('••••••••')).toBeInTheDocument();
+    expect(getValue()).toBe('ExampleUser');
+  });
+
   describe('XCPasswordCell', () => {
     const renderXCCell = (customProperties) => {
       const XCCell = getCol('custom_properties').cell;
@@ -641,6 +721,19 @@ describe('UsersTable', () => {
 
       const { getByText } = renderXCCell({ xc_password: 'mypassword' });
       expect(getByText('••••••••')).toBeInTheDocument();
+    });
+    it('overrides an already revealed XC password while screenshot mode is enabled', () => {
+      setupMocks();
+      render(<UsersTable />);
+      renderXCCell({ xc_password: 'mypassword' });
+      fireEvent.click(screen.getByRole('button', { name: 'Show XC password' }));
+      expect(screen.getByText('mypassword')).toBeInTheDocument();
+      act(() => useScreenshotMode.getState().toggle());
+      expect(screen.queryByText('mypassword')).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Show XC password' })
+      ).toBeDisabled();
+      expect(screen.getByText('••••••••')).toBeInTheDocument();
     });
 
     it('shows the password after clicking the eye toggle', () => {

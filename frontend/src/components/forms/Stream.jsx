@@ -2,7 +2,8 @@
 import React, { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import { Button, Flex, Modal, Select, TextInput } from '@mantine/core';
+import { Button, Flex, Modal, Select } from '@mantine/core';
+import { SensitiveTextInput as TextInput } from '../SensitiveFields.jsx';
 import useChannelsStore from '../../store/channels';
 import {
   addStream,

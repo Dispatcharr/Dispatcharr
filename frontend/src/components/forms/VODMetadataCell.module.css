@@ -1,0 +1,21 @@
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-height: 44px;
+  overflow: hidden;
+}
+
+.tag.tag {
+  height: 1.25rem;
+  font-size: var(--mantine-font-size-xs);
+}
+
+.languageTag.languageTag {
+  flex: 0 0 2.25rem;
+  width: 2.25rem;
+  min-width: 2.25rem;
+  padding-inline: 4px;
+}

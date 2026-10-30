@@ -13,7 +13,6 @@ import {
   Code,
   Divider,
   Group,
-  Modal,
   NumberInput,
   Paper,
   Select,
@@ -27,6 +26,7 @@ import {
   TextInput,
 } from '@mantine/core';
 import { Calendar, Clock } from 'lucide-react';
+import StackedModal from '../StackedModal.jsx';
 import {
   buildCron,
   CRON_FIELDS,
@@ -152,10 +152,11 @@ export default function CronBuilder({
   };
 
   return (
-    <Modal
+    <StackedModal
       opened={opened}
       onClose={onClose}
       title="Cron Expression Builder"
+      closeButtonProps={{ 'aria-label': 'Close cron builder' }}
       size="xl"
     >
       <Stack gap="md">
@@ -305,6 +306,6 @@ export default function CronBuilder({
           <Button onClick={handleApply}>Apply Expression</Button>
         </Group>
       </Stack>
-    </Modal>
+    </StackedModal>
   );
 }

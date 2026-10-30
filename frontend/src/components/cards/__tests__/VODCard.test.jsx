@@ -35,7 +35,16 @@ vi.mock('@mantine/core', () => ({
       {children}
     </div>
   ),
-  Card: ({ children, onClick, style, withBorder, shadow, radius, p }) => (
+  Card: ({
+    children,
+    onClick,
+    style,
+    withBorder,
+    shadow,
+    radius,
+    p,
+    ...props
+  }) => (
     <div
       data-testid="vod-card"
       onClick={onClick}
@@ -44,6 +53,7 @@ vi.mock('@mantine/core', () => ({
       data-shadow={shadow}
       data-radius={radius}
       data-p={p}
+      {...props}
     >
       {children}
     </div>
@@ -61,13 +71,14 @@ vi.mock('@mantine/core', () => ({
       {children}
     </div>
   ),
-  Image: ({ src, alt, height, fallbackSrc, fit }) => (
+  Image: ({ src, alt, height, fallbackSrc, fit, loading }) => (
     <img
       src={src}
       alt={alt}
       data-height={height}
       data-fallback={fallbackSrc}
       data-fit={fit}
+      loading={loading}
     />
   ),
   Stack: ({ children, spacing, gap, p }) => (
@@ -75,7 +86,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </div>
   ),
-  Text: ({ children, size, c, weight, fw, lineClamp, style }) => (
+  Text: ({ children, size, c, weight, fw, lineClamp, style, title }) => (
     <span
       data-testid="text"
       data-size={size}
@@ -84,6 +95,7 @@ vi.mock('@mantine/core', () => ({
       data-fw={fw}
       data-line-clamp={lineClamp}
       style={style}
+      title={title}
     >
       {children}
     </span>
@@ -139,6 +151,31 @@ const makeEpisode = (overrides = {}) => ({
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('VODCard', () => {
+  it.each([0, '0', '0.0', null, undefined, ''])(
+    'does not render an empty rating (%s) as a stray number',
+    (rating) => {
+      render(
+        <VODCard
+          vod={makeMovie({ rating, duration: 0, duration_secs: 0 })}
+          onClick={vi.fn()}
+        />
+      );
+      expect(screen.queryByTestId('icon-star')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('icon-clock')).not.toBeInTheDocument();
+      expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('0.0', { exact: true })
+      ).not.toBeInTheDocument();
+    }
+  );
+
+  it('retains the duration when the rating is zero', () => {
+    render(<VODCard vod={makeMovie({ rating: 0 })} onClick={vi.fn()} />);
+    expect(screen.getByTestId('icon-clock')).toBeInTheDocument();
+    expect(screen.queryByTestId('icon-star')).not.toBeInTheDocument();
+    expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(formatDuration).mockImplementation((mins) =>
@@ -187,23 +224,42 @@ describe('VODCard', () => {
       expect(screen.getByText('120m')).toBeInTheDocument();
     });
 
+    it.each([
+      { duration: 5700, duration_secs: undefined },
+      { duration: undefined, duration_secs: 5700 },
+    ])('renders the duration from either Library API shape: %j', (duration) => {
+      render(<VODCard vod={makeMovie(duration)} onClick={vi.fn()} />);
+      expect(formatDuration).toHaveBeenCalledWith(5700);
+      expect(screen.getByTestId('icon-clock')).toBeInTheDocument();
+      expect(screen.getByText('5700m')).toBeInTheDocument();
+    });
+
     it('renders the clock icon when duration is present', () => {
       render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
       expect(screen.getByTestId('icon-clock')).toBeInTheDocument();
     });
 
-    it('renders genre badges', () => {
+    it('renders the genre', () => {
       render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
       expect(screen.getByText('Action')).toBeInTheDocument();
     });
 
-    it('renders the calendar icon when year is present', () => {
+    it('shows the type and year below the poster without an overlay badge', () => {
       render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
-      expect(screen.getByTestId('icon-calendar')).toBeInTheDocument();
+      expect(screen.getByText(/Movie ·/)).toHaveTextContent('Movie · 2022');
+      expect(screen.getByTestId('card-section')).not.toHaveTextContent('Movie');
+      expect(screen.queryByTestId('badge')).not.toBeInTheDocument();
     });
 
-    it('renders the play icon', () => {
-      render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
+    it('keeps long titles compact while exposing their full text', () => {
+      const name = 'A very long movie title that needs more than one line';
+      render(<VODCard vod={makeMovie({ name })} onClick={vi.fn()} />);
+      expect(screen.getByText(name)).toHaveAttribute('data-line-clamp', '2');
+      expect(screen.getByText(name)).toHaveAttribute('title', name);
+    });
+
+    it('renders a placeholder icon when there is no artwork', () => {
+      render(<VODCard vod={makeMovie({ logo: null })} onClick={vi.fn()} />);
       expect(screen.getByTestId('icon-play')).toBeInTheDocument();
     });
 
@@ -251,6 +307,14 @@ describe('VODCard', () => {
   // ── Poster fallback ────────────────────────────────────────────────────────
 
   describe('poster image', () => {
+    it('fills the responsive poster frame and loads artwork lazily', () => {
+      render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
+      const image = screen.getByRole('img');
+      expect(image).toHaveAttribute('data-fit', 'cover');
+      expect(image).toHaveAttribute('loading', 'lazy');
+      expect(image).not.toHaveAttribute('data-height');
+    });
+
     it('renders an image when logo.url is present', () => {
       render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
       expect(screen.getByRole('img')).toBeInTheDocument();
@@ -292,7 +356,8 @@ describe('VODCard', () => {
   describe('optional metadata', () => {
     it('does not render year when absent', () => {
       render(<VODCard vod={makeMovie({ year: null })} onClick={vi.fn()} />);
-      expect(screen.queryByTestId('icon-calendar')).not.toBeInTheDocument();
+      expect(screen.getByText('Movie')).toHaveTextContent(/^Movie$/);
+      expect(screen.queryByText('2022')).not.toBeInTheDocument();
     });
 
     it('does not render rating when absent', () => {
@@ -300,19 +365,20 @@ describe('VODCard', () => {
       expect(screen.queryByTestId('icon-star')).not.toBeInTheDocument();
     });
 
-    it('does not render duration when formatDuration returns null', () => {
-      vi.mocked(formatDuration).mockReturnValue(null);
-      render(<VODCard vod={makeMovie({ duration: null })} onClick={vi.fn()} />);
+    it('does not render a clock or call the formatter when duration is absent', () => {
+      render(
+        <VODCard
+          vod={makeMovie({ duration: null, duration_secs: null })}
+          onClick={vi.fn()}
+        />
+      );
       expect(screen.queryByTestId('icon-clock')).not.toBeInTheDocument();
+      expect(formatDuration).not.toHaveBeenCalled();
     });
 
     it('does not render genre when absent', () => {
       render(<VODCard vod={makeMovie({ genre: null })} onClick={vi.fn()} />);
-      const badges = screen.queryAllByTestId('badge');
-      const dimmedBadges = badges.filter(
-        (badge) => badge.getAttribute('data-color') === 'dimmed'
-      );
-      expect(dimmedBadges.length).toBe(0);
+      expect(screen.queryByText('Action')).not.toBeInTheDocument();
     });
   });
 
@@ -328,11 +394,14 @@ describe('VODCard', () => {
       expect(onClick).toHaveBeenCalledWith(vod);
     });
 
-    it('calls onClick when play button is clicked', async () => {
+    it('opens the preview with the keyboard', async () => {
       const onClick = vi.fn();
       const vod = makeMovie();
       render(<VODCard vod={vod} onClick={onClick} />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.keyDown(
+        screen.getByRole('button', { name: 'Preview Test Movie' }),
+        { key: 'Enter' }
+      );
       expect(onClick).toHaveBeenCalledWith(vod);
     });
 

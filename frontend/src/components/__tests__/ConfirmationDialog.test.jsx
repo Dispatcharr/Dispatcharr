@@ -1,7 +1,8 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
+import useScreenshotMode from '../../store/useScreenshotMode.js';
 
 // Mock the warnings store
 vi.mock('../../store/warnings');
@@ -9,16 +10,20 @@ vi.mock('../../store/warnings');
 // Mock Mantine components
 vi.mock('@mantine/core', async () => {
   return {
-    Modal: ({ children, opened, title }) =>
+    useModalStackContext: () => null,
+    Modal: ({ children, opened, title, onClose, closeButtonProps }) =>
       opened ? (
         <div data-testid="modal">
           <div data-testid="modal-title">{title}</div>
+          <button {...closeButtonProps} onClick={onClose}>
+            ×
+          </button>
           {children}
         </div>
       ) : null,
     Group: ({ children }) => <div>{children}</div>,
-    Button: ({ children, onClick, disabled }) => (
-      <button onClick={onClick} disabled={disabled}>
+    Button: ({ children, onClick, disabled, color }) => (
+      <button onClick={onClick} disabled={disabled} data-color={color}>
         {children}
       </button>
     ),
@@ -43,6 +48,7 @@ describe('ConfirmationDialog', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useScreenshotMode.setState({ enabled: false });
     mockGetActionPreference.mockReturnValue(false);
     useWarningsStore.mockImplementation((selector) => {
       const state = {
@@ -53,6 +59,26 @@ describe('ConfirmationDialog', () => {
       };
       return selector ? selector(state) : state;
     });
+  });
+  it('hides source URLs in a confirmation already on screen without altering the action', () => {
+    const url = 'https://example.invalid/playlist?password=example-secret';
+    render(
+      <ConfirmationDialog
+        opened
+        onClose={mockOnClose}
+        onConfirm={mockOnConfirm}
+        message={`Delete ${url} for ExampleUser?`}
+      />
+    );
+    expect(
+      screen.getByText(`Delete ${url} for ExampleUser?`)
+    ).toBeInTheDocument();
+    act(() => useScreenshotMode.getState().toggle());
+    expect(
+      screen.getByText('Delete •••••••• for ExampleUser?')
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Confirm'));
+    expect(mockOnConfirm).toHaveBeenCalledWith();
   });
 
   it('should render when opened', () => {
@@ -69,6 +95,44 @@ describe('ConfirmationDialog', () => {
       screen.getByText('Are you sure you want to proceed?')
     ).toBeInTheDocument();
   });
+
+  it('names the close button for screen readers and cancels without confirming', () => {
+    render(
+      <ConfirmationDialog
+        opened
+        onClose={mockOnClose}
+        onConfirm={mockOnConfirm}
+      />
+    );
+    const close = screen.getByRole('button', {
+      name: 'Close confirmation dialog',
+    });
+    expect(close).toHaveAccessibleName('Close confirmation dialog');
+    fireEvent.click(close);
+    expect(mockOnClose).toHaveBeenCalledOnce();
+    expect(mockOnConfirm).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['red', undefined],
+    ['blue', 'blue'],
+  ])(
+    'uses %s for the confirm action without changing the destructive default',
+    (expected, confirmColor) => {
+      render(
+        <ConfirmationDialog
+          opened
+          onClose={mockOnClose}
+          onConfirm={mockOnConfirm}
+          confirmColor={confirmColor}
+        />
+      );
+      expect(screen.getByRole('button', { name: 'Confirm' })).toHaveAttribute(
+        'data-color',
+        expected
+      );
+    }
+  );
 
   it('should not render when closed', () => {
     render(

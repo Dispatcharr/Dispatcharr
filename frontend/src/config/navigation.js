@@ -29,20 +29,25 @@ export const NAV_ITEMS = {
     path: '/channels',
     adminOnly: false,
     hasBadge: true,
+    section: 'Live TV',
   },
   vods: {
     id: 'vods',
-    label: 'VODs',
+    label: 'Library',
     icon: Video,
     path: '/vods',
     adminOnly: true,
+    section: 'Video on Demand',
   },
   sources: {
     id: 'sources',
-    label: 'M3U & EPG Manager',
+    label: 'Sources',
     icon: Play,
-    path: '/sources',
     adminOnly: true,
+    paths: [
+      { label: 'M3U Accounts', icon: Play, path: '/sources/m3u' },
+      { label: 'EPG Sources', icon: Database, path: '/sources/epg' },
+    ],
   },
   guide: {
     id: 'guide',
@@ -50,6 +55,7 @@ export const NAV_ITEMS = {
     icon: LayoutGrid,
     path: '/guide',
     adminOnly: false,
+    section: 'Live TV',
   },
   dvr: {
     id: 'dvr',
@@ -57,6 +63,7 @@ export const NAV_ITEMS = {
     icon: Database,
     path: '/dvr',
     adminOnly: true,
+    section: 'Live TV',
   },
   stats: {
     id: 'stats',
@@ -101,31 +108,31 @@ export const NAV_ITEMS = {
 
 export const DEFAULT_ADMIN_ORDER = [
   'channels',
-  'vods',
-  'sources',
   'guide',
   'dvr',
+  'vods',
+  'sources',
   'stats',
   'plugins',
   'system',
 ];
 
-export const DEFAULT_USER_ORDER = [
-  'channels',
-  'guide',
-  'settings',
-];
+export const DEFAULT_USER_ORDER = ['channels', 'guide', 'settings'];
 
 /** Whether a nav item renders as its own visually-grouped block (heading + rows). */
 const isGroupedItem = (item) => Boolean(item.paths || item.dynamicPinned);
 
 /** True when a divider should render before navItems[idx] (start or end of a grouped section). */
 export const isGroupBoundary = (navItems, idx) =>
-  idx > 0 && (isGroupedItem(navItems[idx]) || isGroupedItem(navItems[idx - 1]));
+  idx > 0 &&
+  Boolean(
+    isGroupedItem(navItems[idx]) ||
+    isGroupedItem(navItems[idx - 1]) ||
+    navItems[idx].section !== navItems[idx - 1].section
+  );
 
 /**
- * Default nav order for a user. For standard users, inserts 'vods' after
- * 'channels' when canViewVod, and 'dvr' after 'guide' when canViewDvr.
+ * Default nav order keeps Live items together, followed by the VOD library.
  * Shared by getOrderedNavItems and any caller (e.g. NavOrderForm) that needs
  * the default order on its own, such as to reset to defaults or revert an
  * optimistic update.
@@ -136,16 +143,20 @@ export const getDefaultOrder = (
 ) => {
   let order = isAdmin ? [...DEFAULT_ADMIN_ORDER] : [...DEFAULT_USER_ORDER];
 
-  if (!isAdmin && canViewVod && !order.includes('vods')) {
-    const channelsIdx = order.indexOf('channels');
-    const insertAt = channelsIdx >= 0 ? channelsIdx + 1 : 0;
-    order = [...order.slice(0, insertAt), 'vods', ...order.slice(insertAt)];
-  }
-
   if (!isAdmin && canViewDvr && !order.includes('dvr')) {
     const guideIdx = order.indexOf('guide');
     const insertAt = guideIdx >= 0 ? guideIdx + 1 : order.length - 1;
     order = [...order.slice(0, insertAt), 'dvr', ...order.slice(insertAt)];
+  }
+
+  if (!isAdmin && canViewVod && !order.includes('vods')) {
+    const lastLiveIdx = Math.max(
+      order.indexOf('channels'),
+      order.indexOf('guide'),
+      order.indexOf('dvr')
+    );
+    const insertAt = lastLiveIdx + 1;
+    order = [...order.slice(0, insertAt), 'vods', ...order.slice(insertAt)];
   }
 
   return order;
@@ -174,39 +185,42 @@ export const getOrderedNavItems = (
     order = defaultOrder;
   }
 
-  return order.map((id) => {
-    const item = NAV_ITEMS[id];
-    if (!item) return null;
+  return order
+    .map((id) => {
+      const item = NAV_ITEMS[id];
+      if (!item) return null;
 
-    // Group item (has paths array)
-    if (item.paths) {
-      return {
+      // Group item (has paths array)
+      if (item.paths) {
+        return {
+          id: item.id,
+          label: item.label,
+          icon: item.icon,
+          // A missing flag keeps the entry.
+          paths: item.paths.filter(
+            (entry) => !entry.requires || access[entry.requires] !== false
+          ),
+          canHide: item.canHide,
+        };
+      }
+
+      const navItem = {
         id: item.id,
         label: item.label,
         icon: item.icon,
-        // A missing flag keeps the entry.
-        paths: item.paths.filter(
-          (entry) => !entry.requires || access[entry.requires] !== false
-        ),
+        path: item.path,
         canHide: item.canHide,
+        panel: item.panel,
+        section: item.section,
+        dynamicPinned: item.dynamicPinned,
       };
-    }
 
-    const navItem = {
-      id: item.id,
-      label: item.label,
-      icon: item.icon,
-      path: item.path,
-      canHide: item.canHide,
-      panel: item.panel,
-      dynamicPinned: item.dynamicPinned,
-    };
+      // Add badge for channels
+      if (id === 'channels') {
+        navItem.badge = `(${Array.isArray(channelIds) ? channelIds.length : 0})`;
+      }
 
-    // Add badge for channels
-    if (id === 'channels') {
-      navItem.badge = `(${Array.isArray(channelIds) ? channelIds.length : 0})`;
-    }
-
-    return navItem;
-  }).filter(Boolean);
+      return navItem;
+    })
+    .filter(Boolean);
 };

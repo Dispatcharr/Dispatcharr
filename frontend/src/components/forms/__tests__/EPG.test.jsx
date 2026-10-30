@@ -1,5 +1,8 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Modal } from '@mantine/core';
+
+Modal.Stack = ({ children }) => <>{children}</>;
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 global.fetch = vi.fn().mockResolvedValue({
@@ -18,12 +21,15 @@ vi.mock('../../../api.js', () => ({
 
 vi.mock('../../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
+  hideNotification: vi.fn(),
 }));
 
 vi.mock('../../../utils/forms/DummyEpgUtils.js', () => ({
   addEPG: vi.fn(),
   updateEPG: vi.fn(),
 }));
+
+vi.mock('../../ConfirmationDialog.jsx', () => ({ default: () => null }));
 
 // ── Mantine form ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/form', () => ({
@@ -48,6 +54,8 @@ vi.mock('@mantine/form', () => ({
         values[field] = value;
       }),
       reset: vi.fn(),
+      resetDirty: vi.fn(),
+      isDirty: () => false,
       submitting: false,
       onSubmit: vi.fn((handler) => (e) => {
         e?.preventDefault?.();
@@ -98,6 +106,9 @@ vi.mock('../ScheduleInput', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', async () => ({
+  useModalStackContext: () => null,
+  SimpleGrid: ({ children }) => <div>{children}</div>,
+  Paper: ({ children }) => <div>{children}</div>,
   Box: ({ children, style }) => <div style={style}>{children}</div>,
   Button: ({ children, onClick, disabled, loading, type, color, variant }) => (
     <button
@@ -255,7 +266,11 @@ vi.mock('@mantine/core', async () => ({
       {children}
     </div>
   ),
-  Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
+  Stack: ({ children, gap, role, 'aria-label': ariaLabel }) => (
+    <div data-testid="stack" role={role} aria-label={ariaLabel}>
+      {children}
+    </div>
+  ),
   Text: ({ children, ...props }) => <span>{children}</span>,
   TextInput: ({ label, value, onChange, placeholder, ...props }) => (
     <input
@@ -302,7 +317,7 @@ describe('EPG', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(DummyEpgUtils.addEPG).mockResolvedValue(undefined);
-    vi.mocked(DummyEpgUtils.updateEPG).mockResolvedValue(undefined);
+    vi.mocked(DummyEpgUtils.updateEPG).mockResolvedValue({ id: 1 });
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -320,7 +335,9 @@ describe('EPG', () => {
 
     it('renders submit button with "Create" title for a new EPG', () => {
       render(<EPG {...defaultProps()} />);
-      expect(screen.getByText('Create EPG Source')).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Create' })
+      ).toBeInTheDocument();
     });
 
     it('renders submit button with "Update" title when editing an existing EPG', () => {
@@ -375,6 +392,8 @@ describe('EPG', () => {
           epg[field] = value;
         }),
         reset: vi.fn(),
+        resetDirty: vi.fn(),
+        isDirty: () => false,
         submitting: false,
         onSubmit: vi.fn((h) => (e) => {
           e?.preventDefault?.();
@@ -401,6 +420,8 @@ describe('EPG', () => {
         setValues: mockSetValues,
         setFieldValue: vi.fn(() => {}),
         reset: vi.fn(),
+        resetDirty: vi.fn(),
+        isDirty: () => false,
         submitting: false,
         onSubmit: vi.fn((h) => (e) => {
           e?.preventDefault?.();
@@ -497,7 +518,7 @@ describe('EPG', () => {
   describe('form submission (add)', () => {
     it('calls addEPG when submitting a new EPG', async () => {
       render(<EPG {...defaultProps()} />);
-      fireEvent.click(screen.getByText('Create EPG Source'));
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
       await waitFor(() => {
         expect(DummyEpgUtils.addEPG).toHaveBeenCalled();
       });
@@ -505,19 +526,18 @@ describe('EPG', () => {
 
     it('does not call updateEPG when adding a new EPG', async () => {
       render(<EPG {...defaultProps()} />);
-      fireEvent.click(screen.getByText('Create EPG Source'));
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
       await waitFor(() => {
         expect(DummyEpgUtils.updateEPG).not.toHaveBeenCalled();
       });
     });
 
-    it('calls onClose after successful add', async () => {
+    it('keeps a failed add open rather than discarding the draft', async () => {
       const onClose = vi.fn();
       render(<EPG {...defaultProps({ onClose })} />);
-      fireEvent.click(screen.getByText('Create EPG Source'));
-      await waitFor(() => {
-        expect(onClose).toHaveBeenCalled();
-      });
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+      await waitFor(() => expect(DummyEpgUtils.addEPG).toHaveBeenCalled());
+      expect(onClose).not.toHaveBeenCalled();
     });
 
     it('clears cron_expression when schedule type is interval on submit', async () => {
@@ -528,7 +548,7 @@ describe('EPG', () => {
       });
       render(<EPG {...defaultProps()} />);
       fireEvent.click(screen.getByTestId('set-interval'));
-      fireEvent.click(screen.getByText('Create EPG Source'));
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
       await waitFor(() => {
         expect(capturedValues?.cron_expression ?? '').toBe('');
       });
@@ -545,6 +565,9 @@ describe('EPG', () => {
       await waitFor(() => {
         expect(DummyEpgUtils.updateEPG).toHaveBeenCalled();
       });
+      expect(DummyEpgUtils.updateEPG.mock.calls[0][0]).not.toHaveProperty(
+        'is_active'
+      );
     });
 
     it('does not call addEPG when epg.id is present', async () => {
@@ -571,6 +594,8 @@ describe('EPG', () => {
           epg[field] = value;
         }),
         reset: vi.fn(),
+        resetDirty: vi.fn(),
+        isDirty: () => false,
         submitting: false,
         onSubmit: vi.fn((h) => (e) => {
           e?.preventDefault?.();
@@ -602,6 +627,8 @@ describe('EPG', () => {
           epg[field] = value;
         }),
         reset: vi.fn(),
+        resetDirty: vi.fn(),
+        isDirty: () => false,
         submitting: false,
         onSubmit: vi.fn((h) => (e) => {
           e?.preventDefault?.();
@@ -653,7 +680,7 @@ describe('EPG', () => {
       expect(onClose).toHaveBeenCalled();
     });
 
-    it('resets the form on close', async () => {
+    it('resets the form on an unchanged close', async () => {
       const mockReset = vi.fn();
       vi.mocked(useForm).mockReturnValueOnce({
         key: vi.fn(),
@@ -661,6 +688,8 @@ describe('EPG', () => {
         setValues: vi.fn(),
         setFieldValue: vi.fn(() => {}),
         reset: mockReset,
+        resetDirty: vi.fn(),
+        isDirty: () => false,
         submitting: false,
         onSubmit: vi.fn((h) => (e) => {
           e?.preventDefault?.();
@@ -673,7 +702,7 @@ describe('EPG', () => {
         })),
       });
       render(<EPG {...defaultProps()} />);
-      fireEvent.click(screen.getByText('Create EPG Source'));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
       await waitFor(() => {
         expect(mockReset).toHaveBeenCalled();
       });
@@ -682,12 +711,47 @@ describe('EPG', () => {
 
   // ── Active checkbox ────────────────────────────────────────────────────────
 
-  describe('active checkbox', () => {
-    it('renders the Active checkbox', () => {
+  describe('overview-controlled enabled state', () => {
+    it.each([null, makeEPG({ is_active: false })])(
+      'does not duplicate the enabled control (epg=%j)',
+      (epg) => {
+        render(<EPG {...defaultProps({ epg })} />);
+        expect(
+          screen.queryByTestId('checkbox-enable-this-epg-source')
+        ).not.toBeInTheDocument();
+      }
+    );
+    it('keeps URL with the source and the schedule in Settings', () => {
       render(<EPG {...defaultProps()} />);
       expect(
-        screen.getByTestId('checkbox-enable-this-epg-source')
-      ).toBeInTheDocument();
+        screen.getByRole('group', { name: 'EPG source settings' })
+      ).toContainElement(screen.getByTestId('input-url'));
+      expect(
+        screen.getByRole('group', { name: 'EPG settings' })
+      ).toContainElement(screen.getByTestId('schedule-input'));
+      expect(
+        screen.getByRole('group', { name: 'EPG settings' })
+      ).toContainElement(screen.getByTestId('number-priority'));
+      expect(
+        screen.getByRole('group', { name: 'EPG source settings' })
+      ).not.toContainElement(screen.getByTestId('number-priority'));
+      expect(screen.getByText('Settings')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Refresh', { exact: true })
+      ).not.toBeInTheDocument();
     });
+    it.each(['xmltv', 'schedules_direct'])(
+      'keeps auto-apply logos with Settings for an existing %s source',
+      (source_type) => {
+        render(<EPG {...defaultProps({ epg: makeEPG({ source_type }) })} />);
+        const logos = screen.getByText('Auto-Apply EPG Logos to Channels');
+        expect(
+          screen.getByRole('group', { name: 'EPG settings' })
+        ).toContainElement(logos);
+        expect(
+          screen.getByRole('group', { name: 'EPG source settings' })
+        ).not.toContainElement(logos);
+      }
+    );
   });
 });

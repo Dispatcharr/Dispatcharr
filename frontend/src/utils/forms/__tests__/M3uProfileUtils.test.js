@@ -102,13 +102,13 @@ describe('M3uProfileUtils', () => {
       ).rejects.toThrow('Update failed');
     });
 
-    it('resolves without returning a value', async () => {
+    it('returns the saved profile result', async () => {
       vi.mocked(API.updateM3UProfile).mockResolvedValue({ success: true });
       const m3u = makeM3U();
 
       const result = await updateM3UProfile(m3u.id, makeSubmitValues());
 
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ success: true });
     });
   });
 
@@ -162,13 +162,13 @@ describe('M3uProfileUtils', () => {
       );
     });
 
-    it('resolves without returning a value', async () => {
+    it('returns the created profile result', async () => {
       vi.mocked(API.addM3UProfile).mockResolvedValue({ id: 'new-profile' });
       const m3u = makeM3U();
 
       const result = await addM3UProfile(m3u.id, makeSubmitValues());
 
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ id: 'new-profile' });
     });
   });
 
@@ -463,7 +463,9 @@ describe('M3uProfileUtils', () => {
     });
 
     it('returns null when profile has no exp_date and no pending', () => {
-      expect(resolveProfileExpDate({ is_default: false }, undefined)).toBeNull();
+      expect(
+        resolveProfileExpDate({ is_default: false }, undefined)
+      ).toBeNull();
       expect(resolveProfileExpDate(null, undefined)).toBeNull();
     });
   });

@@ -35,6 +35,11 @@ vi.mock('lucide-react', () => ({
   ListOrdered: () => <div data-testid="icon-list-ordered" />,
   Play: () => <div data-testid="play-icon" />,
   Copy: () => <div data-testid="copy-icon" />,
+  ChevronDown: () => <span />,
+}));
+vi.mock('../../utils/notificationUtils.js', () => ({
+  showNotification: vi.fn(),
+  hideNotification: vi.fn(),
 }));
 
 // Mock Mantine components
@@ -47,6 +52,7 @@ vi.mock('@mantine/core', async () => {
       if (!opened) return null;
       return (
         <div data-testid="modal" data-title={title} data-size={size}>
+          <h2>{title}</h2>
           <button onClick={onClose} data-testid="modal-close">
             Close
           </button>
@@ -188,6 +194,9 @@ vi.mock('@mantine/core', async () => {
       </td>
     ),
     Divider: (props) => <hr data-testid="divider" {...props} />,
+    UnstyledButton: ({ children, ...props }) => (
+      <button {...props}>{children}</button>
+    ),
   };
 });
 
@@ -277,6 +286,26 @@ describe('SeriesModal', () => {
     copyToClipboard.mockResolvedValue(undefined);
   });
 
+  it.each([0, '0', '0.0', null])(
+    'omits empty rating and episode-count badges (%s)',
+    async (rating) => {
+      const series = { ...mockSeries, rating, episode_count: 0 };
+      mockVODStore.fetchSeriesInfo.mockResolvedValue({
+        ...series,
+        episodesList: [],
+      });
+      render(<SeriesModal series={series} opened onClose={vi.fn()} />);
+      await screen.findByText('No episodes found for this series.');
+      expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('0.0', { exact: true })
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('0 episodes', { exact: true })
+      ).not.toBeInTheDocument();
+    }
+  );
+
   describe('Rendering', () => {
     it('should render nothing when series is null', () => {
       const { container } = render(
@@ -325,16 +354,17 @@ describe('SeriesModal', () => {
       });
     });
 
-    it('should show loader while fetching details', () => {
+    it('shows a text status without a spinner while fetching details', () => {
       mockVODStore.fetchSeriesInfo = vi.fn(() => new Promise(() => {}));
 
       render(
         <SeriesModal series={mockSeries} opened={true} onClose={vi.fn()} />
       );
 
-      //expect multiple loader instances since we have one for details and one for providers
-      const loaders = screen.getAllByTestId('loader');
-      expect(loaders.length).toBeGreaterThan(0);
+      expect(
+        screen.getByText('Loading series details and episodes...')
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     });
   });
 
@@ -491,17 +521,16 @@ describe('SeriesModal', () => {
       });
     });
 
-    it('should show loader while fetching providers', () => {
+    it('shows a text status without a spinner while fetching providers', () => {
       mockVODStore.fetchSeriesProviders = vi.fn(() => new Promise(() => {}));
 
       render(
         <SeriesModal series={mockSeries} opened={true} onClose={vi.fn()} />
       );
 
-      // Should show loading text and loader
       expect(screen.getByText('Stream Selection')).toBeInTheDocument();
-      const loaders = screen.getAllByTestId('loader');
-      expect(loaders.length).toBeGreaterThan(0);
+      expect(screen.getByText('Loading streams…')).toBeInTheDocument();
+      expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     });
   });
 
@@ -577,6 +606,20 @@ describe('SeriesModal', () => {
   });
 
   describe('Episode Actions', () => {
+    it('provides an accessible episode-details button and named playback actions', async () => {
+      render(<SeriesModal series={mockSeries} opened onClose={vi.fn()} />);
+      const details = await screen.findByRole('button', { name: 'Pilot' });
+      expect(details).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(details);
+      expect(details).toHaveAttribute('aria-expanded', 'true');
+      expect(
+        screen.getByRole('button', { name: 'Play Pilot' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Copy link to Pilot' })
+      ).toBeInTheDocument();
+      expect(screen.getAllByText('Test Series')).toHaveLength(1);
+    });
     it('should play episode when play button clicked', async () => {
       render(
         <SeriesModal series={mockSeries} opened={true} onClose={vi.fn()} />

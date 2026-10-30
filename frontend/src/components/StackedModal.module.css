@@ -1,0 +1,7 @@
+/* Keep the parent context below the active dialog and its overlay.
+   Mantine still controls the stack, focus and Escape. The inactive root is
+   inert, so revealing its content does not make it interactive. */
+.background :global(.mantine-Modal-content[data-hidden]) {
+  opacity: 1 !important;
+  pointer-events: none;
+}

@@ -47,6 +47,7 @@ from apps.accounts.permissions import (
     permissions_for_action,
 )
 from dispatcharr.utils import get_client_ip
+from dispatcharr.log_redaction import redact_log_data
 
 
 logger = logging.getLogger(__name__)
@@ -638,8 +639,9 @@ def get_system_events(request):
             'event_type_display': event.get_event_type_display(),
             'timestamp': event.timestamp.isoformat(),
             'channel_id': str(event.channel_id) if event.channel_id else None,
-            'channel_name': event.channel_name,
-            'details': event.details
+            'channel_name': redact_log_data(event.channel_name),
+            # Also protect history created before write-time redaction existed.
+            'details': redact_log_data(event.details)
         } for event in events]
 
         return Response({

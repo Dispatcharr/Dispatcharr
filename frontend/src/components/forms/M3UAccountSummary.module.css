@@ -1,0 +1,80 @@
+.categoryGrid {
+  display: grid;
+  gap: var(--mantine-spacing-md);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+}
+
+.card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.categoryCard.categoryCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
+  min-height: 11rem;
+}
+
+.catalogCounts {
+  margin-top: auto;
+  padding-top: var(--mantine-spacing-sm);
+}
+
+.cardHeading {
+  min-width: 0;
+  flex: 1;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.selectionActions {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.profileRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-md);
+}
+
+.profileIdentity {
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+
+.profileDetails {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-xl);
+  margin-top: 4px;
+}
+
+.profileNotes {
+  min-width: 0;
+  flex: 1 1 8rem;
+}
+
+.profileControls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  max-width: 100%;
+  gap: var(--mantine-spacing-xs);
+}
+
+@media (max-width: 40em) {
+  .profileControls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}

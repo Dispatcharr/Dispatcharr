@@ -4,6 +4,7 @@ import {
   isAccountExpired,
   getExpirationInfo,
   profileSortComparator,
+  isTrialProfile,
 } from '../M3uProfilesUtils.js';
 
 // ── Fixed "now" for deterministic tests ───────────────────────────────────────
@@ -19,6 +20,39 @@ const MS = {
 };
 
 describe('M3uProfilesUtils', () => {
+  it.each([true, 1, '1', 'true'])(
+    'recognizes explicit trial values (%s)',
+    (is_trial) => {
+      expect(
+        isTrialProfile({ custom_properties: { user_info: { is_trial } } })
+      ).toBe(true);
+    }
+  );
+  it.each([false, 0, '0', 'false', '', null, undefined])(
+    'does not mark non-trial values (%s)',
+    (is_trial) => {
+      expect(
+        isTrialProfile({ custom_properties: { user_info: { is_trial } } })
+      ).toBe(false);
+    }
+  );
+  it('handles missing trial metadata', () => {
+    expect(isTrialProfile(null)).toBe(false);
+    expect(isTrialProfile({})).toBe(false);
+  });
+  it('uses the saved profile expiration when present, including standard M3U', () => {
+    expect(parseExpirationDate({ exp_date: '2027-01-01T12:00:00Z' })).toEqual(
+      new Date('2027-01-01T12:00:00Z')
+    );
+  });
+  it.each(['invalid', '123broken', 'Infinity'])(
+    'ignores invalid provider expiration (%s)',
+    (exp_date) => {
+      expect(
+        parseExpirationDate({ custom_properties: { user_info: { exp_date } } })
+      ).toBeNull();
+    }
+  );
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);

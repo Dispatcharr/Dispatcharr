@@ -1,6 +1,8 @@
-import { Modal, Group, Button, Checkbox, Box } from '@mantine/core';
+import { Group, Button, Checkbox, Box } from '@mantine/core';
 import React, { useEffect, useState } from 'react';
+import StackedModal from './StackedModal.jsx';
 import useWarningsStore from '../store/warnings';
+import { ScreenshotText } from './SensitiveFields.jsx';
 
 /**
  * A reusable confirmation dialog with option to suppress future warnings
@@ -13,11 +15,11 @@ import useWarningsStore from '../store/warnings';
  * @param {string} props.message - Dialog message
  * @param {string} props.confirmLabel - Text for the confirm button
  * @param {string} props.cancelLabel - Text for the cancel button
+ * @param {string} [props.confirmColor='red'] - Color of the confirm action
  * @param {string} props.actionKey - Unique key for this type of action (used for suppression)
  * @param {Function} props.onSuppressChange - Called when "don't show again" option changes
  * @param {string} [props.size='md'] - Size of the modal
  * @param {boolean} [props.loading=false] - Whether the confirm button should show loading state
- * @param {string} [props.confirmColor='red'] - Color of the confirm button
  * @param {boolean} [props.showDeleteFileOption=false] - Show "also delete files" checkbox
  * @param {string} [props.deleteFileLabel] - Label for delete-files checkbox
  * @param {boolean} [props.showStopStreamOption=false] - Show "also stop channel" checkbox
@@ -31,6 +33,7 @@ const ConfirmationDialog = ({
   message = 'Are you sure you want to proceed?',
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
+  confirmColor = 'red',
   actionKey,
   onSuppressChange,
   size = 'md',
@@ -40,7 +43,6 @@ const ConfirmationDialog = ({
   showStopStreamOption = false,
   stopStreamLabel = 'Also stop active channel if playing',
   loading = false,
-  confirmColor = 'red',
 }) => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
@@ -102,15 +104,18 @@ const ConfirmationDialog = ({
   };
 
   return (
-    <Modal
+    <StackedModal
       opened={opened}
       onClose={handleClose}
       title={title}
+      closeButtonProps={{ 'aria-label': 'Close confirmation dialog' }}
       size={size}
       centered
       zIndex={zIndex}
     >
-      <Box mb={20}>{message}</Box>
+      <Box mb={20}>
+        <ScreenshotText>{message}</ScreenshotText>
+      </Box>
 
       {showDeleteFileOption && (
         <Checkbox
@@ -153,7 +158,7 @@ const ConfirmationDialog = ({
           {confirmLabel}
         </Button>
       </Group>
-    </Modal>
+    </StackedModal>
   );
 };
 

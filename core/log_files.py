@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timezone
 
 from django.conf import settings
-from django.http import FileResponse
+from django.http import StreamingHttpResponse
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework import serializers
@@ -14,9 +14,23 @@ from rest_framework.response import Response
 
 from apps.accounts.permissions import IsAdmin
 from dispatcharr.log_collector import collector_running, is_log_family_name
+from dispatcharr.log_redaction import redact_log_text, redacted_log_lines
 
 # Above any log the collector can write: only a file it did not write is cut.
 MAX_VIEW_BYTES = 24 * 1024 * 1024
+
+
+class _RedactedLogStream:
+    def __init__(self, log):
+        self.log = log
+
+    def __iter__(self):
+        with self.log:
+            yield from redacted_log_lines(self.log)
+
+    def close(self):
+        # StreamingHttpResponse also closes an attachment never iterated.
+        self.log.close()
 
 
 def _open_log(path):
@@ -151,7 +165,7 @@ def get_log_file(request, name):
 
     return Response(
         {
-            "content": data.decode("utf-8", "replace"),
+            "content": redact_log_text(data.decode("utf-8", "replace")),
             "cursor": f"{stat.st_ino}-{start + len(data)}",
             "reset": reset,
             "truncated": truncated,
@@ -162,13 +176,13 @@ def get_log_file(request, name):
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def download_log_file(request, name):
-    """Stream a log file as an attachment."""
+    """Stream a redacted attachment, including logs written before redaction."""
     path = _resolve(name)
     if path is None:
         raise NotFound("Log file not found")
 
-    response = FileResponse(
-        _open_log(path), content_type="text/plain; charset=utf-8"
+    response = StreamingHttpResponse(
+        _RedactedLogStream(_open_log(path)), content_type="text/plain; charset=utf-8"
     )
     response["Content-Disposition"] = f'attachment; filename="{name}"'
     return response

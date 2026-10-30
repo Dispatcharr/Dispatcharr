@@ -528,6 +528,12 @@ CELERY_BEAT_SCHEDULE = {
 MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
 
+# Private pre-filter inventory: persistent across container recreation and not
+# exposed by MEDIA_URL. Cache data can be rebuilt by a complete Live refresh.
+M3U_FILTER_CATALOG_ROOT = Path(
+    os.environ.get("M3U_FILTER_CATALOG_ROOT", "/data/cache/m3u_filter_catalog")
+)
+
 # Backup settings
 BACKUP_ROOT = os.environ.get("BACKUP_ROOT", "/data/backups")
 BACKUP_DATA_DIRS = [

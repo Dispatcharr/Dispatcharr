@@ -1,4 +1,4 @@
-import { Modal } from '@mantine/core';
+import StackedModal from './StackedModal.jsx';
 import ServerGroupsTable from './tables/ServerGroupsTable';
 
 const ServerGroupsManagerModal = ({
@@ -8,7 +8,8 @@ const ServerGroupsManagerModal = ({
   openCreateOnMount = false,
 }) => {
   return (
-    <Modal
+    <StackedModal
+      stackId="m3u-server-groups"
       opened={isOpen}
       onClose={onClose}
       title="Server Groups"
@@ -21,7 +22,7 @@ const ServerGroupsManagerModal = ({
           openCreateOnMount={openCreateOnMount}
         />
       ) : null}
-    </Modal>
+    </StackedModal>
   );
 };
 

@@ -14,8 +14,17 @@ vi.mock('@mantine/core', async () => ({
       {children}
     </div>
   ),
-  Card: ({ children, onClick, style, withBorder, shadow, padding, radius }) => (
-    <div data-testid="series-card" onClick={onClick} style={style}>
+  Card: ({
+    children,
+    onClick,
+    style,
+    withBorder,
+    shadow,
+    padding,
+    radius,
+    ...props
+  }) => (
+    <div data-testid="series-card" onClick={onClick} style={style} {...props}>
       {children}
     </div>
   ),
@@ -25,17 +34,26 @@ vi.mock('@mantine/core', async () => ({
   Group: ({ children, gap, justify }) => (
     <div data-testid="group">{children}</div>
   ),
-  Image: ({ src, alt, fallbackSrc, height, fit }) => (
-    <img src={src} alt={alt} data-fallback={fallbackSrc} data-fit={fit} />
+  Image: ({ src, alt, fallbackSrc, height, fit, loading }) => (
+    <img
+      src={src}
+      alt={alt}
+      data-fallback={fallbackSrc}
+      data-fit={fit}
+      data-height={height}
+      loading={loading}
+    />
   ),
   Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
-  Text: ({ children, size, fw, c, lineClamp, style }) => (
+  Text: ({ children, size, fw, c, lineClamp, style, title }) => (
     <span
       data-testid="text"
       data-size={size}
       data-fw={fw}
       data-color={c}
+      data-line-clamp={lineClamp}
       style={style}
+      title={title}
     >
       {children}
     </span>
@@ -61,8 +79,30 @@ const makeSeries = (overrides = {}) => ({
 });
 
 describe('SeriesCard', () => {
+  it.each([0, '0', '0.0', null, undefined, ''])(
+    'does not render an empty rating (%s) as a stray number',
+    (rating) => {
+      render(<SeriesCard series={makeSeries({ rating })} onClick={vi.fn()} />);
+      expect(screen.queryByTestId('icon-star')).not.toBeInTheDocument();
+      expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('0.0', { exact: true })
+      ).not.toBeInTheDocument();
+    }
+  );
+
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+  it('opens its preview with Space or Enter', () => {
+    const onClick = vi.fn();
+    const series = makeSeries();
+    render(<SeriesCard series={series} onClick={onClick} />);
+    const card = screen.getByRole('button', { name: 'Preview Breaking Bad' });
+    fireEvent.keyDown(card, { key: ' ' });
+    fireEvent.keyDown(card, { key: 'Enter' });
+    expect(onClick).toHaveBeenCalledTimes(2);
+    expect(onClick).toHaveBeenLastCalledWith(series);
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -110,9 +150,28 @@ describe('SeriesCard', () => {
       expect(screen.getByText('9.5')).toBeInTheDocument();
     });
 
-    it('renders calendar icon', () => {
+    it('shows the type and year below the poster without an overlay badge', () => {
       render(<SeriesCard series={makeSeries()} onClick={vi.fn()} />);
-      expect(screen.getByTestId('icon-calendar')).toBeInTheDocument();
+      expect(screen.getByText(/Series ·/)).toHaveTextContent('Series · 2008');
+      expect(screen.getByTestId('card-section')).not.toHaveTextContent(
+        'Series'
+      );
+      expect(screen.queryByTestId('badge')).not.toBeInTheDocument();
+    });
+
+    it('fills the responsive poster frame and loads artwork lazily', () => {
+      render(<SeriesCard series={makeSeries()} onClick={vi.fn()} />);
+      const image = screen.getByRole('img');
+      expect(image).toHaveAttribute('data-fit', 'cover');
+      expect(image).toHaveAttribute('loading', 'lazy');
+      expect(image).not.toHaveAttribute('data-height');
+    });
+
+    it('keeps long titles compact while exposing their full text', () => {
+      const name = 'A very long series title that needs more than one line';
+      render(<SeriesCard series={makeSeries({ name })} onClick={vi.fn()} />);
+      expect(screen.getByText(name)).toHaveAttribute('data-line-clamp', '2');
+      expect(screen.getByText(name)).toHaveAttribute('title', name);
     });
 
     it('renders play icon', () => {

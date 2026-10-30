@@ -1,0 +1,46 @@
+.card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.name {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
+.statusBadge {
+  flex-shrink: 0;
+}
+
+.statusMessage {
+  min-width: 0;
+  max-width: 24rem;
+}
+
+.detailTooltip.detailTooltip {
+  max-width: min(420px, calc(100vw - 32px));
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  pointer-events: auto;
+}
+
+.controls.controls {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  flex-shrink: 0;
+}

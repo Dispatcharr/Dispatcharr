@@ -20,8 +20,8 @@ import {
   TabsTab,
   Text,
   Textarea,
-  TextInput,
 } from '@mantine/core';
+import { SensitiveTextInput as TextInput } from '../SensitiveFields.jsx';
 import { isNotEmpty, useForm } from '@mantine/form';
 import {
   buildConfig,

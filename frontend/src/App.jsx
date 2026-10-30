@@ -178,6 +178,14 @@ const App = () => {
                               path="/sources"
                               element={<ContentSources />}
                             />
+                            <Route
+                              path="/sources/m3u"
+                              element={<ContentSources section="m3u" />}
+                            />
+                            <Route
+                              path="/sources/epg"
+                              element={<ContentSources section="epg" />}
+                            />
                             <Route path="/guide" element={<Guide />} />
                             <Route path="/dvr" element={<DVR />} />
                             <Route path="/stats" element={<Stats />} />

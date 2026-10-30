@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { BrowserRouter } from 'react-router-dom';
 import M3URefreshNotification from '../M3URefreshNotification';
@@ -9,7 +9,11 @@ import useChannelsStore from '../../store/channels';
 import useEPGsStore from '../../store/epgs';
 import useVODStore from '../../store/useVODStore';
 import API from '../../api';
-import { showNotification } from '../../utils/notificationUtils';
+import {
+  showNotification,
+  updateNotification,
+  hideNotification,
+} from '../../utils/notificationUtils';
 
 // Mock all stores
 vi.mock('../../store/playlists', () => ({
@@ -43,10 +47,13 @@ vi.mock('../../api', () => ({
 // Mock notification utility
 vi.mock('../../utils/notificationUtils', () => ({
   showNotification: vi.fn(),
+  updateNotification: vi.fn(),
+  hideNotification: vi.fn(),
 }));
 
 vi.mock('@mantine/core', async () => {
   return {
+    Progress: ({ value }) => <div data-testid="progress" data-value={value} />,
     Stack: ({ children }) => <div>{children}</div>,
     Group: ({ children }) => <div>{children}</div>,
     Button: ({ children, onClick }) => (
@@ -144,594 +151,281 @@ describe('M3URefreshNotification', () => {
     });
   });
 
-  describe('Download Progress Notifications', () => {
-    it('should show notification when download starts', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'downloading',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
+  const setProgress = (values, account = 1) => {
+    mockPlaylistsStore.refreshProgress = {
+      [account]: {
+        account,
+        action: 'parsing',
+        progress: 0,
+        status: 'processing',
+        ...values,
+      },
+    };
+  };
+  const rerenderNotifications = (view) =>
+    view.rerender(
+      <BrowserRouter>
+        <M3URefreshNotification />
+      </BrowserRouter>
+    );
 
+  describe('Persistent progress notifications', () => {
+    it.each([
+      'initializing',
+      'downloading',
+      'parsing',
+      'processing_groups',
+      'vod_refresh',
+    ])('keeps %s visible until the refresh finishes', (action) => {
+      setProgress({ action });
       renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'Downloading starting...',
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
           loading: true,
-          autoClose: 2000,
-          icon: null,
-        });
-      });
+          autoClose: false,
+          withCloseButton: false,
+        })
+      );
     });
-
-    it('should show notification when download completes', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'downloading',
-          progress: 100,
-          status: 'completed',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'Downloading complete!',
+    it('updates the same notification for intermediate progress and completion', () => {
+      setProgress({ action: 'parsing' });
+      const view = renderWithProviders(<M3URefreshNotification />);
+      setProgress({
+        progress: 50,
+        streams_processed: 2000,
+        elapsed_time: 12,
+        time_remaining: 15,
+      });
+      rerenderNotifications(view);
+      expect(showNotification).toHaveBeenCalledTimes(1);
+      expect(updateNotification).toHaveBeenCalledWith(
+        'm3u-refresh-1-live',
+        expect.objectContaining({ loading: true, autoClose: false })
+      );
+      const message = updateNotification.mock.calls.at(-1)[1].message;
+      render(<>{message}</>);
+      expect(screen.getByText('Processing streams: 50%')).toBeInTheDocument();
+      expect(screen.getByText('Streams: 2000')).toBeInTheDocument();
+      setProgress({ progress: 100, status: 'success' });
+      rerenderNotifications(view);
+      expect(updateNotification).toHaveBeenLastCalledWith(
+        'm3u-refresh-1-live',
+        expect.objectContaining({
           loading: false,
-          autoClose: 2000,
-          icon: expect.anything(),
-        });
-      });
-    });
-
-    it('should not show notification for intermediate progress', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'downloading',
-          progress: 50,
-          status: 'in_progress',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).not.toHaveBeenCalled();
-      });
-    });
-  });
-
-  describe('Parsing Progress Notifications', () => {
-    it('should show notification when parsing starts', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'Stream parsing starting...',
-          loading: true,
-          autoClose: 2000,
-          icon: null,
-        });
-      });
-    });
-
-    it('should show notification and trigger fetches when parsing completes', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 100,
-          status: 'completed',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalled();
-        expect(mockStreamsStore.fetchStreams).toHaveBeenCalled();
-        expect(API.requeryChannels).toHaveBeenCalled();
-        expect(mockChannelsStore.fetchChannelIds).toHaveBeenCalled();
-      });
-    });
-  });
-
-  describe('Group Processing Notifications', () => {
-    it('should show notification when processing groups starts', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'processing_groups',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'Group parsing starting...',
-          loading: true,
-          autoClose: 2000,
-          icon: null,
-        });
-      });
-    });
-
-    it('should trigger multiple fetches when processing groups completes', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'processing_groups',
-          progress: 100,
-          status: 'completed',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(mockStreamsStore.fetchStreams).toHaveBeenCalled();
-        expect(mockChannelsStore.fetchChannelGroups).toHaveBeenCalled();
-        expect(mockEPGsStore.fetchEPGData).toHaveBeenCalled();
-        expect(mockPlaylistsStore.fetchPlaylists).toHaveBeenCalled();
-      });
-    });
-  });
-
-  describe('VOD Refresh Notifications', () => {
-    it('should show notification when VOD refresh starts', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'vod_refresh',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'VOD content refresh starting...',
-          loading: true,
-          autoClose: 2000,
-          icon: null,
-        });
-      });
-    });
-
-    it('should trigger VOD-specific fetches when VOD refresh completes', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'vod_refresh',
-          progress: 100,
-          status: 'completed',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(mockPlaylistsStore.fetchPlaylists).toHaveBeenCalled();
-        expect(mockVODStore.fetchCategories).toHaveBeenCalled();
-      });
-    });
-  });
-
-  describe('Pending Setup Status', () => {
-    it('should show setup notification and trigger fetches for pending_setup status', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          status: 'pending_setup',
-          message: 'Test setup message',
-          progress: 100,
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Setup: Test Playlist',
-          message: expect.anything(),
-          color: 'orange.5',
-          autoClose: 5000,
-        });
-        expect(mockChannelsStore.fetchChannelGroups).toHaveBeenCalled();
-        expect(mockPlaylistsStore.fetchPlaylists).toHaveBeenCalled();
-      });
-    });
-
-    it('should use default message when no message provided in pending_setup', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          status: 'pending_setup',
-          progress: 100,
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalled();
-      });
-    });
-  });
-
-  describe('Error Handling', () => {
-    it('should show error notification when status is error and progress is 100', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          status: 'error',
-          progress: 100,
-          error: 'Connection timeout',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'parsing failed: Connection timeout',
-          color: 'red',
-          autoClose: 5000,
-        });
-      });
-    });
-
-    it('should not show error notification when progress is not 100', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          status: 'error',
-          progress: 50,
-          error: 'Connection timeout',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).not.toHaveBeenCalled();
-      });
-    });
-
-    it('should use default error message when error field is missing', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'downloading',
-          status: 'error',
-          progress: 100,
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'downloading failed: Unknown error',
-          color: 'red',
-          autoClose: 5000,
-        });
-      });
-    });
-
-    it('should use default action when action field is missing in error', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          status: 'error',
-          progress: 100,
-          error: 'Test error',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledWith({
-          title: 'M3U Processing: Test Playlist',
-          message: 'Processing failed: Test error',
-          color: 'red',
-          autoClose: 5000,
-        });
-      });
-    });
-
-    it('should not show further notifications after error status', async () => {
-      // First update with error
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          status: 'error',
-          progress: 100,
-          error: 'Test error',
-        },
-      };
-
-      const { rerender } = renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledTimes(1);
-      });
-
-      vi.clearAllMocks();
-
-      // Second update with success
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          status: 'completed',
-          progress: 100,
-        },
-      };
-
-      rerender(
-        <BrowserRouter>
-          <M3URefreshNotification />
-        </BrowserRouter>
+          color: 'green',
+          withCloseButton: true,
+        })
       );
-
-      // Should not show notification due to previous error
+      expect(mockStreamsStore.fetchStreams).toHaveBeenCalled();
+      expect(API.requeryChannels).toHaveBeenCalled();
+      expect(mockChannelsStore.fetchChannelIds).toHaveBeenCalled();
+    });
+    it('shows VOD phases, elapsed time, estimated remaining time and catalog counts', () => {
+      setProgress({
+        action: 'vod_refresh',
+        phase: 'Processing movies',
+        progress: 12,
+        items_processed: 2000,
+        items_total: 48061,
+        elapsed_time: 12,
+        time_remaining: 89,
+      });
+      renderWithProviders(<M3URefreshNotification />);
+      render(<>{showNotification.mock.calls[0][0].message}</>);
+      expect(screen.getByText('Processing movies: 12%')).toBeInTheDocument();
+      expect(
+        screen.getByText('Catalog entries: 2,000 / 48,061')
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Elapsed:/)).toBeInTheDocument();
+      expect(screen.getByText(/Remaining/)).toBeInTheDocument();
+    });
+    it('keeps the Live notification running when only the download phase finishes', () => {
+      setProgress({ action: 'downloading', progress: 100 });
+      renderWithProviders(<M3URefreshNotification />);
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ loading: true, autoClose: false })
+      );
+      expect(mockStreamsStore.fetchStreams).not.toHaveBeenCalled();
+    });
+    it('uses separate stable notification IDs for Live TV and VOD', () => {
+      setProgress({});
+      const view = renderWithProviders(<M3URefreshNotification />);
+      setProgress({ action: 'vod_refresh' });
+      rerenderNotifications(view);
+      expect(showNotification.mock.calls.map((call) => call[0].id)).toEqual([
+        'm3u-refresh-1-live',
+        'm3u-refresh-1-vod',
+      ]);
+    });
+    it('deduplicates repeated events and playlist updates', () => {
+      setProgress({});
+      const view = renderWithProviders(<M3URefreshNotification />);
+      mockPlaylistsStore.refreshProgress = {
+        ...mockPlaylistsStore.refreshProgress,
+      };
+      rerenderNotifications(view);
+      mockPlaylistsStore.playlists = [...mockPlaylistsStore.playlists];
+      rerenderNotifications(view);
+      expect(showNotification).toHaveBeenCalledTimes(1);
+      expect(updateNotification).not.toHaveBeenCalled();
+    });
+    it('shows a new notification after the prior completed message has closed', () => {
+      setProgress({ progress: 100, status: 'success' });
+      const view = renderWithProviders(<M3URefreshNotification />);
+      showNotification.mock.calls[0][0].onClose();
+      setProgress({});
+      rerenderNotifications(view);
+      expect(showNotification).toHaveBeenCalledTimes(2);
+    });
+    it.each(['processing_groups', 'vod_refresh'])(
+      'keeps completion fetches for %s',
+      (action) => {
+        setProgress({ action, progress: 100, status: 'success' });
+        renderWithProviders(<M3URefreshNotification />);
+        expect(mockPlaylistsStore.fetchPlaylists).toHaveBeenCalled();
+        if (action === 'vod_refresh')
+          expect(mockVODStore.fetchCategories).toHaveBeenCalled();
+        else {
+          expect(mockChannelsStore.fetchChannelGroups).toHaveBeenCalled();
+          expect(mockEPGsStore.fetchEPGData).toHaveBeenCalled();
+        }
+      }
+    );
+    it('ignores progress for unknown or deleted accounts', () => {
+      setProgress({}, 999);
+      renderWithProviders(<M3URefreshNotification />);
       expect(showNotification).not.toHaveBeenCalled();
     });
+    it('removes a deleted account notification without replaying other accounts', () => {
+      mockPlaylistsStore.playlists = [mockPlaylist, { id: 2, name: 'Other' }];
+      mockPlaylistsStore.refreshProgress = {
+        1: { account: 1, action: 'parsing', progress: 5 },
+        2: { account: 2, action: 'parsing', progress: 5 },
+      };
+      const view = renderWithProviders(<M3URefreshNotification />);
+      mockPlaylistsStore.playlists = [mockPlaylist];
+      rerenderNotifications(view);
+      expect(hideNotification).toHaveBeenCalledWith('m3u-refresh-2-live');
+      expect(showNotification).toHaveBeenCalledTimes(2);
+      expect(updateNotification).not.toHaveBeenCalled();
+    });
+    it('cleans up its notifications when the authenticated app unmounts', () => {
+      setProgress({ action: 'vod_refresh' });
+      const view = renderWithProviders(<M3URefreshNotification />);
+      view.unmount();
+      expect(hideNotification).toHaveBeenCalledWith('m3u-refresh-1-vod');
+    });
+    it('supports multiple providers without creating duplicate phase notifications', () => {
+      mockPlaylistsStore.playlists = [
+        mockPlaylist,
+        { id: 2, name: 'Second Playlist' },
+      ];
+      mockPlaylistsStore.refreshProgress = {
+        1: { account: 1, action: 'parsing', progress: 5 },
+        2: { account: 2, action: 'vod_refresh', progress: 30 },
+      };
+      renderWithProviders(<M3URefreshNotification />);
+      expect(showNotification).toHaveBeenCalledTimes(2);
+      expect(showNotification.mock.calls.map((call) => call[0].id)).toEqual([
+        'm3u-refresh-1-live',
+        'm3u-refresh-2-vod',
+      ]);
+    });
   });
 
-  describe('Playlist Validation', () => {
-    it('should not show notification if playlist not found', async () => {
-      mockPlaylistsStore.playlists = [];
-      mockPlaylistsStore.refreshProgress = {
-        999: {
-          account: 999,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).not.toHaveBeenCalled();
-      });
-    });
-
-    it('should handle multiple playlists correctly', async () => {
-      const secondPlaylist = { id: 2, name: 'Second Playlist' };
-      mockPlaylistsStore.playlists = [mockPlaylist, secondPlaylist];
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-        2: {
-          account: 2,
-          action: 'downloading',
-          progress: 100,
-          status: 'completed',
-        },
-      };
-
-      renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledTimes(2);
+  describe('Setup and errors', () => {
+    it.each([0, 100])(
+      'stops the spinner and preserves an error at progress %s',
+      (progress) => {
+        setProgress({
+          status: 'error',
+          progress,
+          error: 'Provider unavailable',
+        });
+        renderWithProviders(<M3URefreshNotification />);
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({
-            title: 'M3U Processing: Test Playlist',
+            message: 'Provider unavailable',
+            loading: false,
+            color: 'red',
+            autoClose: false,
+            withCloseButton: true,
           })
         );
-        expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({
-            title: 'M3U Processing: Second Playlist',
-          })
-        );
+      }
+    );
+    it('uses an upstream message when no error field is present', () => {
+      setProgress({
+        action: 'vod_refresh',
+        status: 'error',
+        message: 'Upstream timed out',
       });
-    });
-  });
-
-  describe('Notification Deduplication', () => {
-    it('should not show duplicate notification for same status', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      const { rerender } = renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledTimes(1);
-      });
-
-      vi.clearAllMocks();
-
-      // Re-render with same data
-      rerender(
-        <BrowserRouter>
-          <M3URefreshNotification />
-        </BrowserRouter>
-      );
-
-      expect(showNotification).not.toHaveBeenCalled();
-    });
-
-    it('should show notification when status changes', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      const { rerender } = renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledTimes(1);
-      });
-
-      vi.clearAllMocks();
-
-      // Update with different progress
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 100,
-          status: 'completed',
-        },
-      };
-
-      rerender(
-        <BrowserRouter>
-          <M3URefreshNotification />
-        </BrowserRouter>
-      );
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalledTimes(1);
-      });
-    });
-  });
-
-  describe('State Cleanup', () => {
-    it('should reset notification status when playlists change', async () => {
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      const { rerender } = renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalled();
-      });
-
-      vi.clearAllMocks();
-
-      // Change playlists - remove existing playlist
-      mockPlaylistsStore.playlists = [];
-      mockPlaylistsStore.refreshProgress = {
-        2: {
-          account: 2,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      rerender(
-        <BrowserRouter>
-          <M3URefreshNotification />
-        </BrowserRouter>
-      );
-
-      // Should not show notification because playlist doesn't exist
-      expect(showNotification).not.toHaveBeenCalled();
-    });
-
-    it('should handle empty playlists array', async () => {
-      mockPlaylistsStore.playlists = [];
-      mockPlaylistsStore.refreshProgress = {};
-
       renderWithProviders(<M3URefreshNotification />);
-
-      await waitFor(() => {
-        expect(showNotification).not.toHaveBeenCalled();
-      });
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Upstream timed out' })
+      );
     });
-  });
+    it('uses a useful fallback for an empty error', () => {
+      setProgress({ status: 'error' });
+      renderWithProviders(<M3URefreshNotification />);
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Refresh failed. Please retry.' })
+      );
+    });
+    it('allows a new refresh after an error', () => {
+      setProgress({ status: 'error' });
+      const view = renderWithProviders(<M3URefreshNotification />);
+      setProgress({});
+      rerenderNotifications(view);
+      expect(updateNotification).toHaveBeenCalledWith(
+        'm3u-refresh-1-live',
+        expect.objectContaining({ loading: true, autoClose: false })
+      );
+    });
+    it('turns pending setup into the configure/refresh notification', () => {
+      setProgress({
+        status: 'pending_setup',
+        action: 'processing_groups',
+        progress: 100,
+      });
+      renderWithProviders(<M3URefreshNotification />);
+      expect(mockChannelsStore.fetchChannelGroups).toHaveBeenCalled();
+      expect(mockPlaylistsStore.fetchPlaylists).toHaveBeenCalled();
+      const notification = showNotification.mock.calls[0][0];
+      expect(notification).toMatchObject({
+        title: 'M3U Setup: Test Playlist',
+        loading: false,
+        autoClose: 5000,
+      });
+      render(<BrowserRouter>{notification.message}</BrowserRouter>);
+      fireEvent.click(screen.getByText('Refresh Now'));
+      expect(API.refreshPlaylist).toHaveBeenCalledWith(1);
+    });
 
-  describe('Effect Dependencies', () => {
-    it('should re-run effect when refreshProgress changes', async () => {
-      mockPlaylistsStore.refreshProgress = {};
-
-      const { rerender } = renderWithProviders(<M3URefreshNotification />);
-
+    it('does not duplicate handoff notifications during guided setup', () => {
+      mockPlaylistsStore.playlists = [
+        { ...mockPlaylist, setup_step: 'categories' },
+      ];
+      setProgress({
+        status: 'pending_setup',
+        action: 'processing_groups',
+        progress: 100,
+      });
+      renderWithProviders(<M3URefreshNotification />);
+      expect(mockChannelsStore.fetchChannelGroups).toHaveBeenCalled();
       expect(showNotification).not.toHaveBeenCalled();
-
-      mockPlaylistsStore.refreshProgress = {
-        1: {
-          account: 1,
-          action: 'parsing',
-          progress: 0,
-          status: 'in_progress',
-        },
-      };
-
-      rerender(
-        <BrowserRouter>
-          <M3URefreshNotification />
-        </BrowserRouter>
-      );
-
-      await waitFor(() => {
-        expect(showNotification).toHaveBeenCalled();
-      });
     });
 
-    it('should re-run effect when playlists change', async () => {
-      const { rerender } = renderWithProviders(<M3URefreshNotification />);
-
-      const newPlaylist = { id: 2, name: 'New Playlist' };
-      mockPlaylistsStore.playlists = [mockPlaylist, newPlaylist];
-
-      rerender(
-        <BrowserRouter>
-          <M3URefreshNotification />
-        </BrowserRouter>
+    it('keeps provider errors visible during guided setup', () => {
+      mockPlaylistsStore.playlists = [{ ...mockPlaylist, setup_step: 'epg' }];
+      setProgress({ status: 'error', error: 'Provider request failed' });
+      renderWithProviders(<M3URefreshNotification />);
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ color: 'red', autoClose: false })
       );
     });
   });
 
-  // The parsing-complete event payload carries auto-sync counts
-  // (channels_created/updated/deleted/failed) and a failed_stream_details
-  // array. The component surfaces the counts inline in the notification
-  // body and exposes a "Click for details" affordance when failures exist.
   describe('Auto-sync count rendering on parsing complete', () => {
     it('inlines auto-sync summary when counts are present', async () => {
       mockPlaylistsStore.refreshProgress = {
@@ -812,7 +506,7 @@ describe('M3URefreshNotification', () => {
       mockPlaylistsStore.refreshProgress = {
         1: {
           account: 1,
-          action: 'downloading',
+          action: 'parsing',
           progress: 100,
           status: 'success',
         },

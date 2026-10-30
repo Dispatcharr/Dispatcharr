@@ -3,8 +3,11 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
   ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   Copy,
+  Eye,
+  EyeOff,
   Heart,
   HelpCircle,
   LogOut,
@@ -39,6 +42,39 @@ import { canViewDvr } from '../utils/dvrAccess';
 import { canViewVod } from '../utils/vodAccess';
 import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
+import useScreenshotMode from '../store/useScreenshotMode.js';
+import { SensitiveValue } from './SensitiveFields.jsx';
+
+export const ScreenshotModeButton = ({ collapsed = false }) => {
+  const enabled = useScreenshotMode((state) => state.enabled);
+  const toggle = useScreenshotMode((state) => state.toggle);
+  return (
+    <Tooltip
+      label={
+        enabled
+          ? 'Screenshot mode: URLs, usernames and passwords are hidden. Click to show them.'
+          : 'Hide URLs, usernames and passwords for screenshots'
+      }
+      position={collapsed ? 'right' : 'top'}
+      withArrow
+      multiline
+      maw={280}
+      events={{ hover: true, focus: true, touch: true }}
+    >
+      <ActionIcon
+        aria-label={
+          enabled ? 'Disable screenshot mode' : 'Enable screenshot mode'
+        }
+        aria-pressed={enabled}
+        variant={enabled ? 'light' : 'transparent'}
+        color={enabled ? 'blue' : 'gray'}
+        onClick={toggle}
+      >
+        {enabled ? <EyeOff size={20} /> : <Eye size={20} />}
+      </ActionIcon>
+    </Tooltip>
+  );
+};
 
 // Settings is the only remaining sub-panel (plugins used to have one too -
 // removed in favor of pinned rows directly in the primary nav). Kept as a
@@ -238,6 +274,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     useSettingsStore((s) => s.settings?.system_settings?.value?.log_persist) !==
     false;
   const appVersion = useSettingsStore((s) => s.version);
+  const versionLabel = `v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`;
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
@@ -398,12 +435,26 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           }
 
           return withDivider(
-            <NavItem
-              key={item.path}
-              item={item}
-              isActive={location.pathname === item.path}
-              collapsed={collapsed}
-            />
+            <Box key={item.id}>
+              {!collapsed &&
+                item.section &&
+                navItems[idx - 1]?.section !== item.section && (
+                  <Text
+                    size="xs"
+                    fw={700}
+                    tt="uppercase"
+                    c="dimmed"
+                    className="sidebar-section-heading"
+                  >
+                    {item.section}
+                  </Text>
+                )}
+              <NavItem
+                item={item}
+                isActive={location.pathname === item.path}
+                collapsed={collapsed}
+              />
+            </Box>
           );
         })}
       </Stack>
@@ -457,6 +508,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   return (
     <AppShellNavbar
+      className={`dispatcharr-sidebar${collapsed ? ' dispatcharr-sidebar-collapsed' : ''}`}
       width={{ base: collapsed ? miniDrawerWidth : drawerWidth }}
       p="xs"
       style={{
@@ -465,31 +517,43 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         minHeight: '100vh',
         display: 'flex',
         flexDirection: 'column',
+        overflow: 'visible',
       }}
     >
-      {/* Brand: click to toggle collapse */}
-      <Group
-        onClick={toggleDrawer}
-        style={{
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '16px 12px',
-          fontSize: 18,
-          fontWeight: 600,
-          color: '#FFFFFF',
-          justifyContent: collapsed ? 'center' : 'flex-start',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        <img width={30} src={logo} alt="Dispatcharr" />
-        {!collapsed && (
-          <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 150 }}>
-            Dispatcharr
-          </Text>
-        )}
-      </Group>
+      <Box className="sidebar-brand">
+        <Group
+          gap={12}
+          wrap="nowrap"
+          justify={collapsed ? 'center' : 'flex-start'}
+          className="sidebar-brand-content"
+        >
+          <img width={32} height={32} src={logo} alt="Dispatcharr" />
+          {!collapsed && (
+            <Text
+              fw={600}
+              size="lg"
+              c="white"
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+              }}
+            >
+              Dispatcharr
+            </Text>
+          )}
+        </Group>
+        <ActionIcon
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          onClick={toggleDrawer}
+          variant="default"
+          size={22}
+          className="sidebar-edge-toggle"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+        </ActionIcon>
+      </Box>
 
       <SlidingPanels
         isOpen={nav.isOpen}
@@ -516,7 +580,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               environment.ip_lookup_pending && (
                 <Box>
                   <Text size="xs" fw={500} mb={4}>Public IP</Text>
-                  <Skeleton height={36} radius="sm" />
+                  <Skeleton height={36} radius="md" />
                 </Box>
               )}
 
@@ -532,7 +596,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                       display: 'flex',
                       alignItems: 'center',
                       border: '1px solid var(--mantine-color-default-border)',
-                      borderRadius: 'var(--mantine-radius-sm)',
+                      borderRadius: 'var(--mantine-radius-default)',
                       backgroundColor: 'var(--mantine-color-dark-6)',
                       height: '36px',
                       paddingLeft: '10px',
@@ -579,7 +643,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                 <Group gap="xs">
                   <Avatar src="" radius="xl" />
                   <UnstyledButton onClick={() => setUserFormOpen(true)}>
-                    {authUser.first_name || authUser.username}
+                    <SensitiveValue component="span" inherit>
+                      {authUser.first_name || authUser.username}
+                    </SensitiveValue>
                   </UnstyledButton>
                 </Group>
                 <ActionIcon variant="transparent" color="white" size="xs">
@@ -596,49 +662,48 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         )}
       </Box>
 
-      {/* Version and Notifications */}
-      {!collapsed && (
-        <Group gap="xs" wrap="nowrap" style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}>
-          <Tooltip
-            label={`v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`}
-            position="top"
-          >
-            <Text
-              size="xs"
-              c="dimmed"
-              style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1, cursor: 'pointer' }}
-              onClick={() =>
-                copyToClipboard(
-                  `v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`,
-                  { successTitle: 'Copied', successMessage: 'Version copied to clipboard' }
-                )
-              }
+      {/* Tools above a dedicated version row. */}
+      <Box className="sidebar-footer">
+        <Group
+          gap="xs"
+          justify="center"
+          wrap="nowrap"
+          className="sidebar-tools"
+          role="group"
+          aria-label="Sidebar tools"
+        >
+          <Tooltip label="About" position={collapsed ? 'right' : 'top'}>
+            <ActionIcon
+              variant="transparent"
+              color="gray"
+              onClick={() => setAboutOpen(true)}
             >
-              v{appVersion?.version || '0.0.0'}{appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
-            </Text>
-          </Tooltip>
-          <Group gap="xs" wrap="nowrap">
-            <Tooltip label="About" position="top">
-              <ActionIcon variant="transparent" color="gray" onClick={() => setAboutOpen(true)}>
-                <HelpCircle size={20} />
-              </ActionIcon>
-            </Tooltip>
-            <DonateButton />
-            {isAuthenticated && <NotificationCenter />}
-          </Group>
-        </Group>
-      )}
-      {collapsed && (
-        <Box style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-          {isAuthenticated && <NotificationCenter />}
-          <DonateButton tooltipPosition="right" />
-          <Tooltip label="About" position="right">
-            <ActionIcon variant="transparent" color="gray" onClick={() => setAboutOpen(true)}>
               <HelpCircle size={20} />
             </ActionIcon>
           </Tooltip>
-        </Box>
-      )}
+          <DonateButton tooltipPosition={collapsed ? 'right' : 'top'} />
+          {isAuthenticated && <NotificationCenter />}
+          {isAuthenticated && <ScreenshotModeButton collapsed={collapsed} />}
+        </Group>
+        {!collapsed && (
+          <Tooltip label={versionLabel} position="top">
+            <UnstyledButton
+              className="sidebar-version"
+              aria-label="Copy version"
+              onClick={() =>
+                copyToClipboard(versionLabel, {
+                  successTitle: 'Copied',
+                  successMessage: 'Version copied to clipboard',
+                })
+              }
+            >
+              <Text size="xs" c="dimmed" ta="center">
+                {versionLabel}
+              </Text>
+            </UnstyledButton>
+          </Tooltip>
+        )}
+      </Box>
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={() => setUserFormOpen(false)} />
       <AboutModal isOpen={aboutOpen} onClose={() => setAboutOpen(false)} />

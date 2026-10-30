@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LogoForm from '../forms/Logo';
+import { SensitiveValue } from '../SensitiveFields.jsx';
 import useLogosStore from '../../store/logos';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import {
@@ -453,9 +454,13 @@ const LogosTable = () => {
                 maxWidth: 300,
               }}
             >
-              <Text size="sm" c="dimmed">
+              <SensitiveValue
+                size="sm"
+                c="dimmed"
+                sensitive={/^https?:\/\//i.test(getValue() || '')}
+              >
                 {getValue()}
-              </Text>
+              </SensitiveValue>
             </Box>
             {getValue()?.startsWith('http') && (
               <ActionIcon

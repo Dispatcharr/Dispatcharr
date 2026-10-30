@@ -116,6 +116,7 @@ vi.mock('../../theme/SizedInstallButton.jsx', () => ({
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  useModalStackContext: () => null,
   Avatar: ({ children, src, alt }) => (
     <div data-testid="avatar" aria-label={alt}>
       {src ? <img src={src} alt={alt} /> : children}
