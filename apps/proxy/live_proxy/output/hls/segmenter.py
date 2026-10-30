@@ -140,46 +140,144 @@ def parse_pat(packet):
     return None
 
 
-def parse_pmt_streams(packet):
-    """Return [(stream_type, es_pid), ...] from a PMT packet, or None if unparseable.
+def parse_pmt_section(section):
+    """Return [(stream_type, es_pid, descriptors), ...] from a reassembled PMT section.
 
-    Returns None when the declared section does not fit in this TS packet
-    (multi-packet / truncated PMT). Callers must not treat a partial ES loop
-    as authoritative, or audio descriptors in packet 1 with video in packet 2
-    would look like an audio-only stream.
+    ``section`` starts at table_id. ``descriptors`` is that stream's raw ES_info
+    loop. Returns None when the section is truncated or internally inconsistent,
+    so a partial ES loop is never treated as the whole program.
     """
-    base = packet_payload_offset(packet)
-    if base is None or base + 1 >= TS_PACKET_SIZE:
-        return None
-    pointer = packet[base]
-    section = base + 1 + pointer
-    if section + 12 >= TS_PACKET_SIZE:
-        return None
-    if packet[section] != 0x02:  # table_id must be PMT
+    if len(section) < 12 or section[0] != 0x02:  # table_id must be PMT
         return None
     # section_length: bytes after the length field, including CRC.
-    section_length = ((packet[section + 1] & 0x0F) << 8) | packet[section + 2]
-    if section + 3 + section_length > TS_PACKET_SIZE:
+    section_length = ((section[1] & 0x0F) << 8) | section[2]
+    end = 3 + section_length
+    if section_length < 13 or end > len(section):
         return None
-    program_info_length = ((packet[section + 10] & 0x0F) << 8) | packet[section + 11]
-    offset = section + 12 + program_info_length
+    program_info_length = ((section[10] & 0x0F) << 8) | section[11]
+    offset = 12 + program_info_length
     # ES loop ends before the 4-byte CRC.
-    section_end = section + 3 + section_length - 4
+    section_end = end - 4
     if offset > section_end:
         return None
 
     streams = []
     while offset + 4 < section_end:
-        stream_type = packet[offset]
-        es_pid = ((packet[offset + 1] & 0x1F) << 8) | packet[offset + 2]
-        es_info_length = ((packet[offset + 3] & 0x0F) << 8) | packet[offset + 4]
+        stream_type = section[offset]
+        es_pid = ((section[offset + 1] & 0x1F) << 8) | section[offset + 2]
+        es_info_length = ((section[offset + 3] & 0x0F) << 8) | section[offset + 4]
         entry_end = offset + 5 + es_info_length
         if entry_end > section_end:
             # Truncated descriptor inside an otherwise sized section: refuse.
             return None
-        streams.append((stream_type, es_pid))
+        streams.append((stream_type, es_pid, bytes(section[offset + 5:entry_end])))
         offset = entry_end
     return streams
+
+
+class PsiSectionAssembler:
+    """Reassemble one PID's PSI sections across TS packets.
+
+    A PMT section is capped at 1024 bytes, so a program with many audio,
+    subtitle, or CA descriptors spans multiple 188-byte packets. The first
+    packet carries a pointer_field and the section start; the rest continue
+    the payload. ``push`` returns each section only once it is complete, along
+    with the TS packets that carried it, so callers never parse a partial ES loop.
+    """
+
+    def __init__(self):
+        self._reset()
+
+    def _reset(self):
+        self._active = False
+        self._buf = bytearray()
+        self._packets = []
+
+    def retag_origins(self, origin):
+        """Mark packets already held as not belonging to the buffer about to be scanned."""
+        self._packets = [(packet, origin) for packet, _ in self._packets]
+
+    def push(self, packet, origin=None):
+        """Feed one TS packet. Return [(section, [(packet, origin), ...]), ...]."""
+        base = packet_payload_offset(packet)
+        if base is None:
+            return []
+        payload = packet[base:]
+        if not payload:
+            return []
+        done = []
+        raw = bytes(packet)
+        if packet_pusi(packet):
+            pointer = payload[0]
+            if pointer > len(payload) - 1:
+                self._reset()
+                return []
+            if self._active and pointer:
+                # pointer_field is the tail of the previous section only.
+                self._buf.extend(payload[1:1 + pointer])
+                self._packets.append((raw, origin))
+                done.extend(self._drain_complete(one=True))
+            # One payload may hold several sections back to back. Stuffing
+            # (0xFF) ends the packet; anything else is the next section.
+            rest = payload[1 + pointer:]
+            self._active = True
+            self._buf = bytearray(rest)
+            self._packets = [(raw, origin)]
+            done.extend(self._drain_complete())
+        elif self._active:
+            self._buf.extend(payload)
+            self._packets.append((raw, origin))
+            done.extend(self._drain_complete())
+        return done
+
+    def _drain_complete(self, one=False):
+        """Yield every finished section still in the buffer.
+
+        An unfinished tail stays buffered. ``one`` stops after a single
+        section, used for the pointer_field tail of the previous section.
+        """
+        done = []
+        while True:
+            if len(self._buf) < 3 or self._buf[0] == 0xFF:
+                if self._buf[:1] == b"\xff":
+                    self._buf.clear()
+                break
+            # section_length is 12 bits; a PSI section is at most 1024 bytes.
+            need = 3 + (((self._buf[1] & 0x0F) << 8) | self._buf[2])
+            if need < 16 or need > 1024:
+                self._reset()
+                break
+            if len(self._buf) < need:
+                break
+            section = bytes(self._buf[:need])
+            packets = list(self._packets)
+            del self._buf[:need]
+            done.append((section, packets))
+            if self._buf and self._packets:
+                # The next section starts in the packet that finished this one.
+                self._packets = [self._packets[-1]]
+            if one:
+                break
+        if not self._buf:
+            self._active = False
+            self._packets = []
+        return done
+
+
+def parse_pmt_streams(packet):
+    """Return [(stream_type, es_pid), ...] from a PMT packet, or None if unparseable.
+
+    Returns None unless the whole section is in this one packet. A PMT that
+    spans packets has to be reassembled with PsiSectionAssembler, because the
+    ES loop in the first packet alone is not the program.
+    """
+    done = PsiSectionAssembler().push(packet)
+    if len(done) != 1:
+        return None
+    streams = parse_pmt_section(done[0][0])
+    if streams is None:
+        return None
+    return [(stream_type, es_pid) for stream_type, es_pid, _ in streams]
 
 
 def parse_pmt(packet):
@@ -492,6 +590,7 @@ class TSSegmenter:
         self._current = bytearray()
         self._pat_packet = None
         self._pmt_packet = None
+        self._pmt_sections = PsiSectionAssembler()
         self._pmt_pid = None
         self._video_pid = None
         self._video_stream_type = None
@@ -594,40 +693,49 @@ class TSSegmenter:
                 self._pmt_pid = parse_pat(packet)
             return None
         if self._pmt_pid is not None and pid == self._pmt_pid:
-            self._pmt_packet = packet
-            streams = parse_pmt_streams(packet)
-            if streams is None:
-                return None
-            video_pid, stream_type = None, None
-            audio_pid = None
-            for st, es_pid in streams:
-                if video_pid is None and st in VIDEO_STREAM_TYPES:
-                    video_pid, stream_type = es_pid, st
-                elif audio_pid is None and st in AUDIO_STREAM_TYPES:
-                    audio_pid = es_pid
-            if video_pid is not None:
-                # Re-learned continuously so PID/codec changes across
-                # provider failovers are tolerated.
-                if (
-                    video_pid != self._video_pid
-                    or stream_type != self._video_stream_type
-                ):
-                    self._param_sets = {}
-                self._video_pid = video_pid
-                self._video_stream_type = stream_type
-                self._audio_only = False
-                self._audio_pid = audio_pid
-            elif audio_pid is not None:
-                # PMT listed elementary streams with no video: audio-only
-                # (radio / music channels). Decide immediately from the table;
-                # do not wait for a video PID that will never arrive.
-                self._audio_pid = audio_pid
-                self._audio_only = True
-                self._video_pid = None
-                self._video_stream_type = None
-                self._param_sets = {}
+            # A PMT section can span packets. Learn the program only from a
+            # complete section, and keep every packet of it so a segment can
+            # be prefixed with the whole table.
+            for section, packets in self._pmt_sections.push(packet):
+                streams = parse_pmt_section(section)
+                if streams is None:
+                    continue
+                self._pmt_packet = b"".join(pkt for pkt, _origin in packets)
+                self._apply_pmt_streams(streams)
             return None
+        return self._handle_media_packet(packet, pid)
 
+    def _apply_pmt_streams(self, streams):
+        video_pid, stream_type = None, None
+        audio_pid = None
+        for st, es_pid, _descriptors in streams:
+            if video_pid is None and st in VIDEO_STREAM_TYPES:
+                video_pid, stream_type = es_pid, st
+            elif audio_pid is None and st in AUDIO_STREAM_TYPES:
+                audio_pid = es_pid
+        if video_pid is not None:
+            # Re-learned continuously so PID/codec changes across
+            # provider failovers are tolerated.
+            if (
+                video_pid != self._video_pid
+                or stream_type != self._video_stream_type
+            ):
+                self._param_sets = {}
+            self._video_pid = video_pid
+            self._video_stream_type = stream_type
+            self._audio_only = False
+            self._audio_pid = audio_pid
+        elif audio_pid is not None:
+            # PMT listed elementary streams with no video: audio-only
+            # (radio / music channels). Decide immediately from the table;
+            # do not wait for a video PID that will never arrive.
+            self._audio_pid = audio_pid
+            self._audio_only = True
+            self._video_pid = None
+            self._video_stream_type = None
+            self._param_sets = {}
+
+    def _handle_media_packet(self, packet, pid):
         if self._video_pid is None and not self._audio_only:
             return None
 

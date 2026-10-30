@@ -7,6 +7,7 @@ from django.test import TestCase
 from apps.proxy.live_proxy.constants import TS_PACKET_SIZE
 from apps.proxy.live_proxy.input.buffer import StreamBuffer
 from apps.proxy.live_proxy.input.ts_discontinuity import packet_has_discontinuity_indicator
+from apps.proxy.live_proxy.redis_keys import RedisKeys
 
 
 CHANNEL_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -81,6 +82,10 @@ class _FakePipeline:
 
     def set(self, *a):
         self.ops.append(("set", a))
+        return self
+
+    def get(self, *a):
+        self.ops.append(("get", a))
         return self
 
     def zadd(self, *a):
@@ -194,3 +199,127 @@ class MarkDiscontinuityTests(TestCase):
         self.assertEqual(buf.index, 2)
         self.assertIn(f"{buf.buffer_prefix}2", redis.kv)
         self.assertNotIn(f"{buf.buffer_prefix}3", redis.kv)
+
+
+class IndexedClientDataTests(TestCase):
+    """Indexed reads keep Redis indices, and small chunks fill toward 1MB."""
+
+    def _buffer_with_chunks(self, present, head, size=TS_PACKET_SIZE, size_at=None):
+        """Seed ``present`` chunk indices (1-based). ``head`` is the buffer index."""
+        redis = _FakeRedis()
+        redis.kv[RedisKeys.buffer_index(CHANNEL_ID)] = str(head)
+        redis._index = head
+        size_at = size_at or {}
+        prefix = RedisKeys.buffer_chunk_prefix(CHANNEL_ID)
+        for idx in present:
+            n = size_at.get(idx, size)
+            redis.kv[f"{prefix}{idx}"] = b"\x47" + b"\x00" * (n - 1)
+        buf = StreamBuffer(CHANNEL_ID, redis_client=redis)
+        buf.index = head
+        return buf
+
+    def test_primary_batch_new_index_covers_holes(self):
+        # Hole at 3: hits are 1,2,4,5. new_index must still land at 5 so 3 is not re-read.
+        buf = self._buffer_with_chunks([1, 2, 4, 5], head=5)
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual([i for i, _ in indexed], [1, 2, 4, 5])
+        self.assertEqual(new_index, 5)
+
+    def test_small_chunks_keep_reading_until_the_target(self):
+        # 20KB * 20 = 400KB, under the 1MB target, so reading continues.
+        # Three batches is 1.2MB and the fourth batch must stay unread.
+        buf = self._buffer_with_chunks(list(range(1, 81)), head=80, size=20 * 1024)
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual([i for i, _ in indexed], list(range(1, 61)))
+        self.assertEqual(new_index, 60)
+        chunks, plain_index = buf.get_optimized_client_data(0)
+        self.assertEqual(len(chunks), 60)
+        self.assertEqual(plain_index, 60)
+
+    def test_batch_already_over_target_does_not_read_further(self):
+        # 60KB * 20 = 1.2MB. The extra-read path must not run, which is the
+        # steady state for the default ~1MB buffer chunks.
+        buf = self._buffer_with_chunks(list(range(1, 41)), head=40, size=60 * 1024)
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual([i for i, _ in indexed], list(range(1, 21)))
+        self.assertEqual(new_index, 20)
+
+    def test_additional_batch_over_the_size_cap_is_left_unread(self):
+        # 40KB * 20 = 800KB, then 100KB * 20 would push the read past 2MB.
+        small = 40 * 1024
+        large = 100 * 1024
+        buf = self._buffer_with_chunks(
+            list(range(1, 41)),
+            head=40,
+            size=small,
+            size_at={i: large for i in range(21, 41)},
+        )
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual([i for i, _ in indexed], list(range(1, 21)))
+        self.assertEqual(new_index, 20)
+        # The next read takes the large chunks as its first batch.
+        indexed, new_index = buf.get_optimized_client_data_indexed(new_index)
+        self.assertEqual([i for i, _ in indexed], list(range(21, 41)))
+        self.assertEqual(new_index, 40)
+
+    def test_hole_in_a_later_batch_is_skipped_and_reading_continues(self):
+        present = list(range(1, 21)) + list(range(41, 81))
+        buf = self._buffer_with_chunks(present, head=80, size=20 * 1024)
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        ids = [i for i, _ in indexed]
+        self.assertEqual(ids, present)
+        self.assertEqual(new_index, 80)
+        self.assertNotIn(25, ids)
+        self.assertIn(41, ids)
+
+    def test_failed_additional_read_does_not_skip_ahead(self):
+        buf = self._buffer_with_chunks(list(range(1, 41)), head=40)
+        real = buf._get_chunks_exact_indexed
+
+        def flaky(start_index, count):
+            flaky.calls += 1
+            if flaky.calls > 1:
+                return None
+            return real(start_index, count)
+
+        flaky.calls = 0
+        buf._get_chunks_exact_indexed = flaky
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual([i for i, _ in indexed], list(range(1, 21)))
+        self.assertEqual(new_index, 20)
+
+        buf._get_chunks_exact_indexed = real
+        indexed, new_index = buf.get_optimized_client_data_indexed(new_index)
+        self.assertEqual([i for i, _ in indexed], list(range(21, 41)))
+        self.assertEqual(new_index, 40)
+
+    def test_failed_first_read_does_not_skip_ahead(self):
+        # A small backlog used to advance past unread chunks when Redis failed,
+        # because the empty-list path only held the index when way behind.
+        buf = self._buffer_with_chunks([1, 2, 3, 4, 5], head=5)
+        buf._get_chunks_exact_indexed = lambda *_a, **_k: None
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual(indexed, [])
+        self.assertEqual(new_index, 0)
+
+        buf = self._buffer_with_chunks([1, 2, 3, 4, 5], head=5)
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual([i for i, _ in indexed], [1, 2, 3, 4, 5])
+        self.assertEqual(new_index, 5)
+
+    def test_tiny_chunks_stop_at_the_per_call_ceiling(self):
+        # 188-byte chunks never reach 1MB. Reading must still stop after 100
+        # chunks rather than issue a Redis round-trip per 20 until the head.
+        buf = self._buffer_with_chunks(list(range(1, 501)), head=500)
+        calls = []
+        real = buf._get_chunks_exact_indexed
+
+        def counting(start_index, count):
+            calls.append((start_index, count))
+            return real(start_index, count)
+
+        buf._get_chunks_exact_indexed = counting
+        indexed, new_index = buf.get_optimized_client_data_indexed(0)
+        self.assertEqual([i for i, _ in indexed], list(range(1, 101)))
+        self.assertEqual(new_index, 100)
+        self.assertEqual(len(calls), 5)  # 5 batches of 20
