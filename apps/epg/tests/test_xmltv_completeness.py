@@ -28,6 +28,11 @@ TRUNCATED_XML = (
     '    <sub-title>Cut off mid'
 )
 
+CLOUDFLARE_EMAIL_DECODE = (
+    b'<script data-cfasync="false" '
+    b'src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script>'
+)
+
 
 class XmltvFileIsCompleteTests(TestCase):
     def test_complete_file_passes(self):
@@ -63,6 +68,55 @@ class XmltvFileIsCompleteTests(TestCase):
             path = handle.name
         try:
             self.assertTrue(_xmltv_file_is_complete(path))
+        finally:
+            os.unlink(path)
+
+    def test_cdn_markup_after_root_still_passes(self):
+        """Cloudflare appends its email-decode script to guides served as text/html."""
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as handle:
+            handle.write(
+                b'<?xml version="1.0"?><tv><channel id="a"/></tv>'
+                + CLOUDFLARE_EMAIL_DECODE
+            )
+            path = handle.name
+        try:
+            self.assertTrue(_xmltv_file_is_complete(path))
+        finally:
+            os.unlink(path)
+
+    def test_inline_script_after_root_still_passes(self):
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as handle:
+            handle.write(
+                b'<?xml version="1.0"?><tv><channel id="a"/></tv>\n'
+                b'<script>if (a < b) { f("<x>"); }</script>\n'
+            )
+            path = handle.name
+        try:
+            self.assertTrue(_xmltv_file_is_complete(path))
+        finally:
+            os.unlink(path)
+
+    def test_closing_tag_inside_cut_off_cdata_fails(self):
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as handle:
+            handle.write(
+                b'<?xml version="1.0"?><tv><programme channel="a">'
+                b'<desc><![CDATA[ends with </tv> but the file was cut'
+            )
+            path = handle.name
+        try:
+            self.assertFalse(_xmltv_file_is_complete(path))
+        finally:
+            os.unlink(path)
+
+    def test_guide_elements_after_closing_tag_fail(self):
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as handle:
+            handle.write(
+                b'<?xml version="1.0"?><tv><channel id="a"/></tv>\n'
+                b'<tv><programme channel="a"><title>X'
+            )
+            path = handle.name
+        try:
+            self.assertFalse(_xmltv_file_is_complete(path))
         finally:
             os.unlink(path)
 
@@ -178,6 +232,20 @@ class FetchXmltvCompletenessTests(TestCase):
 
     @patch('apps.epg.tasks.send_epg_update')
     @patch('apps.epg.tasks.requests.get')
+    def test_download_with_cdn_trailer_replaces_cache(self, mock_get, _send):
+        body = b'<?xml version="1.0"?><tv><channel id="new"/></tv>' + CLOUDFLARE_EMAIL_DECODE
+        mock_get.return_value = self._mock_response(body)
+
+        result = fetch_xmltv(self.source)
+
+        self.assertTrue(result)
+        with open(self.good_xml, 'rb') as handle:
+            self.assertIn(b'<channel id="new"/>', handle.read())
+        self.source.refresh_from_db()
+        self.assertNotEqual(self.source.status, EPGSource.STATUS_ERROR)
+
+    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.tasks.requests.get')
     def test_truncated_gzip_keeps_previous_cache(self, mock_get, _send):
         # Valid gzip header/body that decompresses to truncated XML.
         truncated = b'<?xml version="1.0"?><tv><programme channel="a"><title>X'
@@ -241,6 +309,31 @@ class ParseProgramsRejectsIncompleteXmlTests(TestCase):
         self.assertEqual(ProgramData.objects.get(epg=self.mapped_epg).title, 'Keep Me')
         self.source.refresh_from_db()
         self.assertEqual(self.source.status, EPGSource.STATUS_ERROR)
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_cdn_trailer_after_root_still_parses(self, _send, _log):
+        handle = tempfile.NamedTemporaryFile(mode='wb', suffix='.xml', delete=False)
+        handle.write(
+            (
+                '<?xml version="1.0" encoding="UTF-8"?>\n<tv>\n'
+                f'  <programme start="{self.start}" stop="{self.stop}" channel="mapped.channel">'
+                '<title>New Show</title></programme>\n</tv>'
+            ).encode('utf-8')
+            + CLOUDFLARE_EMAIL_DECODE
+        )
+        handle.close()
+        self.xml_path = handle.name
+        self.source.file_path = self.xml_path
+        self.source.save(update_fields=['file_path'])
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        self.assertEqual(
+            list(ProgramData.objects.filter(epg=self.mapped_epg).values_list('title', flat=True)),
+            ['New Show'],
+        )
 
     @patch('apps.epg.tasks.log_system_event')
     @patch('apps.epg.tasks.send_epg_update')
