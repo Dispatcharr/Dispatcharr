@@ -102,6 +102,16 @@ class TitleCleanupTests(SimpleTestCase):
 
 class LibraryTMDBTests(SimpleTestCase):
 
+    def test_credential_validation_uses_authentication_endpoint_for_both_formats(self):
+        for token in ("a" * 32, "a" * 100):
+            client = Client(token)
+            with patch.object(client, "get", return_value={"success": True}) as get:
+                client.validate()
+                get.assert_called_once_with("authentication")
+            with patch.object(client, "get", return_value={"success": False}):
+                with self.assertRaises(TMDBAuthenticationError):
+                    client.validate()
+
     def test_details_keep_more_than_two_languages_with_one_request(self):
         client = Client("synthetic-token")
         payload = {

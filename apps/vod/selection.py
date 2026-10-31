@@ -39,6 +39,46 @@ def resolve_content(content_type, identifier, *, by_uuid=False):
     return model.objects.filter(pk=alias.target_id).first(), alias.requirements or {}
 
 
+def content_is_blocked(content):
+    """A canonical output block applies to every source and every series episode.
+
+    Metadata protection is unrelated. Management can still inspect and edit a
+    blocked title, but client catalogs, details and playback must fail closed.
+    """
+    from .models import Episode, Movie, Series
+
+    if isinstance(content, (Movie, Series)):
+        return content.library_blocked
+    return isinstance(content, Episode) and content.series.library_blocked
+
+
+def available_source_relations(relations):
+    """Global blocks are mandatory before any present or future profile rules."""
+    from django.db.models import QuerySet
+
+    from .models import M3UEpisodeRelation, M3UMovieRelation, M3USeriesRelation
+
+    paths = {
+        M3UMovieRelation: "movie__library_blocked",
+        M3USeriesRelation: "series__library_blocked",
+        M3UEpisodeRelation: "episode__series__library_blocked",
+    }
+    if isinstance(relations, QuerySet) and relations.model in paths:
+        return list(relations.filter(**{paths[relations.model]: False}))
+    rows = list(relations)
+    blocked = set()
+    for model, path in paths.items():
+        ids = [row.pk for row in rows if isinstance(row, model)]
+        if ids:
+            blocked.update(
+                (model, pk)
+                for pk in model.objects.filter(pk__in=ids, **{path: True}).values_list(
+                    "pk", flat=True
+                )
+            )
+    return [row for row in rows if (type(row), getattr(row, "pk", None)) not in blocked]
+
+
 def source_candidates(
     relations, *, requirements=None, preferred_relation=None, preserve_selection=True
 ):
@@ -48,7 +88,7 @@ def source_candidates(
     been selected, capacity fallback cannot silently lose its known languages,
     resolution or video features. This is not mid-stream/file-level failover.
     """
-    relations = list(relations)
+    relations = available_source_relations(relations)
     mapping = category_metadata_map(relations)
     metadata = {
         relation.id: effective_source_metadata(

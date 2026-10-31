@@ -14,6 +14,7 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
 from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
+from apps.vod.selection import content_is_blocked, resolve_content
 from apps.m3u.models import M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
@@ -285,7 +286,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 content_type,
             )
 
-    if content_obj is None:
+    if content_obj is None or content_is_blocked(content_obj):
         return None, None, []
     if content_type == 'series':
         content_obj = content_obj.episodes.order_by('season_number', 'episode_number', 'pk').first()
@@ -564,6 +565,9 @@ def stream_vod(
     user = _user_from_vod_request(request, user)
     if not _vod_playback_allowed(content_type, user):
         return JsonResponse({"error": "Forbidden"}, status=403)
+    content, _ = resolve_content(content_type, content_id, by_uuid=True)
+    if content_is_blocked(content):
+        return JsonResponse({"error": "Title not found"}, status=404)
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
@@ -801,6 +805,9 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
     user = _user_from_vod_request(request)
     if not _vod_playback_allowed(content_type, user):
         return JsonResponse({"error": "Forbidden"}, status=403)
+    content, _ = resolve_content(content_type, content_id, by_uuid=True)
+    if content_is_blocked(content):
+        return JsonResponse({"error": "Title not found"}, status=404)
 
     logger.info(f"[VOD-HEAD] HEAD request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
 
@@ -1333,8 +1340,15 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     from apps.vod.models import VODContentAlias
     from apps.vod.selection import resolve_content
     movie, requirements = resolve_content('movie', stream_id)
-    if movie is None or not movie.m3u_relations.filter(m3u_account__is_active=True).exists() or (
-        user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False) and movie.is_adult
+    if (
+        movie is None
+        or content_is_blocked(movie)
+        or not movie.m3u_relations.filter(m3u_account__is_active=True).exists()
+        or (
+            user.user_level < 10
+            and (user.custom_properties or {}).get('hide_adult_content', False)
+            and movie.is_adult
+        )
     ):
         return JsonResponse({"error": "Movie not found"}, status=404)
     alias = VODContentAlias.objects.filter(content_type='movie', legacy_id=stream_id).first()
@@ -1367,7 +1381,11 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     from apps.vod.models import VODContentAlias
     from apps.vod.selection import resolve_content
     episode, requirements = resolve_content('episode', stream_id)
-    if episode is None or not episode.m3u_relations.filter(m3u_account__is_active=True).exists():
+    if (
+        episode is None
+        or content_is_blocked(episode)
+        or not episode.m3u_relations.filter(m3u_account__is_active=True).exists()
+    ):
         return JsonResponse({"error": "Episode not found"}, status=404)
     alias = VODContentAlias.objects.filter(content_type='episode', legacy_id=stream_id).first()
 

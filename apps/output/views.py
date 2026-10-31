@@ -10,7 +10,13 @@ from apps.vod.metadata import (
     metadata_suffix, metadata_satisfies, requirements_from_metadata,
 )
 from apps.vod.references import output_references, selection_key
-from apps.vod.selection import resolve_content, select_source, source_candidates
+from apps.vod.presentation import canonical_title, canonical_title_expression
+from apps.vod.selection import (
+    content_is_blocked,
+    resolve_content,
+    select_source,
+    source_candidates,
+)
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -1162,14 +1168,20 @@ def _xc_fetch_priority_distinct_relations(
     pressure in Docker.
     """
     from django.db import connection, transaction
+    from apps.vod.library import library_settings
 
     narrow_qs = manager.filter(**rel_filters)
+    title = canonical_title_expression(
+        order_by_name_field.removesuffix('name'), library_settings()['languages']
+    )
+    available = {f"{order_by_name_field.removesuffix('name')}library_blocked": False}
 
     def _fetch_by_ids(ids):
         return list(
-            _xc_annotate_relation_artwork(manager.filter(pk__in=ids))
-            .values(*value_fields)
-            .order_by(Lower(order_by_name_field))
+            _xc_annotate_relation_artwork(manager.filter(pk__in=ids, **available))
+            .annotate(_library_title=title)
+            .values(*value_fields, '_library_title')
+            .order_by(Lower('_library_title'), 'id')
         )
 
     if connection.vendor == 'postgresql':
@@ -1190,14 +1202,16 @@ def _xc_fetch_priority_distinct_relations(
             return _fetch_by_ids(winning_ids)
 
     seen = {}
-    for row in _xc_annotate_relation_artwork(narrow_qs).values(*value_fields).order_by(
+    for row in _xc_annotate_relation_artwork(narrow_qs.filter(**available)).annotate(
+        _library_title=title
+    ).values(*value_fields, '_library_title').order_by(
         '-m3u_account__priority', 'id'
     ):
         key = row[distinct_field]
         if key not in seen:
             seen[key] = row
     rows = list(seen.values())
-    rows.sort(key=lambda r: (r[order_by_name_field] or '').lower())
+    rows.sort(key=lambda r: (r['_library_title'].lower(), r['id']))
     return rows
 
 
@@ -1213,6 +1227,7 @@ def xc_get_vod_categories(user):
     # Users with VOD access get it from all active M3U accounts
     categories = VODCategory.objects.filter(
         category_type='movie',
+        m3umovierelation__movie__library_blocked=False,
         m3umovierelation__m3u_account__is_active=True
     ).distinct().order_by(Lower("name"))
 
@@ -1269,7 +1284,7 @@ def xc_get_vod_streams(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": metadata_suffix(row['movie__name'], source_metadata[row['id']]),
+            "name": metadata_suffix(row['_library_title'], source_metadata[row['id']]),
             "stream_type": "movie",
             "stream_id": references[selection_key('movie', row['movie_id'], requirements_from_metadata(source_metadata[row['id']]))].legacy_id,
             "stream_icon": _xc_cover_or_logo(
@@ -1316,6 +1331,7 @@ def xc_get_series_categories(user):
     # Users with VOD access get series from all active M3U accounts
     categories = VODCategory.objects.filter(
         category_type='series',
+        m3useriesrelation__series__library_blocked=False,
         m3useriesrelation__m3u_account__is_active=True
     ).distinct().order_by(Lower("name"))
 
@@ -1369,7 +1385,7 @@ def xc_get_series(request, user, category_id=None):
 
         append({
             "num": num,
-            "name": metadata_suffix(row['series__name'], source_metadata[row['id']]),
+            "name": metadata_suffix(row['_library_title'], source_metadata[row['id']]),
             "series_id": references[selection_key('series', row['series_id'], requirements_from_metadata(source_metadata[row['id']]))].legacy_id,
             "cover": _xc_cover_or_logo(
                 request,
@@ -1418,7 +1434,7 @@ def xc_get_series_info(request, user, series_id):
         raise Http404()
 
     series, requirements = resolve_content('series', series_id)
-    if series is None:
+    if series is None or content_is_blocked(series):
         raise Http404()
     filters = {"series_id": series.pk, "m3u_account__is_active": True}
 
@@ -1665,10 +1681,12 @@ def xc_get_series_info(request, user, series_id):
     else:
         series_cover = None
 
+    from apps.vod.library import library_settings
+    title = canonical_title(series, library_settings()['languages'])
     info = {
         'seasons': seasons_list,
         "info": {
-            "name": metadata_suffix(series_data['name'], selected_metadata),
+            "name": metadata_suffix(title, selected_metadata),
             "cover": series_cover,
             "plot": series_data['description'],
             "cast": series_data['cast'],
@@ -1711,7 +1729,7 @@ def xc_get_vod_info(request, user, vod_id):
         raise Http404()
 
     movie, requirements = resolve_content('movie', vod_id)
-    if movie is None:
+    if movie is None or content_is_blocked(movie):
         raise Http404()
     filters = {"movie_id": movie.pk, "m3u_account__is_active": True}
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
@@ -1831,11 +1849,16 @@ def xc_get_vod_info(request, user, vod_id):
     else:
         movie_cover = None
 
+    # Provider detail responses must not replace the canonical presentation title.
+    from apps.vod.library import library_settings
+    title = metadata_suffix(
+        canonical_title(movie, library_settings()['languages']), selected_metadata
+    )
     # Transform API response to XtreamCodes format
     info = {
         "info": {
-            "name": metadata_suffix(movie_data.get('name', movie.name), selected_metadata),
-            "o_name": metadata_suffix(movie_data.get('name', movie.name), selected_metadata),
+            "name": title,
+            "o_name": title,
             "cover_big": movie_cover,
             "movie_image": movie_cover,
             'description': movie_data.get('description', ''),
@@ -1864,7 +1887,7 @@ def xc_get_vod_info(request, user, vod_id):
         },
         "movie_data": {
             "stream_id": int(vod_id),
-            "name": metadata_suffix(movie.name, selected_metadata),
+            "name": title,
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],

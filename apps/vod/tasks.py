@@ -1,4 +1,5 @@
 from celery import shared_task, current_app, group
+from celery.signals import worker_ready
 from django.utils import timezone
 from django.db import transaction, IntegrityError
 from django.db.models import F, OuterRef, Q, Subquery, TextField, Value
@@ -18,6 +19,15 @@ from .models import (
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
 from .metadata import update_declared_metadata
+from .identity import has_manual_source_assignment
+from .canonical_import import (
+    CanonicalImportIndex,
+    ImportTitleError,
+    coalesce_title_entries,
+    compatible_identity,
+    import_title,
+    title_key,
+)
 from .refresh_progress import VODRefreshProgress
 from apps.m3u.category_preview import (
     import_cached_categories, known_provider_total, remember_categories,
@@ -25,9 +35,47 @@ from apps.m3u.category_preview import (
 from datetime import datetime
 import logging
 import json
-import re
 
 logger = logging.getLogger(__name__)
+
+
+@worker_ready.connect
+def recover_library_outbox(**kwargs):
+    from .library_jobs import publish_pending_enrichment
+
+    publish_pending_enrichment()
+
+
+@shared_task(bind=True, max_retries=None)
+def dispatch_pending_library_enrichment(self):
+    from .library_jobs import dispatch_pending_enrichment
+
+    if not dispatch_pending_enrichment():
+        raise self.retry(countdown=30)
+
+
+@shared_task
+def refresh_library_provider_details(kind, relation_id, token):
+    from .provider_refresh import run_provider_refresh
+
+    return run_provider_refresh(kind, relation_id, token)
+
+
+@shared_task(bind=True)
+def enrich_vod_library(self, task_id):
+    """Run a durable, explicitly selected Library cleanup/enrichment job."""
+    from .library import run_library_job
+    from .models import VODMetadataState
+
+    try:
+        run_library_job(task_id)
+    except Exception:
+        VODMetadataState.objects.filter(pk=1, task_id=task_id).update(
+            status="failed", error="The library job failed; review the server log before retrying.",
+            completed_at=timezone.now(),
+        )
+        logger.exception("VOD Library job failed")
+        raise
 
 
 class _VODIdentityConflict(ValueError):
@@ -55,8 +103,10 @@ def _enrich_list_identities(existing_relations, entries, content_field):
     changed = False
     for provider_id, properties in entries:
         relation = existing_relations.get(provider_id)
-        if relation is None or not can_enrich(
-            getattr(relation, content_field), properties
+        if (
+            relation is None
+            or has_manual_source_assignment(relation)
+            or not can_enrich(getattr(relation, content_field), properties)
         ):
             continue
         # A preceding merge may have moved this source and deleted its cached
@@ -144,11 +194,15 @@ def refresh_vod_content(self, account_id):
 
     lock_renewer = TaskLockRenewer(lock_name, account_id)
     lock_renewer.start()
+    from .library_jobs import mark_library_refresh
+
     try:
+        mark_library_refresh(account_id, running=True)
         return _refresh_vod_content_impl(account_id)
     finally:
         lock_renewer.stop()
         release_task_lock(lock_name, account_id)
+        mark_library_refresh(account_id, running=False)
 
 
 def _refresh_vod_content_impl(account_id):
@@ -239,8 +293,27 @@ def _refresh_vod_content_impl(account_id):
         completion = f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
         logger.info(completion)
 
+        for scope, categories in zip(("movie", "series"), category_maps):
+            publish_live_filter_catalog(
+                account_id, getattr(categories, "catalog_stage", None), scope=scope
+            )
+            if isinstance(categories, CategoryImportMap):
+                categories.catalog_stage = None
+
+        # Recompute provider values once, after all selected categories were imported.
+        # Importing never protects a title; cleanup jobs, TMDB matches and edits do.
+        from .provider_metadata import reconcile_provider_metadata
+
+        for kind, source_model in (
+            ("movie", M3UMovieRelation), ("series", M3USeriesRelation)
+        ):
+            ids = source_model.objects.filter(
+                m3u_account_id=account_id, last_seen__gte=start_time
+            ).values_list(f"{kind}_id", flat=True)
+            reconcile_provider_metadata(kind, ids)
+
         from apps.m3u.refresh_metrics import record_refresh_metrics
-        record_refresh_metrics(
+        first_vod_import = record_refresh_metrics(
             account_id,
             "vod",
             {
@@ -257,16 +330,17 @@ def _refresh_vod_content_impl(account_id):
             end_time,
         )
 
-        for scope, categories in zip(("movie", "series"), category_maps):
-            publish_live_filter_catalog(
-                account_id, getattr(categories, "catalog_stage", None), scope=scope
-            )
-            if isinstance(categories, CategoryImportMap):
-                categories.catalog_stage = None
-
         # Send completion notification
         send_m3u_update(account_id, "vod_refresh", 100, status="success",
-                       message=f"VOD refresh completed in {duration:.2f} seconds")
+                       message=f"VOD refresh completed in {duration:.2f} seconds",
+                       first_vod_import=first_vod_import)
+
+        from .library import library_settings, selected_content
+        from .library_jobs import request_automatic_enrichment
+        if library_settings()["auto_enrich"] and library_settings()["token_configured"]:
+            refs = selected_content({"all_matching": True, "filters": {"account": account_id, "locked": "false", "metadata_status": "pending_lookup"}})
+            if refs:
+                request_automatic_enrichment(refs)
 
         return completion
 
@@ -387,6 +461,9 @@ def refresh_movies(
 ):
     """Refresh movies, reusing selected category previews or one full catalog."""
     logger.info(f"Refreshing movies for account {account.name}")
+    from .library import library_settings
+
+    identity_index = CanonicalImportIndex(Movie, library_settings())
 
     # Ensure "Uncategorized" category exists for movies without a category
     uncategorized_category, created = VODCategory.objects.get_or_create(
@@ -451,7 +528,14 @@ def refresh_movies(
         chunk_num = (i // chunk_size) + 1
 
         logger.info(f"Processing movie chunk {chunk_num}/{total_chunks} ({len(chunk)} movies)")
-        process_movie_batch(account, chunk, categories_by_provider, relations, scan_start_time)
+        process_movie_batch(
+            account,
+            chunk,
+            categories_by_provider,
+            relations,
+            scan_start_time,
+            identity_index=identity_index,
+        )
         if progress:
             processed = i + len(chunk)
             progress.send(
@@ -475,6 +559,9 @@ def refresh_series(
 ):
     """Refresh series, reusing selected category previews or one full catalog."""
     logger.info(f"Refreshing series for account {account.name}")
+    from .library import library_settings
+
+    identity_index = CanonicalImportIndex(Series, library_settings())
 
     # Ensure "Uncategorized" category exists for series without a category
     uncategorized_category, created = VODCategory.objects.get_or_create(
@@ -539,7 +626,14 @@ def refresh_series(
         chunk_num = (i // chunk_size) + 1
 
         logger.info(f"Processing series chunk {chunk_num}/{total_chunks} ({len(chunk)} series)")
-        process_series_batch(account, chunk, categories_by_provider, relations, scan_start_time)
+        process_series_batch(
+            account,
+            chunk,
+            categories_by_provider,
+            relations,
+            scan_start_time,
+            identity_index=identity_index,
+        )
         if progress:
             processed = i + len(chunk)
             progress.send(
@@ -703,7 +797,9 @@ def batch_create_categories(categories_data, category_type, account):
 
 @shared_task
 @transaction.atomic
-def process_movie_batch(account, batch, categories, relations, scan_start_time=None):
+def process_movie_batch(
+    account, batch, categories, relations, scan_start_time=None, identity_index=None
+):
     """Process a batch of movies using simple bulk operations like M3U processing"""
     logger.info(f"Processing movie batch of {len(batch)} movies for account {account.name}")
 
@@ -712,12 +808,21 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     relations_to_create = []
     relations_to_update = []
     movie_keys = {}  # For deduplication like M3U stream_hashes
+    from .library import library_settings
+
+    identity_index = identity_index or CanonicalImportIndex(Movie, library_settings())
+    settings = identity_index.settings
 
     # Account/provider identity stays stable when category metadata changes.
     batch_stream_ids = [str(movie_data.get('stream_id')) for movie_data in batch]
-    existing_relation_qs = M3UMovieRelation.objects.filter(
-        m3u_account=account, stream_id__in=batch_stream_ids
-    ).select_related('movie')
+    existing_relation_qs = (
+        M3UMovieRelation.objects.filter(
+            m3u_account=account, stream_id__in=batch_stream_ids
+        )
+        .select_related("movie")
+        .order_by("pk")
+        .select_for_update(of=("self",))
+    )
     existing_relations = {rel.stream_id: rel for rel in existing_relation_qs}
 
     # Process each movie in the batch
@@ -767,7 +872,15 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         continue
 
             # Extract metadata
-            year = extract_year_from_data(movie_data, 'name')
+            year = extract_year_from_data(
+                movie_data,
+                "name",
+                year_rules=settings["year_rules"],
+                removal_rules=settings.get("removal_rules"),
+            )
+            clean_title = import_title(
+                name, year, settings, relations.get(category.id) if category else None
+            )
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
@@ -779,8 +892,22 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Source languages and features never participate in content identity.
             existing_relation = existing_relations.get(stream_id)
-            if not tmdb_id and not imdb_id and existing_relation is not None:
+            if existing_relation is not None and has_manual_source_assignment(
+                existing_relation
+            ):
+                tmdb_id = (
+                    existing_relation.movie.tmdb_id
+                    or existing_relation.tmdb_override_id
+                    or None
+                )
+                imdb_id = existing_relation.movie.imdb_id
+                movie_key = ("override", existing_relation.movie_id)
+            elif not tmdb_id and not imdb_id and existing_relation is not None:
                 movie_key = ('existing', existing_relation.movie_id)
+                tmdb_id, imdb_id = (
+                    existing_relation.movie.tmdb_id,
+                    existing_relation.movie.imdb_id,
+                )
             elif not tmdb_id and not imdb_id and year is None:
                 movie_key = ('source', account.pk, stream_id)
             elif tmdb_id:
@@ -788,7 +915,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             elif imdb_id:
                 movie_key = ('imdb', str(imdb_id))
             else:
-                movie_key = ('name', name, year)
+                movie_key = ("name", title_key(clean_title), year)
 
             # Reuse props for this movie_key, but keep every distinct stream_id
             # so each still gets its own relation (same stream_id coalesces).
@@ -800,6 +927,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 incoming_props, incoming_logo = build_movie_list_props(
                     movie_data, name, year, tmdb_id, imdb_id,
                 )
+                incoming_props["clean_title"] = clean_title
                 merge_blank_vod_list_props(movie_keys[movie_key]['props'], incoming_props)
                 if not movie_keys[movie_key].get('logo_url') and incoming_logo:
                     movie_keys[movie_key]['logo_url'] = incoming_logo
@@ -808,6 +936,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             movie_props, logo_url = build_movie_list_props(
                 movie_data, name, year, tmdb_id, imdb_id,
             )
+            movie_props["clean_title"] = clean_title
 
             movie_keys[movie_key] = {
                 'props': movie_props,
@@ -820,11 +949,12 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 },
             }
 
-        except _VODIdentityConflict:
+        except (_VODIdentityConflict, ImportTitleError):
             raise
         except Exception as e:
             logger.error(f"Error preparing movie {movie_data.get('name', 'Unknown')}: {str(e)}")
 
+    coalesce_title_entries(movie_keys, identity_index, existing_relations, "movie")
     if _enrich_list_identities(
         existing_relations,
         (
@@ -877,21 +1007,38 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     existing_movies = {}
     for source in existing_relations.values():
         existing_movies[('existing', source.movie_id)] = source.movie
+        existing_movies[("override", source.movie_id)] = source.movie
 
     tmdb_ids = {data['props']['tmdb_id'] for data in movie_keys.values() if data['props'].get('tmdb_id')}
     imdb_ids = {data['props']['imdb_id'] for data in movie_keys.values() if data['props'].get('imdb_id')}
     for movie in Movie.objects.filter(Q(tmdb_id__in=tmdb_ids) | Q(imdb_id__in=imdb_ids)):
         _index_vod_row(movie, existing_movies)
 
-    # Exact name/year fallback only when external identity is absent.
-    name_year_keys = [k[1:] for k in movie_keys if k[0] == 'name']
-    for key_tuple, movie in lookup_by_name_year(Movie, name_year_keys).items():
-        existing_movies[('name', *key_tuple)] = movie
+    candidates, matches = identity_index.matches(
+        [data["props"] for data in movie_keys.values()]
+    )
+    for key, data in movie_keys.items():
+        candidate = candidates.get(matches.get(id(data["props"])))
+        if (
+            key not in existing_movies
+            and candidate is not None
+            and compatible_identity(vars(candidate), data["props"])
+        ):
+            existing_movies[key] = candidate
 
     # existing_relations was already prefetched above (before movie_keys was
     # built) so per-row identity could pin to it.
 
     # Process each movie
+    locked_movies = {
+        row.pk: row for row in Movie.objects.select_for_update().filter(
+            pk__in={row.pk for row in existing_movies.values()}
+        ).order_by("pk")
+    }
+    existing_movies = {
+        key: locked_movies[row.pk] for key, row in existing_movies.items()
+        if row.pk in locked_movies
+    }
     for movie_key, data in movie_keys.items():
         movie_props = data['props']
         logo_url = data.get('logo_url')
@@ -901,6 +1048,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             updated = False
 
             for field, value in movie_props.items():
+                if movie.tmdb_lookup_excluded and field not in {
+                    'tmdb_id', 'imdb_id', 'is_adult'
+                }:
+                    continue
                 if field == 'custom_properties':
                     # Merge custom_properties: fill director/actors/release_date
                     # only when empty; apply other non-blank list keys.
@@ -916,13 +1067,24 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     if merged != existing_cp:
                         movie.custom_properties = merged
                         updated = True
+                elif movie_key[0] == "override" and field in {
+                    "year",
+                    "tmdb_id",
+                    "imdb_id",
+                    "clean_title",
+                }:
+                    continue
+                elif field == "clean_title" and (
+                    movie.display_name or movie.tmdb_lookup_excluded
+                ):
+                    continue
                 elif should_apply_provider_list_field(getattr(movie, field), value):
                     setattr(movie, field, value)
                     updated = True
 
             # Handle logo assignment for existing movies
             logo_updated = False
-            if logo_url and len(logo_url) <= 500:
+            if not movie.tmdb_lookup_excluded and logo_url and len(logo_url) <= 500:
                 if logo_url in existing_logos:
                     new_logo = existing_logos[logo_url]
                     if movie.logo_id != new_logo.id:
@@ -932,7 +1094,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
                     movie._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
+            elif (
+                not movie.tmdb_lookup_excluded
+                and (not logo_url or len(logo_url) > 500) and movie.logo_id
+            ):
                 # Clear logo if no logo URL provided or URL is too long
                 movie._logo_to_update = None
                 logo_updated = True
@@ -1030,10 +1195,21 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             # Update existing movies
             if movies_to_update:
                 # First, update all fields except logo to avoid unsaved related object issues
-                Movie.objects.bulk_update(movies_to_update, [
-                    'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
-                    'duration_secs', 'is_adult', 'custom_properties'
-                ])
+                Movie.objects.bulk_update(
+                    movies_to_update,
+                    [
+                        "description",
+                        "rating",
+                        "genre",
+                        "year",
+                        "tmdb_id",
+                        "imdb_id",
+                        "duration_secs",
+                        "is_adult",
+                        "custom_properties",
+                        "clean_title",
+                    ],
+                )
 
                 # Handle logo updates separately to avoid bulk_update issues
                 for movie in movies_to_update:
@@ -1059,6 +1235,11 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     'movie', 'category', 'container_extension', 'custom_properties', 'last_seen', 'declared_metadata'
                 ])
 
+        from .provider_metadata import reconcile_provider_metadata
+
+        touched = {source.movie_id for source in relations_to_create + relations_to_update}
+        reconcile_provider_metadata("movie", touched)
+        identity_index.remember(Movie.objects.filter(pk__in=touched))
         logger.info("Movie batch processing completed successfully!")
         return f"Movie batch processed: {len(movies_to_create)} created, {len(movies_to_update)} updated"
 
@@ -1070,7 +1251,9 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
 @shared_task
 @transaction.atomic
-def process_series_batch(account, batch, categories, relations, scan_start_time=None):
+def process_series_batch(
+    account, batch, categories, relations, scan_start_time=None, identity_index=None
+):
     """Process a batch of series using simple bulk operations like M3U processing"""
     logger.info(f"Processing series batch of {len(batch)} series for account {account.name}")
 
@@ -1079,12 +1262,21 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     relations_to_create = []
     relations_to_update = []
     series_keys = {}  # For deduplication like M3U stream_hashes
+    from .library import library_settings
+
+    identity_index = identity_index or CanonicalImportIndex(Series, library_settings())
+    settings = identity_index.settings
 
     # Account/provider identity stays stable when category metadata changes.
     batch_series_ids = [str(series_data.get('series_id')) for series_data in batch]
-    existing_relation_qs = M3USeriesRelation.objects.filter(
-        m3u_account=account, external_series_id__in=batch_series_ids
-    ).select_related('series')
+    existing_relation_qs = (
+        M3USeriesRelation.objects.filter(
+            m3u_account=account, external_series_id__in=batch_series_ids
+        )
+        .select_related("series")
+        .order_by("pk")
+        .select_for_update(of=("self",))
+    )
     existing_relations = {rel.external_series_id: rel for rel in existing_relation_qs}
 
     # Process each series in the batch
@@ -1133,9 +1325,14 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                         continue
 
             # Extract metadata
-            year = extract_year(series_data.get('releaseDate', ''))
-            if not year and series_data.get('release_date'):
-                year = extract_year(series_data.get('release_date'))
+            year = extract_year_from_data(
+                series_data,
+                year_rules=settings["year_rules"],
+                removal_rules=settings.get("removal_rules"),
+            )
+            clean_title = import_title(
+                name, year, settings, relations.get(category.id) if category else None
+            )
 
             tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
@@ -1148,8 +1345,22 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Source languages and features never participate in content identity.
             existing_relation = existing_relations.get(series_id)
-            if not tmdb_id and not imdb_id and existing_relation is not None:
+            if existing_relation is not None and has_manual_source_assignment(
+                existing_relation
+            ):
+                tmdb_id = (
+                    existing_relation.series.tmdb_id
+                    or existing_relation.tmdb_override_id
+                    or None
+                )
+                imdb_id = existing_relation.series.imdb_id
+                series_key = ("override", existing_relation.series_id)
+            elif not tmdb_id and not imdb_id and existing_relation is not None:
                 series_key = ('existing', existing_relation.series_id)
+                tmdb_id, imdb_id = (
+                    existing_relation.series.tmdb_id,
+                    existing_relation.series.imdb_id,
+                )
             elif not tmdb_id and not imdb_id and year is None:
                 series_key = ('source', account.pk, series_id)
             elif tmdb_id:
@@ -1157,7 +1368,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             elif imdb_id:
                 series_key = ('imdb', str(imdb_id))
             else:
-                series_key = ('name', name, year)
+                series_key = ("name", title_key(clean_title), year)
 
             # Reuse props for this series_key, but keep every distinct series_id
             # so each still gets its own relation (same series_id coalesces).
@@ -1169,6 +1380,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 incoming_props, incoming_logo = build_series_list_props(
                     series_data, name, year, tmdb_id, imdb_id,
                 )
+                incoming_props["clean_title"] = clean_title
                 merge_blank_vod_list_props(series_keys[series_key]['props'], incoming_props)
                 if not series_keys[series_key].get('logo_url') and incoming_logo:
                     series_keys[series_key]['logo_url'] = incoming_logo
@@ -1177,6 +1389,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             series_props, logo_url = build_series_list_props(
                 series_data, name, year, tmdb_id, imdb_id,
             )
+            series_props["clean_title"] = clean_title
 
             series_keys[series_key] = {
                 'props': series_props,
@@ -1189,11 +1402,12 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 },
             }
 
-        except _VODIdentityConflict:
+        except (_VODIdentityConflict, ImportTitleError):
             raise
         except Exception as e:
             logger.error(f"Error preparing series {series_data.get('name', 'Unknown')}: {str(e)}")
 
+    coalesce_title_entries(series_keys, identity_index, existing_relations, "series")
     if _enrich_list_identities(
         existing_relations,
         (
@@ -1248,21 +1462,38 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     existing_series = {}
     for source in existing_relations.values():
         existing_series[('existing', source.series_id)] = source.series
+        existing_series[("override", source.series_id)] = source.series
 
     tmdb_ids = {data['props']['tmdb_id'] for data in series_keys.values() if data['props'].get('tmdb_id')}
     imdb_ids = {data['props']['imdb_id'] for data in series_keys.values() if data['props'].get('imdb_id')}
     for series in Series.objects.filter(Q(tmdb_id__in=tmdb_ids) | Q(imdb_id__in=imdb_ids)):
         _index_vod_row(series, existing_series)
 
-    # Exact name/year fallback only when external identity is absent.
-    name_year_keys = [k[1:] for k in series_keys if k[0] == 'name']
-    for key_tuple, series in lookup_by_name_year(Series, name_year_keys).items():
-        existing_series[('name', *key_tuple)] = series
+    candidates, matches = identity_index.matches(
+        [data["props"] for data in series_keys.values()]
+    )
+    for key, data in series_keys.items():
+        candidate = candidates.get(matches.get(id(data["props"])))
+        if (
+            key not in existing_series
+            and candidate is not None
+            and compatible_identity(vars(candidate), data["props"])
+        ):
+            existing_series[key] = candidate
 
     # existing_relations was already prefetched above (before series_keys was
     # built) so per-row identity could pin to it.
 
     # Process each series
+    locked_series = {
+        row.pk: row for row in Series.objects.select_for_update().filter(
+            pk__in={row.pk for row in existing_series.values()}
+        ).order_by("pk")
+    }
+    existing_series = {
+        key: locked_series[row.pk] for key, row in existing_series.items()
+        if row.pk in locked_series
+    }
     for series_key, data in series_keys.items():
         series_props = data['props']
         logo_url = data.get('logo_url')
@@ -1272,6 +1503,8 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             updated = False
 
             for field, value in series_props.items():
+                if series.tmdb_lookup_excluded and field not in {'tmdb_id', 'imdb_id'}:
+                    continue
                 if field == 'custom_properties':
                     existing_cp = series.custom_properties or {}
                     incoming_cp = value or {}
@@ -1282,13 +1515,24 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     if merged != existing_cp:
                         series.custom_properties = merged
                         updated = True
+                elif series_key[0] == "override" and field in {
+                    "year",
+                    "tmdb_id",
+                    "imdb_id",
+                    "clean_title",
+                }:
+                    continue
+                elif field == "clean_title" and (
+                    series.display_name or series.tmdb_lookup_excluded
+                ):
+                    continue
                 elif should_apply_provider_list_field(getattr(series, field), value):
                     setattr(series, field, value)
                     updated = True
 
             # Handle logo assignment for existing series
             logo_updated = False
-            if logo_url and len(logo_url) <= 500:
+            if not series.tmdb_lookup_excluded and logo_url and len(logo_url) <= 500:
                 if logo_url in existing_logos:
                     new_logo = existing_logos[logo_url]
                     if series.logo_id != new_logo.id:
@@ -1300,7 +1544,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
                     series._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and series.logo_id:
+            elif (
+                not series.tmdb_lookup_excluded
+                and (not logo_url or len(logo_url) > 500) and series.logo_id
+            ):
                 # Clear logo if no logo URL provided or URL is too long
                 series._logo_to_update = None
                 logo_updated = True
@@ -1398,10 +1645,19 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             # Update existing series
             if series_to_update:
                 # First, update all fields except logo to avoid unsaved related object issues
-                Series.objects.bulk_update(series_to_update, [
-                    'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
-                    'custom_properties'
-                ])
+                Series.objects.bulk_update(
+                    series_to_update,
+                    [
+                        "description",
+                        "rating",
+                        "genre",
+                        "year",
+                        "tmdb_id",
+                        "imdb_id",
+                        "custom_properties",
+                        "clean_title",
+                    ],
+                )
 
                 # Handle logo updates separately to avoid bulk_update issues
                 for series in series_to_update:
@@ -1427,6 +1683,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     'series', 'category', 'custom_properties', 'last_seen', 'declared_metadata'
                 ])
 
+        from .provider_metadata import reconcile_provider_metadata
+        touched = {source.series_id for source in relations_to_create + relations_to_update}
+        reconcile_provider_metadata("series", touched)
+        identity_index.remember(Series.objects.filter(pk__in=touched))
         logger.info("Series batch processing completed successfully!")
         return f"Series batch processed: {len(series_to_create)} created, {len(series_to_update)} updated"
 
@@ -1539,29 +1799,15 @@ def extract_year(date_string):
 
 
 def extract_year_from_title(title):
-    """Extract year from movie title if present"""
-    if not title:
-        return None
+    """Use the same release-year parser as Library cleanup."""
+    from .title_cleanup import extract_year_from_title as configured_year
 
-    # Pattern for (YYYY) format
-    pattern1 = r'\((\d{4})\)'
-    # Pattern for - YYYY format
-    pattern2 = r'\s-\s(\d{4})'
-    # Pattern for YYYY at the end
-    pattern3 = r'\s(\d{4})$'
-
-    for pattern in [pattern1, pattern2, pattern3]:
-        match = re.search(pattern, title)
-        if match:
-            year = int(match.group(1))
-            # Validate year is reasonable (between 1900 and current year + 5)
-            if 1900 <= year <= 2030:
-                return year
-
-    return None
+    return configured_year(title)
 
 
-def extract_year_from_data(data, title_key='name'):
+def extract_year_from_data(
+    data, title_key="name", *, year_rules=None, removal_rules=None
+):
     """Extract year from various data sources with fallback options"""
     try:
         # First try the year field
@@ -1569,13 +1815,13 @@ def extract_year_from_data(data, title_key='name'):
         if year and str(year).strip() and str(year).strip() != '':
             try:
                 year_int = int(year)
-                if 1900 <= year_int <= 2030:
+                if 1800 <= year_int <= timezone.now().year + 5:
                     return year_int
             except (ValueError, TypeError):
                 pass
 
         # Try releaseDate or release_date fields
-        for date_field in ['releaseDate', 'release_date']:
+        for date_field in ['releaseDate', 'release_date', 'releasedate', 'first_air_date']:
             date_value = data.get(date_field)
             if date_value and isinstance(date_value, str) and date_value.strip():
                 # Extract year from date format like "2011-09-19"
@@ -1583,7 +1829,7 @@ def extract_year_from_data(data, title_key='name'):
                     year_str = date_value.split('-')[0].strip()
                     if year_str:
                         year = int(year_str)
-                        if 1900 <= year <= 2030:
+                        if 1800 <= year <= timezone.now().year + 5:
                             return year
                 except (ValueError, IndexError):
                     continue
@@ -1591,6 +1837,13 @@ def extract_year_from_data(data, title_key='name'):
         # Finally try extracting from title
         title = data.get(title_key, '')
         if title and title.strip():
+            if year_rules is not None:
+                from .title_cleanup import (
+                    extract_year_from_title as configured_year,
+                    remove_title_text,
+                )
+
+                return configured_year(remove_title_text(title, removal_rules), year_rules)
             return extract_year_from_title(title)
 
     except Exception:
@@ -1680,28 +1933,6 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                             type(raw_info).__name__,
                         )
                     info = _coerce_provider_info(raw_info)
-                    if info:
-                        # Only update fields if new value is non-empty and either no existing value or existing value is empty
-                        updated = False
-                        if should_update_field(series.description, info.get('plot')):
-                            series.description = extract_string_from_array_or_string(info.get('plot'))
-                            updated = True
-                        normalized_rating = normalize_rating(info.get('rating'))
-                        if normalized_rating and (not series.rating or not str(series.rating).strip()):
-                            series.rating = normalized_rating
-                            updated = True
-                        if should_update_field(series.genre, info.get('genre')):
-                            series.genre = extract_string_from_array_or_string(info.get('genre'))
-                            updated = True
-
-                        year = extract_year_from_data(info)
-                        if year and not series.year:
-                            series.year = year
-                            updated = True
-
-                        if updated:
-                            series.save()
-
                     episodes_data = series_info.get('episodes') or {}
                 else:
                     episodes_data = {}
@@ -1766,6 +1997,9 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
             series_relation.custom_properties = custom_props
             update_declared_metadata(series_relation, info)
             series_relation.save()
+            from .provider_metadata import reconcile_provider_metadata
+
+            reconcile_provider_metadata("series", [series.pk])
 
     except Exception as e:
         logger.error(f"Error refreshing episodes for series {series.name}: {str(e)}")
@@ -2638,105 +2872,14 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                     movie_data = {}
                     logger.warning(f"VOD movie_data for stream {relation.stream_id} returned unexpected type: {type(movie_data_raw)}")
 
-                # Update Movie fields if changed
-                updated = False
-                custom_props = movie.custom_properties or {}
-                if info.get('plot') and info.get('plot') != movie.description:
-                    movie.description = info.get('plot')
-                    updated = True
-                normalized_rating = normalize_rating(info.get('rating'))
-                if normalized_rating and normalized_rating != movie.rating:
-                    movie.rating = normalized_rating
-                    updated = True
-                if info.get('genre') and info.get('genre') != movie.genre:
-                    movie.genre = info.get('genre')
-                    updated = True
-                # Keep an existing duration when the provider sends missing or
-                # invalid data, including 0. Only apply a successfully extracted value.
-                duration_secs = extract_duration_from_data(info)
-                if duration_secs is not None and duration_secs != movie.duration_secs:
-                    movie.duration_secs = duration_secs
-                    updated = True
-                # Check for releasedate or release_date
-                release_date_value = info.get('releasedate') or info.get('release_date')
-                if release_date_value:
-                    try:
-                        year = int(str(release_date_value).split('-')[0])
-                        if year != movie.year:
-                            movie.year = year
-                            updated = True
-                    except Exception:
-                        pass
-                # Handle TMDB/IMDB ID updates with duplicate key protection
-                tmdb_id_to_set = info.get('tmdb_id') if info.get('tmdb_id') and info.get('tmdb_id') != movie.tmdb_id else None
-                imdb_id_to_set = info.get('imdb_id') if info.get('imdb_id') and info.get('imdb_id') != movie.imdb_id else None
-
-                logger.debug(f"Movie {movie.id} current IDs: tmdb_id={movie.tmdb_id}, imdb_id={movie.imdb_id}")
-                logger.debug(f"IDs to set: tmdb_id={tmdb_id_to_set}, imdb_id={imdb_id_to_set}")
-
-                if tmdb_id_to_set or imdb_id_to_set:
-                    # Check for existing movies with these IDs and handle duplicates
-                    updated_movie, relation_updated = handle_movie_id_conflicts(
-                        movie, relation, tmdb_id_to_set, imdb_id_to_set
-                    )
-                    if relation_updated:
-                        # If the relation was updated to point to a different movie,
-                        # we need to update our reference and continue with that movie
-                        movie = updated_movie
-                        logger.info(f"Relation updated, now working with movie {movie.id}")
-                    else:
-                        # No relation update, safe to set the IDs
-                        if tmdb_id_to_set:
-                            movie.tmdb_id = tmdb_id_to_set
-                            updated = True
-                            logger.debug(f"Set tmdb_id {tmdb_id_to_set} on movie {movie.id}")
-                        if imdb_id_to_set:
-                            movie.imdb_id = imdb_id_to_set
-                            updated = True
-                            logger.debug(f"Set imdb_id {imdb_id_to_set} on movie {movie.id}")
-                if should_update_field(custom_props.get('youtube_trailer'), info.get('trailer')):
-                    custom_props['youtube_trailer'] = extract_string_from_array_or_string(info.get('trailer'))
-                    updated = True
-                if should_update_field(custom_props.get('youtube_trailer'), info.get('youtube_trailer')):
-                    custom_props['youtube_trailer'] = extract_string_from_array_or_string(info.get('youtube_trailer'))
-                    updated = True
-                if should_update_field(custom_props.get('backdrop_path'), info.get('backdrop_path')):
-                    backdrop_url = extract_string_from_array_or_string(info.get('backdrop_path'))
-                    custom_props['backdrop_path'] = [backdrop_url] if backdrop_url else None
-                    updated = True
-                for actors_key in ('actors', 'cast'):
-                    actors_raw = info.get(actors_key)
-                    if should_update_field(custom_props.get('actors'), actors_raw):
-                        if isinstance(actors_raw, list):
-                            custom_props['actors'] = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
-                        else:
-                            custom_props['actors'] = extract_string_from_array_or_string(actors_raw)
-                        updated = True
-                        break
-                if should_update_field(custom_props.get('director'), info.get('director')):
-                    custom_props['director'] = extract_string_from_array_or_string(info.get('director'))
-                    updated = True
-                if updated:
-                    # Clean custom_properties before saving to remove null/empty values
-                    movie.custom_properties = clean_custom_properties(custom_props)
-                    try:
-                        movie.save()
-                    except Exception as save_error:
-                        # If we still get an integrity error after our conflict resolution,
-                        # log it and try to save without the problematic IDs
-                        logger.error(f"Failed to save movie {movie.id} after conflict resolution: {str(save_error)}")
-                        if 'tmdb_id' in str(save_error) and movie.tmdb_id:
-                            logger.warning(f"Clearing tmdb_id {movie.tmdb_id} from movie {movie.id} due to save error")
-                            movie.tmdb_id = None
-                        if 'imdb_id' in str(save_error) and movie.imdb_id:
-                            logger.warning(f"Clearing imdb_id {movie.imdb_id} from movie {movie.id} due to save error")
-                            movie.imdb_id = None
-                        try:
-                            movie.save()
-                            logger.info(f"Successfully saved movie {movie.id} after clearing problematic IDs")
-                        except Exception as final_error:
-                            logger.error(f"Final save attempt failed for movie {movie.id}: {str(final_error)}")
-                            raise
+                # Identity remains separate from the canonical metadata lock.
+                if not has_manual_source_assignment(relation):
+                    tmdb_id = info.get('tmdb_id')
+                    imdb_id = info.get('imdb_id')
+                    if tmdb_id or imdb_id:
+                        movie, _ = handle_movie_id_conflicts(
+                            movie, relation, tmdb_id, imdb_id
+                        )
 
                 # Update relation custom_properties and last_advanced_refresh
                 relation_custom_props = relation.custom_properties or {}
@@ -2755,6 +2898,9 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                 update_declared_metadata(relation, info)
                 relation.last_advanced_refresh = now
                 relation.save(update_fields=['custom_properties', 'last_advanced_refresh', 'declared_metadata'])
+                from .provider_metadata import reconcile_provider_metadata
+
+                reconcile_provider_metadata("movie", [relation.movie_id])
 
         return "Advanced data refreshed."
     except Exception as e:

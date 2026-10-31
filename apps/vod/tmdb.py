@@ -446,6 +446,10 @@ class Client:
         rows = payload.get(key) or []
         return str(rows[0].get("id")) if len(rows) == 1 and rows[0].get("id") else ""
 
+    def validate(self):
+        if self.get("authentication").get("success") is not True:
+            raise TMDBAuthenticationError("TMDB rejected the configured API token")
+
     def search(self, query, year, media_type, languages):
         match_id, _status, _count = self.search_outcome(
             query, year, media_type, languages

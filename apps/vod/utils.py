@@ -58,6 +58,9 @@ def validate_category_custom_properties(props):
     props.update(validate_source_metadata(
         {key: props[key] for key in METADATA_FIELDS if key in props}, allow_reset=True
     ))
+    if "title_cleanup" in props:
+        from .title_cleanup import normalize_group_title_cleanup
+        props["title_cleanup"] = normalize_group_title_cleanup(props["title_cleanup"])
 
     return props
 

@@ -76,6 +76,7 @@ class VODProviderAccountSerializer(serializers.Serializer):
 
 
 class VODLogoSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True, allow_null=True)
     name = serializers.CharField()
     cache_url = serializers.SerializerMethodField()
     movie_count = serializers.SerializerMethodField(
@@ -195,7 +196,20 @@ class VODCategorySerializer(serializers.ModelSerializer):
         ]
 
 
-class SeriesSerializer(serializers.ModelSerializer):
+class LibraryPresentationMixin:
+    def to_representation(self, instance):
+        from .library import browse_document, library_settings
+
+        data = super().to_representation(instance)
+        if "library_settings" not in self.context:
+            self.context["library_settings"] = library_settings()
+        data.update(browse_document(
+            instance, self.context.get("request"), self.context["library_settings"]
+        ))
+        return data
+
+
+class SeriesSerializer(LibraryPresentationMixin, serializers.ModelSerializer):
     logo = VODLogoSerializer(read_only=True)
     episode_count = serializers.SerializerMethodField(
         help_text="Number of episodes in the series"
@@ -211,7 +225,7 @@ class SeriesSerializer(serializers.ModelSerializer):
         return obj.episodes.count()
 
 
-class MovieSerializer(serializers.ModelSerializer):
+class MovieSerializer(LibraryPresentationMixin, serializers.ModelSerializer):
     logo = VODLogoSerializer(read_only=True)
     custom_properties = serializers.JSONField(required=False, allow_null=True)
 
@@ -433,6 +447,9 @@ class EpisodeWithProvidersSerializer(EpisodeSerializer):
 class MovieProviderInfoSerializer(serializers.Serializer):
     """Response shape for GET /api/vod/movies/{id}/provider-info/."""
     id = serializers.IntegerField()
+    refresh_status = serializers.ChoiceField(
+        choices=["pending", "completed", "failed", "unavailable"], required=False
+    )
     uuid = serializers.UUIDField()
     stream_id = serializers.CharField()
     name = serializers.CharField()
@@ -499,6 +516,15 @@ class SeriesProviderInfoEpisodeSerializer(serializers.Serializer):
 
 
 class SeriesProviderInfoSerializer(serializers.Serializer):
+    refresh_status = serializers.ChoiceField(
+        choices=["pending", "completed", "failed", "unavailable"], required=False
+    )
+    director = serializers.CharField(required=False, allow_blank=True)
+    actors = serializers.CharField(required=False, allow_blank=True)
+    country = serializers.CharField(required=False, allow_blank=True)
+    age = serializers.CharField(required=False, allow_blank=True)
+    youtube_trailer = serializers.CharField(required=False, allow_blank=True)
+    release_date = serializers.CharField(required=False, allow_blank=True)
     """Response shape for GET /api/vod/series/{id}/provider-info/."""
     id = serializers.IntegerField()
     series_id = serializers.CharField()
@@ -527,7 +553,7 @@ class SeriesProviderInfoSerializer(serializers.Serializer):
 
 class UnifiedContentLogoSerializer(serializers.Serializer):
     """Logo shape returned by the unified content SQL list endpoint."""
-    id = serializers.IntegerField()
+    id = serializers.IntegerField(allow_null=True)
     name = serializers.CharField(allow_null=True)
     url = serializers.CharField(allow_null=True)
     cache_url = serializers.CharField()

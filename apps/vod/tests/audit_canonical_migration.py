@@ -24,9 +24,11 @@ def run():
     ) in executor.loader.applied_migrations:
         raise RuntimeError("Migration audit must start before VOD 0007.")
     head = executor.loader.graph.leaf_nodes()
-    before = [target for target in head if target[0] != "vod"] + [
-        ("vod", "0006_movie_series_language")
-    ]
+    # Later M3U policy migrations depend on the new VOD foundation. Starting
+    # with those leaves would request forwards and backwards in one plan.
+    # The historical VOD target brings its own dependencies; migrate all
+    # current leaves only after the old-schema fixtures have been created.
+    before = [("vod", "0006_movie_series_language")]
     executor.migrate(before)
     state = executor.loader.project_state(before).apps
     Account = state.get_model("m3u", "M3UAccount")

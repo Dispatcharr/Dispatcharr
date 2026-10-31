@@ -6,7 +6,8 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch, Q, Value
+from django.db.models.functions import Coalesce, Lower, NullIf
 import django_filters
 import logging
 from types import SimpleNamespace
@@ -51,13 +52,23 @@ from .image_proxy import (
 from core.image_proxy import RawImageContentNegotiationMixin
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from drf_spectacular.types import OpenApiTypes
-from .tasks import refresh_series_episodes, refresh_movie_advanced_data
 from .utils import is_vod_movies_enabled, is_vod_series_enabled, parse_category_filter_value
+from .provider_refresh import queue_provider_refresh
 from django.utils import timezone
 from datetime import timedelta
 from rest_framework.utils.urls import replace_query_param, remove_query_param
 
 logger = logging.getLogger(__name__)
+
+VOD_IMAGE_PARAMETERS = [
+    OpenApiParameter('kind', OpenApiTypes.STR, description='Stored image kind.'),
+    OpenApiParameter('index', OpenApiTypes.INT, description='Backdrop index.'),
+    OpenApiParameter('m3u_account_id', OpenApiTypes.INT, description='Provider account scope.'),
+    OpenApiParameter(
+        'relation_id', OpenApiTypes.INT,
+        description='Exact provider relation belonging to this movie, series or episode.',
+    ),
+]
 
 
 class SourceMetadataOptionsView(APIView):
@@ -158,9 +169,9 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
 
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = MovieFilter
-    search_fields = ['name', 'description', 'genre']
+    search_fields = ['name', 'display_name', 'clean_title', 'description', 'genre']
     ordering_fields = ['name', 'year', 'created_at']
-    ordering = ['name']
+    ordering = None
 
     def get_permissions(self):
         return permissions_for_action(self)
@@ -174,13 +185,20 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
         qs = Movie.objects.filter(
             m3u_relations__m3u_account__is_active=True
         ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
+        if user is None or user.user_level < 10:
+            qs = qs.filter(library_blocked=False)
         if (
             user is not None
             and user.user_level < 10
             and (user.custom_properties or {}).get('hide_adult_content', False)
         ):
             qs = qs.filter(is_adult=False)
-        return qs
+        title = Coalesce(
+            NullIf('display_name', Value('')),
+            NullIf('clean_title', Value('')),
+            'name',
+        )
+        return qs.order_by(Lower(title), 'id')
 
     @extend_schema(responses=M3UMovieRelationSerializer(many=True))
     @action(
@@ -231,7 +249,7 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
         permission_classes=[Authenticated],
     )
     def provider_info(self, request, pk=None):
-        """Get detailed movie information from the original provider, throttled to 24h."""
+        """Return stored details and queue missing/stale provider data in the background."""
         movie = self.get_object()
 
         relation_id = request.query_params.get('relation_id')
@@ -275,16 +293,11 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
             (now - relation.last_advanced_refresh).total_seconds() > 86400
         )
 
-        if needs_refresh:
-            # Trigger advanced data refresh
-            logger.debug(f"Refreshing advanced data for movie {movie.id} (relation ID: {relation.id})")
-            refresh_movie_advanced_data(relation.id, force_refresh=force_refresh)
+        refresh_status = queue_provider_refresh(
+            "movie", relation.id, required=needs_refresh, force=force_refresh
+        )
 
-            # Refresh objects from database after task completion
-            movie.refresh_from_db()
-            relation.refresh_from_db()
-
-        # Use refreshed data from database
+        # Imported/stored data remains available while the worker runs.
         custom_props = relation.custom_properties or {}
         info = custom_props.get('detailed_info', {})
         movie_data = custom_props.get('movie_data', {})
@@ -341,6 +354,7 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
         # Build response with available data, then coerce through the serializer so
         # runtime JSON types match the OpenAPI schema used by generated clients.
         response_data = {
+            'refresh_status': refresh_status,
             'id': movie.id,
             'uuid': movie.uuid,
             'stream_id': relation.stream_id,
@@ -379,8 +393,12 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
                 'account_type': relation.m3u_account.account_type
             }
         }
-        return Response(MovieProviderInfoSerializer(response_data).data)
+        from .library import overlay_provider_document
+        return Response(MovieProviderInfoSerializer(
+            overlay_provider_document(response_data, movie, request)
+        ).data)
 
+    @extend_schema(parameters=VOD_IMAGE_PARAMETERS)
     @action(detail=True, methods=['get'], url_path='image', permission_classes=[AllowAny])
     def image(self, request, pk=None):
         """Proxy a stored movie image (backdrop, movie_image, poster_path)."""
@@ -447,10 +465,14 @@ class EpisodeViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelView
             return Episode.objects.none()
 
         # Only return episodes that have active M3U relations
-        return Episode.objects.select_related('series').filter(
+        qs = Episode.objects.select_related('series').filter(
             m3u_relations__m3u_account__is_active=True
         ).distinct()
+        if user is None or user.user_level < 10:
+            qs = qs.filter(series__library_blocked=False)
+        return qs
 
+    @extend_schema(parameters=VOD_IMAGE_PARAMETERS)
     @action(detail=True, methods=['get'], url_path='image', permission_classes=[AllowAny])
     def image(self, request, pk=None):
         """Proxy a stored episode image (movie_image, backdrop, poster_path)."""
@@ -465,9 +487,9 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
 
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = SeriesFilter
-    search_fields = ['name', 'description', 'genre']
+    search_fields = ['name', 'display_name', 'clean_title', 'description', 'genre']
     ordering_fields = ['name', 'year', 'created_at']
-    ordering = ['name']
+    ordering = None
 
     def get_permissions(self):
         return permissions_for_action(self)
@@ -478,9 +500,17 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
             return Series.objects.none()
 
         # Only return series that have active M3U relations.
-        return Series.objects.filter(
+        qs = Series.objects.filter(
             m3u_relations__m3u_account__is_active=True
         ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
+        if user is None or user.user_level < 10:
+            qs = qs.filter(library_blocked=False)
+        title = Coalesce(
+            NullIf('display_name', Value('')),
+            NullIf('clean_title', Value('')),
+            'name',
+        )
+        return qs.order_by(Lower(title), 'id')
 
     @extend_schema(responses=M3USeriesRelationSerializer(many=True))
     @action(
@@ -607,6 +637,7 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
         try:
             # Check if we should refresh data (optional force refresh parameter)
             force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
+            explicit_force_refresh = force_refresh
             refresh_interval_hours = int(request.query_params.get("refresh_interval", 24))  # Default to 24 hours
 
             now = timezone.now()
@@ -625,17 +656,12 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
                 force_refresh = True
                 logger.debug(f"Series {series.id} refresh interval exceeded or never refreshed, forcing refresh")
 
-            if force_refresh:
-                logger.debug(f"Refreshing series {series.id} data from provider")
-                # Use existing refresh logic with external_series_id
-                from .tasks import refresh_series_episodes
-                account = relation.m3u_account
-                if account and account.is_active:
-                    refresh_series_episodes(account, series, relation.external_series_id)
-                    series.refresh_from_db()  # Reload from database after refresh
-                    relation.refresh_from_db()  # Reload relation too
+            refresh_status = queue_provider_refresh(
+                "series", relation.id,
+                required=force_refresh, force=explicit_force_refresh,
+            )
 
-            # Return the database data (which should now be fresh)
+            # Return stored data immediately; the client polls the pending worker.
             custom_props = relation.custom_properties or {}
             series_props = series.custom_properties or {}
             series_artwork = prefer_relation_artwork(custom_props, series_props)
@@ -694,6 +720,7 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
                     'name': relation.m3u_account.name,
                     'account_type': relation.m3u_account.account_type
                 },
+                'refresh_status': refresh_status,
                 'episodes_fetched': custom_props.get('episodes_fetched', False),
                 'detailed_fetched': custom_props.get('detailed_fetched', False)
             }
@@ -775,7 +802,10 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
 
             logger.debug(f"Returning series info response for series {series.id}")
             # Coerce through the serializer so runtime JSON types match OpenAPI.
-            return Response(SeriesProviderInfoSerializer(response_data).data)
+            from .library import overlay_provider_document
+            return Response(SeriesProviderInfoSerializer(
+                overlay_provider_document(response_data, series, request)
+            ).data)
 
         except Exception as e:
             logger.error(f"Error fetching series info for series {pk}: {str(e)}")
@@ -784,6 +814,7 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @extend_schema(parameters=VOD_IMAGE_PARAMETERS)
     @action(detail=True, methods=['get'], url_path='image', permission_classes=[AllowAny])
     def image(self, request, pk=None):
         """Proxy a stored series image (backdrop, movie_image, poster_path)."""
@@ -963,6 +994,10 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             movie_params = []
             series_params = []
 
+            if user is None or user.user_level < 10:
+                where_conditions[0] += " AND movies.library_blocked = false"
+                where_conditions[1] += " AND series.library_blocked = false"
+
             if not movies_allowed:
                 where_conditions[0] = "1=0"
             if not series_allowed:
@@ -971,11 +1006,11 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             if search:
                 search_param = f"%{search.lower()}%"
                 if movies_allowed:
-                    where_conditions[0] += " AND LOWER(movies.name) LIKE %s"
-                    movie_params.append(search_param)
+                    where_conditions[0] += " AND (LOWER(movies.name) LIKE %s OR LOWER(movies.display_name) LIKE %s OR LOWER(movies.clean_title) LIKE %s)"
+                    movie_params.extend([search_param] * 3)
                 if series_allowed:
-                    where_conditions[1] += " AND LOWER(series.name) LIKE %s"
-                    series_params.append(search_param)
+                    where_conditions[1] += " AND (LOWER(series.name) LIKE %s OR LOWER(series.display_name) LIKE %s OR LOWER(series.clean_title) LIKE %s)"
+                    series_params.extend([search_param] * 3)
 
             if category:
                 valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
@@ -1013,7 +1048,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 SELECT
                     movies.id,
                     movies.uuid,
-                    movies.name,
+                    COALESCE(NULLIF(movies.display_name, ''), NULLIF(movies.clean_title, ''), movies.name) AS name,
                     movies.description,
                     movies.year,
                     movies.rating,
@@ -1035,7 +1070,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 SELECT
                     series.id,
                     series.uuid,
-                    series.name,
+                    COALESCE(NULLIF(series.display_name, ''), NULLIF(series.clean_title, ''), series.name) AS name,
                     series.description,
                     series.year,
                     series.rating,
@@ -1104,6 +1139,23 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                         'content_type': item_dict['content_type']
                     }
                     results.append(formatted_item)
+
+            from .library import browse_document, library_settings
+            library_config = library_settings()
+            for kind, model in (("movie", Movie), ("series", Series)):
+                objects = model.objects.in_bulk(
+                    item["id"] for item in results
+                    if item["content_type"] == kind
+                )
+                for item in results:
+                    if item["content_type"] == kind:
+                        item.update(browse_document(
+                            objects[item["id"]], request, library_config
+                        ))
+                        try:
+                            item["rating"] = float(item["rating"] or 0)
+                        except (ValueError, TypeError):
+                            item["rating"] = 0.0
 
             # Get total count estimate (for pagination info)
             # Use a separate efficient count query

@@ -16,7 +16,7 @@ from core.image_proxy import serve_local_or_remote_image
 from core.utils import build_absolute_uri_with_port
 
 # Allowlisted kinds resolved from custom_properties on the parent object.
-VOD_IMAGE_KINDS = frozenset({"backdrop", "movie_image", "poster_path"})
+VOD_IMAGE_KINDS = frozenset({"backdrop", "movie_image", "poster_path", "tmdb_poster", "tmdb_backdrop"})
 
 
 def is_proxyable_image_url(url: str | None) -> bool:
@@ -98,8 +98,8 @@ def prefer_relation_artwork(relation_custom_properties, object_custom_properties
     return {"movie_image": movie_image, "backdrop_path": backdrop_path}
 
 
-def _best_image_relation(obj, m3u_account_id=None):
-    """Highest-priority active relation for obj, or a specific account when given."""
+def _best_image_relation(obj, m3u_account_id=None, relation_id=None):
+    """Resolve an active relation within its parent, account and optional exact ID."""
     from apps.vod.models import (
         Episode,
         Movie,
@@ -129,6 +129,8 @@ def _best_image_relation(obj, m3u_account_id=None):
 
     if m3u_account_id is not None:
         qs = qs.filter(m3u_account_id=m3u_account_id)
+    if relation_id is not None:
+        qs = qs.filter(pk=relation_id)
 
     return qs.order_by("-m3u_account__priority", "id").only("custom_properties").first()
 
@@ -153,7 +155,9 @@ def _url_from_props(props: dict, kind: str, index: int = 0) -> str | None:
     return url
 
 
-def resolve_vod_image_url(obj, kind: str, index: int = 0, m3u_account_id=None) -> str | None:
+def resolve_vod_image_url(
+    obj, kind: str, index: int = 0, m3u_account_id=None, relation_id=None
+) -> str | None:
     """Resolve a stored image URL for an allowlisted kind.
 
     Prefers artwork from the highest-priority active provider relation (or a
@@ -163,8 +167,26 @@ def resolve_vod_image_url(obj, kind: str, index: int = 0, m3u_account_id=None) -
     if kind not in VOD_IMAGE_KINDS:
         return None
 
+    if kind in {"tmdb_poster", "tmdb_backdrop"}:
+        if relation_id is not None:
+            return None
+        url = getattr(
+            obj,
+            "tmdb_poster_url" if kind == "tmdb_poster" else "tmdb_backdrop_url",
+            "",
+        )
+        return url if is_proxyable_image_url(url) else None
+
     if getattr(obj, "pk", None):
-        relation = _best_image_relation(obj, m3u_account_id=m3u_account_id)
+        relation = _best_image_relation(
+            obj, m3u_account_id=m3u_account_id, relation_id=relation_id
+        )
+        if relation_id is not None:
+            if relation is None:
+                return None
+            return _url_from_props(
+                get_relation_artwork(relation.custom_properties), kind, index
+            )
         if relation is not None:
             art = prefer_relation_artwork(relation.custom_properties, obj.custom_properties)
             # poster_path is only on shared object props today.
@@ -204,6 +226,7 @@ def format_vod_image_url(
     index: int = 0,
     source_url: str | None = None,
     m3u_account_id=None,
+    relation_id=None,
 ) -> str:
     """Assemble a proxy URL from precomputed prefix/suffix (no reverse)."""
     # Keep query building allocation-light for XC list hot paths.
@@ -212,6 +235,8 @@ def format_vod_image_url(
         parts.append(f"&index={index}")
     if m3u_account_id is not None:
         parts.append(f"&m3u_account_id={m3u_account_id}")
+    if relation_id is not None:
+        parts.append(f"&relation_id={relation_id}")
     if source_url:
         parts.append(f"&v={hashlib.md5(source_url.encode()).hexdigest()[:8]}")
     return "".join(parts)
@@ -271,6 +296,7 @@ def rewrite_single_image_url(
     *,
     url_parts: tuple[str, str] | None = None,
     m3u_account_id=None,
+    relation_id=None,
 ) -> str:
     """Rewrite a single absolute image URL to its parent-scoped proxy URL."""
     if not is_proxyable_image_url(url):
@@ -285,6 +311,7 @@ def rewrite_single_image_url(
         kind,
         source_url=url,
         m3u_account_id=m3u_account_id,
+        relation_id=relation_id,
     )
 
 
@@ -318,16 +345,28 @@ def vod_image_action(view, request, resource: str = ""):
     kind = request.query_params.get("kind", "backdrop")
     index = request.query_params.get("index", "0")
     account_id = request.query_params.get("m3u_account_id")
+    relation_id = request.query_params.get("relation_id")
+    if relation_id is not None:
+        try:
+            relation_id = int(relation_id)
+            if relation_id < 1:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise Http404("Image not found") from exc
     if account_id is not None:
         try:
             account_id = int(account_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            if relation_id is not None:
+                raise Http404("Image not found") from exc
             account_id = None
 
     if kind not in VOD_IMAGE_KINDS:
         raise Http404("Image not found")
 
-    url = resolve_vod_image_url(obj, kind, index, m3u_account_id=account_id)
+    url = resolve_vod_image_url(
+        obj, kind, index, m3u_account_id=account_id, relation_id=relation_id
+    )
     if not url:
         raise Http404("Image not found")
 

@@ -105,7 +105,9 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     This is treated as a singleton: only one instance should exist.
     """
 
-    queryset = CoreSettings.objects.all()
+    # The Library settings contain a TMDB credential. Only its dedicated
+    # admin endpoint may read it, and that endpoint returns configuration flags.
+    queryset = CoreSettings.objects.exclude(key="vod_library")
     serializer_class = CoreSettingsSerializer
 
     def get_permissions(self):

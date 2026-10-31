@@ -17,6 +17,7 @@ from rest_framework.test import APIClient
 
 from apps.m3u.models import M3UAccount
 from apps.vod.models import Episode, M3UEpisodeRelation, M3USeriesRelation, Series
+from apps.vod.provider_refresh import run_provider_refresh
 from apps.vod.tasks import (
     batch_process_episodes,
     batch_refresh_series_episodes,
@@ -214,26 +215,33 @@ class EmptyEpisodesFetchedGuardTests(TestCase):
         client.force_authenticate(user)
         url = f'/api/vod/series/{self.series.id}/provider-info/'
 
-        with patch('apps.vod.tasks.XtreamCodesClient') as provider, USER_AGENT_PATCH:
+        with patch('apps.vod.tasks.XtreamCodesClient') as provider, USER_AGENT_PATCH, patch('apps.vod.tasks.refresh_library_provider_details.delay') as publish:
             get_series_info = provider.return_value.__enter__.return_value.get_series_info
             get_series_info.return_value = {'info': {}, 'episodes': {}}
 
             first = client.get(url)
             self.assertEqual(first.status_code, 200)
+            self.assertEqual(first.data['refresh_status'], 'pending')
+            get_series_info.assert_not_called()
+            run_provider_refresh('series', self.relation.pk, publish.call_args.args[2])
+            first = client.get(url)
             self.assertFalse(first.data['episodes_fetched'])
             self.assertTrue(first.data['detailed_fetched'])
             self.assertEqual(first.data['episodes'], {})
 
-            second = client.get(url)
+            second = client.get(url, {'force_refresh': 'true'})
             self.assertEqual(second.status_code, 200)
+            run_provider_refresh('series', self.relation.pk, publish.call_args.args[2])
             self.assertEqual(get_series_info.call_count, 2)
 
             get_series_info.return_value = {
                 'info': {'plot': 'A show'},
                 'episodes': {'1': [_episode(101, 'S1E1', 1)]},
             }
-            third = client.get(url)
+            third = client.get(url, {'force_refresh': 'true'})
             self.assertEqual(third.status_code, 200)
+            run_provider_refresh('series', self.relation.pk, publish.call_args.args[2])
+            third = client.get(url)
             self.assertTrue(third.data['episodes_fetched'])
             self.assertTrue(third.data['detailed_fetched'])
             self.assertEqual(len(third.data['episodes']['1']), 1)
@@ -251,12 +259,15 @@ class EmptyEpisodesFetchedGuardTests(TestCase):
         client.force_authenticate(user)
         url = f'/api/vod/series/{self.series.id}/provider-info/'
 
-        with patch('apps.vod.tasks.XtreamCodesClient') as provider, USER_AGENT_PATCH:
+        with patch('apps.vod.tasks.XtreamCodesClient') as provider, USER_AGENT_PATCH, patch('apps.vod.tasks.refresh_library_provider_details.delay') as publish:
             get_series_info = provider.return_value.__enter__.return_value.get_series_info
             get_series_info.return_value = {
                 'info': {'plot': 'A show'},
                 'episodes': {'1': [_episode(101, 'S1E1', 1)]},
             }
+            first = client.get(url)
+            self.assertEqual(first.data['refresh_status'], 'pending')
+            run_provider_refresh('series', self.relation.pk, publish.call_args.args[2])
             first = client.get(url)
             self.assertEqual(len(first.data['episodes']['1']), 1)
 
@@ -265,6 +276,11 @@ class EmptyEpisodesFetchedGuardTests(TestCase):
             self.relation.save(update_fields=['last_episode_refresh'])
             get_series_info.return_value = {'info': {}, 'episodes': {}}
 
+            second = client.get(url)
+            self.assertEqual(second.data['refresh_status'], 'pending')
+            # Stored episodes remain visible while a background refresh runs.
+            self.assertEqual(len(second.data['episodes']['1']), 1)
+            run_provider_refresh('series', self.relation.pk, publish.call_args.args[2])
             second = client.get(url)
             self.assertEqual(second.status_code, 200)
             self.assertTrue(second.data['episodes_fetched'])

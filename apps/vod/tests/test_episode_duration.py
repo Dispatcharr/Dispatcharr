@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 
 from apps.m3u.models import M3UAccount
 from apps.vod.models import Episode, M3UEpisodeRelation, M3USeriesRelation, Series
+from apps.vod.provider_refresh import run_provider_refresh
 from apps.vod.tasks import MAX_DURATION_SECS, batch_process_episodes
 
 
@@ -100,7 +101,7 @@ class EpisodeDurationTests(TestCase):
         client.force_authenticate(user)
         url = f'/api/vod/series/{self.series.id}/provider-info/'
 
-        with patch('apps.vod.tasks.XtreamCodesClient') as provider:
+        with patch('apps.vod.tasks.XtreamCodesClient') as provider, patch('apps.vod.tasks.refresh_library_provider_details.delay') as publish:
             get_series_info = provider.return_value.__enter__.return_value.get_series_info
             get_series_info.return_value = {
                 'info': {'plot': 'Duration test plot'},
@@ -108,6 +109,10 @@ class EpisodeDurationTests(TestCase):
             }
             response = client.get(url)
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data['refresh_status'], 'pending')
+            get_series_info.assert_not_called()
+            run_provider_refresh('series', self.relation.pk, publish.call_args.args[2])
+            response = client.get(url)
             self.assertTrue(response.data['episodes_fetched'])
             self.assertEqual(
                 [episode['duration_secs'] for episode in response.data['episodes']['1']],

@@ -129,6 +129,11 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
         model = CoreSettings
         fields = "__all__"
 
+    def validate_key(self, value):
+        if value == "vod_library":
+            raise serializers.ValidationError("Use the VOD Library settings endpoint.")
+        return value
+
     def create(self, validated_data):
         if validated_data.get("key") == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))

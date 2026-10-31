@@ -3,6 +3,13 @@
 from django.db import transaction
 
 
+def has_manual_source_assignment(relation):
+    return bool(
+        relation.tmdb_override_id
+        or (relation.custom_properties or {}).get("_library_manual_assignment") is True
+    )
+
+
 def remember_alias(source, target, content_type, requirements=None):
     from .models import VODContentAlias
 
@@ -78,6 +85,9 @@ def handle_identity_conflicts(current, relation, tmdb_id, imdb_id):
             raise ValueError(
                 "Conflicting external identifiers; canonical merge aborted."
             )
+    from .library import merge_library_state
+
+    merge_library_state(current, rows)
     for donor in rows:
         if donor.pk == current.pk:
             continue
@@ -90,12 +100,15 @@ def handle_identity_conflicts(current, relation, tmdb_id, imdb_id):
             "tmdb_id",
             "imdb_id",
         ):
+            if current.tmdb_lookup_excluded and field not in {"tmdb_id", "imdb_id"}:
+                continue
             if not getattr(current, field) and getattr(donor, field):
                 setattr(current, field, getattr(donor, field))
-        current.custom_properties = {
-            **(donor.custom_properties or {}),
-            **(current.custom_properties or {}),
-        }
+        if not current.tmdb_lookup_excluded:
+            current.custom_properties = {
+                **(donor.custom_properties or {}),
+                **(current.custom_properties or {}),
+            }
         if kind == "movie":
             current.is_adult = current.is_adult or donor.is_adult
         relation_model.objects.filter(**{kind: donor}).update(**{kind: current})

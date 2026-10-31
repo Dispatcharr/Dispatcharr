@@ -15,37 +15,48 @@ DEFAULT_TITLE_YEAR_RULES = (
 )
 
 
+def _normalize_literal_rules(values, label):
+    if not isinstance(values, list):
+        raise ValueError(f"{label.capitalize()} rules must be a list")
+    if len(values) > 20:
+        plural = "title prefixes" if label == "title prefix" else "title text removals"
+        raise ValueError(f"Use at most 20 {plural}")
+    rules = []
+    for index, raw in enumerate(values):
+        if isinstance(raw, str):
+            value, enabled = raw, True
+        elif isinstance(raw, dict):
+            value = str(raw.get("value") or "")
+            enabled = raw.get("enabled") is not False
+        else:
+            raise ValueError(f"{label.capitalize()} {index + 1} must be text")
+        if not value.strip():
+            raise ValueError(f"{label.capitalize()} {index + 1} cannot be empty")
+        if len(value) > 255:
+            raise ValueError(f"{label.capitalize()} {index + 1} is too long")
+        rules.append({"value": value, "enabled": enabled})
+    return rules
+
+
 def normalize_title_rules(values):
     """Normalize ordered literal prefixes removed from VOD titles.
 
     Prefixes are literal text, including any intentional trailing space.
     Regex removal is explicitly configured per category instead.
     """
-    if not isinstance(values, list):
-        raise ValueError("Title rules must be a list")
-    if len(values) > 20:
-        raise ValueError("Use at most 20 title prefixes")
-    rules = []
-    for index, raw in enumerate(values[:20]):
-        if isinstance(raw, str):
-            value = raw
-            enabled = True
-        elif isinstance(raw, dict):
-            value = str(raw.get("value") or "")
-            enabled = raw.get("enabled") is not False
-        else:
-            raise ValueError(f"Title prefix {index + 1} must be text")
-        if not value.strip():
-            raise ValueError(f"Title prefix {index + 1} cannot be empty")
-        if len(value) > 255:
-            raise ValueError(f"Title prefix {index + 1} is too long")
-        rules.append(
-            {
-                "value": value,
-                "enabled": enabled,
-            }
-        )
-    return rules
+    return _normalize_literal_rules(values, "title prefix")
+
+
+def normalize_removal_rules(values):
+    return _normalize_literal_rules(values, "title text removal")
+
+
+def remove_title_text(title, rules=None):
+    result = str(title or "")
+    for rule in normalize_removal_rules(rules or []):
+        if rule["enabled"]:
+            result = result.replace(rule["value"], "")
+    return result
 
 
 def normalize_year_rules(values):
@@ -194,12 +205,13 @@ def clean_lookup_title(
     year=None,
     rules=None,
     year_rules=None,
+    removal_rules=None,
     group_rule=None,
 ):
     """Create the non-persistent title used for TMDB search and its preview.
 
-    Provider names remain untouched. The administrator's global prefix and
-    year cleanup runs first, so a broad category regex cannot damage those
+    Provider names remain untouched. Global prefix, literal text and year
+    cleanup run first, so a broad category regex cannot damage those
     configured formats. The category regex then removes provider-group-specific
     additions. A release year is removed from the title because TMDB receives
     it in a dedicated parameter.
@@ -211,6 +223,7 @@ def clean_lookup_title(
         value = rule["value"]
         if result.startswith(value):
             result = result[len(value) :].lstrip()
+    result = remove_title_text(result, removal_rules)
     result = _remove_configured_year(result, year=year, rules=year_rules)
     if normalize_group_title_cleanup(group_rule):
         result = _apply_group_title_cleanup(result, group_rule)
