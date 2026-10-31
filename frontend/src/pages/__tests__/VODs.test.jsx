@@ -1,755 +1,394 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import VODsPage from '../VODs';
-import useAuthStore from '../../store/auth';
-import useVODStore from '../../store/useVODStore';
-import {
-  hideNotification,
-  showNotification,
-} from '../../utils/notificationUtils.js';
-import { USER_LEVELS } from '../../constants';
-import {
-  filterCategoriesToEnabled,
-  getCategoryOptions,
-} from '../../utils/pages/VODsUtils.js';
-
-vi.mock('../../store/useVODStore');
-vi.mock('../../store/auth');
+import api from '../../api';
+import { showNotification } from '../../utils/notificationUtils.js';
 vi.mock('../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
-  hideNotification: vi.fn(),
 }));
+import useLibraryStore from '../../store/useLibraryStore';
 
-vi.mock('../../components/SeriesModal', () => ({
-  default: ({ opened, series, onClose }) =>
-    opened ? (
-      <div data-testid="series-modal">
-        <div data-testid="series-name">{series?.name}</div>
-        <button onClick={onClose}>Close</button>
-      </div>
-    ) : null,
+const auth = vi.hoisted(() => ({
+  user: { user_level: 10, custom_properties: {} },
 }));
-vi.mock('../../components/VODModal', () => ({
-  default: ({ opened, vod, onClose }) =>
-    opened ? (
-      <div data-testid="vod-modal">
-        <div data-testid="vod-name">{vod?.name}</div>
-        <button onClick={onClose}>Close</button>
-      </div>
-    ) : null,
+vi.mock('../../store/auth', () => ({ default: (selector) => selector(auth) }));
+vi.mock('../../api', () => ({
+  default: {
+    getVODLibrary: vi.fn(),
+    getVODLibraryOptions: vi.fn(),
+    getVODLibraryState: vi.fn(),
+  },
 }));
-vi.mock('../../components/cards/VODCard', () => ({
-  default: ({ vod, onClick }) => (
-    <div data-testid="vod-card" onClick={() => onClick(vod)}>
-      <div>{vod.name}</div>
-    </div>
-  ),
-}));
-vi.mock('../../components/cards/SeriesCard', () => ({
-  default: ({ series, onClick }) => (
-    <div data-testid="series-card" onClick={() => onClick(series)}>
-      <div>{series.name}</div>
+vi.mock('../../components/LibraryPreviewModal', () => ({
+  default: ({ item, onClose, accountId }) => (
+    <div
+      role="dialog"
+      aria-label={
+        item.content_type === 'movie' ? 'Movie preview' : 'Series preview'
+      }
+    >
+      <span>{item.name}</span>
+      <span data-testid="movie-id">{item.content_id}</span>
+      <span data-testid="source-id">{item.source_id}</span>
+      <span data-testid="preview-account">{accountId}</span>
+      <button onClick={onClose}>Close preview</button>
     </div>
   ),
 }));
 
-vi.mock('@mantine/core', () => {
-  const gridComponent = ({ children, ...props }) => (
-    <div {...props}>{children}</div>
-  );
-  gridComponent.Col = ({ children, ...props }) => (
-    <div {...props}>{children}</div>
-  );
-
-  return {
-    Box: ({ children, ...props }) => <div {...props}>{children}</div>,
-    Stack: ({ children, ...props }) => <div {...props}>{children}</div>,
-    Group: ({ children, ...props }) => <div {...props}>{children}</div>,
-    Flex: ({ children, ...props }) => <div {...props}>{children}</div>,
-    Title: ({ children, ...props }) => <h2 {...props}>{children}</h2>,
-    Text: ({ children, role }) => <span role={role}>{children}</span>,
-    Button: ({ children, onClick, disabled }) => (
-      <button onClick={onClick} disabled={disabled}>
-        {children}
-      </button>
-    ),
-    TextInput: ({ value, onChange, placeholder, leftSection }) => (
-      <div>
-        {leftSection}
-        <input
-          type="text"
-          value={value}
-          onChange={onChange}
-          placeholder={placeholder}
-        />
-      </div>
-    ),
-    Select: ({
-      value,
-      onChange,
-      data,
-      label,
-      placeholder,
-      'aria-label': ariaLabel,
-    }) => (
-      <div>
-        {label && <label>{label}</label>}
-        <select
-          value={value}
-          onChange={(e) => onChange?.(e.target.value)}
-          aria-label={ariaLabel || placeholder || label}
-        >
-          {data?.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
-    ),
-    SegmentedControl: ({ value, onChange, data }) => (
-      <div data-testid="type-control">
-        {data.map((item) => (
-          <button
-            key={item.value}
-            onClick={() => onChange(item.value)}
-            data-active={value === item.value}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-    ),
-    Pagination: ({ value: page, onChange, total }) => (
-      <div data-testid="pagination">
-        <button onClick={() => onChange(page - 1)} disabled={page === 1}>
-          Prev
-        </button>
-        <span>
-          {page} of {total}
-        </span>
-        <button onClick={() => onChange(page + 1)} disabled={page === total}>
-          Next
-        </button>
-      </div>
-    ),
-    Grid: gridComponent,
-    GridCol: gridComponent.Col,
-    Loader: () => <div data-testid="loader">Loading...</div>,
-    LoadingOverlay: ({ visible }) =>
-      visible ? <div data-testid="loading-overlay">Loading...</div> : null,
-  };
-});
-
-vi.mock('../../utils/pages/VODsUtils.js', () => {
-  return {
-    filterCategoriesToEnabled: vi.fn(),
-    getCategoryOptions: vi.fn(),
-  };
-});
-
-const mockAdminUser = {
-  user_level: USER_LEVELS.ADMIN,
-  custom_properties: {},
+const initialFilters = { ...useLibraryStore.getState().filters };
+const movie = {
+  key: 'movie:1',
+  id: 1,
+  content_id: 1,
+  content_type: 'movie',
+  name: 'Film',
+  source_count: 2,
+  metadata_summary: {},
+  metadata_status: '',
+  duration_secs: 3600,
+  poster_url: '',
 };
-
-const renderVODsPage = (initialPath = '/vods') =>
+const series = {
+  ...movie,
+  key: 'series:2',
+  id: 2,
+  content_id: 2,
+  content_type: 'series',
+  name: 'Series',
+  episode_count: 3,
+};
+const renderPage = () =>
   render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route path="/vods" element={<VODsPage />} />
-        <Route path="/channels" element={<div>Channels page</div>} />
-      </Routes>
-    </MemoryRouter>
+    <MantineProvider env="test">
+      <MemoryRouter initialEntries={['/vods']}>
+        <Routes>
+          <Route path="/vods" element={<VODsPage />} />
+          <Route path="/channels" element={<div>Channels destination</div>} />
+        </Routes>
+      </MemoryRouter>
+    </MantineProvider>
   );
 
-describe('VODsPage', () => {
-  const mockFetchContent = vi.fn();
-  const mockFetchCategories = vi.fn();
-  const mockSetFilters = vi.fn();
-  const mockSetPage = vi.fn();
-  const mockSetPageSize = vi.fn();
+beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
+  auth.user = { user_level: 10, custom_properties: {} };
+  useLibraryStore.setState({
+    filters: { ...initialFilters },
+    page: 1,
+    pageSize: 24,
+    rows: [],
+    count: 0,
+    loading: false,
+    error: null,
+    options: { accounts: [], categories: [] },
+    optionsError: null,
+    job: { status: 'idle', progress: {} },
+  });
+  api.getVODLibrary.mockResolvedValue({ results: [movie, series], count: 2 });
+  api.getVODLibraryOptions.mockResolvedValue({
+    accounts: [{ id: 3, name: 'Provider' }],
+    categories: [{ id: 4, name: 'English', category_type: 'movie' }],
+    audio_languages: ['eng'],
+    subtitle_languages: [],
+    resolution: ['1080p'],
+    video_features: [],
+    container_extensions: [],
+    totals: { movie: 1234, series: 1 },
+  });
+  api.getVODLibraryState.mockResolvedValue({ status: 'idle', progress: {} });
+});
 
-  const defaultStoreState = {
-    currentPageContent: [],
-    categories: {},
-    filters: { type: 'all', search: '', category: '' },
-    currentPage: 1,
-    totalCount: 0,
-    pageSize: 12,
-    setFilters: mockSetFilters,
-    setPage: mockSetPage,
-    setPageSize: mockSetPageSize,
-    fetchContent: mockFetchContent,
-    fetchCategories: mockFetchCategories,
-    categoriesError: null,
-    categoriesLoading: false,
-  };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockFetchContent.mockResolvedValue();
-    mockFetchCategories.mockResolvedValue();
-    filterCategoriesToEnabled.mockReturnValue({});
-    getCategoryOptions.mockReturnValue([]);
-    useVODStore.mockImplementation((selector) => selector(defaultStoreState));
-    useAuthStore.mockImplementation((selector) =>
-      selector({ user: mockAdminUser })
+describe('Library page and shared view pipeline', () => {
+  it('shows the visible movie and series totals next to the title', async () => {
+    renderPage();
+    expect(await screen.findByLabelText('Library titles')).toHaveTextContent(
+      '1,234 movies · 1 series'
     );
-    localStorage.clear();
-    useVODStore.getState = vi.fn(() => ({ error: null }));
   });
-
-  it('renders the page title', async () => {
-    renderVODsPage();
-    await screen.findByText('Library');
-  });
-
-  it('redirects to channels when VOD access is denied', async () => {
-    useAuthStore.mockImplementation((selector) =>
-      selector({
-        user: {
-          user_level: USER_LEVELS.STANDARD,
-          custom_properties: {
-            vod_movies_enabled: false,
-            vod_series_enabled: false,
-          },
-        },
-      })
-    );
-
-    renderVODsPage();
-
-    await screen.findByText('Channels page');
-    expect(screen.queryByText('Library')).not.toBeInTheDocument();
-    expect(mockFetchContent).not.toHaveBeenCalled();
-  });
-
-  it('hides type control when only movies are enabled', async () => {
-    useAuthStore.mockImplementation((selector) =>
-      selector({
-        user: {
-          user_level: USER_LEVELS.STANDARD,
-          custom_properties: {
-            vod_movies_enabled: true,
-            vod_series_enabled: false,
-          },
-        },
-      })
-    );
-    useVODStore.mockImplementation((selector) =>
-      selector({
-        ...defaultStoreState,
-        filters: { type: 'movies', search: '', category: '' },
-      })
-    );
-
-    renderVODsPage();
-
-    await screen.findByText('Library');
-    expect(screen.queryByTestId('type-control')).not.toBeInTheDocument();
-  });
-
-  it('shows All / Movies / Series when both VOD types are enabled', async () => {
-    useAuthStore.mockImplementation((selector) =>
-      selector({
-        user: {
-          user_level: USER_LEVELS.STANDARD,
-          custom_properties: {},
-        },
-      })
-    );
-
-    renderVODsPage();
-
-    await screen.findByText('Library');
-    expect(screen.getByTestId('type-control')).toBeInTheDocument();
-    expect(screen.getByText('All')).toBeInTheDocument();
-    expect(screen.getByText('Movies')).toBeInTheDocument();
-    expect(screen.getByText('Series')).toBeInTheDocument();
-  });
-
-  it('forces movies type when series is disabled', async () => {
-    useAuthStore.mockImplementation((selector) =>
-      selector({
-        user: {
-          user_level: USER_LEVELS.STANDARD,
-          custom_properties: {
-            vod_movies_enabled: true,
-            vod_series_enabled: false,
-          },
-        },
-      })
-    );
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(mockSetFilters).toHaveBeenCalledWith({
-        type: 'movies',
-        category: '',
-      });
-    });
-    expect(mockFetchContent).not.toHaveBeenCalled();
-  });
-
-  it('fetches categories on mount', async () => {
-    renderVODsPage();
-    await waitFor(() => {
-      expect(mockFetchCategories).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it('fetches content on mount', async () => {
-    renderVODsPage();
-    await waitFor(() => {
-      expect(mockFetchContent).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it('shows an initial loading status without a spinner or a false zero count', async () => {
-    mockFetchContent.mockImplementationOnce(() => new Promise(() => {}));
-    renderVODsPage();
-    await screen.findByText('Loading library…');
-    expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
-    expect(screen.queryByText('0–0 of 0')).not.toBeInTheDocument();
-  });
-
-  it('explains the empty library', async () => {
-    renderVODsPage();
-    await screen.findByText('No titles found.');
+  it('limits selection to the table and clears it when switching to posters', async () => {
+    renderPage();
+    await screen.findByRole('button', { name: 'Preview Film' });
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(
-      screen.getByText('No movies or series have been imported yet.')
-    ).toBeInTheDocument();
-  });
-
-  it('reports load errors as a notification and supports retry', async () => {
-    useVODStore.getState.mockReturnValue({ error: 'Failed to load content.' });
-    renderVODsPage();
-    await screen.findByText('Library could not be loaded.');
-    expect(showNotification).toHaveBeenCalledWith(
-      expect.objectContaining({
-        color: 'red',
-        message: 'Failed to load content.',
-        autoClose: false,
-      })
-    );
-    useVODStore.getState.mockReturnValue({ error: null });
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await screen.findByText('No titles found.');
-    expect(mockFetchContent).toHaveBeenCalledTimes(2);
-  });
-
-  it('ignores invalid stored page sizes', async () => {
-    localStorage.setItem('vodsPageSize', '-12');
-    renderVODsPage();
-    await screen.findByLabelText('Items per page');
-    expect(mockSetPageSize).not.toHaveBeenCalled();
-  });
-
-  it('reports category failures independently without hiding successfully loaded titles', async () => {
-    let state = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Movie 1', contentType: 'movie' }],
-      totalCount: 1,
-      categoriesError: null,
-    };
-    useVODStore.mockImplementation((selector) => selector(state));
-    const { rerender } = render(
-      <MemoryRouter>
-        <VODsPage />
-      </MemoryRouter>
-    );
-    await screen.findByText('Movie 1');
-    state = { ...state, categoriesError: 'Failed to load categories.' };
-    rerender(
-      <MemoryRouter>
-        <VODsPage />
-      </MemoryRouter>
-    );
-    expect(screen.getByText('Movie 1')).toBeInTheDocument();
-    expect(
-      screen.queryByText('Library could not be loaded.')
+      screen.queryByRole('button', { name: /^Edit/ })
     ).not.toBeInTheDocument();
-    expect(showNotification).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'vod-library-categories-error',
-        title: 'Library categories could not be loaded',
-        color: 'red',
-        autoClose: false,
-      })
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Retry categories' }));
-    expect(mockFetchCategories).toHaveBeenCalledTimes(2);
-    expect(mockFetchContent).toHaveBeenCalledTimes(1);
-    state = { ...state, categoriesLoading: true };
-    rerender(
-      <MemoryRouter>
-        <VODsPage />
-      </MemoryRouter>
-    );
+    const requests = api.getVODLibrary.mock.calls.length;
+    fireEvent.click(screen.getByRole('radio', { name: 'List', exact: true }));
     expect(
-      screen.getByRole('button', { name: 'Retrying categories…' })
-    ).toBeDisabled();
-    state = { ...state, categoriesLoading: false, categoriesError: null };
-    rerender(
-      <MemoryRouter>
-        <VODsPage />
-      </MemoryRouter>
-    );
-    expect(
-      screen.queryByRole('button', { name: 'Retry categories' })
-    ).not.toBeInTheDocument();
-    expect(hideNotification).toHaveBeenCalledWith(
-      'vod-library-categories-error'
-    );
-    expect(screen.getByText('Movie 1')).toBeInTheDocument();
-  });
-
-  it('reports a category failure before content finishes without treating it as a content error', async () => {
-    useVODStore.mockImplementation((selector) =>
-      selector({
-        ...defaultStoreState,
-        categoriesError: 'Failed to load categories.',
-      })
-    );
-    mockFetchContent.mockImplementationOnce(() => new Promise(() => {}));
-    renderVODsPage();
-    await screen.findByText('Loading library…');
-    expect(
-      screen.getByRole('button', { name: 'Retry categories' })
+      screen.getByRole('columnheader', { name: 'Sources' })
     ).toBeInTheDocument();
-    expect(showNotification).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'vod-library-categories-error' })
+    expect(
+      screen.getByRole('radio', { name: 'Titles', exact: true })
+    ).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Edit (0)' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Film' }));
+    expect(screen.getByRole('button', { name: 'Edit (1)' })).toBeEnabled();
+    expect(api.getVODLibrary).toHaveBeenCalledTimes(requests);
+    expect(localStorage.getItem('vodsViewMode')).toBe('list');
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Posters', exact: true })
     );
-    expect(showNotification).not.toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'vod-library-load-error' })
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /^Edit/ })
+    ).not.toBeInTheDocument();
+    expect(api.getVODLibrary).toHaveBeenCalledTimes(requests);
+    fireEvent.click(screen.getByRole('radio', { name: 'List', exact: true }));
+    expect(
+      screen.getByRole('checkbox', { name: 'Select Film' })
+    ).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Edit (0)' })).toBeDisabled();
+  });
+  it('restores the saved display mode independently from the title representation', async () => {
+    localStorage.setItem('vodsViewMode', 'list');
+    renderPage();
+    await screen.findByRole('columnheader', { name: 'Artwork' });
+    expect(
+      screen.getByRole('radio', { name: 'List', exact: true })
+    ).toBeChecked();
+    expect(
+      screen.getByRole('radio', { name: 'Titles', exact: true })
+    ).toBeChecked();
+  });
+  it('keeps Sources list-only, opens the exact source and restores the title poster preference', async () => {
+    api.getVODLibrary.mockImplementation(async (params) => ({
+      results:
+        params.get('view') === 'sources'
+          ? [
+              {
+                ...movie,
+                key: 'movie:5',
+                source_id: 5,
+                provider_name: 'Provider Film',
+                account: { id: 3, name: 'Provider account' },
+                category: { id: 4, name: 'English category' },
+              },
+            ]
+          : [movie],
+      count: 1,
+    }));
+    renderPage();
+    await screen.findByRole('button', { name: 'Preview Film' });
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Sources', exact: true })
     );
+    expect(await screen.findByText('Provider account')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('radiogroup', { name: 'Library layout' })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('columnheader', { name: 'Source', exact: true })
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview Provider Film' })
+    );
+    expect(await screen.findByTestId('source-id')).toHaveTextContent('5');
+    expect(screen.getByTestId('movie-id')).toHaveTextContent('1');
+    fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Titles', exact: true }));
+    expect(
+      screen.getByRole('radio', { name: 'Posters', exact: true })
+    ).toBeChecked();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
-
-  it('displays content after loading', async () => {
-    const stateWithContent = {
-      ...defaultStoreState,
-      currentPageContent: [
-        { id: 1, name: 'Movie 1', contentType: 'movie' },
-        { id: 2, name: 'Series 1', contentType: 'series' },
-      ],
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithContent));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(screen.getByText('Movie 1')).toBeInTheDocument();
-      expect(screen.getByText('Series 1')).toBeInTheDocument();
-    });
+  it('passes the selected account into the preview as display context', async () => {
+    useLibraryStore.setState((state) => ({
+      filters: { ...state.filters, account: '3' },
+    }));
+    renderPage();
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Preview Film' })
+    );
+    expect(await screen.findByTestId('preview-account')).toHaveTextContent('3');
+    expect(screen.getByTestId('movie-id')).toHaveTextContent('1');
   });
-
-  it('renders VOD cards for movies', async () => {
-    const stateWithMovies = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Movie 1', contentType: 'movie' }],
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithMovies));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(screen.getByTestId('vod-card')).toBeInTheDocument();
-    });
+  it('starts with the existing poster cards and a shared filter toolbar', async () => {
+    renderPage();
+    await screen.findByRole('button', { name: 'Preview Film' });
+    expect(
+      screen.getByRole('heading', { name: 'Library' })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('radio', { name: 'Posters', exact: true })
+    ).toBeChecked();
+    expect(
+      screen.getByRole('button', { name: 'Filter library' })
+    ).toBeInTheDocument();
+    expect(
+      api.getVODLibrary.mock.calls.some(
+        ([params]) => params.get('view') === 'titles'
+      )
+    ).toBe(true);
   });
-
-  it('renders series cards for series', async () => {
-    const stateWithSeries = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Series 1', contentType: 'series' }],
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithSeries));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(screen.getByTestId('series-card')).toBeInTheDocument();
-    });
-  });
-
-  it('opens VOD modal when VOD card is clicked', async () => {
-    const stateWithMovies = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Test Movie', contentType: 'movie' }],
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithMovies));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      fireEvent.click(screen.getByTestId('vod-card'));
-    });
-
-    expect(screen.getByTestId('vod-modal')).toBeInTheDocument();
-    expect(screen.getByTestId('vod-name')).toHaveTextContent('Test Movie');
-  });
-
-  it('opens series modal when series card is clicked', async () => {
-    const stateWithSeries = {
-      ...defaultStoreState,
-      currentPageContent: [
-        { id: 1, name: 'Test Series', contentType: 'series' },
-      ],
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithSeries));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      fireEvent.click(screen.getByTestId('series-card'));
-    });
-
-    expect(screen.getByTestId('series-modal')).toBeInTheDocument();
-    expect(screen.getByTestId('series-name')).toHaveTextContent('Test Series');
-  });
-
-  it('closes VOD modal when close button is clicked', async () => {
-    const stateWithMovies = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Test Movie', contentType: 'movie' }],
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithMovies));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      fireEvent.click(screen.getByTestId('vod-card'));
-    });
-
-    fireEvent.click(screen.getByText('Close'));
-
-    expect(screen.queryByTestId('vod-modal')).not.toBeInTheDocument();
-  });
-
-  it('closes series modal when close button is clicked', async () => {
-    const stateWithSeries = {
-      ...defaultStoreState,
-      currentPageContent: [
-        { id: 1, name: 'Test Series', contentType: 'series' },
-      ],
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithSeries));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      fireEvent.click(screen.getByTestId('series-card'));
-    });
-
-    fireEvent.click(screen.getByText('Close'));
-
-    expect(screen.queryByTestId('series-modal')).not.toBeInTheDocument();
-  });
-
-  it('updates filters when search input changes', async () => {
-    renderVODsPage();
-
-    const searchInput = screen.getByPlaceholderText('Search VODs...');
-    fireEvent.change(searchInput, { target: { value: 'test search' } });
-
-    await waitFor(() => {
-      expect(mockSetFilters).toHaveBeenCalledWith({ search: 'test search' });
-    });
-  });
-
-  it('updates filters and resets page when type changes', async () => {
-    renderVODsPage();
-
-    const moviesButton = screen.getByText('Movies');
-    fireEvent.click(moviesButton);
-
-    await waitFor(() => {
-      expect(mockSetFilters).toHaveBeenCalledWith({
-        type: 'movies',
-        category: '',
+  it.each(['titles', 'sources'])(
+    'uses the same endpoint for %s and preserves filters',
+    async (view) => {
+      renderPage();
+      await screen.findByRole('button', { name: 'Preview Film' });
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search titles' }), {
+        target: { value: 'Film' },
       });
-      expect(mockSetPage).toHaveBeenCalledWith(1);
-    });
+      fireEvent.click(
+        screen.getByRole('radio', {
+          name: view === 'titles' ? 'Titles' : 'Sources',
+          exact: true,
+        })
+      );
+      await waitFor(() =>
+        expect(
+          api.getVODLibrary.mock.calls.some(
+            ([params]) =>
+              params.get('view') === view && params.get('search') === 'Film'
+          )
+        ).toBe(true)
+      );
+      expect(
+        screen.getByRole('textbox', { name: 'Search titles' })
+      ).toHaveValue('Film');
+    }
+  );
+  it('opens and closes movie and series previews without provider refresh calls', async () => {
+    renderPage();
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Preview Film' })
+    );
+    expect(
+      await screen.findByRole('dialog', { name: 'Movie preview' })
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('movie-id')).toHaveTextContent('1');
+    fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview Series' }));
+    expect(
+      await screen.findByRole('dialog', { name: 'Series preview' })
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
-
-  it('updates filters and resets page when category changes', async () => {
-    getCategoryOptions.mockReturnValue([{ value: 'action', label: 'Action' }]);
-
-    renderVODsPage();
-
-    const categorySelect = screen.getByLabelText('Category');
-    fireEvent.change(categorySelect, { target: { value: 'action' } });
-
-    await waitFor(() => {
-      expect(mockSetFilters).toHaveBeenCalledWith({ category: 'action' });
-      expect(mockSetPage).toHaveBeenCalledWith(1);
-    });
+  it.each([
+    null,
+    { user_level: 0, custom_properties: {} },
+    {
+      user_level: 1,
+      custom_properties: {
+        vod_movies_enabled: false,
+        vod_series_enabled: false,
+      },
+    },
+  ])(
+    'redirects users without VOD access before loading data (%j)',
+    async (user) => {
+      auth.user = user;
+      renderPage();
+      expect(
+        await screen.findByText('Channels destination')
+      ).toBeInTheDocument();
+      expect(api.getVODLibrary).not.toHaveBeenCalled();
+    }
+  );
+  it('does not expose source management or Library settings to standard users', async () => {
+    auth.user = { user_level: 1, custom_properties: {} };
+    renderPage();
+    await screen.findByRole('button', { name: 'Preview Film' });
+    expect(
+      screen.queryByRole('radio', { name: 'Sources', exact: true })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Library settings' })
+    ).not.toBeInTheDocument();
   });
-
-  it('updates page size and saves to localStorage', async () => {
-    renderVODsPage();
-
-    const pageSizeSelect = await screen.findByLabelText('Items per page');
-    fireEvent.change(pageSizeSelect, { target: { value: '24' } });
-
-    await waitFor(() => {
-      expect(mockSetPageSize).toHaveBeenCalledWith(24);
-      expect(localStorage.getItem('vodsPageSize')).toBe('24');
-    });
+  it.each([
+    ['movie', 'vod_series_enabled'],
+    ['series', 'vod_movies_enabled'],
+  ])('locks the first request to the allowed %s type', async (type, flag) => {
+    auth.user = { user_level: 1, custom_properties: { [flag]: false } };
+    renderPage();
+    await screen.findByRole('button', { name: 'Preview Film' });
+    expect(
+      api.getVODLibrary.mock.calls.every(
+        ([params]) => params.get('type') === type
+      )
+    ).toBe(true);
   });
-
-  it('hydrates page size from localStorage then fetches once', async () => {
+  it('hydrates page size before the first request and ignores invalid stored sizes', async () => {
     localStorage.setItem('vodsPageSize', '48');
-
-    let storeState = { ...defaultStoreState, pageSize: 12 };
-    mockSetPageSize.mockImplementation((size) => {
-      storeState = {
-        ...storeState,
-        pageSize: Number(size),
-        currentPage: 1,
-      };
-    });
-    useVODStore.mockImplementation((selector) => selector(storeState));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(mockSetPageSize).toHaveBeenCalledWith(48);
-      expect(mockFetchContent).toHaveBeenCalledTimes(1);
-    });
+    renderPage();
+    await screen.findByRole('button', { name: 'Preview Film' });
+    expect(api.getVODLibrary.mock.calls[0][0].get('page_size')).toBe('48');
   });
-
-  it('fetches once when localStorage page size already matches', async () => {
-    localStorage.setItem('vodsPageSize', '12');
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(mockFetchContent).toHaveBeenCalledTimes(1);
-    });
-    expect(mockSetPageSize).not.toHaveBeenCalled();
-  });
-
-  it('displays pagination when total pages > 1', async () => {
-    const stateWithPagination = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Movie 1', contentType: 'movie' }],
-      totalCount: 25,
-      pageSize: 12,
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithPagination));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(screen.getByTestId('pagination')).toBeInTheDocument();
-    });
-  });
-
-  it('keeps the count and page size available on a single page', async () => {
-    const stateNoPagination = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Movie 1', contentType: 'movie' }],
-      totalCount: 5,
-      pageSize: 12,
-    };
-    useVODStore.mockImplementation((selector) => selector(stateNoPagination));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      expect(screen.getByText('1–5 of 5')).toBeInTheDocument();
-      expect(screen.getByLabelText('Items per page')).toBeInTheDocument();
-    });
-  });
-
-  it('changes page when pagination is clicked', async () => {
-    const stateWithPagination = {
-      ...defaultStoreState,
-      currentPageContent: [{ id: 1, name: 'Movie 1', contentType: 'movie' }],
-      totalCount: 25,
-      pageSize: 12,
-      currentPage: 1,
-    };
-    useVODStore.mockImplementation((selector) => selector(stateWithPagination));
-
-    renderVODsPage();
-
-    await waitFor(() => {
-      fireEvent.click(screen.getByText('Next'));
-    });
-
-    expect(mockSetPage).toHaveBeenCalledWith(2);
-  });
-
-  it('refetches content when filters change', async () => {
-    const { rerender } = renderVODsPage();
-
-    const updatedState = {
-      ...defaultStoreState,
-      filters: { type: 'movies', search: '', category: '' },
-    };
-    useVODStore.mockImplementation((selector) => selector(updatedState));
-
-    rerender(
-      <MemoryRouter initialEntries={['/vods']}>
-        <Routes>
-          <Route path="/vods" element={<VODsPage />} />
-          <Route path="/channels" element={<div>Channels page</div>} />
-        </Routes>
-      </MemoryRouter>
+  it('shows an empty state only after the request completes', async () => {
+    let resolve;
+    api.getVODLibrary.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        })
     );
-
-    await waitFor(() => {
-      expect(mockFetchContent).toHaveBeenCalledTimes(2);
-    });
+    renderPage();
+    await waitFor(() => expect(api.getVODLibrary).toHaveBeenCalled());
+    expect(
+      screen.queryByText('No titles match these filters.')
+    ).not.toBeInTheDocument();
+    resolve({ results: [], count: 0 });
+    expect(
+      await screen.findByText('No titles match these filters.')
+    ).toBeInTheDocument();
   });
-
-  it('refetches content when page changes', async () => {
-    const { rerender } = renderVODsPage();
-
-    const updatedState = {
-      ...defaultStoreState,
-      currentPage: 2,
-    };
-    useVODStore.mockImplementation((selector) => selector(updatedState));
-
-    rerender(
-      <MemoryRouter initialEntries={['/vods']}>
-        <Routes>
-          <Route path="/vods" element={<VODsPage />} />
-          <Route path="/channels" element={<div>Channels page</div>} />
-        </Routes>
-      </MemoryRouter>
+  it('keeps successful titles visible when option loading fails', async () => {
+    api.getVODLibraryOptions.mockRejectedValue(
+      new Error('Options unavailable')
     );
-
-    await waitFor(() => {
-      expect(mockFetchContent).toHaveBeenCalledTimes(2);
-    });
+    renderPage();
+    expect(
+      await screen.findByRole('button', { name: 'Preview Film' })
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Options unavailable',
+          color: 'red',
+        })
+      )
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
-
-  it('refetches content when page size changes', async () => {
-    const { rerender } = renderVODsPage();
-
-    const updatedState = {
-      ...defaultStoreState,
-      pageSize: 24,
-    };
-    useVODStore.mockImplementation((selector) => selector(updatedState));
-
-    rerender(
-      <MemoryRouter initialEntries={['/vods']}>
-        <Routes>
-          <Route path="/vods" element={<VODsPage />} />
-          <Route path="/channels" element={<div>Channels page</div>} />
-        </Routes>
-      </MemoryRouter>
+  it('supports retry after a content request fails', async () => {
+    api.getVODLibrary
+      .mockRejectedValueOnce(new Error('Content unavailable'))
+      .mockResolvedValue({ results: [movie], count: 1 });
+    renderPage();
+    await waitFor(() =>
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Content unavailable',
+          color: 'red',
+        })
+      )
     );
-
-    await waitFor(() => {
-      expect(mockFetchContent).toHaveBeenCalledTimes(2);
-    });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry library' }));
+    expect(
+      await screen.findByRole('button', { name: 'Preview Film' })
+    ).toBeInTheDocument();
+  });
+  it('applies technical filters in the poster view without changing any data', async () => {
+    renderPage();
+    await screen.findByRole('button', { name: 'Preview Film' });
+    fireEvent.click(screen.getByRole('button', { name: 'Filter library' }));
+    fireEvent.click(screen.getByRole('textbox', { name: 'DUB', exact: true }));
+    fireEvent.click(
+      await screen.findByRole('option', { name: 'English (eng)', exact: true })
+    );
+    await waitFor(() =>
+      expect(
+        api.getVODLibrary.mock.calls.some(
+          ([params]) =>
+            params.get('view') === 'titles' &&
+            params.get('audio_language') === 'eng'
+        )
+      ).toBe(true)
+    );
   });
 });

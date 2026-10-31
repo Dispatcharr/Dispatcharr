@@ -4,6 +4,7 @@ import SeriesCard from '../SeriesCard';
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', async () => ({
+  Tooltip: ({ label, children }) => <div data-tooltip={label}>{children}</div>,
   Badge: ({ children, color, variant }) => (
     <span data-testid="badge" data-color={color} data-variant={variant}>
       {children}
@@ -24,7 +25,16 @@ vi.mock('@mantine/core', async () => ({
     radius,
     ...props
   }) => (
-    <div data-testid="series-card" onClick={onClick} style={style} {...props}>
+    <div
+      data-testid="series-card"
+      onClick={onClick}
+      style={style}
+      data-with-border={withBorder}
+      data-shadow={shadow}
+      data-padding={padding}
+      data-radius={radius}
+      {...props}
+    >
       {children}
     </div>
   ),
@@ -32,9 +42,11 @@ vi.mock('@mantine/core', async () => ({
     <div data-testid="card-section">{children}</div>
   ),
   Group: ({ children, gap, justify }) => (
-    <div data-testid="group">{children}</div>
+    <div data-testid="group" data-gap={gap} data-justify={justify}>
+      {children}
+    </div>
   ),
-  Image: ({ src, alt, fallbackSrc, height, fit, loading }) => (
+  Image: ({ src, alt, fallbackSrc, height, fit, loading, onError }) => (
     <img
       src={src}
       alt={alt}
@@ -42,13 +54,19 @@ vi.mock('@mantine/core', async () => ({
       data-fit={fit}
       data-height={height}
       loading={loading}
+      onError={onError}
     />
   ),
-  Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
-  Text: ({ children, size, fw, c, lineClamp, style, title }) => (
+  Stack: ({ children, gap }) => (
+    <div data-testid="stack" data-gap={gap}>
+      {children}
+    </div>
+  ),
+  Text: ({ children, size, fw, c, lineClamp, style, title, lh }) => (
     <span
       data-testid="text"
       data-size={size}
+      data-line-height={lh}
       data-fw={fw}
       data-color={c}
       data-line-clamp={lineClamp}
@@ -79,6 +97,41 @@ const makeSeries = (overrides = {}) => ({
 });
 
 describe('SeriesCard', () => {
+  it('rounds series poster ratings to one decimal', () => {
+    render(<SeriesCard series={makeSeries({ rating: '7.787' })} compact />);
+    expect(screen.getByText('7.8')).toBeInTheDocument();
+  });
+  it('keeps the compact Library caption one line and reserves a rating row', () => {
+    render(<SeriesCard series={makeSeries({ rating: null })} compact />);
+    const title = screen.getByText('Breaking Bad');
+    expect(title).toHaveAttribute('data-line-clamp', '1');
+    expect(title).toHaveAttribute('data-size', '13');
+    expect(title).toHaveAttribute('data-line-height', '1.4');
+    expect(title.closest('[data-tooltip]')).toHaveAttribute(
+      'data-tooltip',
+      'Breaking Bad'
+    );
+    expect(screen.getByText(/^Series ·/)).toHaveTextContent('Series · 2008');
+    expect(screen.getByText('2008')).toBeInTheDocument();
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('Drama')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+  it('falls back after a failed poster and retries when the artwork changes', () => {
+    const { rerender } = render(
+      <SeriesCard series={makeSeries()} onClick={vi.fn()} />
+    );
+    fireEvent.error(screen.getByRole('img'));
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.getByTestId('icon-play')).toBeInTheDocument();
+    rerender(
+      <SeriesCard
+        series={makeSeries({ logo: { cache_url: '/new-poster' } })}
+        onClick={vi.fn()}
+      />
+    );
+    expect(screen.getByRole('img')).toHaveAttribute('src', '/new-poster');
+  });
   it.each([0, '0', '0.0', null, undefined, ''])(
     'does not render an empty rating (%s) as a stray number',
     (rating) => {

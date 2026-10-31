@@ -160,6 +160,7 @@ const groupFailuresByReason = (entries) => {
 };
 
 export default function M3URefreshNotification() {
+  const navigate = useNavigate();
   const playlists = usePlaylistsStore((s) => s.playlists);
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
   const fetchStreams = useStreamsStore((s) => s.fetchStreams);
@@ -308,6 +309,30 @@ export default function M3URefreshNotification() {
 
     let body = message;
     let autoClose = 2000;
+    if (
+      data.action === 'vod_refresh' &&
+      data.status === 'success' &&
+      data.first_vod_import === true
+    ) {
+      body = (
+        <Stack gap="xs">
+          <Text size="sm">{message}</Text>
+          <Group gap="xs">
+            <Button size="xs" variant="light" onClick={() => navigate('/vods')}>
+              Open Library
+            </Button>
+            <Button
+              size="xs"
+              variant="default"
+              onClick={() => navigate('/settings#vod-metadata')}
+            >
+              Metadata settings
+            </Button>
+          </Group>
+        </Stack>
+      );
+      autoClose = 10000;
+    }
     // Surface stream and auto-sync counts attached to the parsing-complete
     // event so the outcome appears in the notification body.
     if (data.progress == 100 && data.action === 'parsing') {

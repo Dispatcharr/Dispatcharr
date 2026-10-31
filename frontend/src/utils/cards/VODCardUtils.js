@@ -12,6 +12,13 @@ export const getSeasonLabel = (vod) => {
     : '';
 };
 
+export const formatRating = (value) => {
+  const rating = Number(value);
+  return Number.isFinite(rating) && rating > 0 && rating <= 10
+    ? rating.toFixed(1)
+    : '—';
+};
+
 /** Prefer proxied cache_url for VOD posters; fall back to the raw provider URL. */
 export const vodLogoSrc = (logo) =>
   typeof logo === 'string' ? logo : logo?.cache_url || logo?.url || null;

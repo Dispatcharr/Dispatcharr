@@ -117,6 +117,24 @@ describe('immediate saved category selection', () => {
     });
   });
 
+  it('points VOD accounts to the Library metadata and cleanup settings', () => {
+    const { unmount } = show();
+    for (const [name, href] of [
+      ['Metadata', '/settings#vod-metadata'],
+      ['Cleanup', '/settings#vod-title-cleanup'],
+    ]) {
+      const link = screen.getByRole('link', { name });
+      expect(link).toHaveAttribute('href', href);
+      expect(link).toHaveAttribute('target', '_blank');
+    }
+    expect(
+      screen.getByText(/Movies and series appear in the Library/)
+    ).toBeVisible();
+    unmount();
+    show({ account: { ...account, enable_vod: false } });
+    expect(screen.queryByRole('link', { name: 'Metadata' })).toBeNull();
+  });
+
   it('shows account selection counts synchronously without a catalog request or hint', () => {
     show();
     expect(screen.getAllByText('1 of 2 categories selected')).toHaveLength(2);

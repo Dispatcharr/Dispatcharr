@@ -12,6 +12,14 @@ import { describe, expect, it, vi } from 'vitest';
 import VODCategoryFilter from '../VODCategoryFilter';
 import MEDIA_LANGUAGE_OPTIONS from '../../../../../apps/vod/media_languages.json';
 
+vi.mock('../../../api', () => ({
+  default: {
+    vodLibraryAction: vi
+      .fn()
+      .mockResolvedValue({ count: 0, page: 1, page_size: 10, results: [] }),
+  },
+}));
+
 vi.mock('../../../store/useVODStore', () => ({
   default: (select) => select({ categories: {} }),
 }));
@@ -84,9 +92,15 @@ async function openEditor(index = 0) {
       name: `Edit defaults for Synthetic category ${index}`,
     })
   );
-  return screen.findByRole('dialog', {
+  const dialog = await screen.findByRole('dialog', {
     name: `Category defaults · Synthetic category ${index}`,
   });
+  await waitFor(() =>
+    expect(
+      within(dialog).getByRole('button', { name: 'Apply', exact: true })
+    ).toBeEnabled()
+  );
+  return dialog;
 }
 
 async function openPicker(field) {
@@ -558,6 +572,13 @@ describe('VOD category metadata with real Mantine controls', () => {
     ).toBeInTheDocument();
     fireEvent.click(
       within(editor).getByRole('button', { name: 'Close category defaults' })
+    );
+    const discard = await screen.findByRole('dialog', {
+      name: 'Discard unsaved changes?',
+    });
+    expect(editor).toBeInTheDocument();
+    fireEvent.click(
+      within(discard).getByRole('button', { name: 'Discard', exact: true })
     );
     await waitFor(() => expect(editor).not.toBeInTheDocument());
     expect(onChange).not.toHaveBeenCalled();

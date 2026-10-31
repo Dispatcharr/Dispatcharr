@@ -38,6 +38,7 @@ import mantineTheme from './mantineTheme';
 import API from './api';
 import { Notifications } from '@mantine/notifications';
 import M3URefreshNotification from './components/M3URefreshNotification';
+import LibraryJobNotification from './components/LibraryJobNotification.jsx';
 import ErrorBoundary from './components/ErrorBoundary';
 import { defaultRoute, getSafeNextPath } from './utils/loginRedirect';
 import 'allotment/dist/style.css';
@@ -229,6 +230,7 @@ const App = () => {
               </AppShell.Main>
             </AppShell>
             <M3URefreshNotification />
+            {authReady && <LibraryJobNotification />}
             <Notifications containerWidth={350} />
           </Router>
         </WebsocketProvider>

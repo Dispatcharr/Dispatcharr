@@ -3,6 +3,7 @@ import {
   ArrowLeftRight,
   CalendarDays,
   DatabaseBackup,
+  Eraser,
   FileOutput,
   KeyRound,
   Menu,
@@ -30,6 +31,16 @@ const SystemSettingsForm = lazy(() => import('../components/forms/settings/Syste
 const UserLimitsForm = lazy(() => import('../components/forms/settings/UserLimitsForm.jsx'));
 const ReverseProxyAuthForm = lazy(() => import('../components/forms/settings/ReverseProxyAuthForm.jsx'));
 const BackupManager = lazy(() => import('../components/backups/BackupManager.jsx'));
+const MetadataSettingsForm = lazy(() =>
+  import('../components/forms/settings/VODSettingsForm.jsx').then((module) => ({
+    default: module.MetadataSettingsForm,
+  }))
+);
+const CleanupSettingsForm = lazy(() =>
+  import('../components/forms/settings/VODSettingsForm.jsx').then((module) => ({
+    default: module.CleanupSettingsForm,
+  }))
+);
 
 // Component lives on each section so it can never drift out of sync with the
 // id used for routing/lookup (previously a separate COMPONENT_MAP keyed by
@@ -69,6 +80,25 @@ export const SETTINGS_GROUPS = [
     adminOnly: true,
     sections: [
       { id: 'epg-settings', label: 'EPG Settings', icon: CalendarDays, Component: EpgSettingsForm },
+    ],
+  },
+  {
+    id: 'vod',
+    label: 'Video on Demand',
+    adminOnly: true,
+    sections: [
+      {
+        id: 'vod-metadata',
+        label: 'Metadata',
+        icon: Video,
+        Component: MetadataSettingsForm,
+      },
+      {
+        id: 'vod-title-cleanup',
+        label: 'Cleanup',
+        icon: Eraser,
+        Component: CleanupSettingsForm,
+      },
     ],
   },
   {

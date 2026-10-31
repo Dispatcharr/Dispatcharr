@@ -32,6 +32,9 @@ import VODCategoryMetadataEditor from './VODCategoryMetadataEditor.jsx';
 import VODMetadataCell from './VODMetadataCell.jsx';
 import CategoryVisibilityFilter from './CategoryVisibilityFilter.jsx';
 import CategoryStatusBadge from './CategoryStatusBadge.jsx';
+import CategoryCleanupFields from '../CategoryCleanupFields.jsx';
+import StackedModal from '../StackedModal.jsx';
+import ConfirmationDialog from '../ConfirmationDialog.jsx';
 import {
   DEFAULT_CATEGORY_VISIBILITY,
   matchesCategoryVisibility,
@@ -68,6 +71,8 @@ const CategoryCard = memo(function CategoryCard({
   previewUnavailableHint,
 }) {
   const summary = metadataSummary(categoryMetadata(category));
+  const cleanupConfigured =
+    !!category.custom_properties?.title_cleanup?.pattern;
   return (
     <TableTr
       data-selected={selected || undefined}
@@ -114,8 +119,8 @@ const CategoryCard = memo(function CategoryCard({
           >
             <ActionIcon
               aria-label={`Edit defaults for ${category.name}`}
-              variant={summary ? 'light' : 'subtle'}
-              color={summary ? 'blue' : undefined}
+              variant={summary || cleanupConfigured ? 'light' : 'subtle'}
+              color={summary || cleanupConfigured ? 'blue' : undefined}
               disabled={!category.enabled}
               onClick={() => category.enabled && onConfigure(category)}
             >
@@ -175,6 +180,10 @@ const VODCategoryFilter = ({
   const [bulkEditorOpen, setBulkEditorOpen] = useState(false);
   const [bulkSettings, setBulkSettings] = useState(EMPTY_BULK_SETTINGS);
   const [configuringCategoryId, setConfiguringCategoryId] = useState(null);
+  const [cleanupDraft, setCleanupDraft] = useState({});
+  const [cleanupValid, setCleanupValid] = useState(true);
+  const [metadataDirty, setMetadataDirty] = useState(false);
+  const [discardConfig, setDiscardConfig] = useState(false);
   const configuringCategory = categoryStates.find(
     (category) => category.id === configuringCategoryId
   );
@@ -256,9 +265,22 @@ const VODCategoryFilter = ({
   );
 
   const openConfigure = useCallback((category) => {
-    if (category.enabled) setConfiguringCategoryId(category.id);
+    if (category.enabled) {
+      setCleanupDraft(category.custom_properties?.title_cleanup || {});
+      setCleanupValid(true);
+      setMetadataDirty(false);
+      setConfiguringCategoryId(category.id);
+    }
   }, []);
-  const closeConfigure = () => setConfiguringCategoryId(null);
+  const closeConfigure = () => {
+    const cleanupDirty =
+      JSON.stringify(cleanupDraft) !==
+      JSON.stringify(
+        configuringCategory?.custom_properties?.title_cleanup || {}
+      );
+    if (metadataDirty || cleanupDirty) setDiscardConfig(true);
+    else setConfiguringCategoryId(null);
+  };
   const applyMetadata = (draft) => {
     const patch = categoryMetadataPatch(draft);
     setCategoryStates((current) =>
@@ -266,12 +288,19 @@ const VODCategoryFilter = ({
         category.id === configuringCategoryId
           ? {
               ...category,
-              custom_properties: { ...category.custom_properties, ...patch },
+              custom_properties: {
+                ...category.custom_properties,
+                ...patch,
+                ...(JSON.stringify(cleanupDraft) !==
+                JSON.stringify(category.custom_properties?.title_cleanup || {})
+                  ? { title_cleanup: cleanupDraft }
+                  : {}),
+              },
             }
           : category
       )
     );
-    closeConfigure();
+    setConfiguringCategoryId(null);
   };
 
   const isVisible = useCallback(
@@ -498,25 +527,50 @@ const VODCategoryFilter = ({
         group={previewCategory}
         onClose={() => setPreviewCategory(null)}
       />
-      <Modal
+      <StackedModal
         stackId={`vod-category-defaults-${type}`}
+        keepVisibleInStack
         opened={!!configuringCategory}
         onClose={closeConfigure}
-        size="md"
+        size="lg"
         title={`Category defaults · ${configuringCategory?.name || ''}`}
         closeButtonProps={{ 'aria-label': 'Close category defaults' }}
       >
         {configuringCategory && (
-          <VODCategoryMetadataEditor
-            key={configuringCategory.id}
-            value={categoryMetadata(configuringCategory)}
-            languages={MEDIA_LANGUAGE_OPTIONS}
-            resolutions={VOD_RESOLUTIONS}
-            pickerStackId={`vod-category-metadata-${type}`}
-            onApply={applyMetadata}
-          />
+          <ScrollArea.Autosize mah="70dvh" offsetScrollbars>
+            <VODCategoryMetadataEditor
+              key={configuringCategory.id}
+              value={categoryMetadata(configuringCategory)}
+              languages={MEDIA_LANGUAGE_OPTIONS}
+              resolutions={VOD_RESOLUTIONS}
+              pickerStackId={`vod-category-metadata-${type}`}
+              onApply={applyMetadata}
+              disabled={!cleanupValid}
+              onDirtyChange={setMetadataDirty}
+            >
+              <CategoryCleanupFields
+                accountId={playlist.id}
+                categoryId={configuringCategory.id}
+                value={cleanupDraft}
+                onChange={setCleanupDraft}
+                onValidityChange={setCleanupValid}
+              />
+            </VODCategoryMetadataEditor>
+          </ScrollArea.Autosize>
         )}
-      </Modal>
+      </StackedModal>
+      <ConfirmationDialog
+        opened={discardConfig}
+        onClose={() => setDiscardConfig(false)}
+        onConfirm={() => {
+          setDiscardConfig(false);
+          setConfiguringCategoryId(null);
+        }}
+        title="Discard unsaved changes?"
+        message="Your category changes have not been applied."
+        confirmLabel="Discard"
+        cancelLabel="Continue editing"
+      />
       <Modal
         stackId={`vod-category-bulk-${type}`}
         opened={bulkEditorOpen}

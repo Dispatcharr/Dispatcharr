@@ -224,6 +224,27 @@ describe('VODModal', () => {
       expect(mockFetchMovieProviders).toHaveBeenCalledWith(mockVOD.id);
     });
   });
+
+  it('opens the exact source selected from Library without falling back to the first provider', async () => {
+    const second = { ...mockProvider, id: 2, stream_id: 'second-stream' };
+    mockFetchMovieProviders.mockResolvedValue([mockProvider, second]);
+    render(
+      <VODModal
+        vod={{ ...mockVOD, source_id: 2 }}
+        opened
+        onClose={mockOnClose}
+      />
+    );
+    await waitFor(() =>
+      expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledWith(
+        mockVOD.id,
+        2
+      )
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('provider-select')).toHaveValue('2')
+    );
+  });
   it('shows the title once and fetches each initial resource only once', async () => {
     render(<VODModal vod={mockVOD} opened onClose={mockOnClose} />);
     await screen.findByText('Test Provider');
@@ -380,6 +401,48 @@ describe('VODModal', () => {
     // Should still render without providers
     expect(screen.getByTestId('modal')).toBeInTheDocument();
   });
+
+  it.each([0, '0', null, undefined])(
+    'omits the technical details section when its values are empty (%s)',
+    async (bitrate) => {
+      const emptyDetails = { bitrate, video: {}, audio: {} };
+      const vod = { ...mockVOD, ...emptyDetails };
+      mockFetchMovieDetailsFromProvider.mockResolvedValue(vod);
+      mockFetchMovieProviders.mockResolvedValue([
+        { ...mockProvider, ...emptyDetails },
+      ]);
+      render(<VODModal vod={vod} opened onClose={mockOnClose} />);
+      await screen.findByText('Test Provider');
+      expect(screen.queryByText(/Technical Details/)).not.toBeInTheDocument();
+      expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument();
+    }
+  );
+
+  it.each([
+    { video: { codec_name: 'h264' }, audio: {}, label: 'Video:' },
+    { video: {}, audio: { codec_name: 'aac' }, label: 'Audio:' },
+  ])(
+    'keeps $label details without rendering a zero bitrate',
+    async (details) => {
+      const technical = {
+        bitrate: 0,
+        video: details.video,
+        audio: details.audio,
+      };
+      mockFetchMovieDetailsFromProvider.mockResolvedValue({
+        ...mockVOD,
+        ...technical,
+      });
+      mockFetchMovieProviders.mockResolvedValue([
+        { ...mockProvider, ...technical },
+      ]);
+      render(<VODModal vod={mockVOD} opened onClose={mockOnClose} />);
+      await screen.findByText('Test Provider');
+      expect(screen.getByText(details.label)).toBeInTheDocument();
+      expect(screen.queryByText('Bitrate:')).not.toBeInTheDocument();
+      expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument();
+    }
+  );
 
   it('should display technical details when available', async () => {
     const vodWithTech = {

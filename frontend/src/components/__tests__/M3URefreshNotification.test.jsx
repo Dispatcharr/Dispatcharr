@@ -170,6 +170,43 @@ describe('M3URefreshNotification', () => {
     );
 
   describe('Persistent progress notifications', () => {
+    it('offers Open Library only after the first successful VOD import without refreshing', () => {
+      window.history.replaceState({}, '', '/sources/m3u');
+      setProgress({
+        action: 'vod_refresh',
+        progress: 100,
+        status: 'success',
+        first_vod_import: true,
+      });
+      renderWithProviders(<M3URefreshNotification />);
+      const notification = showNotification.mock.calls[0][0];
+      expect(notification.autoClose).toBe(10000);
+      render(<>{notification.message}</>);
+      fireEvent.click(screen.getByRole('button', { name: 'Open Library' }));
+      expect(window.location.pathname).toBe('/vods');
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Metadata settings' })
+      );
+      expect(window.location.pathname).toBe('/settings');
+      expect(window.location.hash).toBe('#vod-metadata');
+      expect(API.refreshPlaylist).not.toHaveBeenCalled();
+      window.history.replaceState({}, '', '/');
+    });
+    it.each([
+      { action: 'vod_refresh', status: 'success', first_vod_import: false },
+      { action: 'vod_refresh', status: 'error', first_vod_import: true },
+      { action: 'parsing', status: 'success', first_vod_import: true },
+    ])(
+      'does not offer the action for ordinary refreshes or errors (%j)',
+      (values) => {
+        setProgress({ progress: 100, ...values });
+        renderWithProviders(<M3URefreshNotification />);
+        render(<>{showNotification.mock.calls[0][0].message}</>);
+        expect(
+          screen.queryByRole('button', { name: 'Open Library' })
+        ).not.toBeInTheDocument();
+      }
+    );
     it.each([
       'initializing',
       'downloading',

@@ -4147,21 +4147,11 @@ export default class API {
 
   static async getAllContent(params = new URLSearchParams()) {
     try {
-      console.log(
-        'Calling getAllContent with URL:',
-        `${host}/api/vod/all/?${params.toString()}`
-      );
       const response = await request(
         `${host}/api/vod/all/?${params.toString()}`
       );
-      console.log('getAllContent raw response:', response);
       return response;
     } catch (e) {
-      console.error('getAllContent error:', e);
-      console.error('Error status:', e.status);
-      console.error('Error body:', e.body);
-      console.error('Error message:', e.message);
-
       // Don't show error notification for "Invalid page" errors as they're handled gracefully
       const isInvalidPage =
         e.body?.detail?.includes('Invalid page') ||
@@ -4183,9 +4173,16 @@ export default class API {
     }
   }
 
-  static async getMovieProviderInfo(movieId, relationId = null) {
+  static async getMovieProviderInfo(
+    movieId,
+    relationId = null,
+    { forceRefresh = false } = {}
+  ) {
     try {
-      const params = relationId ? `?relation_id=${relationId}` : '';
+      const query = new URLSearchParams();
+      if (relationId) query.set('relation_id', relationId);
+      if (forceRefresh) query.set('force_refresh', 'true');
+      const params = query.size ? `?${query}` : '';
       const response = await request(
         `${host}/api/vod/movies/${movieId}/provider-info/${params}`
       );
@@ -4234,10 +4231,65 @@ export default class API {
     }
   }
 
-  static async getSeriesInfo(seriesId, relationId = null) {
+  static async getVODLibrary(params = new URLSearchParams()) {
+    return request(`${host}/api/vod/library/?${params}`);
+  }
+
+  static async getVODLibraryOptions(params = new URLSearchParams()) {
+    return request(`${host}/api/vod/library/options/?${params}`);
+  }
+
+  static async getVODLibraryDetails(params) {
+    return request(`${host}/api/vod/library/details/?${params}`);
+  }
+
+  static async getVODCanonicalTargets(params) {
+    return request(`${host}/api/vod/library/canonical-targets/?${params}`);
+  }
+
+  static async getVODLibrarySettings() {
+    return request(`${host}/api/vod/library/settings/`);
+  }
+
+  static async getVODLibraryState() {
+    return request(`${host}/api/vod/library/state/`);
+  }
+
+  static async updateVODLibrarySettings(body) {
+    return request(`${host}/api/vod/library/settings/`, {
+      method: 'PUT',
+      body,
+    });
+  }
+
+  static async vodLibraryAction(action, body = {}, method = 'POST') {
+    const actions = new Set([
+      'cleanup-preview',
+      'bulk',
+      'content',
+      'tmdb-lookup',
+      'tmdb-match',
+      'source-metadata',
+      'category-cleanup',
+      'test-connection',
+      'cancel',
+      'resume',
+    ]);
+    if (!actions.has(action)) throw new Error('Unsupported Library action');
+    return request(`${host}/api/vod/library/${action}/`, { method, body });
+  }
+
+  static async getSeriesInfo(
+    seriesId,
+    relationId = null,
+    { forceRefresh = false, includeEpisodes = true } = {}
+  ) {
     try {
-      const params = new URLSearchParams({ include_episodes: 'true' });
+      const params = new URLSearchParams({
+        include_episodes: String(includeEpisodes),
+      });
       if (relationId) params.set('relation_id', relationId);
+      if (forceRefresh) params.set('force_refresh', 'true');
       const response = await request(
         `${host}/api/vod/series/${seriesId}/provider-info/?${params}`
       );

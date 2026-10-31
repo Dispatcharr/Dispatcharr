@@ -29,6 +29,28 @@ describe('useVODStore', () => {
     });
   });
 
+  it.each([
+    ['fetchMovieDetailsFromProvider', 'getMovieProviderInfo'],
+    ['fetchSeriesInfo', 'getSeriesInfo'],
+  ])(
+    'polls %s in the background without changing an unrelated loading state',
+    async (action, endpoint) => {
+      api[endpoint].mockResolvedValue({
+        id: 1,
+        name: 'Imported',
+        refresh_status: 'pending',
+        episodes: {},
+      });
+      useVODStore.setState({ loading: true, error: 'Existing operation' });
+      const load = useVODStore.getState()[action];
+      const result = await load(1, 2, { background: true, forceRefresh: true });
+      expect(result.refresh_status).toBe('pending');
+      expect(api[endpoint]).toHaveBeenCalledWith(1, 2, { forceRefresh: true });
+      expect(useVODStore.getState().loading).toBe(true);
+      expect(useVODStore.getState().error).toBe('Existing operation');
+    }
+  );
+
   it('should initialize with default state', () => {
     const { result } = renderHook(() => useVODStore());
 

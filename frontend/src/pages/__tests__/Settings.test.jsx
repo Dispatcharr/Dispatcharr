@@ -6,6 +6,10 @@ import useAuthStore from '../../store/auth';
 import { USER_LEVELS } from '../../constants';
 
 vi.mock('../../store/auth');
+vi.mock('../../components/forms/settings/VODSettingsForm.jsx', () => ({
+  MetadataSettingsForm: () => <div data-testid="vod-metadata-form" />,
+  CleanupSettingsForm: () => <div data-testid="vod-cleanup-form" />,
+}));
 vi.mock('../../components/tables/UserAgentsTable', () => ({
   default: ({ active }) => (
     <div data-testid="user-agents-table">UserAgentsTable {active ? 'active' : 'inactive'}</div>
@@ -97,6 +101,18 @@ describe('SettingsPage', () => {
       useAuthStore.mockReturnValue({ user_level: USER_LEVELS.USER, username: 'testuser' });
     });
 
+    it.each(['vod-metadata', 'vod-title-cleanup'])(
+      'does not expose %s to non-admin users',
+      (section) => {
+        renderWithRouter(<SettingsPage />, {
+          initialEntries: [`/settings#${section}`],
+        });
+        expect(
+          screen.getByText('Select a setting from the sidebar')
+        ).toBeInTheDocument();
+      }
+    );
+
     it('renders ui-settings section via hash', async () => {
       renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#ui-settings'] });
       await waitFor(() => {
@@ -121,6 +137,17 @@ describe('SettingsPage', () => {
   describe('admin user', () => {
     beforeEach(() => {
       useAuthStore.mockReturnValue({ user_level: USER_LEVELS.ADMIN, username: 'admin' });
+    });
+
+    it.each([
+      ['vod-metadata', 'vod-metadata-form', 'Metadata'],
+      ['vod-title-cleanup', 'vod-cleanup-form', 'Cleanup'],
+    ])('renders the independent %s section', async (section, testId, label) => {
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: [`/settings#${section}`],
+      });
+      expect(await screen.findByTestId(testId)).toBeInTheDocument();
+      expect(screen.getByText(label)).toBeInTheDocument();
     });
 
     it('renders dvr-settings section via hash', async () => {

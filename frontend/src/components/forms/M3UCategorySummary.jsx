@@ -1,5 +1,6 @@
 import { createElement } from 'react';
 import {
+  Anchor,
   Button,
   Group,
   Paper,
@@ -109,6 +110,30 @@ const M3UCategorySummary = ({
           </div>
         ) : (
           <Text fw={600}>Categories</Text>
+        )}
+        {showCounts && counts.length > 1 && (
+          <Text size="sm" c="dimmed">
+            Movies and series appear in the Library. Title cleanup and optional
+            TMDB metadata can be set up in Settings at any time and apply to
+            unprotected titles on the next refresh:{' '}
+            <Anchor
+              href="/settings#vod-metadata"
+              target="_blank"
+              rel="noopener noreferrer"
+              inherit
+            >
+              Metadata
+            </Anchor>
+            {' · '}
+            <Anchor
+              href="/settings#vod-title-cleanup"
+              target="_blank"
+              rel="noopener noreferrer"
+              inherit
+            >
+              Cleanup
+            </Anchor>
+          </Text>
         )}
         {onEdit && (
           <section

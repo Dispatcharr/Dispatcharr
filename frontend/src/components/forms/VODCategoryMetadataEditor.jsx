@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActionIcon,
   Button,
@@ -52,6 +52,12 @@ const VODCategoryMetadataEditor = ({
   onApply,
   bulk = false,
   ruleMode = false,
+  sourceMode = false,
+  onDirtyChange,
+  applyLabel,
+  disabled = false,
+  invalidFields = [],
+  children,
 }) => {
   const [draft, setDraft] = useState({
     audio_languages: [],
@@ -71,6 +77,21 @@ const VODCategoryMetadataEditor = ({
   const [resolutionError, setResolutionError] = useState(false);
   const isLanguage = picker !== 'video_features';
   const direct = bulk || ruleMode;
+  const initialDraft = JSON.stringify({
+    audio_languages: [],
+    subtitle_languages: [],
+    resolution: '',
+    video_features: [],
+    ...value,
+  });
+
+  useEffect(() => {
+    onDirtyChange?.(
+      direct
+        ? Object.values(modes).some((mode) => mode !== 'keep')
+        : JSON.stringify(draft) !== initialDraft
+    );
+  }, [modes, draft, direct, initialDraft, onDirtyChange]);
 
   const labelFor = (field, code) =>
     field === 'video_features'
@@ -83,7 +104,7 @@ const VODCategoryMetadataEditor = ({
     if (bulk)
       setModes((current) => ({
         ...current,
-        [field]: nextValue?.length ? 'replace' : 'reset',
+        [field]: sourceMode || nextValue?.length ? 'replace' : 'reset',
       }));
     else if (ruleMode)
       setModes((current) => ({
@@ -104,7 +125,9 @@ const VODCategoryMetadataEditor = ({
       ? `Do not set ${label} with this rule`
       : clearing
         ? `Keep ${label} unchanged`
-        : `Clear ${label} defaults`;
+        : sourceMode
+          ? `Reset ${label} override`
+          : `Clear ${label} defaults`;
     return (
       <Tooltip
         label={action}
@@ -131,6 +154,8 @@ const VODCategoryMetadataEditor = ({
               }));
             } else {
               updateField(field, field === 'resolution' ? '' : []);
+              if (sourceMode)
+                setModes((current) => ({ ...current, [field]: 'reset' }));
             }
           }}
         >
@@ -147,7 +172,9 @@ const VODCategoryMetadataEditor = ({
         : 'Not set by this rule'
       : bulk
         ? modes[field] === 'reset'
-          ? 'Clear'
+          ? sourceMode
+            ? 'Inherit'
+            : 'Clear'
           : 'Keep unchanged'
         : 'Not specified';
 
@@ -205,7 +232,7 @@ const VODCategoryMetadataEditor = ({
           style={{
             flex: 1,
             minWidth: 0,
-            border: `1px solid ${direct && modes[field] && modes[field] !== 'keep' ? 'var(--mantine-color-blue-5)' : 'var(--mantine-color-default-border)'}`,
+            border: `1px solid ${invalidFields.includes(field) ? 'var(--mantine-color-red-6)' : direct && modes[field] && modes[field] !== 'keep' ? 'var(--mantine-color-blue-5)' : 'var(--mantine-color-default-border)'}`,
             borderRadius: 'var(--mantine-radius-default)',
             background: 'var(--mantine-color-default)',
           }}
@@ -399,7 +426,7 @@ const VODCategoryMetadataEditor = ({
             data={resolutionOptions}
             value={draft.resolution || null}
             error={
-              resolutionError
+              invalidFields.includes('resolution') || resolutionError
                 ? 'Choose a resolution or leave this field unset.'
                 : undefined
             }
@@ -408,7 +435,10 @@ const VODCategoryMetadataEditor = ({
               updateField('resolution', resolution || '');
             }}
             styles={
-              direct && modes.resolution && modes.resolution !== 'keep'
+              !invalidFields.includes('resolution') &&
+              direct &&
+              modes.resolution &&
+              modes.resolution !== 'keep'
                 ? { input: { borderColor: 'var(--mantine-color-blue-5)' } }
                 : undefined
             }
@@ -435,9 +465,10 @@ const VODCategoryMetadataEditor = ({
             {editorFields}
           </Stack>
         </Paper>
+        {children}
         <Group justify="flex-end">
-          <Button type="button" onClick={apply}>
-            {bulk ? 'Apply to selected' : 'Apply'}
+          <Button type="button" onClick={apply} disabled={disabled}>
+            {applyLabel || (bulk ? 'Apply to selected' : 'Apply')}
           </Button>
         </Group>
       </Stack>

@@ -41,6 +41,7 @@ const getMovieDetails = (response, movieId) => {
 
 const getMovieDetailsWithProvider = (response, movieId) => {
   return {
+    refresh_status: response.refresh_status,
     id: response.id || movieId,
     name: response.name || '',
     description: response.description || response.plot || '',
@@ -55,6 +56,7 @@ const getMovieDetailsWithProvider = (response, movieId) => {
     actors: response.actors || response.cast || '',
     country: response.country || '',
     tmdb_id: response.tmdb_id || '',
+    imdb_id: response.imdb_id || '',
     youtube_trailer: response.youtube_trailer || '',
     // Additional provider fields
     backdrop_path: response.backdrop_path || [],
@@ -71,6 +73,7 @@ const getMovieDetailsWithProvider = (response, movieId) => {
 
 const getSeriesDetails = (response, seriesId) => {
   return {
+    refresh_status: response.refresh_status,
     id: response.id || seriesId,
     name: response.name || '',
     description: response.description || response.custom_properties?.plot || '',
@@ -79,8 +82,8 @@ const getSeriesDetails = (response, seriesId) => {
     rating: response.rating || '',
     logo: response.cover || null,
     type: 'series',
-    director: response.custom_properties?.director || '',
-    cast: response.custom_properties?.cast || '',
+    director: response.director || response.custom_properties?.director || '',
+    cast: response.actors || response.custom_properties?.cast || '',
     country: response.country || '',
     tmdb_id: response.tmdb_id || '',
     imdb_id: response.imdb_id || '',
@@ -92,7 +95,10 @@ const getSeriesDetails = (response, seriesId) => {
     o_name: response.o_name || '',
     age: response.age || '',
     m3u_account: response.m3u_account || '',
-    youtube_trailer: response.custom_properties?.youtube_trailer || '',
+    youtube_trailer:
+      response.youtube_trailer ||
+      response.custom_properties?.youtube_trailer ||
+      '',
   };
 };
 
@@ -189,14 +195,11 @@ const useVODStore = create((set, get) => ({
       } else {
         // Use the new unified backend endpoint for 'all' view
         const response = await api.getAllContent(params);
-        console.log('getAllContent response:', response);
 
         const results = response.results || response;
-        console.log('results:', results);
 
         // Check if results is actually an array before calling map
         if (!Array.isArray(results)) {
-          console.error('Results is not an array:', results);
           throw new Error('Invalid response format - results is not an array');
         }
 
@@ -247,24 +250,33 @@ const useVODStore = create((set, get) => ({
     }
   },
 
-  fetchMovieDetailsFromProvider: async (movieId, relationId = null) => {
-    set({ loading: true, error: null });
+  fetchMovieDetailsFromProvider: async (
+    movieId,
+    relationId = null,
+    { background = false, forceRefresh = false } = {}
+  ) => {
+    if (!background) set({ loading: true, error: null });
     try {
-      const response = await api.getMovieProviderInfo(movieId, relationId);
+      const response = forceRefresh
+        ? await api.getMovieProviderInfo(movieId, relationId, {
+            forceRefresh: true,
+          })
+        : await api.getMovieProviderInfo(movieId, relationId);
 
       // Transform the response data to match our expected format
       const movieDetails = getMovieDetailsWithProvider(response, movieId);
 
-      set({ loading: false }); // Only update loading state
+      if (!background) set({ loading: false });
 
       // Do NOT merge or overwrite the store entry
       return movieDetails;
     } catch (error) {
       console.error('Failed to fetch movie details from provider:', error);
-      set({
-        error: 'Failed to load movie details from provider.',
-        loading: false,
-      });
+      if (!background)
+        set({
+          error: 'Failed to load movie details from provider.',
+          loading: false,
+        });
       throw error;
     }
   },
@@ -395,10 +407,16 @@ const useVODStore = create((set, get) => ({
       return { content: updatedContent };
     }),
 
-  fetchSeriesInfo: async (seriesId, relationId = null) => {
-    set({ loading: true, error: null });
+  fetchSeriesInfo: async (
+    seriesId,
+    relationId = null,
+    { background = false, forceRefresh = false } = {}
+  ) => {
+    if (!background) set({ loading: true, error: null });
     try {
-      const response = await api.getSeriesInfo(seriesId, relationId);
+      const response = forceRefresh
+        ? await api.getSeriesInfo(seriesId, relationId, { forceRefresh: true })
+        : await api.getSeriesInfo(seriesId, relationId);
 
       // Transform the response data to match our expected format
       const seriesInfo = getSeriesDetails(response, seriesId);
@@ -433,7 +451,7 @@ const useVODStore = create((set, get) => ({
           ...state.content,
           [`series_${seriesInfo.id}`]: { ...seriesInfo, contentType: 'series' },
         },
-        loading: false,
+        ...(!background && { loading: false }),
       }));
 
       // Return series info with episodes array for easy access
@@ -443,7 +461,8 @@ const useVODStore = create((set, get) => ({
       };
     } catch (error) {
       console.error('Failed to fetch series info:', error);
-      set({ error: 'Failed to load series details.', loading: false });
+      if (!background)
+        set({ error: 'Failed to load series details.', loading: false });
       throw error;
     }
   },

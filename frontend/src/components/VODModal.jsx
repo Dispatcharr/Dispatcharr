@@ -1,4 +1,5 @@
 import VODSourceMetadata from './VODSourceMetadata.jsx';
+import useProviderDetailsPolling from '../hooks/useProviderDetailsPolling.jsx';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
@@ -200,15 +201,15 @@ const Movie = ({
 
 const MovieTechnicalDetails = ({ selectedProvider, displayVOD }) => {
   const techDetails = getTechnicalDetails(selectedProvider, displayVOD);
-  const hasDetails =
-    techDetails.bitrate || techDetails.video || techDetails.audio;
+  const hasBitrate = Number(techDetails.bitrate) > 0;
+  const hasVideo = Boolean(
+    techDetails.video && Object.keys(techDetails.video).length > 0
+  );
+  const hasAudio = Boolean(
+    techDetails.audio && Object.keys(techDetails.audio).length > 0
+  );
 
-  if (!hasDetails) return null;
-
-  const hasVideo =
-    techDetails.video && Object.keys(techDetails.video).length > 0;
-  const hasAudio =
-    techDetails.audio && Object.keys(techDetails.audio).length > 0;
+  if (!hasBitrate && !hasVideo && !hasAudio) return null;
 
   return (
     <Stack gap={4} className={classes.section}>
@@ -224,7 +225,7 @@ const MovieTechnicalDetails = ({ selectedProvider, displayVOD }) => {
         )}
       </Text>
 
-      {techDetails.bitrate && techDetails.bitrate > 0 && (
+      {hasBitrate && (
         <Text size="xs" c="dimmed">
           <strong>Bitrate:</strong> {techDetails.bitrate} kbps
         </Text>
@@ -256,6 +257,15 @@ const VODModal = ({ vod, opened, onClose }) => {
   const detailsRequestIdRef = useRef(0);
 
   const { fetchMovieDetailsFromProvider, fetchMovieProviders } = useVODStore();
+  const { retry: retryProviderDetails, retrying: retryingProviderDetails } =
+    useProviderDetailsPolling({
+      opened,
+      id: vod?.id,
+      relationId: selectedProvider?.id || vod?.source_id,
+      details: detailedVOD,
+      load: fetchMovieDetailsFromProvider,
+      onResult: setDetailedVOD,
+    });
 
   useEffect(() => {
     if (!opened || !vod) return;
@@ -267,7 +277,10 @@ const VODModal = ({ vod, opened, onClose }) => {
     setLoadingDetails(true);
     hideNotification('movie-preview-details');
     hideNotification('movie-preview-providers');
-    fetchMovieDetailsFromProvider(vod.id)
+    (vod.source_id
+      ? fetchMovieDetailsFromProvider(vod.id, vod.source_id)
+      : fetchMovieDetailsFromProvider(vod.id)
+    )
       .then((details) => {
         if (detailsRequestIdRef.current === requestId) setDetailedVOD(details);
       })
@@ -292,7 +305,12 @@ const VODModal = ({ vod, opened, onClose }) => {
       .then((providersData) => {
         if (cancelled) return;
         setProviders(providersData);
-        setSelectedProvider(providersData[0] || null);
+        setSelectedProvider(
+          vod.source_id
+            ? providersData.find((provider) => provider.id === vod.source_id) ||
+                null
+            : providersData[0] || null
+        );
       })
       .catch(() => {
         if (cancelled) return;
@@ -426,10 +444,30 @@ const VODModal = ({ vod, opened, onClose }) => {
           {/* Modal content above backdrop */}
           <Box style={{ position: 'relative', zIndex: 2 }}>
             <Stack gap="md">
-              {loadingDetails && (
+              {(loadingDetails ||
+                detailedVOD?.refresh_status === 'pending') && (
                 <Text size="sm" c="dimmed" role="status">
-                  Loading additional details...
+                  {detailedVOD?.refresh_status === 'pending'
+                    ? 'Loading provider details in the background…'
+                    : 'Loading additional details...'}
                 </Text>
+              )}
+              {['failed', 'unavailable'].includes(
+                detailedVOD?.refresh_status
+              ) && (
+                <Group gap="xs">
+                  <Text size="sm" c="dimmed">
+                    Provider details unavailable. Imported information is shown.
+                  </Text>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    loading={retryingProviderDetails}
+                    onClick={retryProviderDetails}
+                  >
+                    Retry details
+                  </Button>
+                </Group>
               )}
 
               {/* Movie poster and basic info */}
@@ -455,7 +493,7 @@ const VODModal = ({ vod, opened, onClose }) => {
                 <Movie
                   detailedVOD={detailedVOD}
                   vod={vod}
-                  hasMultipleProviders={providers.length > 0}
+                  hasMultipleProviders={providers.length > 0 || !!vod.source_id}
                   selectedProvider={selectedProvider}
                   onClickYouTubeTrailer={onClickYouTubeTrailer}
                 >

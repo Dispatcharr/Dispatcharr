@@ -6,19 +6,22 @@ import {
   Image,
   Stack,
   Text,
+  Tooltip,
 } from '@mantine/core';
 import { Clock, Play, Star } from 'lucide-react';
-import React from 'react';
+import React, { useState } from 'react';
 import classes from '../VODLayout.module.css';
 import {
   formatDuration,
+  formatRating,
   getSeasonLabel,
   vodLogoSrc,
 } from '../../utils/cards/VODCardUtils.js';
 
-const VODCard = ({ vod, onClick }) => {
+const VODCard = ({ vod, onClick, compact = false }) => {
   const isEpisode = vod.type === 'episode';
   const posterSrc = vodLogoSrc(vod.logo);
+  const [failedPoster, setFailedPoster] = useState(null);
   const durationSeconds = vod.duration_secs ?? vod.duration;
   const hasRating = Number(vod.rating) > 0;
 
@@ -44,9 +47,10 @@ const VODCard = ({ vod, onClick }) => {
     return (
       <Text
         fw={600}
-        size="sm"
-        lineClamp={2}
-        title={vod.name}
+        size={compact ? 13 : 'sm'}
+        lh={compact ? 1.4 : undefined}
+        lineClamp={compact ? 1 : 2}
+        title={compact ? undefined : vod.name}
         className={classes.cardTitle}
       >
         {vod.name}
@@ -78,13 +82,14 @@ const VODCard = ({ vod, onClick }) => {
     >
       <CardSection>
         <Box className={classes.cardMedia}>
-          {posterSrc ? (
+          {posterSrc && failedPoster !== posterSrc ? (
             <Image
               src={posterSrc}
               className={classes.cardImage}
               alt={vod.name}
               fit="cover"
               loading="lazy"
+              onError={() => setFailedPoster(posterSrc)}
             />
           ) : (
             <Box className={classes.placeholder} h="100%" display="flex">
@@ -95,7 +100,13 @@ const VODCard = ({ vod, onClick }) => {
       </CardSection>
 
       <Stack gap={2} className={classes.cardInfo}>
-        {getDisplayTitle()}
+        {compact ? (
+          <Tooltip label={vod.name} multiline maw={400} withArrow>
+            {getDisplayTitle()}
+          </Tooltip>
+        ) : (
+          getDisplayTitle()
+        )}
 
         <Text size="xs" c="dimmed">
           {isEpisode ? 'Episode' : 'Movie'}
@@ -107,29 +118,38 @@ const VODCard = ({ vod, onClick }) => {
           ) : null}
         </Text>
 
-        {(durationSeconds > 0 || hasRating) && (
-          <Group gap="sm">
-            {durationSeconds > 0 && (
-              <Group gap={4} wrap="nowrap" c="dimmed">
-                <Clock size={12} aria-hidden="true" />
-                <Text size="xs" c="dimmed">
-                  {formatDuration(durationSeconds)}
-                </Text>
-              </Group>
-            )}
-
-            {hasRating && (
-              <Group gap={4} wrap="nowrap" c="dimmed">
-                <Star size={12} aria-hidden="true" />
-                <Text size="xs" c="dimmed">
-                  {vod.rating}
-                </Text>
-              </Group>
-            )}
+        {compact ? (
+          <Group gap={4} wrap="nowrap" c="dimmed" mih={18}>
+            <Star size={12} aria-hidden="true" />
+            <Text size="xs" c="dimmed">
+              {formatRating(vod.rating)}
+            </Text>
           </Group>
+        ) : (
+          (durationSeconds > 0 || hasRating) && (
+            <Group gap="sm">
+              {durationSeconds > 0 && (
+                <Group gap={4} wrap="nowrap" c="dimmed">
+                  <Clock size={12} aria-hidden="true" />
+                  <Text size="xs" c="dimmed">
+                    {formatDuration(durationSeconds)}
+                  </Text>
+                </Group>
+              )}
+
+              {hasRating && (
+                <Group gap={4} wrap="nowrap" c="dimmed">
+                  <Star size={12} aria-hidden="true" />
+                  <Text size="xs" c="dimmed">
+                    {formatRating(vod.rating)}
+                  </Text>
+                </Group>
+              )}
+            </Group>
+          )
         )}
 
-        {vod.genre && (
+        {!compact && vod.genre && (
           <Text size="xs" c="dimmed" lineClamp={1}>
             {vod.genre}
           </Text>

@@ -44,6 +44,47 @@ import { notifications } from '@mantine/notifications';
 import { formatApiError } from '../utils';
 import useScreenshotMode from '../store/useScreenshotMode.js';
 
+describe('explicit provider detail retries', () => {
+  beforeEach(() => vi.clearAllMocks());
+  it.each(['movie', 'series'])(
+    'preserves the exact %s source and only forces a refresh on request',
+    async (kind) => {
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue({ ok: true, text: async () => '{}' });
+      const action =
+        kind === 'movie' ? API.getMovieProviderInfo : API.getSeriesInfo;
+      await action(7, 9);
+      let url = new URL(
+        globalThis.fetch.mock.calls[0][0],
+        'http://example.invalid'
+      );
+      expect(url.searchParams.get('relation_id')).toBe('9');
+      expect(url.searchParams.has('force_refresh')).toBe(false);
+      await action(7, 9, { forceRefresh: true });
+      url = new URL(
+        globalThis.fetch.mock.calls[1][0],
+        'http://example.invalid'
+      );
+      expect(url.searchParams.get('relation_id')).toBe('9');
+      expect(url.searchParams.get('force_refresh')).toBe('true');
+    }
+  );
+});
+
+describe('Library actions', () => {
+  beforeEach(() => vi.clearAllMocks());
+  it('posts the TMDB connection test to its Library endpoint', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: true, text: async () => '{}' });
+    await API.vodLibraryAction('test-connection', {});
+    const [url, options] = globalThis.fetch.mock.calls[0];
+    expect(url).toMatch(/\/api\/vod\/library\/test-connection\/$/);
+    expect(options.method).toBe('POST');
+  });
+});
+
 describe('profile save results', () => {
   beforeEach(() => vi.clearAllMocks());
   it.each([

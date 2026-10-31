@@ -1,4 +1,5 @@
 import VODSourceMetadata from './VODSourceMetadata.jsx';
+import useProviderDetailsPolling from '../hooks/useProviderDetailsPolling.jsx';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
@@ -358,6 +359,15 @@ const SeriesModal = ({ series, opened, onClose }) => {
   const [selectedProvider, setSelectedProvider] = useState(null);
   const [loadingProviders, setLoadingProviders] = useState(false);
   const detailsRequestIdRef = useRef(0);
+  const { retry: retryProviderDetails, retrying: retryingProviderDetails } =
+    useProviderDetailsPolling({
+      opened,
+      id: series?.id,
+      relationId: selectedProvider?.id || series?.source_id,
+      details: detailedSeries,
+      load: fetchSeriesInfo,
+      onResult: setDetailedSeries,
+    });
 
   useEffect(() => {
     if (opened && series) {
@@ -371,7 +381,10 @@ const SeriesModal = ({ series, opened, onClose }) => {
       hideNotification('series-preview-details');
       hideNotification('series-preview-providers');
       setLoadingDetails(true);
-      fetchSeriesInfo(series.id)
+      (series.source_id
+        ? fetchSeriesInfo(series.id, series.source_id)
+        : fetchSeriesInfo(series.id)
+      )
         .then((details) => {
           if (detailsRequestIdRef.current !== requestId) return;
           setDetailedSeries(details);
@@ -401,9 +414,13 @@ const SeriesModal = ({ series, opened, onClose }) => {
         .then((providersData) => {
           if (cancelled) return;
           setProviders(providersData);
-          if (providersData.length > 0) {
-            setSelectedProvider(providersData[0]);
-          }
+          setSelectedProvider(
+            series.source_id
+              ? providersData.find(
+                  (provider) => provider.id === series.source_id
+                ) || null
+              : providersData[0] || null
+          );
         })
         .catch(() => {
           if (cancelled) return;
@@ -604,10 +621,30 @@ const SeriesModal = ({ series, opened, onClose }) => {
           {/* Modal content above backdrop */}
           <Box style={{ position: 'relative', zIndex: 2 }}>
             <Stack gap="md">
-              {loadingDetails && (
+              {(loadingDetails ||
+                detailedSeries?.refresh_status === 'pending') && (
                 <Text size="sm" c="dimmed" role="status">
-                  Loading series details and episodes...
+                  {detailedSeries?.refresh_status === 'pending'
+                    ? 'Loading provider details and episodes in the background…'
+                    : 'Loading series details and episodes...'}
                 </Text>
+              )}
+              {['failed', 'unavailable'].includes(
+                detailedSeries?.refresh_status
+              ) && (
+                <Group gap="xs">
+                  <Text size="sm" c="dimmed">
+                    Provider details unavailable. Imported information is shown.
+                  </Text>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    loading={retryingProviderDetails}
+                    onClick={retryProviderDetails}
+                  >
+                    Retry details
+                  </Button>
+                </Group>
               )}
 
               {/* Series poster and basic info */}

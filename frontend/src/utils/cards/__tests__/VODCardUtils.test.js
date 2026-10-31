@@ -2,6 +2,22 @@ import { describe, it, expect } from 'vitest';
 import * as VODCardUtils from '../VODCardUtils';
 
 describe('VODCardUtils', () => {
+  describe('formatRating', () => {
+    it.each([
+      [7.709, '7.7'],
+      ['7.787', '7.8'],
+      [8, '8.0'],
+      [10, '10.0'],
+    ])('formats %s as %s', (value, expected) => {
+      expect(VODCardUtils.formatRating(value)).toBe(expected);
+    });
+    it.each([null, undefined, '', 0, -1, 11, 'unknown', Infinity])(
+      'keeps unknown or invalid ratings unset (%s)',
+      (value) => {
+        expect(VODCardUtils.formatRating(value)).toBe('—');
+      }
+    );
+  });
   describe('formatDuration', () => {
     it('should format duration with hours and minutes', () => {
       const result = VODCardUtils.formatDuration(3661); // 1h 1m 1s

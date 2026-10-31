@@ -4,6 +4,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Store mock ─────────────────────────────────────────────────────────────────
 vi.mock('../M3UGroupContentPreview.jsx', () => ({ default: () => null }));
+vi.mock('../../StackedModal.jsx', () => ({
+  default: ({ opened, title, onClose, closeButtonProps, children }) =>
+    opened ? (
+      <div role="dialog" aria-label={title}>
+        <button aria-label={closeButtonProps?.['aria-label']} onClick={onClose}>
+          Close
+        </button>
+        {children}
+      </div>
+    ) : null,
+}));
+vi.mock('../../CategoryCleanupFields.jsx', () => ({
+  default: ({ value, onChange }) => (
+    <input
+      aria-label="Remove from titles (regex)"
+      value={value.pattern || ''}
+      onChange={(event) => onChange({ ...value, pattern: event.target.value })}
+    />
+  ),
+}));
 vi.mock('../../ListPagination.jsx', () => ({ default: () => null }));
 vi.mock('../../../store/useVODStore', () => ({ default: vi.fn() }));
 
@@ -57,7 +77,9 @@ vi.mock('@mantine/core', () => ({
   TableTr: ({ children }) => <tr>{children}</tr>,
   TableTh: ({ children, w }) => <th style={{ width: w }}>{children}</th>,
   TableTd: ({ children }) => <td>{children}</td>,
-  ScrollArea: ({ children }) => <div>{children}</div>,
+  ScrollArea: Object.assign(({ children }) => <div>{children}</div>, {
+    Autosize: ({ children }) => <div>{children}</div>,
+  }),
   Tooltip: ({ children }) => <>{children}</>,
   Popover: Object.assign(({ children }) => <div>{children}</div>, {
     Target: ({ children }) => <>{children}</>,
@@ -746,6 +768,12 @@ describe('VODCategoryFilter', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Close category defaults' })
       );
+      expect(
+        screen.getByRole('dialog', { name: 'Discard unsaved changes?' })
+      ).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Discard', exact: true })
+      );
       expect(screen.getByText('eng', { exact: true })).toBeInTheDocument();
       expect(screen.getByText('1080p', { exact: true })).toBeInTheDocument();
       fireEvent.click(
@@ -780,6 +808,31 @@ describe('VODCategoryFilter', () => {
         quality: '1080p',
       });
       expect(action.original_enabled).toBe(true);
+    });
+    it('keeps category cleanup in the draft until Apply and preserves other properties', () => {
+      const setCategoryStates = vi.fn();
+      render(<VODCategoryFilter {...defaultProps({ setCategoryStates })} />);
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Edit defaults for Action' })
+      );
+      fireEvent.change(screen.getByLabelText('Remove from titles (regex)'), {
+        target: { value: '^EN \\|' },
+      });
+      setCategoryStates.mockClear();
+      expect(setCategoryStates).not.toHaveBeenCalled();
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Apply', exact: true })
+      );
+      const result = latestCategoryStates(
+        setCategoryStates,
+        defaultProps().categoryStates
+      );
+      expect(result.find((row) => row.id === 1).custom_properties).toEqual(
+        expect.objectContaining({ title_cleanup: { pattern: '^EN \\|' } })
+      );
+      expect(result.find((row) => row.id === 2)).toEqual(
+        defaultProps().categoryStates.find((row) => row.id === 2)
+      );
     });
   });
 });

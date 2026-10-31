@@ -307,6 +307,24 @@ describe('SeriesModal', () => {
   );
 
   describe('Rendering', () => {
+    it('opens the exact series source selected from Library', async () => {
+      render(
+        <SeriesModal
+          series={{ ...mockSeries, source_id: 2 }}
+          opened
+          onClose={vi.fn()}
+        />
+      );
+      await waitFor(() =>
+        expect(mockVODStore.fetchSeriesInfo).toHaveBeenCalledWith(
+          mockSeries.id,
+          2
+        )
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('combobox')).toHaveValue('2')
+      );
+    });
     it('should render nothing when series is null', () => {
       const { container } = render(
         <SeriesModal series={null} opened={true} onClose={vi.fn()} />

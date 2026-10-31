@@ -6,14 +6,28 @@ import {
   Image,
   Stack,
   Text,
+  Tooltip,
 } from '@mantine/core';
 import { Play, Star } from 'lucide-react';
-import React from 'react';
+import React, { useState } from 'react';
 import classes from '../VODLayout.module.css';
-import { vodLogoSrc } from '../../utils/cards/VODCardUtils.js';
+import { formatRating, vodLogoSrc } from '../../utils/cards/VODCardUtils.js';
 
-const SeriesCard = ({ series, onClick }) => {
+const SeriesCard = ({ series, onClick, compact = false }) => {
   const posterSrc = vodLogoSrc(series.logo);
+  const [failedPoster, setFailedPoster] = useState(null);
+  const title = (
+    <Text
+      fw={600}
+      size={compact ? 13 : 'sm'}
+      lh={compact ? 1.4 : undefined}
+      lineClamp={compact ? 1 : 2}
+      title={compact ? undefined : series.name}
+      className={classes.cardTitle}
+    >
+      {series.name}
+    </Text>
+  );
   return (
     <Card
       padding={0}
@@ -34,13 +48,14 @@ const SeriesCard = ({ series, onClick }) => {
     >
       <CardSection>
         <Box className={classes.cardMedia}>
-          {posterSrc ? (
+          {posterSrc && failedPoster !== posterSrc ? (
             <Image
               src={posterSrc}
               className={classes.cardImage}
               alt={series.name}
               fit="cover"
               loading="lazy"
+              onError={() => setFailedPoster(posterSrc)}
             />
           ) : (
             <Box className={classes.placeholder} h="100%" display="flex">
@@ -51,15 +66,13 @@ const SeriesCard = ({ series, onClick }) => {
       </CardSection>
 
       <Stack gap={2} className={classes.cardInfo}>
-        <Text
-          fw={600}
-          size="sm"
-          lineClamp={2}
-          title={series.name}
-          className={classes.cardTitle}
-        >
-          {series.name}
-        </Text>
+        {compact ? (
+          <Tooltip label={series.name} multiline maw={400} withArrow>
+            {title}
+          </Tooltip>
+        ) : (
+          title
+        )}
 
         <Text size="xs" c="dimmed">
           Series
@@ -70,16 +83,16 @@ const SeriesCard = ({ series, onClick }) => {
             </>
           ) : null}
         </Text>
-        {Number(series.rating) > 0 && (
+        {(compact || Number(series.rating) > 0) && (
           <Group gap={4} wrap="nowrap" c="dimmed">
             <Star size={12} aria-hidden="true" />
             <Text size="xs" c="dimmed">
-              {series.rating}
+              {formatRating(series.rating)}
             </Text>
           </Group>
         )}
 
-        {series.genre && (
+        {!compact && series.genre && (
           <Text size="xs" c="dimmed" lineClamp={1}>
             {series.genre}
           </Text>

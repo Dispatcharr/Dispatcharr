@@ -2,7 +2,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── VODCardUtils ──────────────────────────────────────────────────────────────
-vi.mock('../../../utils/cards/VODCardUtils.js', () => ({
+vi.mock('../../../utils/cards/VODCardUtils.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   formatDuration: vi.fn((mins) => (mins ? `${mins}m` : null)),
   getSeasonLabel: vi.fn(() => 'S01E02'),
   vodLogoSrc: vi.fn((logo) => logo?.cache_url || logo?.url || null),
@@ -10,6 +11,7 @@ vi.mock('../../../utils/cards/VODCardUtils.js', () => ({
 
 // ── Mantine core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  Tooltip: ({ label, children }) => <div data-tooltip={label}>{children}</div>,
   ActionIcon: ({ children, onClick, variant, size }) => (
     <button
       data-testid="action-icon"
@@ -71,7 +73,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </div>
   ),
-  Image: ({ src, alt, height, fallbackSrc, fit, loading }) => (
+  Image: ({ src, alt, height, fallbackSrc, fit, loading, onError }) => (
     <img
       src={src}
       alt={alt}
@@ -79,6 +81,7 @@ vi.mock('@mantine/core', () => ({
       data-fallback={fallbackSrc}
       data-fit={fit}
       loading={loading}
+      onError={onError}
     />
   ),
   Stack: ({ children, spacing, gap, p }) => (
@@ -86,10 +89,11 @@ vi.mock('@mantine/core', () => ({
       {children}
     </div>
   ),
-  Text: ({ children, size, c, weight, fw, lineClamp, style, title }) => (
+  Text: ({ children, size, c, weight, fw, lineClamp, style, title, lh }) => (
     <span
       data-testid="text"
       data-size={size}
+      data-line-height={lh}
       data-color={c}
       data-weight={weight}
       data-fw={fw}
@@ -151,6 +155,48 @@ const makeEpisode = (overrides = {}) => ({
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('VODCard', () => {
+  it.each([7.709, '7.709'])(
+    'rounds poster ratings without changing source data (%s)',
+    (rating) => {
+      const vod = makeMovie({ rating });
+      render(<VODCard vod={vod} compact onClick={vi.fn()} />);
+      expect(screen.getByText('7.7')).toBeInTheDocument();
+      expect(vod.rating).toBe(rating);
+    }
+  );
+  it('uses a compact single-line Library caption with type, year and rating only', () => {
+    const name = 'A very long Library movie title';
+    render(<VODCard vod={makeMovie({ name })} compact onClick={vi.fn()} />);
+    const title = screen.getByText(name);
+    expect(title).toHaveAttribute('data-line-clamp', '1');
+    expect(title).toHaveAttribute('data-size', '13');
+    expect(title).toHaveAttribute('data-line-height', '1.4');
+    expect(title.closest('[data-tooltip]')).toHaveAttribute(
+      'data-tooltip',
+      name
+    );
+    expect(screen.getByText(/^Movie ·/)).toHaveTextContent('Movie · 2022');
+    expect(screen.getByText('2022')).toBeInTheDocument();
+    expect(screen.getByText('8.5')).toBeInTheDocument();
+    expect(screen.queryByText('Action')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('icon-clock')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+  it('falls back after a failed poster and retries new artwork', () => {
+    const { rerender } = render(
+      <VODCard vod={makeMovie()} onClick={vi.fn()} />
+    );
+    fireEvent.error(screen.getByRole('img'));
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.getByTestId('icon-play')).toBeInTheDocument();
+    rerender(
+      <VODCard
+        vod={makeMovie({ logo: { cache_url: '/new-poster' } })}
+        onClick={vi.fn()}
+      />
+    );
+    expect(screen.getByRole('img')).toHaveAttribute('src', '/new-poster');
+  });
   it.each([0, '0', '0.0', null, undefined, ''])(
     'does not render an empty rating (%s) as a stray number',
     (rating) => {
