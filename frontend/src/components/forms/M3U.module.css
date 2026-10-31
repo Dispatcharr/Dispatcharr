@@ -1,0 +1,51 @@
+.column {
+  position: relative;
+}
+
+.column:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: calc(var(--mantine-spacing-xl) / -2);
+  border-top: 2px solid var(--mantine-color-default-border);
+}
+
+@media (min-width: 48em) {
+  .column::before {
+    display: none;
+  }
+
+  .column:nth-child(even)::before {
+    display: block;
+    inset-inline-start: calc(var(--mantine-spacing-xl) / -2);
+    inset-inline-end: auto;
+    top: 0;
+    bottom: 0;
+    border-top: 0;
+    border-inline-start: 2px solid var(--mantine-color-default-border);
+  }
+
+  .column:nth-child(n + 3)::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    top: calc(var(--mantine-spacing-xl) / -2);
+    border-top: 2px solid var(--mantine-color-default-border);
+  }
+}
+
+@media (min-width: 62em) {
+  .column:not(:first-child)::before {
+    display: block;
+    inset-inline-start: calc(var(--mantine-spacing-xl) / -2);
+    inset-inline-end: auto;
+    top: 0;
+    bottom: 0;
+    border-top: 0;
+    border-inline-start: 2px solid var(--mantine-color-default-border);
+  }
+
+  .column::after {
+    display: none;
+  }
+}
