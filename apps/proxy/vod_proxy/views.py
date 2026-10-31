@@ -90,6 +90,7 @@ def _find_idle_vod_session(
         return manager.find_matching_idle_session(
             content_type=_content_type_for_obj(content_obj),
             content_uuid=str(content_obj.uuid),
+            selection_key=getattr(content_obj, '_vod_selection_key', ''),
             client_ip=client_ip,
             client_user_agent=client_user_agent,
             utc_start=utc_start,
@@ -259,218 +260,76 @@ def _select_vod_stream(
 
 
 def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
-    """Get the content object and its M3U relation"""
-    try:
-        logger.info(f"[CONTENT-LOOKUP] Looking up {content_type} with UUID {content_id}")
+    """Resolve a canonical title and keep its requested source context intact."""
+    from apps.vod.metadata import effective_source_metadata, requirements_from_metadata
+    from apps.vod.references import selection_key
+    from apps.vod.selection import resolve_content, source_candidates
+
+    content_obj, requirements = resolve_content(content_type, content_id, by_uuid=True)
+    relation_model = M3UMovieRelation if content_type == 'movie' else M3UEpisodeRelation
+    relation = None
+
+    if content_obj is None and content_type in ('movie', 'episode') and preferred_stream_id:
+        query = relation_model.objects.filter(
+            stream_id=str(preferred_stream_id), m3u_account__is_active=True,
+        )
         if preferred_m3u_account_id:
-            logger.info(f"[CONTENT-LOOKUP] Preferred M3U account ID: {preferred_m3u_account_id}")
-        if preferred_stream_id:
-            logger.info(f"[CONTENT-LOOKUP] Preferred stream ID: {preferred_stream_id}")
-
-        if content_type == 'movie':
-            content_obj = Movie.objects.filter(uuid=content_id).first()
-            if content_obj is None and preferred_stream_id:
-                # UUIDs are regenerated when process_movie_batch
-                # (apps/vod/tasks.py) creates duplicate vod_movie records
-                # during refresh — see #961 / #973. stream_id is stable
-                # (unique per (m3u_account, stream_id)) so it's a safe
-                # fallback for previously-cached external player URLs.
-                # Strictest-match first: prefer the requested account, then
-                # any active account by priority (matches the existing
-                # relation-selection ordering below).
-                rel = None
-                if preferred_m3u_account_id:
-                    rel = (
-                        M3UMovieRelation.objects
-                        .filter(stream_id=preferred_stream_id,
-                                m3u_account_id=preferred_m3u_account_id,
-                                m3u_account__is_active=True)
-                        .select_related('movie', 'm3u_account__user_agent')
-                        .first()
-                    )
-                if rel is None:
-                    rel = (
-                        M3UMovieRelation.objects
-                        .filter(stream_id=preferred_stream_id,
-                                m3u_account__is_active=True)
-                        .select_related('movie', 'm3u_account__user_agent')
-                        .order_by('-m3u_account__priority', 'id')
-                        .first()
-                    )
-                if rel is not None:
-                    content_obj = rel.movie
-                    logger.warning(
-                        f"[STREAMID-FALLBACK] Movie UUID {content_id} not "
-                        f"found; resolved via stream_id "
-                        f"{preferred_stream_id} -> movie uuid "
-                        f"{content_obj.uuid} (provider: "
-                        f"{rel.m3u_account.name})"
-                    )
-            if content_obj is None:
-                raise Http404(
-                    f"Movie not found by uuid {content_id} "
-                    f"or stream_id {preferred_stream_id}"
-                )
-            logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
-
-            # Materialise the active relations once (single DB hit), ordered by
-            # priority. Selection below is done in memory, and the full ordered
-            # list is returned so the caller can fail over without re-querying.
-            candidates = list(
-                content_obj.m3u_relations
-                .filter(m3u_account__is_active=True)
-                .select_related('m3u_account__user_agent')
-                .order_by('-m3u_account__priority', 'id')
+            query = query.filter(m3u_account_id=preferred_m3u_account_id)
+        matches = list(query.select_related(content_type).order_by('pk')[:2])
+        # Provider IDs are account-scoped. Never guess between colliding IDs.
+        if len(matches) == 1:
+            relation = matches[0]
+            content_obj = getattr(relation, content_type)
+            logger.warning(
+                "[STREAMID-FALLBACK] Recovered %s through an unambiguous provider source",
+                content_type,
             )
 
-            if preferred_stream_id:
-                specific_relation = next(
-                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
-                if specific_relation:
-                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation, candidates
-                else:
-                    logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
-
-            if preferred_m3u_account_id:
-                specific_relation = next(
-                    (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
-                if specific_relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation, candidates
-                else:
-                    logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
-
-            relation = candidates[0] if candidates else None
-            if relation:
-                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
-
-            return content_obj, relation, candidates
-
-        elif content_type == 'episode':
-            content_obj = Episode.objects.filter(uuid=content_id).first()
-            if content_obj is None and preferred_stream_id:
-                # Same rationale as the movie branch above — episode UUIDs
-                # are regenerated when process_series_batch creates
-                # duplicate vod_episode records during refresh.
-                rel = None
-                if preferred_m3u_account_id:
-                    rel = (
-                        M3UEpisodeRelation.objects
-                        .filter(stream_id=preferred_stream_id,
-                                m3u_account_id=preferred_m3u_account_id,
-                                m3u_account__is_active=True)
-                        .select_related('episode', 'm3u_account__user_agent')
-                        .first()
-                    )
-                if rel is None:
-                    rel = (
-                        M3UEpisodeRelation.objects
-                        .filter(stream_id=preferred_stream_id,
-                                m3u_account__is_active=True)
-                        .select_related('episode', 'm3u_account__user_agent')
-                        .order_by('-m3u_account__priority', 'id')
-                        .first()
-                    )
-                if rel is not None:
-                    content_obj = rel.episode
-                    logger.warning(
-                        f"[STREAMID-FALLBACK] Episode UUID {content_id} not "
-                        f"found; resolved via stream_id "
-                        f"{preferred_stream_id} -> episode uuid "
-                        f"{content_obj.uuid} (provider: "
-                        f"{rel.m3u_account.name})"
-                    )
-            if content_obj is None:
-                raise Http404(
-                    f"Episode not found by uuid {content_id} "
-                    f"or stream_id {preferred_stream_id}"
-                )
-            logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
-
-            # Materialise the active relations once (single DB hit), ordered by
-            # priority. Selection below is done in memory, and the full ordered
-            # list is returned so the caller can fail over without re-querying.
-            candidates = list(
-                content_obj.m3u_relations
-                .filter(m3u_account__is_active=True)
-                .select_related('m3u_account__user_agent')
-                .order_by('-m3u_account__priority', 'id')
-            )
-
-            if preferred_stream_id:
-                specific_relation = next(
-                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
-                if specific_relation:
-                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation, candidates
-                else:
-                    logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
-
-            if preferred_m3u_account_id:
-                specific_relation = next(
-                    (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
-                if specific_relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation, candidates
-                else:
-                    logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
-
-            relation = candidates[0] if candidates else None
-            if relation:
-                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
-
-            return content_obj, relation, candidates
-
-        elif content_type == 'series':
-            # For series, get the first episode
-            series = get_object_or_404(Series, uuid=content_id)
-            logger.info(f"[CONTENT-FOUND] Series: {series.name} (ID: {series.id})")
-            episode = series.episodes.first()
-            if not episode:
-                logger.error(f"[CONTENT-ERROR] No episodes found for series {series.name}")
-                return None, None, []
-
-            logger.info(f"[CONTENT-FOUND] First episode: {episode.name} (ID: {episode.id})")
-
-            # Materialise once (single DB hit), ordered by priority; select in memory.
-            candidates = list(
-                episode.m3u_relations
-                .filter(m3u_account__is_active=True)
-                .select_related('m3u_account__user_agent')
-                .order_by('-m3u_account__priority', 'id')
-            )
-
-            if preferred_stream_id:
-                specific_relation = next(
-                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
-                if specific_relation:
-                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                    return episode, specific_relation, candidates
-                else:
-                    logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
-
-            if preferred_m3u_account_id:
-                specific_relation = next(
-                    (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
-                if specific_relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                    return episode, specific_relation, candidates
-                else:
-                    logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
-
-            relation = candidates[0] if candidates else None
-            if relation:
-                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
-
-            return episode, relation, candidates
-        else:
-            logger.error(f"[CONTENT-ERROR] Invalid content type: {content_type}")
-            return None, None, []
-
-    except Exception as e:
-        logger.error(f"Error getting content object: {e}")
+    if content_obj is None:
         return None, None, []
+    if content_type == 'series':
+        content_obj = content_obj.episodes.order_by('season_number', 'episode_number', 'pk').first()
+        if content_obj is None:
+            return None, None, []
+        relation_model = M3UEpisodeRelation
+    elif content_type not in ('movie', 'episode'):
+        return None, None, []
+
+    candidates = list(
+        content_obj.m3u_relations.filter(m3u_account__is_active=True)
+        .select_related('m3u_account__user_agent', *(
+            ('series_relation',) if relation_model is M3UEpisodeRelation else ()
+        ))
+        .order_by('-m3u_account__priority', 'pk')
+    )
+    if preferred_stream_id:
+        preferred = [
+            source for source in candidates
+            if str(source.stream_id) == str(preferred_stream_id)
+            and (not preferred_m3u_account_id or source.m3u_account_id == preferred_m3u_account_id)
+        ]
+        if len(preferred) != 1:
+            return content_obj, None, []
+        relation = preferred[0]
+    elif preferred_m3u_account_id:
+        relation = next((source for source in candidates if source.m3u_account_id == preferred_m3u_account_id), None)
+
+    candidates = source_candidates(
+        candidates, requirements=requirements, preferred_relation=relation
+    )
+    if not candidates:
+        return content_obj, None, []
+    relation = candidates[0]
+    context = dict(requirements or requirements_from_metadata(
+        effective_source_metadata(relation)['values']
+    ))
+    if preferred_stream_id or preferred_m3u_account_id:
+        context['preferred_source'] = relation.id
+    content_obj._vod_selection_key = (
+        selection_key('movie' if isinstance(content_obj, Movie) else 'episode', content_obj.pk, context)
+        if context else ''
+    )
+    return content_obj, relation, candidates
 
 def _order_candidates(candidates, preferred_relation=None):
     """In-memory ordering helper (no DB access).
@@ -1471,21 +1330,19 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if not is_vod_movies_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # Users with movie access get it from all active M3U accounts
-    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not movie_relation:
-            return JsonResponse({"error": "Movie not found"}, status=404)
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+    from apps.vod.models import VODContentAlias
+    from apps.vod.selection import resolve_content
+    movie, requirements = resolve_content('movie', stream_id)
+    if movie is None or not movie.m3u_relations.filter(m3u_account__is_active=True).exists() or (
+        user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False) and movie.is_adult
+    ):
         return JsonResponse({"error": "Movie not found"}, status=404)
+    alias = VODContentAlias.objects.filter(content_type='movie', legacy_id=stream_id).first()
 
     return stream_vod(
         request._request,
         'movie',
-        movie_relation.movie.uuid,
+        alias.legacy_uuid if alias else movie.uuid,
         session_id,
         profile_id,
         user,
@@ -1507,17 +1364,17 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     if not is_vod_series_enabled(user=user):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # Users with series access get episodes from all active M3U accounts
-    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-
-    episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-    if not episode_relation:
+    from apps.vod.models import VODContentAlias
+    from apps.vod.selection import resolve_content
+    episode, requirements = resolve_content('episode', stream_id)
+    if episode is None or not episode.m3u_relations.filter(m3u_account__is_active=True).exists():
         return JsonResponse({"error": "Episode not found"}, status=404)
+    alias = VODContentAlias.objects.filter(content_type='episode', legacy_id=stream_id).first()
 
     return stream_vod(
         request._request,
         'episode',
-        episode_relation.episode.uuid,
+        alias.legacy_uuid if alias else episode.uuid,
         session_id,
         profile_id,
         user,

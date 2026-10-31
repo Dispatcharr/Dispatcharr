@@ -8,10 +8,57 @@ vi.mock('../../../store/useVODStore', () => ({ default: vi.fn() }));
 vi.mock('lucide-react', () => ({
   CircleCheck: () => <svg data-testid="icon-circle-check" />,
   CircleX: () => <svg data-testid="icon-circle-x" />,
+  Settings: () => <svg data-testid="icon-settings" />,
+  Plus: () => <svg data-testid="icon-plus" />,
 }));
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  ActionIcon: ({
+    children,
+    onClick,
+    disabled,
+    color,
+    variant,
+    'aria-label': label,
+  }) => (
+    <button
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled}
+      data-color={color}
+      data-variant={variant}
+    >
+      {children}
+    </button>
+  ),
+  Tooltip: ({ children }) => children,
+  Modal: ({ opened, children }) =>
+    opened ? <div role="dialog">{children}</div> : null,
+  ScrollArea: ({ children }) => <div>{children}</div>,
+  MultiSelect: ({
+    value = [],
+    data = [],
+    onChange,
+    'aria-label': ariaLabel,
+  }) => (
+    <select
+      multiple
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(event) =>
+        onChange(
+          Array.from(event.target.selectedOptions, (option) => option.value)
+        )
+      }
+    >
+      {data.map((item) => (
+        <option key={item.value} value={item.value}>
+          {item.label}
+        </option>
+      ))}
+    </select>
+  ),
   Box: ({ children }) => <div>{children}</div>,
   Button: ({ children, onClick, disabled, color, variant }) => (
     <button
@@ -519,70 +566,67 @@ describe('VODCategoryFilter', () => {
 
   // ── Language / quality ────────────────────────────────────────────────────
 
-  describe('language and quality selects', () => {
-    it('renders language and quality selects for each visible category', () => {
+  describe('compact metadata summaries', () => {
+    it('uses a disabled settings action for categories that are not enabled', () => {
       render(<VODCategoryFilter {...defaultProps()} />);
-      expect(screen.getAllByLabelText('Language')).toHaveLength(3);
-      expect(screen.getAllByLabelText('Quality')).toHaveLength(3);
+      const disabled = screen.getByRole('button', {
+        name: 'Edit defaults for Comedy',
+      });
+      expect(disabled).toBeDisabled();
+      expect(
+        disabled.querySelector('[data-testid="icon-settings"]')
+      ).not.toBeNull();
+      fireEvent.click(disabled);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Edit defaults for Action' })
+      ).toBeEnabled();
     });
 
-    it('loads existing language and quality from category state', () => {
+    it('highlights configured defaults and keeps an empty settings action neutral', () => {
       render(<VODCategoryFilter {...defaultProps()} />);
-      const languageSelects = screen.getAllByLabelText('Language');
-      const qualitySelects = screen.getAllByLabelText('Quality');
-      // Categories render sorted by name: Action, Comedy, Drama
-      expect(languageSelects[0]).toHaveValue('en');
-      expect(qualitySelects[0]).toHaveValue('1080p');
-      expect(languageSelects[1]).toHaveValue('');
-      expect(qualitySelects[1]).toHaveValue('');
+      const configured = screen.getByRole('button', {
+        name: 'Edit defaults for Action',
+      });
+      expect(configured).toHaveAttribute('data-variant', 'light');
+      expect(configured).toHaveAttribute('data-color', 'blue');
+      const empty = screen.getByRole('button', {
+        name: 'Edit defaults for Drama',
+      });
+      expect(empty).toHaveAttribute('data-variant', 'subtle');
+      expect(empty).toHaveAttribute('data-color', 'gray');
     });
 
-    it('updates custom_properties.language when language changes', () => {
-      const setCategoryStates = vi.fn();
-      const props = defaultProps({ setCategoryStates });
-      render(<VODCategoryFilter {...props} />);
-      const languageSelects = screen.getAllByLabelText('Language');
-      fireEvent.change(languageSelects[0], { target: { value: 'es' } });
-      const called = latestCategoryStates(
-        setCategoryStates,
-        props.categoryStates
-      );
-      expect(called.find((s) => s.id === 1).custom_properties.language).toBe(
-        'es'
-      );
-      expect(called.find((s) => s.id === 1).custom_properties.quality).toBe(
-        '1080p'
-      );
+    it('renders an edit action instead of inline metadata controls', () => {
+      render(<VODCategoryFilter {...defaultProps()} />);
+      expect(
+        screen.getAllByRole('button', { name: /^Edit defaults for/ })
+      ).toHaveLength(3);
+      expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
 
-    it('updates custom_properties.quality when quality changes', () => {
-      const setCategoryStates = vi.fn();
-      const props = defaultProps({ setCategoryStates });
-      render(<VODCategoryFilter {...props} />);
-      const qualitySelects = screen.getAllByLabelText('Quality');
-      fireEvent.change(qualitySelects[0], { target: { value: '4K' } });
-      const called = latestCategoryStates(
-        setCategoryStates,
-        props.categoryStates
-      );
-      expect(called.find((s) => s.id === 1).custom_properties.quality).toBe(
-        '4K'
-      );
+    it('summarizes legacy language and numeric resolution without inputs', () => {
+      render(<VODCategoryFilter {...defaultProps()} />);
+      expect(screen.getByText('DUB: ENG · 1080p')).toBeInTheDocument();
     });
 
-    it('clears language to null when deselected', () => {
-      const setCategoryStates = vi.fn();
-      const props = defaultProps({ setCategoryStates });
-      render(<VODCategoryFilter {...props} />);
-      const languageSelects = screen.getAllByLabelText('Language');
-      fireEvent.change(languageSelects[0], { target: { value: '' } });
-      const called = latestCategoryStates(
-        setCategoryStates,
-        props.categoryStates
+    it('keeps feature summaries readable without storage prefixes', () => {
+      render(
+        <VODCategoryFilter
+          {...defaultProps({
+            categoryStates: [
+              {
+                id: 1,
+                name: 'Action',
+                enabled: true,
+                custom_properties: { video_features: ['hdr', 'custom:imax'] },
+              },
+            ],
+          })}
+        />
       );
-      expect(called.find((s) => s.id === 1).custom_properties.language).toBe(
-        null
-      );
+      expect(screen.getByText('HDR, IMAX')).toBeInTheDocument();
     });
 
     it('hydrates custom_properties from the store on mount', () => {

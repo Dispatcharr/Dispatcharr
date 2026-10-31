@@ -56,6 +56,23 @@ const makeCategoryState = (overrides = {}) => ({
 const makeAutoEnableSettings = () => ({ auto_enable: true });
 
 describe('M3uGroupFilterUtils', () => {
+  it.each([
+    'audio_languages',
+    'subtitle_languages',
+    'resolution',
+    'video_features',
+  ])('saves a metadata-only change to %s', (field) => {
+    const value = field === 'resolution' ? '1080p' : ['synthetic-value'];
+    const state = makeCategoryState({
+      enabled: true,
+      original_enabled: true,
+      custom_properties: { [field]: value },
+    });
+    expect(prepareCategorySettings([state], [])).toEqual([
+      { id: state.id, enabled: true, custom_properties: { [field]: value } },
+    ]);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(updatePlaylist).mockResolvedValue(undefined);
