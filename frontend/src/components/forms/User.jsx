@@ -33,6 +33,7 @@ import { DVR_ACCESS } from '../../utils/dvrAccess';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
 import { copyToClipboard } from '../../utils';
+import API from '../../api';
 import {
   createUser,
   formValuesToPayload,
@@ -101,6 +102,7 @@ const User = ({ user = null, isOpen, onClose }) => {
   const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
   const [activeTab, setActiveTab] = useState('account');
   const [clearAllAppData, setClearAllAppData] = useState(null);
+  const [vodProfiles, setVODProfiles] = useState([]);
 
   const theme = useMantineTheme();
 
@@ -179,6 +181,15 @@ const User = ({ user = null, isOpen, onClose }) => {
   useEffect(() => {
     setActiveTab('account');
   }, [isOpen, user?.id]);
+
+  const canAssignVODProfile =
+    authUser?.user_level == USER_LEVELS.ADMIN && authUser?.id !== user?.id;
+  useEffect(() => {
+    if (!isOpen || !canAssignVODProfile) return;
+    API.getVODProfiles()
+      .then(setVODProfiles)
+      .catch(() => setVODProfiles([]));
+  }, [isOpen, canAssignVODProfile]);
 
   const onAllowedM3uProfilesChange = (values) => {
     // Any MultiSelect change (including clear to []) is an explicit allowlist.
@@ -441,6 +452,33 @@ const User = ({ user = null, isOpen, onClose }) => {
                     label: profile.name,
                     value: `${profile.id}`,
                   }))}
+                />
+                <Select
+                  label={helpLabel(
+                    'VOD Profile',
+                    'Decides which movies and series this user receives via Xtream Codes and how they are named. Leave empty to use the default profile.'
+                  )}
+                  aria-label="VOD Profile"
+                  placeholder={`Default profile${
+                    vodProfiles.find((profile) => profile.is_default)
+                      ? ` (${vodProfiles.find((profile) => profile.is_default).name})`
+                      : ''
+                  }`}
+                  clearable
+                  data={vodProfiles
+                    .filter(
+                      (profile) =>
+                        (!profile.is_default && profile.is_active) ||
+                        `${profile.id}` === form.getValues().vod_profile
+                    )
+                    .map((profile) => ({
+                      value: `${profile.id}`,
+                      label: profile.is_active
+                        ? profile.name
+                        : `${profile.name} (inactive)`,
+                    }))}
+                  {...form.getInputProps('vod_profile')}
+                  key={form.key('vod_profile')}
                 />
                 <Stack gap="xs">
                   <MultiSelect

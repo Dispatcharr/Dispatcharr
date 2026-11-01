@@ -77,6 +77,9 @@ export default function LibraryPreviewModal({
   onClose,
   accountId = '',
   inStack = false,
+  // Per source ID, e.g. from a VOD profile: an order to show, or a label and
+  // reason why the source is left out.
+  sourceNotes,
 }) {
   const admin = useAuthStore((state) => state.user?.user_level >= 10);
   const environment = useSettingsStore((state) => state.environment.env_mode);
@@ -459,6 +462,7 @@ export default function LibraryPreviewModal({
                   selected={selected}
                   series={series}
                   accountId={accountId}
+                  notes={sourceNotes}
                   blocked={!!canonical.library_blocked}
                   disabled={disabled}
                   admin={admin}

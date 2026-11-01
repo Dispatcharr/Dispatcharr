@@ -13,14 +13,13 @@ import {
   Tooltip,
   UnstyledButton,
 } from '@mantine/core';
-import { Copy, Pencil, Play } from 'lucide-react';
+import { Ban, Copy, FilterX, Pencil, Play } from 'lucide-react';
 import {
   formatDuration,
   getTmdbUrlLink,
   imdbUrl,
   tmdbUrl,
 } from '../utils/components/SeriesModalUtils.js';
-import { metadataFieldItems } from '../utils/vodSourceMetadata';
 import { ScreenshotText } from './SensitiveFields.jsx';
 import ListPagination from './ListPagination.jsx';
 import MetadataOriginBadges from './MetadataOriginBadges.jsx';
@@ -217,22 +216,31 @@ export function PreviewSummary({
   );
 }
 
-function Tags({ values, color = 'gray', language = false }) {
-  return values?.length ? (
+// Technical details come from the provider; features keep their own origin.
+function DetailBadges({ technical, origins }) {
+  const features = Object.keys(origins.video_features || {}).length > 0;
+  if (!technical.length && !features) return <Text c="dimmed">—</Text>;
+  return (
     <Group gap={4}>
-      {values.map((value) => (
-        <Badge
-          key={value}
-          color={color}
-          variant="light"
-          className={language ? classes.language : undefined}
-        >
-          {value}
-        </Badge>
-      ))}
+      {technical.length > 0 && (
+        <MetadataOriginBadges
+          origins={{
+            technical: Object.fromEntries(
+              technical.map((value) => [value, 'provider'])
+            ),
+          }}
+          field="technical"
+          size="md"
+        />
+      )}
+      {features && (
+        <MetadataOriginBadges
+          origins={origins}
+          field="video_features"
+          size="md"
+        />
+      )}
     </Group>
-  ) : (
-    <Text c="dimmed">—</Text>
   );
 }
 
@@ -254,7 +262,6 @@ function fileSize(value) {
 
 function sourceDetails(source) {
   const technical = source.provider?.technical || {};
-  const values = source.effective_metadata?.values || {};
   const bitrate = positive(technical.bitrate);
   const bytes = positive(technical.file_size_bytes);
   const rawRate =
@@ -273,7 +280,6 @@ function sourceDetails(source) {
     technical.video?.codec_name?.toUpperCase(),
     technical.audio?.codec_name?.toUpperCase(),
     rate && `${Number.isInteger(rate) ? rate : rate.toFixed(2)} FPS`,
-    ...metadataFieldItems(values, 'video_features'),
   ].filter(Boolean);
 }
 
@@ -282,6 +288,7 @@ export function PreviewSources({
   selected,
   series,
   accountId,
+  notes = {},
   disabled,
   blocked = false,
   admin,
@@ -290,6 +297,13 @@ export function PreviewSources({
   onCopy,
   onEdit,
 }) {
+  // A narrow first column explains restricted rows: the failover order of a
+  // VOD profile, or why a source is left out or outside the account filter.
+  const isOutside = (source) =>
+    !!accountId && String(source.account.id) !== String(accountId);
+  const marked =
+    Object.keys(notes).length > 0 ||
+    sources.some((source) => isOutside(source));
   return (
     <div className={classes.tableFrame}>
       <Table
@@ -303,6 +317,7 @@ export function PreviewSources({
       >
         <Table.Thead>
           <Table.Tr>
+            {marked && <Table.Th w={44} aria-label="Order" />}
             <Table.Th>
               <Text inherit fw={700}>
                 Source
@@ -323,8 +338,14 @@ export function PreviewSources({
         <Table.Tbody>
           {sources.map((source) => {
             const current = source.source_id === selected.source_id;
-            const outside =
-              !!accountId && String(source.account.id) !== String(accountId);
+            // A source left out elsewhere is shown, but cannot be chosen.
+            const note = notes[source.source_id];
+            const left = !!note?.label;
+            const locked = disabled || left;
+            const outside = left || isOutside(source);
+            const hint = left
+              ? `${note.label}: ${note.reason}`
+              : outside && 'Outside current library filter';
             const technical = source.provider?.technical || {};
             const origins = sourceMetadataOrigins(source, series);
             if (!origins.resolution && technical.video?.height)
@@ -336,36 +357,61 @@ export function PreviewSources({
                 key={source.source_id}
                 aria-label={`Source ${source.account.name} #${source.source_id}`}
                 aria-selected={current}
-                aria-disabled={disabled || undefined}
+                aria-disabled={locked || undefined}
                 data-selected={current || undefined}
                 data-outside-filter={outside || undefined}
-                tabIndex={disabled ? -1 : 0}
-                onClick={() => !disabled && onSelect(source)}
+                tabIndex={locked ? -1 : 0}
+                onClick={() => !locked && onSelect(source)}
                 onKeyDown={(event) => {
                   if (
                     event.target === event.currentTarget &&
                     ['Enter', ' '].includes(event.key)
                   ) {
                     event.preventDefault();
-                    if (!disabled) onSelect(source);
+                    if (!locked) onSelect(source);
                   }
                 }}
               >
+                {marked && (
+                  <Table.Td ta="center">
+                    {note?.order ? (
+                      <Text
+                        size="sm"
+                        fw={700}
+                        c="blue.4"
+                        aria-label={`Failover order ${note.order}`}
+                      >
+                        #{note.order}
+                      </Text>
+                    ) : (
+                      hint && (
+                        <Tooltip label={hint} multiline maw={280} withArrow>
+                          <span
+                            role="img"
+                            aria-label={hint}
+                            tabIndex={0}
+                            style={{ display: 'inline-flex' }}
+                          >
+                            {left ? (
+                              <Ban size={16} aria-hidden="true" />
+                            ) : (
+                              <FilterX size={16} aria-hidden="true" />
+                            )}
+                          </span>
+                        </Tooltip>
+                      )
+                    )}
+                  </Table.Td>
+                )}
                 <Table.Td>
                   <Stack gap={1}>
                     <Text size="sm" fw={500} lineClamp={1}>
                       <ScreenshotText>{source.provider_name}</ScreenshotText>
                     </Text>
-                    <Tooltip
-                      label="Outside current library filter"
-                      disabled={!outside}
-                      withArrow
-                    >
-                      <Text size="xs" c="dimmed">
-                        {source.account.name} ·{' '}
-                        {source.category.name || 'Uncategorized'}
-                      </Text>
-                    </Tooltip>
+                    <Text size="xs" c="dimmed">
+                      {source.account.name} ·{' '}
+                      {source.category.name || 'Uncategorized'}
+                    </Text>
                     <Text size="xs" c="dimmed">
                       {series ? 'Provider series ID' : 'Stream ID'}:{' '}
                       {source.provider_id || '—'} · Relation ID:{' '}
@@ -385,8 +431,9 @@ export function PreviewSources({
                   )
                 )}
                 <Table.Td>
-                  <Tags
-                    values={
+                  <DetailBadges
+                    origins={series ? {} : origins}
+                    technical={
                       series
                         ? technical.episode_video_codecs ||
                           (technical.video?.codec_name

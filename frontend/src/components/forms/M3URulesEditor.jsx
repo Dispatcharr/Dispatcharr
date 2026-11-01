@@ -212,6 +212,10 @@ const M3URulesEditor = ({
   onStateChange,
   onRulesChanged,
   previewGroupIds,
+  // VOD profiles reuse the editor with their own rule endpoints.
+  rulesApi = API,
+  metadataDefaults = true,
+  ignoreResult = true,
 }) => {
   const streamLabel = getM3UStreamLabel(accountType);
   const kind = streamFilters ? 'filters' : 'group-rules';
@@ -238,7 +242,8 @@ const M3URulesEditor = ({
   const [confirmApply, setConfirmApply] = useState(false);
   const [regexHelpOpen, setRegexHelpOpen] = useState(false);
   const [metadataTarget, setMetadataTarget] = useState(null);
-  const vodRules = !streamFilters && ['movie', 'series'].includes(scope);
+  const vodRules =
+    metadataDefaults && !streamFilters && ['movie', 'series'].includes(scope);
   const [coverage, setCoverage] = useState({ causes: {}, coveredBy: {} });
   const [matchCheck, setMatchCheck] = useState(null);
   const [inventoryCount, setInventoryCount] = useState(null);
@@ -363,7 +368,7 @@ const M3URulesEditor = ({
       const errors = savedRuleErrors(rows, streamFilters);
       try {
         if (rows.length) {
-          const response = await API.analyzeM3URules(
+          const response = await rulesApi.analyzeM3URules(
             accountId,
             kind,
             rows.map((row) => ({
@@ -408,6 +413,7 @@ const M3URulesEditor = ({
     [
       accountId,
       kind,
+      rulesApi,
       payload,
       streamFilters,
       acceptCoverage,
@@ -423,7 +429,7 @@ const M3URulesEditor = ({
     setMatchCheck(null);
     setInventoryCount(null);
     try {
-      const loaded = await API.getM3URules(accountId, kind, scope);
+      const loaded = await rulesApi.getM3URules(accountId, kind, scope);
       if (requestId !== coverageRequest.current) return;
       savedRules.current = new Map(loaded.map((rule) => [rule.id, rule]));
       rulesLoaded.current = true;
@@ -445,7 +451,15 @@ const M3URulesEditor = ({
     } finally {
       if (requestId === coverageRequest.current) setBusy(false);
     }
-  }, [accountId, kind, scope, checkKey, streamFilters, checkSavedRows]);
+  }, [
+    accountId,
+    kind,
+    rulesApi,
+    scope,
+    checkKey,
+    streamFilters,
+    checkSavedRows,
+  ]);
 
   useEffect(() => {
     load();
@@ -568,7 +582,7 @@ const M3URulesEditor = ({
   };
 
   const save = async (rule) => {
-    const saved = await API.saveM3URule(
+    const saved = await rulesApi.saveM3URule(
       accountId,
       kind,
       rule.isNew ? null : rule.id,
@@ -628,7 +642,7 @@ const M3URulesEditor = ({
       const checkedRows = persistedRows(rules, rule);
       let response;
       try {
-        response = await API.analyzeM3URules(
+        response = await rulesApi.analyzeM3URules(
           accountId,
           kind,
           checkedRows.map((item) => ({
@@ -707,7 +721,7 @@ const M3URulesEditor = ({
     setPreview(null);
     setTestedPreviewSignature(null);
     try {
-      const response = await API.previewM3URules(
+      const response = await rulesApi.previewM3URules(
         accountId,
         kind,
         draft.map((rule) => ({
@@ -830,7 +844,7 @@ const M3URulesEditor = ({
       return;
     setPreviewBusy(true);
     try {
-      const result = await API.saveApplyM3UGroupRules(
+      const result = await rulesApi.saveApplyM3UGroupRules(
         accountId,
         previewDraft.map((rule) => ({
           ...payload(rule),
@@ -876,7 +890,7 @@ const M3URulesEditor = ({
     try {
       setRules(reordered);
       const saved = reordered.filter((rule) => !rule.isNew);
-      await API.reorderM3URules(
+      await rulesApi.reorderM3URules(
         accountId,
         kind,
         saved.map((rule) => rule.id),
@@ -906,7 +920,7 @@ const M3URulesEditor = ({
     setBusy(true);
     const requestId = ++coverageRequest.current;
     try {
-      await API.deleteM3URule(accountId, kind, deleteTarget.id);
+      await rulesApi.deleteM3URule(accountId, kind, deleteTarget.id);
       savedRules.current.delete(deleteTarget.id);
       hideNotification(errorNotificationId);
       const remaining = rules.filter((rule) => rule.id !== deleteTarget.id);
@@ -1400,7 +1414,9 @@ const M3URulesEditor = ({
                                     value: 'disable',
                                     label: 'Disabled',
                                   },
-                                  { value: 'ignore', label: 'Ignore' },
+                                  ...(ignoreResult
+                                    ? [{ value: 'ignore', label: 'Ignore' }]
+                                    : []),
                                 ]
                           }
                           onChange={(value) =>

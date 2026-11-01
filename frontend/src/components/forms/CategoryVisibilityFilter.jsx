@@ -19,11 +19,17 @@ export default function CategoryVisibilityFilter({
   value,
   onChange,
   categories,
+  statuses = ['enabled', 'disabled', 'ignored'],
+  // Further filters shown in the same menu, e.g. an account choice.
+  children,
+  filtered = false,
+  onReset,
 }) {
   const hiddenCount = categories.filter(
     (row) => !matchesCategoryVisibility(row, value)
   ).length;
-  const active = !value.enabled || !value.disabled || hiddenCount > 0;
+  const active =
+    !value.enabled || !value.disabled || hiddenCount > 0 || filtered;
   return (
     <Popover position="bottom-end" withArrow trapFocus returnFocus>
       <Indicator
@@ -72,7 +78,7 @@ export default function CategoryVisibilityFilter({
               filtered
             </Text>
           )}
-          {['enabled', 'disabled', 'ignored'].map((status) => (
+          {statuses.map((status) => (
             <Checkbox
               key={status}
               data-mantine-stop-propagation="true"
@@ -83,11 +89,15 @@ export default function CategoryVisibilityFilter({
               }
             />
           ))}
+          {children}
           <Button
             size="compact-xs"
             variant="subtle"
             data-mantine-stop-propagation="true"
-            onClick={() => onChange(DEFAULT_CATEGORY_VISIBILITY)}
+            onClick={() => {
+              onChange(DEFAULT_CATEGORY_VISIBILITY);
+              onReset?.();
+            }}
           >
             Reset filters
           </Button>

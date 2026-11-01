@@ -4262,6 +4262,118 @@ export default class API {
     });
   }
 
+  static async getVODProfiles() {
+    return request(`${host}/api/vod/profiles/`);
+  }
+
+  static async getVODProfile(id) {
+    return request(`${host}/api/vod/profiles/${id}/`);
+  }
+
+  // A profile's import rules, in the shape of the M3U rule calls the shared
+  // rules editor makes. The owner key only scopes its notifications.
+  static vodProfileRules(profileId) {
+    const base = `${host}/api/vod/profiles/${profileId}/category-rules`;
+    const call = async (message, owner, kind, url, options) => {
+      try {
+        return await request(url, options);
+      } catch (error) {
+        ruleErrorNotification(message, error, owner, kind);
+        throw error;
+      }
+    };
+    const preview = async (
+      owner,
+      kind,
+      rules,
+      targetId,
+      page,
+      pageSize,
+      { notifyOnError = true } = {}
+    ) => {
+      const url = `${base}/preview-draft/?page=${page}&page_size=${pageSize}`;
+      const options = {
+        method: 'POST',
+        body: { rules, target_id: String(targetId) },
+      };
+      if (!notifyOnError) return request(url, options);
+      return call('Failed to preview import rules', owner, kind, url, options);
+    };
+    return {
+      getM3URules: (owner, kind, scope) =>
+        call(
+          'Failed to load import rules',
+          owner,
+          kind,
+          `${base}/?scope=${encodeURIComponent(scope)}`
+        ),
+      saveM3URule: (owner, kind, ruleId, values) =>
+        call(
+          'Failed to save import rule',
+          owner,
+          kind,
+          `${base}/${ruleId ? `${ruleId}/` : ''}`,
+          { method: ruleId ? 'PATCH' : 'POST', body: values }
+        ),
+      deleteM3URule: (owner, kind, ruleId) =>
+        call(
+          'Failed to delete import rule',
+          owner,
+          kind,
+          `${base}/${ruleId}/`,
+          {
+            method: 'DELETE',
+          }
+        ),
+      previewM3URules: preview,
+      analyzeM3URules: (owner, kind, rules) =>
+        preview(owner, kind, rules, rules[0].preview_id, 1, 1, {
+          notifyOnError: false,
+        }),
+      reorderM3URules: (owner, kind, ids, scope, positions) =>
+        call('Failed to save rule order', owner, kind, `${base}/reorder/`, {
+          method: 'POST',
+          body: { ids, positions, scope },
+        }),
+      saveApplyM3UGroupRules: (owner, rules, targetId) =>
+        call(
+          'Failed to save and apply import rules',
+          owner,
+          'group-rules',
+          `${base}/save-apply/`,
+          { method: 'POST', body: { rules, target_id: String(targetId) } }
+        ),
+    };
+  }
+
+  static async getVODProfileOptions() {
+    return request(`${host}/api/vod/profiles/options/`);
+  }
+
+  static async saveVODProfile(profile, id = null) {
+    return request(
+      id ? `${host}/api/vod/profiles/${id}/` : `${host}/api/vod/profiles/`,
+      { method: id ? 'PATCH' : 'POST', body: profile }
+    );
+  }
+
+  static async deleteVODProfile(id) {
+    return request(`${host}/api/vod/profiles/${id}/`, { method: 'DELETE' });
+  }
+
+  static async rebuildVODProfile(id) {
+    return request(`${host}/api/vod/profiles/${id}/rebuild/`, {
+      method: 'POST',
+    });
+  }
+
+  static async previewVODProfile(body) {
+    return request(`${host}/api/vod/profiles/preview/`, {
+      method: 'POST',
+      body,
+    });
+  }
+
   static async vodLibraryAction(action, body = {}, method = 'POST') {
     const actions = new Set([
       'cleanup-preview',

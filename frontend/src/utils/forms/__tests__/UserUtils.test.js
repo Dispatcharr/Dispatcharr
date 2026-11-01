@@ -183,6 +183,13 @@ describe('UserUtils', () => {
       expect(result.channel_profiles).toEqual(['3', '4']);
     });
 
+    it('maps the VOD profile to a select value', () => {
+      expect(userToFormValues(makeUser({ vod_profile: 7 })).vod_profile).toBe(
+        '7'
+      );
+      expect(userToFormValues(makeUser()).vod_profile).toBe('');
+    });
+
     it('keeps an explicit days-back of 0 distinct from unset', () => {
       const result = userToFormValues(
         makeUser({ custom_properties: { epg_prev_days: 0, epg_days: 0 } })
@@ -495,6 +502,15 @@ describe('UserUtils', () => {
       expect(result.channel_profiles).toEqual(['1', '2']);
     });
 
+    it('sends the VOD profile ID or null for the default profile', () => {
+      expect(
+        formValuesToPayload(makeValues({ vod_profile: '7' }), null).vod_profile
+      ).toBe(7);
+      expect(
+        formValuesToPayload(makeValues({ vod_profile: '' }), null).vod_profile
+      ).toBeNull();
+    });
+
     it('merges existing custom_properties from existingUser', () => {
       const existingUser = {
         custom_properties: { some_other_prop: 'keep_me' },
@@ -526,6 +542,7 @@ describe('UserUtils', () => {
         output_profile: '',
         allowed_m3u_profile_ids: null,
         channel_profiles: [],
+        vod_profile: '',
         hide_adult_content: false,
         catchup_enabled: true,
         vod_movies_enabled: true,

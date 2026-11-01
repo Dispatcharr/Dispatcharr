@@ -18,6 +18,9 @@ vi.mock('../../../store/settings', () => ({ default: vi.fn() }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../utils', () => ({ copyToClipboard: vi.fn() }));
+vi.mock('../../../api', () => ({
+  default: { getVODProfiles: vi.fn(() => Promise.resolve([])) },
+}));
 
 vi.mock('../../../utils/forms/UserUtils.js', () => ({
   createUser: vi.fn(),
@@ -228,6 +231,7 @@ import useAuthStore from '../../../store/auth';
 import useSettingsStore from '../../../store/settings';
 import * as UserUtils from '../../../utils/forms/UserUtils.js';
 import { copyToClipboard } from '../../../utils';
+import API from '../../../api';
 import User from '../User';
 
 // ── Factories ──────────────────────────────────────────────────────────────────
@@ -581,6 +585,22 @@ describe('User', () => {
       expect(
         screen.queryByText('Allowed Provider Profiles')
       ).not.toBeInTheDocument();
+    });
+
+    it('offers the VOD profile when an admin edits another user', async () => {
+      setupMocks();
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+      expect(screen.getByText('VOD Profile')).toBeInTheDocument();
+      await waitFor(() => expect(API.getVODProfiles).toHaveBeenCalled());
+    });
+
+    it('does not load VOD profiles when an admin edits themselves', () => {
+      const admin = makeAdminUser();
+      setupMocks({ authUser: admin });
+      vi.mocked(API.getVODProfiles).mockClear();
+      render(<User isOpen={true} onClose={vi.fn()} user={admin} />);
+      expect(screen.queryByText('VOD Profile')).not.toBeInTheDocument();
+      expect(API.getVODProfiles).not.toHaveBeenCalled();
     });
 
     it('shows Permissions tab when admin edits another user', () => {

@@ -69,6 +69,7 @@ export const userToFormValues = (user) => {
       user.channel_profiles.length > 0
         ? user.channel_profiles.map((id) => `${id}`)
         : ['0'],
+    vod_profile: user.vod_profile ? `${user.vod_profile}` : '',
     xc_password: customProps.xc_password || '',
     output_format: customProps.output_format || '',
     output_profile: customProps.output_profile
@@ -194,6 +195,10 @@ export const formValuesToPayload = (values, existingUser) => {
     payload.channel_profiles = [];
   }
 
+  payload.vod_profile = payload.vod_profile
+    ? parseInt(payload.vod_profile, 10)
+    : null;
+
   return payload;
 };
 
@@ -211,6 +216,7 @@ export const getFormInitialValues = () => {
     output_profile: '',
     allowed_m3u_profile_ids: null,
     channel_profiles: [],
+    vod_profile: '',
     hide_adult_content: false,
     catchup_enabled: true,
     vod_movies_enabled: true,

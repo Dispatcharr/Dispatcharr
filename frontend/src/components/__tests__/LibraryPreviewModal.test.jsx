@@ -476,6 +476,9 @@ describe('source-aware Library preview', () => {
     ]) {
       expect(within(row).getByText(value)).toBeInTheDocument();
     }
+    // Technical details are provider facts, coloured like other provider data.
+    for (const value of ['MKV', '12.5 Mbps', 'HEVC', '23.98 FPS'])
+      expect(within(row).getByLabelText(`${value} · Provider`)).toBeTruthy();
     expect(api.getMovieProviderInfo).toHaveBeenCalledWith(1, 11, {
       background: true,
     });
@@ -565,6 +568,13 @@ describe('source-aware Library preview', () => {
     });
     expect(outside).toHaveAttribute('data-outside-filter', 'true');
     expect(matching).not.toHaveAttribute('data-outside-filter');
+    // The reason sits in a narrow first column, not in the source cell.
+    expect(
+      within(outside).getByRole('img', {
+        name: 'Outside current library filter',
+      })
+    ).toBeTruthy();
+    expect(within(matching).queryByRole('img')).toBeNull();
     expect(matching).toHaveAttribute('aria-selected', 'true');
     expect(outside).not.toHaveAttribute('aria-disabled', 'true');
     expect(
@@ -578,6 +588,34 @@ describe('source-aware Library preview', () => {
       '11'
     );
     expect(api.vodLibraryAction).not.toHaveBeenCalled();
+  });
+
+  it('shows why sources are excluded elsewhere and keeps them unselectable', async () => {
+    renderPreview({
+      sourceNotes: {
+        11: { label: 'Excluded', reason: 'Category disabled in this profile.' },
+        12: { order: 1 },
+      },
+    });
+    const excluded = await screen.findByRole('row', {
+      name: 'Source Provider 11 #11',
+    });
+    expect(excluded).toHaveAttribute('data-outside-filter', 'true');
+    expect(excluded).toHaveAttribute('aria-disabled', 'true');
+    // A block symbol with the reason as tooltip, the failover order otherwise.
+    expect(
+      within(excluded).getByRole('img', {
+        name: 'Excluded: Category disabled in this profile.',
+      })
+    ).toBeTruthy();
+    const allowed = screen.getByRole('row', { name: 'Source Provider 12 #12' });
+    expect(within(allowed).getByText('#1')).toBeTruthy();
+    expect(screen.queryByRole('columnheader', { name: 'Profile' })).toBeNull();
+    expect(allowed).not.toHaveAttribute('aria-disabled', 'true');
+    const calls = api.getVODLibraryDetails.mock.calls.length;
+    fireEvent.click(excluded);
+    fireEvent.keyDown(excluded, { key: 'Enter' });
+    expect(api.getVODLibraryDetails.mock.calls).toHaveLength(calls);
   });
 
   it('does not change the selected source when a source action is clicked', async () => {
