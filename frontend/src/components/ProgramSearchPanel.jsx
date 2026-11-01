@@ -28,9 +28,11 @@ import {
   formatSeasonEpisode,
   formatTime,
   mapSearchResultToGuideProgram,
+  PROGRAM_SEARCH_EXAMPLES,
   PROGRAM_SEARCH_FIELDS,
   PROGRAM_SEARCH_MIN_LENGTH,
   PROGRAM_SEARCH_PAGE_SIZE,
+  PROGRAM_SEARCH_REGEX_EXAMPLES,
   PROGRAM_SEARCH_WINDOWS,
 } from '../utils/guideUtils';
 import {
@@ -321,30 +323,21 @@ const ProgramSearchPanel = React.memo(
                       SEARCH EXAMPLES
                     </Text>
                     <Stack gap={6}>
-                      <Group gap="xs" wrap="nowrap">
-                        <Text size="xs" c="dimmed" style={{ minWidth: '90px' }}>
-                          Both words:
-                        </Text>
-                        <Code size="xs">word1 AND word2</Code>
-                      </Group>
-                      <Group gap="xs" wrap="nowrap">
-                        <Text size="xs" c="dimmed" style={{ minWidth: '90px' }}>
-                          Either word:
-                        </Text>
-                        <Code size="xs">word1 OR word2</Code>
-                      </Group>
-                      <Group gap="xs" wrap="nowrap">
-                        <Text size="xs" c="dimmed" style={{ minWidth: '90px' }}>
-                          Exact phrase:
-                        </Text>
-                        <Code size="xs">"word1 word2"</Code>
-                      </Group>
-                      <Group gap="xs" wrap="nowrap">
-                        <Text size="xs" c="dimmed" style={{ minWidth: '90px' }}>
-                          Grouped:
-                        </Text>
-                        <Code size="xs">(word1 OR word2) AND word3</Code>
-                      </Group>
+                      {(search.mode === 'regex'
+                        ? PROGRAM_SEARCH_REGEX_EXAMPLES
+                        : PROGRAM_SEARCH_EXAMPLES
+                      ).map(({ label, example }) => (
+                        <Group key={label} gap="xs" wrap="nowrap">
+                          <Text
+                            size="xs"
+                            c="dimmed"
+                            style={{ minWidth: '90px' }}
+                          >
+                            {label}
+                          </Text>
+                          <Code size="xs">{example}</Code>
+                        </Group>
+                      ))}
                     </Stack>
                   </PopoverDropdown>
                 </Popover>

@@ -130,6 +130,20 @@ describe('ProgramSearchPanel', () => {
       ).toBeInTheDocument();
     });
 
+    it('shows regex examples when Regex is selected', () => {
+      renderPanel();
+      fireEvent.click(screen.getByLabelText('Regex'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search syntax' }));
+
+      expect(screen.getByText('SEARCH EXAMPLES')).toBeInTheDocument();
+      expect(screen.getByText('^word1')).toBeInTheDocument();
+      expect(screen.getByText('word1$')).toBeInTheDocument();
+      expect(screen.getByText('word1.*word2')).toBeInTheDocument();
+      expect(screen.getByText('word1|word2')).toBeInTheDocument();
+      expect(screen.queryByText('"word1 word2"')).not.toBeInTheDocument();
+    });
+
     it('opens the search examples from the keyboard', async () => {
       vi.useRealTimers();
       const user = userEvent.setup();

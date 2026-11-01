@@ -144,6 +144,18 @@ export const PROGRAM_SEARCH_WINDOWS = [
   { label: 'Next 24 hours', value: '24h' },
   { label: 'Next 7 days', value: '7d' },
 ];
+export const PROGRAM_SEARCH_EXAMPLES = [
+  { label: 'Both words:', example: 'word1 AND word2' },
+  { label: 'Either word:', example: 'word1 OR word2' },
+  { label: 'Exact phrase:', example: '"word1 word2"' },
+  { label: 'Grouped:', example: '(word1 OR word2) AND word3' },
+];
+export const PROGRAM_SEARCH_REGEX_EXAMPLES = [
+  { label: 'Starts with:', example: '^word1' },
+  { label: 'Ends with:', example: 'word1$' },
+  { label: 'In order:', example: 'word1.*word2' },
+  { label: 'Either word:', example: 'word1|word2' },
+];
 // Skips streams and epg_icon_url so the endpoint does not prefetch streams
 const PROGRAM_SEARCH_RESPONSE_FIELDS =
   'id,title,sub_title,description,start_time,end_time,tvg_id,custom_properties,epg_source,epg_name,channels';
