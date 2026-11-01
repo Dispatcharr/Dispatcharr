@@ -183,10 +183,7 @@ def relation_queryset(kind, filters=None):
     if filters.get("metadata_status"):
         state = filters["metadata_status"]
         if state == "missing_id":
-            qs = qs.filter(
-                Q(**{f"{kind}__tmdb_id__isnull": True}) | Q(**{f"{kind}__tmdb_id": ""}),
-                **{f"{kind}__tmdb_match_id": ""},
-            )
+            qs = qs.filter(missing_tmdb_id(f"{kind}__"))
         elif state == "missing_external_ids":
             qs = qs.filter(
                 Q(**{f"{kind}__tmdb_id__isnull": True}) | Q(**{f"{kind}__tmdb_id": ""}),
@@ -210,6 +207,13 @@ def relation_queryset(kind, filters=None):
     from .library_filters import filter_relations
 
     return filter_relations(qs, kind, filters)
+
+
+def missing_tmdb_id(prefix=""):
+    """Titles neither matched in the Library nor identified by their provider."""
+    return Q(**{f"{prefix}tmdb_match_id": ""}) & (
+        Q(**{f"{prefix}tmdb_id__isnull": True}) | Q(**{f"{prefix}tmdb_id": ""})
+    )
 
 
 def available_accounts(filters, allowed):
@@ -426,6 +430,35 @@ def canonical_document(content, settings=None):
         "is_adult": bool(getattr(content, "is_adult", False) or metadata.get("adult")),
         "library_added_at": content.library_added_at,
         "enriched_at": content.tmdb_enriched_at,
+    }
+
+
+def client_document(content, language, settings=None):
+    """Library metadata for client details of a profile using Library metadata."""
+    from .presentation import profile_overview
+
+    document = canonical_document(content, settings)
+    metadata = document["metadata"]
+    return {
+        "description": profile_overview(content, language, document["description"]),
+        "year": document["year"],
+        "genre": document["genre"],
+        "rating": document["rating"],
+        "duration_secs": document["duration_secs"],
+        "tmdb_id": document["tmdb_id"],
+        "imdb_id": document["imdb_id"],
+        **{
+            field: metadata.get(field) or ""
+            for field in (
+                "director",
+                "actors",
+                "country",
+                "release_date",
+                "youtube_trailer",
+            )
+        },
+        "poster_url": content.tmdb_poster_url,
+        "backdrop_url": content.tmdb_backdrop_url,
     }
 
 

@@ -678,3 +678,40 @@ class VODProfileCategoryRule(models.Model):
 
     def __str__(self):
         return f"{self.profile}: {self.regex_pattern}"
+
+
+
+class VODProfileEntry(models.Model):
+    """One prepared Xtream Codes entry of a profile catalogue generation.
+
+    Titles, artwork and blocks stay live at output time; an entry fixes which
+    source represents the title, its public ID and the ordered fallbacks.
+    """
+
+    profile = models.ForeignKey(
+        VODProfile, on_delete=models.CASCADE, related_name="entries"
+    )
+    generation = models.CharField(max_length=32)
+    content_type = models.CharField(
+        max_length=6, choices=(("movie", "Movie"), ("series", "Series"))
+    )
+    content_id = models.PositiveIntegerField()
+    relation_id = models.PositiveIntegerField()
+    public_id = models.PositiveBigIntegerField()
+    edition = models.CharField(max_length=120, blank=True)
+    source_ids = models.JSONField(default=list)
+    # Full lists show primary entries; a category request also gets the best
+    # source within that category, as the live output always did.
+    primary = models.BooleanField(default=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=("profile", "generation", "content_type", "relation_id"),
+                name="vod_profile_entry_relation",
+            ),
+            models.Index(
+                fields=("profile", "generation", "content_type", "content_id"),
+                name="vod_profile_entry_content",
+            ),
+        ]

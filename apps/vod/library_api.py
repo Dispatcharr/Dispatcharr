@@ -75,6 +75,16 @@ class VODLibraryViewSet(viewsets.GenericViewSet):
     def get_permissions(self):
         return permissions_for_action(self)
 
+    def finalize_response(self, request, response, *args, **kwargs):
+        # Prepared profile catalogues depend on source metadata and title flags.
+        if self.action in {"content", "source_metadata", "tmdb_match"} and (
+            response.status_code < 400
+        ):
+            from .profile_catalog import request_catalog_build
+
+            request_catalog_build()
+        return super().finalize_response(request, response, *args, **kwargs)
+
     @extend_schema(
         parameters=[LibraryFilterSerializer], responses=LibraryItemSerializer(many=True)
     )

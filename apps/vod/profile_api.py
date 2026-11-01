@@ -1,5 +1,6 @@
 """Admin API for the VOD profiles that shape Xtream Codes output per user."""
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Count, Prefetch
 from django.shortcuts import get_object_or_404
@@ -10,6 +11,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from apps.accounts.permissions import IsAdmin
+from apps.m3u.models import M3UAccount
 from apps.m3u.rule_previews import (
     PREVIEW_PARAMETERS,
     _draft_rows,
@@ -23,10 +25,11 @@ from apps.m3u.serializers import (
     M3URuleApplyResponseSerializer,
 )
 
-from . import profiles
+from . import profile_catalog, profiles
 from .models import (
     M3UMovieRelation,
     M3USeriesRelation,
+    M3UVODCategoryRelation,
     VODProfile,
     VODProfileAssignment,
     VODProfileCategoryRule,
@@ -34,6 +37,9 @@ from .models import (
 from .profile_serializers import (
     VODProfileCategoryRulePreviewRequestSerializer,
     VODProfileCategoryRuleSerializer,
+    VODProfileOptionsSerializer,
+    VODProfilePreviewRequestSerializer,
+    VODProfilePreviewSerializer,
     VODProfileSerializer,
 )
 
@@ -58,6 +64,78 @@ class VODProfileViewSet(viewsets.ModelViewSet):
                 {"detail": "Make another profile the default before deleting it."}
             )
         instance.delete()
+
+    @extend_schema(request=None, responses=VODProfileSerializer)
+    @action(detail=True, methods=["post"])
+    def rebuild(self, request, pk=None):
+        profile = self.get_object()
+        if not profile.is_active:
+            raise ValidationError({"detail": "Activate the profile first."})
+        if profile.catalog_status != VODProfile.CatalogStatus.BUILDING:
+            profile.catalog_status = VODProfile.CatalogStatus.PENDING
+            profile.save(update_fields=["catalog_status"])
+        profile_catalog.request_catalog_build([profile.pk], countdown=0)
+        return Response(self.get_serializer(profile).data)
+
+    @extend_schema(responses=VODProfileOptionsSerializer)
+    @action(detail=False, methods=["get"])
+    def options(self, request):
+        from .library import library_settings
+        from .media_languages import MEDIA_LANGUAGE_OPTIONS
+        from .metadata import RESOLUTIONS, VIDEO_FEATURES
+
+        users = get_user_model().objects.order_by("username")
+        categories = M3UVODCategoryRelation.objects.order_by(
+            "m3u_account__name", "category__category_type", "category__name"
+        )
+        return Response(
+            VODProfileOptionsSerializer(
+                {
+                    "users": users.values("id", "username"),
+                    "accounts": M3UAccount.objects.filter(
+                        category_relations__isnull=False
+                    )
+                    .distinct()
+                    .order_by("name")
+                    .values("id", "name"),
+                    "categories": categories.values(
+                        "id",
+                        "enabled",
+                        "custom_properties",
+                        "m3u_account_id",
+                        "category_id",
+                        "category__name",
+                        "category__category_type",
+                    ),
+                    "languages": MEDIA_LANGUAGE_OPTIONS,
+                    "metadata_languages": library_settings()["languages"],
+                    "resolutions": list(RESOLUTIONS),
+                    "video_features": sorted(VIDEO_FEATURES),
+                }
+            ).data
+        )
+
+    @extend_schema(
+        request=VODProfilePreviewRequestSerializer,
+        responses=VODProfilePreviewSerializer,
+    )
+    @action(detail=False, methods=["post"])
+    def preview(self, request):
+        serializer = VODProfilePreviewRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        # The saved profile's import rules apply to its unsaved settings.
+        result = profile_catalog.preview(
+            VODProfile(pk=data.get("profile_id"), **data["profile"]),
+            data["content_type"],
+            search=data.get("search", ""),
+            excluded=data["excluded"],
+            account=data.get("account"),
+            category=data.get("category"),
+            page=data["page"],
+            page_size=data["page_size"],
+        )
+        return Response(VODProfilePreviewSerializer(result).data)
 
 
 class VODProfileCategoryRuleViewSet(viewsets.ModelViewSet):
@@ -110,12 +188,17 @@ class VODProfileCategoryRuleViewSet(viewsets.ModelViewSet):
         profile = self.get_profile()
         self._check_unique(profile, serializer.validated_data)
         serializer.save(profile=profile)
+        profile_catalog.refresh_catalog(profile)
 
     def perform_update(self, serializer):
         rule = serializer.instance
         self._check_unique(rule.profile, serializer.validated_data, rule)
-        serializer.save()
+        profile_catalog.refresh_catalog(serializer.save().profile)
 
+    def perform_destroy(self, instance):
+        profile = instance.profile
+        instance.delete()
+        profile_catalog.refresh_catalog(profile)
 
     @staticmethod
     def _matches(profile, rules, target_id, scope, stats=None):
@@ -256,6 +339,7 @@ class VODProfileCategoryRuleViewSet(viewsets.ModelViewSet):
                 if choice["relation"] not in applied
             ]
             profile.save(update_fields=["category_choices", "updated_at"])
+        profile_catalog.refresh_catalog(profile)
         return Response(
             M3URuleApplyResponseSerializer(
                 {
@@ -280,7 +364,9 @@ class VODProfileCategoryRuleViewSet(viewsets.ModelViewSet):
     def reorder(self, request, *args, **kwargs):
         serializer = M3UGroupRuleOrderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        return _reorder(
+        response = _reorder(
             self.get_queryset().filter(scope=serializer.validated_data["scope"]),
             request,
         )
+        profile_catalog.refresh_catalog(self.get_profile())
+        return response

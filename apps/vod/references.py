@@ -64,7 +64,7 @@ def _reserve_ids(model, count, content_type):
 
 def output_references(content_type, selections):
     """Resolve a catalogue batch in bounded queries, creating only missing IDs."""
-    from .models import Episode, Movie, Series, VODContentAlias
+    from .models import Episode, Movie, Series
 
     model = {"movie": Movie, "series": Series, "episode": Episode}[content_type]
     selections = [
@@ -85,6 +85,33 @@ def output_references(content_type, selections):
     wanted = {key: value for key, value in wanted.items() if key not in direct}
     if not wanted:
         return direct
+    return {**direct, **_aliases(content_type, model, wanted)}
+
+
+def source_references(content_type, sources):
+    """Stable output IDs for single provider sources of a title, by source ID.
+
+    The profile catalogue pins each of these IDs to its one source, so they
+    carry no requirements of their own.
+    """
+    from .models import Episode, Movie, Series
+
+    model = {"movie": Movie, "series": Series, "episode": Episode}[content_type]
+    keys = {
+        relation_id: f"{content_type}:{target_id}:source:{relation_id}"
+        for target_id, relation_id in sources
+    }
+    found = _aliases(
+        content_type,
+        model,
+        {keys[relation_id]: (target_id, {}) for target_id, relation_id in sources},
+    )
+    return {relation_id: found[key] for relation_id, key in keys.items()}
+
+
+def _aliases(content_type, model, wanted):
+    """Existing aliases for the wanted selection keys, creating missing ones."""
+    from .models import VODContentAlias
 
     def existing():
         result = {}
@@ -102,7 +129,7 @@ def output_references(content_type, selections):
 
     found = existing()
     if len(found) == len(wanted):
-        return {**direct, **found}
+        return found
     with transaction.atomic():
         if connection.vendor == "postgresql":
             with connection.cursor() as cursor:
@@ -128,7 +155,7 @@ def output_references(content_type, selections):
         ]
         VODContentAlias.objects.bulk_create(rows, batch_size=500)
         found.update({row.selection_key: row for row in rows})
-    return {**direct, **found}
+    return found
 
 
 def output_reference(content_type, target_id, requirements):

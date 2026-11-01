@@ -866,6 +866,9 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         unique_fields=["m3u_account", "category"],
                         update_fields=["enabled", "ignored", "custom_properties", "metadata_defaults"],
                     )
+                    from apps.vod.profile_catalog import request_catalog_build
+
+                    request_catalog_build()
 
             return Response({"message": "Group settings updated successfully"})
 

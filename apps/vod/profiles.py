@@ -1,5 +1,6 @@
 """VOD profile rules: validation and the profile that applies to a user."""
 
+import re
 import string
 
 from django.db import transaction
@@ -451,3 +452,45 @@ def normalize_name_template(value):
     if "title" not in fields:
         raise ValueError("Include {title} in the output name format.")
     return template
+
+
+def _tidy_group(match):
+    """Drop empty parts inside brackets, e.g. "[ · 1080p · ]" becomes "[1080p]"."""
+    inner = match.group(2)
+    for separator in ("·", "|"):
+        parts = [part.strip() for part in inner.split(separator)]
+        inner = f" {separator} ".join(part for part in parts if part)
+    return f"{match.group(1)}{inner}{match.group(3)}" if inner else ""
+
+
+def output_name(
+    template, title, metadata, *, year="", edition="", provider="", extension=""
+):
+    """Format a client-facing name; empty placeholders leave no brackets behind."""
+    if edition and "{edition}" not in template:
+        template = template.replace("{title}", "{title} {edition}", 1)
+    # Clean up around a marker so the title itself is never altered.
+    marker = "\x00"
+    name = template.format_map(
+        {
+            "title": marker,
+            "year": year or "",
+            "edition": edition,
+            "provider": provider,
+            "dub": "/".join(
+                code.upper() for code in metadata.get("audio_languages", [])
+            ),
+            "sub": "/".join(
+                code.upper() for code in metadata.get("subtitle_languages", [])
+            ),
+            "resolution": metadata.get("resolution", ""),
+            "format": (extension or "").upper(),
+            "features": "/".join(
+                feature.removeprefix("custom:").upper()
+                for feature in metadata.get("video_features", [])
+            ),
+        }
+    )
+    name = re.sub(r"([\[(])([^\[\]()]*)([\])])", _tidy_group, name)
+    name = re.sub(r"^[\s·|-]+|[\s·|-]+$", "", re.sub(r"\s{2,}", " ", name))
+    return name.replace(marker, title) or title

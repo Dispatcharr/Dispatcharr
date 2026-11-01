@@ -13,7 +13,13 @@ from apps.output.views import (
 )
 from apps.vod import library
 from apps.vod.metadata import effective_source_metadata, metadata_suffix
-from apps.vod.models import M3UMovieRelation, M3USeriesRelation, Movie, Series
+from apps.vod.models import (
+    M3UMovieRelation,
+    M3USeriesRelation,
+    Movie,
+    Series,
+    VODProfile,
+)
 from apps.vod.presentation import canonical_title, canonical_title_expression
 from apps.vod.serializers import MovieSerializer, SeriesSerializer
 
@@ -50,9 +56,15 @@ class LibraryPresentationTests(TestCase):
         )
         self.request = RequestFactory().get("/player_api.php")
 
+    @staticmethod
+    def prefer(language):
+        # Clients get the metadata language of their VOD profile.
+        VODProfile.objects.filter(is_default=True).update(title_source=language)
+
     def test_precedence_matches_python_sql_serializers_and_xc_for_both_kinds(self):
         languages = ["de-DE", "en-US"]
         library.save_library_settings({"languages": languages})
+        self.prefer("de-DE")
         for kind, content, source, serializer, catalogue, detail in (
             (
                 "movie",
@@ -160,6 +172,7 @@ class LibraryPresentationTests(TestCase):
             (["en-US", "de-DE"], "English"),
         ):
             library.save_library_settings({"languages": languages})
+            self.prefer(languages[0])
             self.assertEqual(
                 self.client.get(self.endpoint(), {"type": "movie"}).json()["results"][
                     0
@@ -174,6 +187,7 @@ class LibraryPresentationTests(TestCase):
 
     def test_localized_titles_are_searchable_and_sorted_in_library_and_xc(self):
         library.save_library_settings({"languages": ["de-DE", "en-US"]})
+        self.prefer("de-DE")
         self.movie.tmdb_metadata = {"localized": {"de-DE": {"title": "Zulu"}}}
         self.movie.save()
         other = Movie.objects.create(
@@ -224,6 +238,7 @@ class LibraryPresentationTests(TestCase):
     def test_xc_list_still_deduplicates_before_fetching_lean_display_columns(self):
         if connection.vendor != "postgresql":
             self.skipTest("PostgreSQL query shape")
+        self.prefer("en-US")
         self.movie.tmdb_metadata = {"localized": {"en-US": {"title": "Translated"}}}
         self.movie.save()
         with CaptureQueriesContext(connection) as queries:

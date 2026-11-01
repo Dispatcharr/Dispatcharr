@@ -43,6 +43,9 @@ class ProfileSchemaTests(SimpleTestCase):
         validate_schema(schema)
         self.assertIn("/api/vod/profiles/", schema["paths"])
         self.assertIn("/api/vod/profiles/{id}/", schema["paths"])
+        self.assertIn("/api/vod/profiles/options/", schema["paths"])
+        self.assertIn("/api/vod/profiles/preview/", schema["paths"])
+        self.assertIn("/api/vod/profiles/{id}/rebuild/", schema["paths"])
         rules = "/api/vod/profiles/{profile_id}/category-rules/"
         for suffix in ("", "{id}/", "preview-draft/", "save-apply/", "reorder/"):
             self.assertIn(rules + suffix, schema["paths"])
@@ -581,3 +584,10 @@ class ProfileImportRuleTests(TestCase):
         self.profile.refresh_from_db()
         self.assertEqual(self.profile.category_choices, [])
         self.assertFalse(self.states()[str(self.german.pk)])
+
+    def test_rule_changes_queue_a_catalogue_rebuild(self):
+        with mock.patch("apps.vod.profile_catalog.request_catalog_build") as build:
+            self.rule("kids")
+        build.assert_called_once_with([self.profile.pk], countdown=5)
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.catalog_status, VODProfile.CatalogStatus.PENDING)

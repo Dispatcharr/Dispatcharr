@@ -46,6 +46,47 @@ def recover_library_outbox(**kwargs):
     publish_pending_enrichment()
 
 
+@worker_ready.connect
+def build_pending_profile_catalogs(**kwargs):
+    from .models import VODProfile
+    from .profile_catalog import request_catalog_build
+
+    pending = list(
+        VODProfile.objects.filter(is_active=True)
+        .exclude(catalog_status=VODProfile.CatalogStatus.READY)
+        .values_list("pk", flat=True)
+    )
+    if pending:
+        request_catalog_build(pending)
+
+
+@shared_task(bind=True, max_retries=None)
+def build_vod_profile_catalogs(self, profile_ids=None, queue_key=None):
+    """Rebuild prepared profile catalogues one after another."""
+    from django.core.cache import cache
+    from .models import VODProfile
+    from .profile_catalog import build_catalog
+
+    if not acquire_task_lock("build_vod_profile_catalogs", "all"):
+        raise self.retry(countdown=60)
+    try:
+        # Changes from now on queue another run instead of joining this one.
+        if queue_key:
+            cache.delete(queue_key)
+        with TaskLockRenewer("build_vod_profile_catalogs", "all"):
+            profiles = VODProfile.objects.filter(is_active=True)
+            if profile_ids is not None:
+                profiles = profiles.filter(pk__in=profile_ids)
+            for profile in profiles:
+                try:
+                    counts = build_catalog(profile)
+                    logger.info("VOD profile %s catalogue built: %s", profile.pk, counts)
+                except Exception:
+                    logger.exception("VOD profile %s catalogue failed", profile.pk)
+    finally:
+        release_task_lock("build_vod_profile_catalogs", "all")
+
+
 @shared_task(bind=True, max_retries=None)
 def dispatch_pending_library_enrichment(self):
     from .library_jobs import dispatch_pending_enrichment
@@ -69,6 +110,9 @@ def enrich_vod_library(self, task_id):
 
     try:
         run_library_job(task_id)
+        from .profile_catalog import request_catalog_build
+
+        request_catalog_build()
     except Exception:
         VODMetadataState.objects.filter(pk=1, task_id=task_id).update(
             status="failed", error="The library job failed; review the server log before retrying.",
@@ -334,6 +378,9 @@ def _refresh_vod_content_impl(account_id):
         send_m3u_update(account_id, "vod_refresh", 100, status="success",
                        message=f"VOD refresh completed in {duration:.2f} seconds",
                        first_vod_import=first_vod_import)
+
+        from .profile_catalog import request_catalog_build
+        request_catalog_build()
 
         from .library import library_settings, selected_content
         from .library_jobs import request_automatic_enrichment
