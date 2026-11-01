@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.db.models import Q
 from django.db.models.functions import Now
@@ -534,3 +535,146 @@ class VODMetadataState(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     error = models.TextField(blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class VODProfile(models.Model):
+    """Client VOD output for the users assigned to it.
+
+    Profiles only shape Xtream Codes catalogues, details and playback. The
+    Library and administration keep showing every source.
+    """
+
+    class OutputMode(models.TextChoices):
+        COMPACT = "compact", "Compact"
+        VARIANTS = "variants", "Sources"
+
+    class OutputGroups(models.TextChoices):
+        PROVIDER = "provider", "Provider"
+        MOVIE_SERIES = "movie_series", "Movie & Series"
+
+    class MetadataSource(models.TextChoices):
+        PROVIDER = "provider", "Provider"
+        ENRICHED = "enriched", "Enriched"
+
+    class CatalogStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        BUILDING = "building", "Building"
+        READY = "ready", "Ready"
+        FAILED = "failed", "Failed"
+
+    name = models.CharField(max_length=255, unique=True)
+    is_default = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    output_mode = models.CharField(
+        max_length=10, choices=OutputMode.choices, default=OutputMode.COMPACT
+    )
+    name_template = models.CharField(
+        max_length=500, default="{title} [{dub} · {resolution} · {features}]"
+    )
+    output_groups = models.CharField(
+        max_length=12, choices=OutputGroups.choices, default=OutputGroups.PROVIDER
+    )
+    # "provider", "clean" for the cleaned Library titles, or a Library
+    # metadata language.
+    title_source = models.CharField(max_length=10, default="provider")
+    metadata_source = models.CharField(
+        max_length=10, choices=MetadataSource.choices, default=MetadataSource.PROVIDER
+    )
+    # Manual choices win over the ordered import rules; the rest is disabled.
+    category_choices = models.JSONField(default=list, blank=True)
+    content_filters = models.JSONField(default=dict, blank=True)
+    # Titles this profile never offers, whatever the filters allow.
+    excluded_titles = models.JSONField(default=list, blank=True)
+    edition_rules = models.JSONField(default=list, blank=True)
+    ranking = models.JSONField(default=list, blank=True)
+    audio_language_order = models.JSONField(default=list, blank=True)
+    subtitle_language_order = models.JSONField(default=list, blank=True)
+    provider_order = models.JSONField(default=list, blank=True)
+    catalog_status = models.CharField(
+        max_length=10, choices=CatalogStatus.choices, default=CatalogStatus.PENDING
+    )
+    catalog_generation = models.CharField(max_length=32, blank=True)
+    catalog_signature = models.CharField(max_length=64, blank=True)
+    catalog_counts = models.JSONField(default=dict, blank=True)
+    catalog_progress = models.JSONField(default=dict, blank=True)
+    catalog_started_at = models.DateTimeField(null=True, blank=True)
+    catalog_completed_at = models.DateTimeField(null=True, blank=True)
+    catalog_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-is_default", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("is_default",),
+                condition=Q(is_default=True),
+                name="vod_single_default_profile",
+            ),
+            models.CheckConstraint(
+                condition=Q(is_default=False) | Q(is_active=True),
+                name="vod_default_profile_active",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class VODProfileAssignment(models.Model):
+    """At most one profile per user; users without one use the default."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="vod_profile_assignment",
+    )
+    profile = models.ForeignKey(
+        VODProfile, on_delete=models.CASCADE, related_name="assignments"
+    )
+
+    def __str__(self):
+        return f"{self.user} -> {self.profile}"
+
+
+class VODProfileCategoryRule(models.Model):
+    """Ordered import rule deciding which account categories a profile offers.
+
+    Rules behave like M3U import rules and share their evaluation: the first
+    enabled match decides, categories without a match stay disabled.
+    """
+
+    class Scope(models.TextChoices):
+        MOVIE = "movie", "VOD Movies"
+        SERIES = "series", "VOD Series"
+
+    class Action(models.TextChoices):
+        ENABLE = "enable", "Enabled"
+        DISABLE = "disable", "Disabled"
+
+    profile = models.ForeignKey(
+        VODProfile, on_delete=models.CASCADE, related_name="category_rules"
+    )
+    scope = models.CharField(max_length=10, choices=Scope.choices)
+    regex_pattern = models.CharField(max_length=500)
+    action = models.CharField(
+        max_length=10, choices=Action.choices, default=Action.DISABLE
+    )
+    case_sensitive = models.BooleanField(default=False)
+    enabled = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0)
+
+    # The shared M3U rule engine also reads these group rule attributes.
+    match_field = "group_name"
+    match_mode = "any"
+    requires_review = False
+
+    @property
+    def metadata_defaults(self):
+        return {}
+
+    class Meta:
+        ordering = ("scope", "order", "id")
+
+    def __str__(self):
+        return f"{self.profile}: {self.regex_pattern}"

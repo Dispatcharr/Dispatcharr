@@ -5,6 +5,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import Group, Permission
 from .models import User
 from apps.channels.models import ChannelProfile
+from apps.vod.models import VODProfile, VODProfileAssignment
 
 
 # Valid navigation item IDs for validation
@@ -54,6 +55,13 @@ class UserSerializer(serializers.ModelSerializer):
         queryset=ChannelProfile.objects.all(), many=True, required=False
     )
     api_key = serializers.CharField(read_only=True, allow_null=True)
+    vod_profile = serializers.PrimaryKeyRelatedField(
+        source="vod_profile_assignment.profile",
+        queryset=VODProfile.objects.all(),
+        allow_null=True,
+        required=False,
+        help_text="VOD profile for Xtream Codes output; empty uses the default profile.",
+    )
 
     class Meta:
         model = User
@@ -65,6 +73,7 @@ class UserSerializer(serializers.ModelSerializer):
             "user_level",
             "password",
             "channel_profiles",
+            "vod_profile",
             "custom_properties",
             "avatar_config",
             "stream_limit",
@@ -128,20 +137,46 @@ class UserSerializer(serializers.ModelSerializer):
 
         return value
 
+    def validate_vod_profile(self, value):
+        current = getattr(
+            getattr(self.instance, "vod_profile_assignment", None), "profile_id", None
+        )
+        if value is not None and not value.is_active and value.pk != current:
+            raise serializers.ValidationError("Select an active VOD profile.")
+        return value
+
+    def _assign_vod_profile(self, user, assignment):
+        if assignment is None:
+            return
+        profile = assignment["profile"]
+        if profile is None:
+            VODProfileAssignment.objects.filter(user=user).delete()
+        else:
+            VODProfileAssignment.objects.update_or_create(
+                user=user, defaults={"profile": profile}
+            )
+        # Serialize the stored assignment, not one cached before the change.
+        cached = type(user).vod_profile_assignment.related
+        if cached.is_cached(user):
+            cached.delete_cached_value(user)
+
     def create(self, validated_data):
         channel_profiles = validated_data.pop("channel_profiles", [])
+        vod_assignment = validated_data.pop("vod_profile_assignment", None)
 
         user = User(**validated_data)
         user.set_password(validated_data["password"])
         user.save()
 
         user.channel_profiles.set(channel_profiles)
+        self._assign_vod_profile(user, vod_assignment)
 
         return user
 
     def update(self, instance, validated_data):
         password = validated_data.pop("password", None)
         channel_profiles = validated_data.pop("channel_profiles", None)
+        vod_assignment = validated_data.pop("vod_profile_assignment", None)
 
         # Merge custom_properties instead of replacing (prevents data loss)
         # null values are explicit deletions; all other values overwrite existing
@@ -173,6 +208,7 @@ class UserSerializer(serializers.ModelSerializer):
 
         if channel_profiles is not None:
             instance.channel_profiles.set(channel_profiles)
+        self._assign_vod_profile(instance, vod_assignment)
 
         return instance
 

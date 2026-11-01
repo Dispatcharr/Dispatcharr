@@ -394,7 +394,7 @@ class AuthViewSet(viewsets.ViewSet):
 class UserViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for Users"""
 
-    queryset = User.objects.all().prefetch_related('channel_profiles')
+    queryset = User.objects.all().select_related('vod_profile_assignment').prefetch_related('channel_profiles')
     serializer_class = UserSerializer
 
     def get_permissions(self):
