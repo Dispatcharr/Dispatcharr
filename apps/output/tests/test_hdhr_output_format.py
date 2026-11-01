@@ -43,12 +43,14 @@ class HDHROutputFormatSettingTests(TestCase):
         settings.save()
         self.assertEqual(CoreSettings.get_hdhr_output_format(), "mpegts")
 
-    def test_returns_fmp4_when_configured(self):
-        _set_stream_settings(hdhr_output_format="fmp4")
-        self.assertEqual(CoreSettings.get_hdhr_output_format(), "fmp4")
+    def test_returns_configured_format(self):
+        for fmt in ("fmp4", "hls"):
+            with self.subTest(fmt=fmt):
+                _set_stream_settings(hdhr_output_format=fmt)
+                self.assertEqual(CoreSettings.get_hdhr_output_format(), fmt)
 
     def test_invalid_values_fall_back_to_mpegts(self):
-        for bad in ("hls", "", None, "garbage", 5):
+        for bad in ("", None, "garbage", 5):
             with self.subTest(value=bad):
                 _set_stream_settings(hdhr_output_format=bad)
                 self.assertEqual(CoreSettings.get_hdhr_output_format(), "mpegts")
@@ -98,12 +100,14 @@ class HDHRLineupOutputFormatTests(TestCase):
         self.assertEqual(query.get("output_format"), ["mpegts"])
         self.assertNotIn("output_profile", query)
 
-    def test_lineup_honours_fmp4_hdhr_format(self):
-        _set_stream_settings(
-            default_output_format="mpegts", hdhr_output_format="fmp4"
-        )
-        query = self._lineup_query()
-        self.assertEqual(query.get("output_format"), ["fmp4"])
+    def test_lineup_honours_configured_hdhr_format(self):
+        for fmt in ("fmp4", "hls"):
+            with self.subTest(fmt=fmt):
+                _set_stream_settings(
+                    default_output_format="mpegts", hdhr_output_format=fmt
+                )
+                query = self._lineup_query()
+                self.assertEqual(query.get("output_format"), [fmt])
 
     def test_lineup_combines_default_output_profile_and_format(self):
         _set_stream_settings(

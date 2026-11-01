@@ -297,7 +297,7 @@ describe('StreamSettingsForm', () => {
       expect(screen.getByTestId('m3u_hash_key')).toBeInTheDocument();
     });
 
-    it('renders the HDHR Default Output Format select with only MPEG-TS and fMP4', () => {
+    it('renders the HDHR Default Output Format select with MPEG-TS, fMP4, and HLS', () => {
       render(<StreamSettingsForm active={true} />);
       const select = screen.getByTestId('hdhr_output_format');
       expect(
@@ -306,7 +306,7 @@ describe('StreamSettingsForm', () => {
       const options = within(select)
         .getAllByRole('option')
         .map((o) => o.value);
-      expect(options).toEqual(['mpegts', 'fmp4']);
+      expect(options).toEqual(['mpegts', 'fmp4', 'hls']);
     });
 
     it('populates user agent options from store', () => {

@@ -909,7 +909,7 @@ class CoreSettings(models.Model):
     def get_hdhr_output_format(cls):
         """HDHR output format, falling back to MPEG-TS for missing or invalid values."""
         raw = cls.get_stream_settings().get("hdhr_output_format")
-        if raw in ("mpegts", "fmp4"):
+        if raw in ("mpegts", "fmp4", "hls"):
             return raw
         return "mpegts"
 
