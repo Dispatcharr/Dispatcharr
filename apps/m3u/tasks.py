@@ -14,6 +14,7 @@ from django.conf import settings
 from django.db import models, transaction
 from .models import CUSTOM_M3U_ACCOUNT_NAME, M3UAccount
 from apps.channels.models import (
+    Channel,
     Stream,
     ChannelGroup,
     ChannelGroupM3UAccount,
@@ -746,6 +747,72 @@ def check_field_lengths(streams_to_create):
         print("")
 
 
+def _move_relationship_to_renamed_group(relationship, new_name):
+    account = relationship.m3u_account
+    old_group = relationship.channel_group
+    target = ChannelGroup.objects.filter(name=new_name).first()
+    shared = (
+        ChannelGroupM3UAccount.objects.filter(channel_group=old_group)
+        .exclude(id=relationship.id)
+        .exists()
+    )
+
+    if target is None and not shared:
+        old_group.name = new_name
+        old_group.save(update_fields=["name"])
+        return
+
+    if target is None:
+        target = ChannelGroup.objects.create(name=new_name)
+
+    relationship.channel_group = target
+    relationship.save(update_fields=["channel_group"])
+    Stream.objects.filter(m3u_account=account, channel_group=old_group).update(
+        channel_group=target
+    )
+    Channel.objects.filter(
+        auto_created=True, auto_created_by=account, channel_group=old_group
+    ).update(channel_group=target)
+
+    if not shared and not old_group.related_channels().exists():
+        old_group.delete()
+
+
+def _follow_renamed_xc_categories(account, groups):
+    offered = {
+        str(props["xc_id"]): name
+        for name, props in groups.items()
+        if props.get("xc_id") is not None
+    }
+    if not offered:
+        return
+
+    relationships = list(
+        ChannelGroupM3UAccount.objects.filter(m3u_account=account).select_related(
+            "channel_group", "m3u_account"
+        )
+    )
+    taken_names = {relationship.channel_group.name for relationship in relationships}
+
+    for relationship in relationships:
+        old_name = relationship.channel_group.name
+        if old_name in groups:
+            continue
+
+        custom_props = ensure_custom_properties_dict(relationship.custom_properties)
+        new_name = offered.get(str(custom_props.get("xc_id")))
+        if new_name is None or new_name in taken_names:
+            continue
+
+        with transaction.atomic():
+            _move_relationship_to_renamed_group(relationship, new_name)
+        taken_names.add(new_name)
+        logger.info(
+            f"Category {custom_props['xc_id']} renamed from '{old_name}' to '{new_name}' - "
+            f"keeping its group settings for account {account.id}"
+        )
+
+
 @shared_task
 def process_groups(account, groups, scan_start_time=None):
     """Process groups and update their relationships with the M3U account.
@@ -759,6 +826,8 @@ def process_groups(account, groups, scan_start_time=None):
     # This ensures consistency with stream processing and cleanup logic
     if scan_start_time is None:
         scan_start_time = timezone.now()
+
+    _follow_renamed_xc_categories(account, groups)
 
     existing_groups = {
         group.name: group
