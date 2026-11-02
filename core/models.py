@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import time
 from collections import namedtuple
 from shlex import split as shlex_split
@@ -77,6 +78,67 @@ def _enforce_locked_profile(instance, allowed_fields):
                 f"Cannot modify {field_name} on a protected profile."
             )
 
+STREAM_PROFILE_TOKEN_PREFIX = "{streamProfile="
+STREAM_PROFILE_TOKEN_RE = re.compile(r"\{streamProfile=([^{}]+)\}")
+
+
+def _lookup_stream_profile(name):
+    """Resolve a {streamProfile=...} token name to a StreamProfile row.
+
+    An exact name wins; otherwise the match is case-insensitive, like
+    StreamProfile.get_locked. Raises ValidationError when the name matches
+    nothing or matches more than one profile.
+    """
+    exact = StreamProfile.objects.filter(name=name).first()
+    if exact is not None:
+        return exact
+    matches = list(StreamProfile.objects.filter(name__iexact=name))
+    if not matches:
+        raise ValidationError(
+            f"Unknown stream profile {name!r} in a {STREAM_PROFILE_TOKEN_PREFIX}...}} token."
+        )
+    if len(matches) > 1:
+        raise ValidationError(
+            f"Ambiguous stream profile reference {name!r} matches "
+            f"{len(matches)} profiles."
+        )
+    return matches[0]
+
+def _resolve_stream_profile_tokens(text, seen=None):
+    """Expand every {streamProfile=Name} token in ``text`` with its parameters.
+
+    Only the referenced profile's parameters are inlined - the referencing
+    profile keeps its own command as argv[0]. Tokens left inside the inlined
+    text expand too, so references may nest. ``seen`` holds the lowercase names
+    already expanded (callers seed it with the profile being built) so a
+    reference cycle raises instead of recursing forever. Raises ValidationError
+    for unknown, ambiguous, malformed, or circular tokens.
+    """
+    if not text:
+        return ""
+    seen = set() if seen is None else set(seen)
+    while True:
+        match = STREAM_PROFILE_TOKEN_RE.search(text)
+        if match is None:
+            if STREAM_PROFILE_TOKEN_PREFIX in text:
+                raise ValidationError(
+                    f"Malformed {STREAM_PROFILE_TOKEN_PREFIX}...}} token: "
+                    "a stream profile name is required."
+                )
+            return text
+        name = match.group(1).strip()
+        key = name.lower()
+        if key in seen:
+            raise ValidationError(
+                f"Circular stream profile reference: {name!r} is already part "
+                "of this command."
+            )
+        profile = _lookup_stream_profile(name)
+        text = (
+            text[: match.start()]
+            + _resolve_stream_profile_tokens(profile.parameters, seen | {key})
+            + text[match.end() :]
+        )
 
 class StreamProfile(models.Model):
     name = models.CharField(max_length=255, help_text="Name of the stream profile")
@@ -86,7 +148,8 @@ class StreamProfile(models.Model):
         blank=True,
     )
     parameters = models.TextField(
-        help_text="Command-line parameters. Use {userAgent}, {streamUrl}, and {channelId} as placeholders.",
+        help_text="Command-line parameters. Use {userAgent}, {streamUrl}, {channelId}, "
+        "and {streamProfile=Name} as placeholders.",
         blank=True,
     )
     locked = models.BooleanField(
@@ -109,6 +172,8 @@ class StreamProfile(models.Model):
     def save(self, *args, **kwargs):
         # user_agent is the profile's request header, not the stream command.
         _enforce_locked_profile(self, {"user_agent"})
+        # Reject unknown or circular {streamProfile=...} references before storing.
+        _resolve_stream_profile_tokens(self.parameters, {self.name.lower()})
         super().save(*args, **kwargs)
 
     @classmethod
@@ -140,6 +205,39 @@ class StreamProfile(models.Model):
         instance.save()
         return instance
 
+    @classmethod
+    def profiles_referencing(cls, name):
+        """Profiles whose parameters hold a {streamProfile=...} token naming ``name``.
+
+        Token names are compared case-insensitively, matching how build_command
+        resolves them.
+        """
+        referencing = []
+        candidates = cls.objects.filter(
+            parameters__icontains=STREAM_PROFILE_TOKEN_PREFIX
+        )
+        for profile in candidates:
+            for token in STREAM_PROFILE_TOKEN_RE.finditer(profile.parameters):
+                if token.group(1).strip().lower() == name.lower():
+                    referencing.append(profile)
+                    break
+        return referencing
+
+    @classmethod
+    def deletion_block_reason(cls, name):
+        """Why ``name`` cannot be deleted, or None when it can be deleted."""
+        referrers = cls.profiles_referencing(name)
+        if not referrers:
+            return None
+        names = ", ".join(f'"{profile.name}"' for profile in referrers[:5])
+        if len(referrers) > 5:
+            names += f" and {len(referrers) - 5} more"
+        return (
+            f'Cannot delete stream profile "{name}" - it is referenced by: '
+            f"{names}. Delete those profiles first (or remove the "
+            f"{{streamProfile={name}}} token from them) and try again."
+        )
+
     def is_proxy(self):
         if self.locked and self.name == PROXY_PROFILE_NAME:
             return True
@@ -161,10 +259,25 @@ class StreamProfile(models.Model):
             "{channelId}": str(channel_id) if channel_id else "",
         }
 
+        # Expand {streamProfile=...} references before splitting: splicing the
+        # referenced profile's raw parameter text keeps its quoting intact and
+        # leaves its own {streamUrl}/{userAgent} tokens for the pass below.
+        try:
+            parameters = _resolve_stream_profile_tokens(
+                self.parameters, {self.name.lower()}
+            )
+        except ValidationError as exc:
+            logger.error(
+                "Stream profile %r cannot build its command: %s",
+                self.name,
+                "; ".join(exc.messages),
+            )
+            return []
+
         # Split the command and iterate through each part to apply replacements
         cmd = [self.command] + [
             self._replace_in_part(part, replacements)
-            for part in shlex_split(self.parameters) # use shlex to handle quoted strings
+            for part in shlex_split(parameters) # use shlex to handle quoted strings
         ]
 
         return cmd

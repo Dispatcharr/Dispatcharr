@@ -137,6 +137,9 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
                 <strong>{'{userAgent}'}</strong>, and{' '}
                 <strong>{'{channelId}'}</strong> as placeholders - they are
                 substituted at stream time.
+				<br />
+                Use <strong>{'{streamProfile=Profile Name}'}</strong> to insert
+                another profile's parameters without copying them.
                 {COMMAND_EXAMPLES[commandSelection] && (
                   <>
                     <br />

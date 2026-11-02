@@ -64,6 +64,18 @@ class StreamProfileSerializer(serializers.ModelSerializer):
             "locked",
         ]
 
+    def validate(self, attrs):
+        """Reject {streamProfile=...} tokens that are unknown or circular."""
+        parameters = attrs.get(
+            "parameters", self.instance.parameters if self.instance else ""
+        )
+        name = attrs.get("name", self.instance.name if self.instance else "")
+        try:
+            _resolve_stream_profile_tokens(parameters, {(name or "").lower()})
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"parameters": exc.messages})
+        return attrs
+
     def update(self, instance, validated_data):
         return _update_profile(self, instance, validated_data)
 

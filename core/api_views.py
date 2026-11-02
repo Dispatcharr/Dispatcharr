@@ -85,7 +85,15 @@ class StreamProfileViewSet(LockedProfileViewSet):
     def get_permissions(self):
         return permissions_for_action(self)
 
-
+    def destroy(self, request, *args, **kwargs):
+        # Check {streamProfile=...} references up front: the pre_delete signal
+        # raises Django's ValidationError, which DRF would turn into a 500.
+        instance = self.get_object()
+        reason = StreamProfile.deletion_block_reason(instance.name)
+        if reason:
+            raise DRFValidationError(reason)
+        return super().destroy(request, *args, **kwargs)
+        
 class OutputProfileViewSet(LockedProfileViewSet):
     """
     API endpoint that allows output profiles to be viewed, created, edited, or deleted.

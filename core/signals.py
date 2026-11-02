@@ -21,6 +21,12 @@ def prevent_deletion_if_locked(sender, instance, **kwargs):
     if instance.locked:
         raise ValidationError("This profile is locked and cannot be deleted.")
 
+@receiver(pre_delete, sender=StreamProfile)
+def prevent_deletion_if_referenced(sender, instance, **kwargs):
+    """Refuse to delete a profile whose parameters another profile references."""
+    reason = StreamProfile.deletion_block_reason(instance.name)
+    if reason:
+        raise ValidationError(reason)
 
 @receiver(pre_delete, sender=OutputProfile)
 def prevent_output_profile_deletion_if_locked(sender, instance, **kwargs):

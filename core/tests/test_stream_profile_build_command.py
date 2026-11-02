@@ -1,4 +1,4 @@
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from core.models import StreamProfile
 
@@ -39,7 +39,111 @@ class StreamProfileBuildCommandTests(SimpleTestCase):
 
     def test_no_channel_id_placeholder_unaffected(self):
         profile = self._profile('-i {streamUrl}')
-        cmd = profile.build_command(
-            "http://example.com/stream.ts", "Mozilla/5.0", channel_id=7
-        )
+        cmd = profile.build_command("http://example.com/stream.ts", "Mozilla/5.0", channel_id=7)
         self.assertEqual(cmd, ["ffmpeg", "-i", "http://example.com/stream.ts"])
+
+
+class StreamProfileReferenceExpansionTests(TestCase):
+    """{streamProfile=Name} tokens inline another profile's parameters."""
+
+    def setUp(self):
+        self.ffmpeg = StreamProfile.objects.create(
+            name="FFmpeg",
+            command="ffmpeg",
+            parameters=(
+                "-fflags +genpts -user_agent {userAgent} "
+                "-i {streamUrl} -c copy -f mpegts pipe:1"
+            ),
+            locked=True,
+        )
+
+    def _profile(self, name, parameters, command="ffmpeg"):
+        # Unsaved on purpose: building a command must not require a stored row.
+        return StreamProfile(name=name, command=command, parameters=parameters)
+
+    def test_expands_referenced_parameters(self):
+        profile = self._profile("FFmpeg Custom", "-hide_banner {streamProfile=FFmpeg}")
+        cmd = profile.build_command(
+            "http://example.com/stream.ts", "Mozilla/5.0", channel_id=42
+        )
+        self.assertEqual(
+            cmd,
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-fflags",
+                "+genpts",
+                "-user_agent",
+                "Mozilla/5.0",
+                "-i",
+                "http://example.com/stream.ts",
+                "-c",
+                "copy",
+                "-f",
+                "mpegts",
+                "pipe:1",
+            ],
+        )
+
+    def test_reference_matches_name_case_insensitively(self):
+        profile = self._profile("Lower", "-x {streamProfile=ffmpeg}")
+        cmd = profile.build_command("http://example.com/stream.ts", "UA")
+        self.assertEqual(
+            cmd,
+            ["ffmpeg", "-x", "-fflags", "+genpts", "-user_agent", "UA", "-i",
+             "http://example.com/stream.ts", "-c", "copy", "-f", "mpegts",
+             "pipe:1"],
+        )
+
+    def test_referenced_quoting_is_preserved(self):
+        StreamProfile.objects.create(
+            name="Quoted",
+            command="ffmpeg",
+            parameters='-vf "scale=1280:720" -c copy',
+        )
+        profile = self._profile("Quoted User", "-hide_banner {streamProfile=Quoted}")
+        self.assertEqual(
+            profile.build_command("http://example.com/stream.ts", "UA"),
+            ["ffmpeg", "-hide_banner", "-vf", "scale=1280:720", "-c", "copy"],
+        )
+
+    def test_nested_references_expand(self):
+        StreamProfile.objects.create(
+            name="Leaf", command="ffmpeg", parameters="-c copy"
+        )
+        StreamProfile.objects.create(
+            name="Middle", command="ffmpeg", parameters="-map 0 {streamProfile=Leaf}"
+        )
+        profile = self._profile("Top", "-hide_banner {streamProfile=Middle}")
+        self.assertEqual(
+            profile.build_command("http://example.com/stream.ts", "UA"),
+            ["ffmpeg", "-hide_banner", "-map", "0", "-c", "copy"],
+        )
+
+    def test_embedded_token_splices_text(self):
+        StreamProfile.objects.create(
+            name="Suffix", command="ffmpeg", parameters="value"
+        )
+        profile = self._profile("Embedded", "--opt={streamProfile=Suffix}")
+        self.assertEqual(
+            profile.build_command("http://example.com/stream.ts", "UA"),
+            ["ffmpeg", "--opt=value"],
+        )
+
+    def test_unknown_reference_builds_no_command(self):
+        profile = self._profile("Broken", "-x {streamProfile=Ghost}")
+        with self.assertLogs("core.models", level="ERROR") as logs:
+            cmd = profile.build_command("http://example.com/stream.ts", "UA")
+        self.assertEqual(cmd, [])
+        self.assertIn("Ghost", logs.output[0])
+
+    def test_circular_reference_builds_no_command(self):
+        loop = StreamProfile.objects.create(
+            name="Loop", command="ffmpeg", parameters="-c copy"
+        )
+        loop.parameters = "-x {streamProfile=Loop}"
+        with self.assertLogs("core.models", level="ERROR") as logs:
+            cmd = loop.build_command("http://example.com/stream.ts", "UA")
+        self.assertEqual(cmd, [])
+        self.assertIn("Circular", logs.output[0])
+

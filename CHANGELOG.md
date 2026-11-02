@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Stream profiles can reuse another profile's parameters.** A `{streamProfile=Name}` token in a Stream Profile's Parameters inlines that profile's fully expanded parameters when the command is built, so a custom profile only lists what it adds instead of duplicating the whole command line - for example `-hide_banner {streamProfile=FFMpeg}` builds `ffmpeg -hide_banner …` from the locked FFmpeg profile's arguments while the new profile keeps its own command as the executable. References resolve by name (exact first, then case-insensitive like `get_locked`), may nest, keep their quoting, and still substitute their own `{streamUrl}` / `{userAgent}` / `{channelId}` tokens. Unknown, ambiguous, or circular references are rejected when the profile is saved (API 400); if one is already stored, the build logs the reason and starts no process instead of spawning a broken command. A profile another profile references cannot be deleted: the API returns 400 naming the profiles to remove first, and the model refuses the delete on every other path.
+
 ### Changed
 
 - **MPEG-TS Program Specific Information (PSI) helpers live in a shared module.** PAT/PMT parsing and PSI section reassembly moved from the HLS segmenter into `apps/proxy/live_proxy/ts_psi.py` (ISO/IEC 13818-1 PSI). The HLS segmenter and the output-profile PMT layout watcher both import from there, so profile code no longer depends on the HLS package and input-side code can reuse the same helpers later.
