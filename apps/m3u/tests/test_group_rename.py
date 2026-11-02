@@ -1,7 +1,13 @@
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.channels.models import Channel, ChannelGroup, ChannelGroupM3UAccount, Stream
+from apps.channels.models import (
+    Channel,
+    ChannelGroup,
+    ChannelGroupM3UAccount,
+    ChannelOverride,
+    Stream,
+)
 from apps.m3u.models import M3UAccount
 from apps.m3u.tasks import cleanup_stale_group_relationships, process_groups
 
@@ -144,6 +150,37 @@ class XCGroupRenameTests(TestCase):
         process_groups(self.account, {"Sports (New)": {"xc_id": "648"}})
 
         self.assertFalse(ChannelGroup.objects.filter(name="Sports (Old)").exists())
+
+    def test_group_holding_a_custom_stream_survives_the_move(self):
+        ChannelGroup.objects.create_manual(name="Sports (New)")
+        stream = Stream.objects.create(
+            name="Custom",
+            url="http://example.com/custom.ts",
+            is_custom=True,
+            channel_group=self.group,
+        )
+
+        process_groups(self.account, {"Sports (New)": {"xc_id": "648"}})
+
+        stream.refresh_from_db()
+        self.assertEqual(stream.channel_group_id, self.group.id)
+
+    def test_group_targeted_by_a_channel_override_survives_the_move(self):
+        ChannelGroup.objects.create_manual(name="Sports (New)")
+        other_group = ChannelGroup.objects.create_manual(name="Other")
+        channel = Channel.objects.create(
+            name="Auto",
+            channel_number=100,
+            channel_group=other_group,
+            auto_created=True,
+            auto_created_by=self.account,
+        )
+        override = ChannelOverride.objects.create(channel=channel, channel_group=self.group)
+
+        process_groups(self.account, {"Sports (New)": {"xc_id": "648"}})
+
+        override.refresh_from_db()
+        self.assertEqual(override.channel_group_id, self.group.id)
 
     def test_old_name_still_offered_is_not_a_rename(self):
         process_groups(

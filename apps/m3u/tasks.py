@@ -15,6 +15,7 @@ from django.db import models, transaction
 from .models import CUSTOM_M3U_ACCOUNT_NAME, M3UAccount
 from apps.channels.models import (
     Channel,
+    ChannelOverride,
     Stream,
     ChannelGroup,
     ChannelGroupM3UAccount,
@@ -774,7 +775,12 @@ def _move_relationship_to_renamed_group(relationship, new_name):
         auto_created=True, auto_created_by=account, channel_group=old_group
     ).update(channel_group=target)
 
-    if not shared and not old_group.related_channels().exists():
+    if (
+        not shared
+        and not old_group.related_channels().exists()
+        and not old_group.streams.exists()
+        and not ChannelOverride.objects.filter(channel_group=old_group).exists()
+    ):
         old_group.delete()
 
 
