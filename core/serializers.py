@@ -10,6 +10,7 @@ from .models import (
     UserAgent,
     StreamProfile,
     OutputProfile,
+    _resolve_stream_profile_tokens,
     DVR_SETTINGS_KEY,
     EPG_DAYS_LIMIT,
     EPG_HISTORY_MAX_DAYS_DEFAULT,

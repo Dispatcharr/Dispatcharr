@@ -47,8 +47,8 @@ class StreamProfileReferenceExpansionTests(TestCase):
     """{streamProfile=Name} tokens inline another profile's parameters."""
 
     def setUp(self):
-        self.ffmpeg = StreamProfile.objects.create(
-            name="FFmpeg",
+        self.referenced = StreamProfile.objects.create(
+            name="TestRef",
             command="ffmpeg",
             parameters=(
                 "-fflags +genpts -user_agent {userAgent} "
@@ -62,7 +62,7 @@ class StreamProfileReferenceExpansionTests(TestCase):
         return StreamProfile(name=name, command=command, parameters=parameters)
 
     def test_expands_referenced_parameters(self):
-        profile = self._profile("FFmpeg Custom", "-hide_banner {streamProfile=FFmpeg}")
+        profile = self._profile("FFmpeg Custom", "-hide_banner {streamProfile=TestRef}")
         cmd = profile.build_command(
             "http://example.com/stream.ts", "Mozilla/5.0", channel_id=42
         )
@@ -86,7 +86,7 @@ class StreamProfileReferenceExpansionTests(TestCase):
         )
 
     def test_reference_matches_name_case_insensitively(self):
-        profile = self._profile("Lower", "-x {streamProfile=ffmpeg}")
+        profile = self._profile("Lower", "-x {streamProfile=testref}")
         cmd = profile.build_command("http://example.com/stream.ts", "UA")
         self.assertEqual(
             cmd,
@@ -97,11 +97,11 @@ class StreamProfileReferenceExpansionTests(TestCase):
 
     def test_referenced_quoting_is_preserved(self):
         StreamProfile.objects.create(
-            name="Quoted",
+            name="QuotedRef",
             command="ffmpeg",
             parameters='-vf "scale=1280:720" -c copy',
         )
-        profile = self._profile("Quoted User", "-hide_banner {streamProfile=Quoted}")
+        profile = self._profile("Quoted User", "-hide_banner {streamProfile=QuotedRef}")
         self.assertEqual(
             profile.build_command("http://example.com/stream.ts", "UA"),
             ["ffmpeg", "-hide_banner", "-vf", "scale=1280:720", "-c", "copy"],
@@ -109,12 +109,12 @@ class StreamProfileReferenceExpansionTests(TestCase):
 
     def test_nested_references_expand(self):
         StreamProfile.objects.create(
-            name="Leaf", command="ffmpeg", parameters="-c copy"
+            name="NestedLeaf", command="ffmpeg", parameters="-c copy"
         )
         StreamProfile.objects.create(
-            name="Middle", command="ffmpeg", parameters="-map 0 {streamProfile=Leaf}"
+            name="NestedMiddle", command="ffmpeg", parameters="-map 0 {streamProfile=NestedLeaf}"
         )
-        profile = self._profile("Top", "-hide_banner {streamProfile=Middle}")
+        profile = self._profile("Top", "-hide_banner {streamProfile=NestedMiddle}")
         self.assertEqual(
             profile.build_command("http://example.com/stream.ts", "UA"),
             ["ffmpeg", "-hide_banner", "-map", "0", "-c", "copy"],
@@ -122,20 +122,20 @@ class StreamProfileReferenceExpansionTests(TestCase):
 
     def test_embedded_token_splices_text(self):
         StreamProfile.objects.create(
-            name="Suffix", command="ffmpeg", parameters="value"
+            name="SuffixRef", command="ffmpeg", parameters="value"
         )
-        profile = self._profile("Embedded", "--opt={streamProfile=Suffix}")
+        profile = self._profile("Embedded", "--opt={streamProfile=SuffixRef}")
         self.assertEqual(
             profile.build_command("http://example.com/stream.ts", "UA"),
             ["ffmpeg", "--opt=value"],
         )
 
     def test_unknown_reference_builds_no_command(self):
-        profile = self._profile("Broken", "-x {streamProfile=Ghost}")
+        profile = self._profile("Broken", "-x {streamProfile=UnknownGhost}")
         with self.assertLogs("core.models", level="ERROR") as logs:
             cmd = profile.build_command("http://example.com/stream.ts", "UA")
         self.assertEqual(cmd, [])
-        self.assertIn("Ghost", logs.output[0])
+        self.assertIn("UnknownGhost", logs.output[0])
 
     def test_circular_reference_builds_no_command(self):
         loop = StreamProfile.objects.create(

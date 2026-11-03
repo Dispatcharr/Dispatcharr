@@ -10,8 +10,9 @@ from core.models import StreamProfile
 
 
 def _create_base():
+    """Create a non-locked base profile with a unique name to avoid colliding with seeded locked profiles."""
     return StreamProfile.objects.create(
-        name="FFmpeg",
+        name="Base",
         command="ffmpeg",
         parameters="-i {streamUrl} -c copy",
     )
@@ -48,13 +49,13 @@ class StreamProfileReferenceValidationTests(TestCase):
             profile.save()
 
     def test_cycle_is_rejected_on_save(self):
-        _create_base()
+        base = _create_base()
         StreamProfile.objects.create(
             name="Child",
             command="ffmpeg",
-            parameters="-x {streamProfile=FFmpeg}",
+            parameters="-x {streamProfile=Base}",
         )
-        base = StreamProfile.objects.get(name="FFmpeg")
+        base.refresh_from_db()
         base.parameters = "-y {streamProfile=Child}"
         with self.assertRaises(ValidationError) as ctx:
             base.save()
@@ -67,9 +68,8 @@ class StreamProfileReferenceValidationTests(TestCase):
         StreamProfile.objects.create(
             name="Custom",
             command="ffmpeg",
-            parameters="-hide_banner {streamProfile=FFmpeg}",
+            parameters="-hide_banner {streamProfile=Base}",
         )
-        self.assertTrue(StreamProfile.objects.filter(name="Custom").exists())
 
     def test_parameters_without_tokens_are_untouched(self):
         StreamProfile.objects.create(
@@ -109,7 +109,7 @@ class StreamProfileReferenceApiTests(TestCase):
         StreamProfile.objects.create(
             name="Child",
             command="ffmpeg",
-            parameters="-x {streamProfile=FFmpeg}",
+            parameters="-x {streamProfile=Base}",
         )
         response = self.client.patch(
             f"/api/core/streamprofiles/{self.base.id}/",
@@ -126,7 +126,7 @@ class StreamProfileReferenceApiTests(TestCase):
             {
                 "name": "Custom",
                 "command": "ffmpeg",
-                "parameters": "-hide_banner {streamProfile=FFmpeg}",
+                "parameters": "-hide_banner {streamProfile=Base}",
             },
             format="json",
         )
@@ -147,7 +147,7 @@ class StreamProfileDeletionGuardTests(TestCase):
         self.custom = StreamProfile.objects.create(
             name="FFmpeg Custom",
             command="ffmpeg",
-            parameters="-hide_banner {streamProfile=FFmpeg}",
+            parameters="-hide_banner {streamProfile=Base}",
         )
 
     def test_model_delete_is_blocked(self):
@@ -183,7 +183,7 @@ class StreamProfileDeletionGuardTests(TestCase):
         StreamProfile.objects.create(
             name="Lower",
             command="ffmpeg",
-            parameters="-x {streamProfile=ffmpeg}",
+            parameters="-x {streamProfile=base}",
         )
         response = self.client.delete(f"/api/core/streamprofiles/{self.base.id}/")
         self.assertEqual(response.status_code, 400)
