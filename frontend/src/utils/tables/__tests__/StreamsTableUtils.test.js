@@ -207,6 +207,34 @@ describe('StreamsTableUtils', () => {
       expect(tooltipContent).toContain('Audio Bitrate: 192 kbps');
     });
 
+    it('lists audio_streams one per line instead of scalar audio fields', () => {
+      const { tooltipContent } = StreamsTableUtils.getStatsTooltip({
+        audio_codec: 'ac3',
+        audio_channels: '5.1',
+        audio_bitrate: 384,
+        audio_streams: [
+          {
+            audio_language: 'eng',
+            audio_channels: '5.1',
+            audio_codec: 'ac3',
+            audio_bitrate: 384,
+            sample_rate: 48000,
+          },
+          {
+            audio_language: 'spa',
+            audio_channels: 'stereo',
+            audio_codec: 'aac',
+            audio_bitrate: 96,
+            sample_rate: 48000,
+          },
+        ],
+      });
+      expect(tooltipContent).toContain('Audio:');
+      expect(tooltipContent).toContain('ENG: 5.1 AC3 384 kbps');
+      expect(tooltipContent).toContain('SPA: stereo AAC 96 kbps');
+      expect(tooltipContent).not.toContain('Audio Codec: AC3');
+    });
+
     it('builds multi-line tooltip joined by newlines', () => {
       const { tooltipContent } = StreamsTableUtils.getStatsTooltip({
         resolution: '1920x1080',

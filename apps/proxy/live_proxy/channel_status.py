@@ -3,6 +3,7 @@ import time
 from .server import ProxyServer
 from .redis_keys import RedisKeys
 from .constants import TS_PACKET_SIZE, ChannelMetadataField
+from .services.log_parsers import decode_audio_streams
 from redis.exceptions import ConnectionError, TimeoutError
 from .utils import get_logger
 from .client_manager import ClientManager
@@ -344,6 +345,15 @@ class ChannelStatus:
         if audio_bitrate:
             info['audio_bitrate'] = audio_bitrate
 
+        audio_language = metadata.get(ChannelMetadataField.AUDIO_LANGUAGE)
+        if audio_language:
+            info['audio_language'] = audio_language
+
+        audio_streams = decode_audio_streams(
+            metadata.get(ChannelMetadataField.AUDIO_STREAMS)
+        )
+        if audio_streams:
+            info['audio_streams'] = audio_streams
 
         # Add FFmpeg performance stats
         ffmpeg_speed = metadata.get(ChannelMetadataField.FFMPEG_SPEED)
@@ -565,6 +575,16 @@ class ChannelStatus:
             audio_channels = metadata.get(ChannelMetadataField.AUDIO_CHANNELS)
             if audio_channels:
                 info['audio_channels'] = audio_channels
+
+            audio_language = metadata.get(ChannelMetadataField.AUDIO_LANGUAGE)
+            if audio_language:
+                info['audio_language'] = audio_language
+
+            audio_streams = decode_audio_streams(
+                metadata.get(ChannelMetadataField.AUDIO_STREAMS)
+            )
+            if audio_streams:
+                info['audio_streams'] = audio_streams
 
             stream_type = metadata.get(ChannelMetadataField.STREAM_TYPE)
             if stream_type:
