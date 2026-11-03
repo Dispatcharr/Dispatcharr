@@ -377,9 +377,9 @@ class LogoGuardTests(TestCase):
 
     @patch("apps.channels.tasks.requests.get")
     def test_channel_name_as_title_skips_external_apis(self, mock_get):
-        """Title = 'USA A&E SD*', channel = 'USA A&E SD*' → no external calls."""
-        program = {"title": "USA A&E SD*"}
-        logo_id, url = self._call("USA A&E SD*", program, channel_logo_id=42)
+        """Title = 'US Test Channel SD*', channel = 'US Test Channel SD*' → no external calls."""
+        program = {"title": "US Test Channel SD*"}
+        logo_id, url = self._call("US Test Channel SD*", program, channel_logo_id=42)
 
         # Should NOT have called any external APIs
         mock_get.assert_not_called()
@@ -389,25 +389,25 @@ class LogoGuardTests(TestCase):
 
     @patch("apps.channels.tasks.requests.get")
     def test_channel_name_normalized_match(self, mock_get):
-        """Title = 'fox news', channel = 'FOX-News*' → normalized match, skip APIs."""
-        program = {"title": "fox news"}
-        logo_id, url = self._call("FOX-News*", program, channel_logo_id=99)
+        """Title = 'alpha news', channel = 'ALPHA-News*' → normalized match, skip APIs."""
+        program = {"title": "alpha news"}
+        logo_id, url = self._call("ALPHA-News*", program, channel_logo_id=99)
 
         mock_get.assert_not_called()
         self.assertEqual(logo_id, 99)
 
     @patch("apps.channels.tasks.requests.get")
     def test_real_title_still_searched(self, mock_get):
-        """Title = 'Breaking Bad' on channel 'AMC' → should try external APIs."""
+        """Title = 'Sample Show' on channel 'TestNet' → should try external APIs."""
         # Mock TVMaze returning a result
         mock_resp = MagicMock(ok=True, status_code=200)
         mock_resp.json.return_value = {
-            "image": {"original": "https://tvmaze.com/breaking-bad.jpg"}
+            "image": {"original": "https://example.com/sample-show.jpg"}
         }
         mock_get.return_value = mock_resp
 
-        program = {"title": "Breaking Bad"}
-        logo_id, url = self._call("AMC", program)
+        program = {"title": "Sample Show"}
+        logo_id, url = self._call("TestNet", program)
 
         # Should have made at least one external API call
         self.assertTrue(mock_get.called, "Should search external APIs for real titles")

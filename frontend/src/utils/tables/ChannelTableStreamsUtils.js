@@ -9,6 +9,7 @@ const categoryMapping = {
     'source_fps',
     'audio_codec',
     'audio_channels',
+    'audio_language',
   ],
   video: [
     'video_bitrate',
@@ -23,6 +24,7 @@ const categoryMapping = {
     'sample_rate',
     'audio_format',
     'audio_channels_layout',
+    'audio_streams',
   ],
   technical: [
     'stream_type',
@@ -46,8 +48,15 @@ export const categorizeStreamStats = (stats) => {
     technical: {},
     other: {},
   };
+  // Best-track bitrate/sample rate are shown on each audio_streams row.
+  const hasAudioStreams =
+    Array.isArray(stats.audio_streams) && stats.audio_streams.length > 0;
+  const redundantWhenStreams = new Set(['audio_bitrate', 'sample_rate']);
 
   Object.entries(stats).forEach(([key, value]) => {
+    if (hasAudioStreams && redundantWhenStreams.has(key)) {
+      return;
+    }
     let categorized = false;
     for (const [category, keys] of Object.entries(categoryMapping)) {
       if (keys.includes(key)) {
@@ -89,6 +98,8 @@ export const formatStatValue = (key, value) => {
 };
 
 export const formatStatKey = (key) => {
+  // Keep the stored field name, but the UI label matches the summary badge.
+  if (key === 'ffmpeg_output_bitrate') return 'Output Bitrate';
   return key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
 };
 
