@@ -6,6 +6,7 @@ from .api_views import (
     LineupAPIView,
     LineupStatusAPIView,
     HDHRDeviceXMLAPIView,
+    HDHRIdentityAPIView,
 )
 
 app_name = 'hdhr'
@@ -18,6 +19,7 @@ urlpatterns = [
     path('lineup.json', LineupAPIView.as_view(), name='lineup'),
     path('lineup_status.json', LineupStatusAPIView.as_view(), name='lineup_status'),
     path('device.xml', HDHRDeviceXMLAPIView.as_view(), name='device_xml'),
+    path('identity/', HDHRIdentityAPIView.as_view(), name='identity'),
 ]
 
 urlpatterns += router.urls

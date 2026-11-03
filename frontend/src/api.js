@@ -3801,6 +3801,22 @@ export default class API {
     }
   }
 
+  static async getHDHRIdentity() {
+    try {
+      return await request(`${host}/api/hdhr/identity/`);
+    } catch (e) {
+      errorNotification('Failed to load HDHR device identity', e);
+    }
+  }
+
+  static async regenerateHDHRIdentity() {
+    try {
+      return await request(`${host}/api/hdhr/identity/`, { method: 'POST' });
+    } catch (e) {
+      errorNotification('Failed to regenerate HDHR device identity', e);
+    }
+  }
+
   static async rehashStreams() {
     try {
       const response = await request(`${host}/api/core/rehash-streams/`, {
