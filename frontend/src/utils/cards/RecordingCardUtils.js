@@ -71,6 +71,13 @@ export const runComSkip = async (recording) => {
   await API.runComskip(recording.id);
 };
 
+export const downloadRecording = (recording) => {
+  return API.downloadRecording(
+    recording.id,
+    recording.custom_properties?.file_name
+  );
+};
+
 export const deleteRecordingById = async (recordingId) => {
   await API.deleteRecording(recordingId);
 };

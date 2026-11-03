@@ -31,6 +31,7 @@ import RecordingSynopsis from '../RecordingSynopsis';
 import {
   deleteRecordingById,
   deleteSeriesAndRule,
+  downloadRecording,
   extendRecordingById,
   getChannelLogoUrl,
   getPosterUrl,
@@ -61,6 +62,8 @@ const areRecordingPropsEqual = (prev, next) => {
     pcp.poster_url === ncp.poster_url &&
     pcp.file_url === ncp.file_url &&
     pcp.output_file_url === ncp.output_file_url &&
+    pcp.file_name === ncp.file_name &&
+    pcp.remux_success === ncp.remux_success &&
     pcp.comskip?.status === ncp.comskip?.status &&
     pcp.program?.title === ncp.program?.title &&
     prev.channel?.id === next.channel?.id &&
@@ -84,6 +87,13 @@ const RecordingCard = ({
   const channel = channelProp;
 
   const customProps = recording.custom_properties || {};
+  // Failed finalization may leave only a playable HLS playlist, not a file.
+  const fileUrl = customProps.file_url || customProps.output_file_url;
+  const canDownload =
+    Boolean(fileUrl) &&
+    !fileUrl.includes('.m3u8') &&
+    customProps.remux_success !== false;
+
   const program = customProps.program || {};
   const recordingName = program.title || 'Custom Recording';
   const subTitle = program.sub_title || '';
@@ -138,6 +148,19 @@ const RecordingCard = ({
     });
   };
 
+  const handleDownload = async (e) => {
+    e.stopPropagation();
+    setDownloading(true);
+
+    try {
+      await downloadRecording(recording);
+    } catch (error) {
+      console.error('Failed to download recording', error);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const handleRunComskip = async (e) => {
     e?.stopPropagation?.();
     try {
@@ -179,6 +202,7 @@ const RecordingCard = ({
   const [stopConfirmOpen, setStopConfirmOpen] = React.useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [downloading, setDownloading] = React.useState(false);
 
   const handleStopClick = (e) => {
     e.stopPropagation();
@@ -519,6 +543,25 @@ const RecordingCard = ({
                   Remove commercials
                 </Button>
               )}
+            {(status === 'completed' || status === 'stopped') && (
+              <Tooltip
+                label={
+                  canDownload
+                    ? 'Download recording'
+                    : 'Recording download not available yet'
+                }
+              >
+                <Button
+                  size="xs"
+                  variant="default"
+                  onClick={handleDownload}
+                  disabled={!canDownload}
+                  loading={downloading}
+                >
+                  Download
+                </Button>
+              </Tooltip>
+            )}
           </Group>
         </Stack>
       </Flex>

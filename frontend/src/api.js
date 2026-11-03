@@ -3280,6 +3280,30 @@ export default class API {
     }
   }
 
+  static async downloadRecording(id, filename) {
+    try {
+      const token = await API.getAuthToken();
+      if (!token) {
+        throw new Error('Authentication required');
+      }
+
+      // Same-origin links honor download even for inline files, without a blob.
+      const params = new URLSearchParams({ token });
+      const link = document.createElement('a');
+      link.href = `/api/channels/recordings/${encodeURIComponent(id)}/file/?${params}`;
+      link.download = filename || 'recording';
+      document.body.appendChild(link);
+
+      try {
+        link.click();
+      } finally {
+        link.remove();
+      }
+    } catch (e) {
+      errorNotification('Failed to download recording', e);
+    }
+  }
+
   static async createRecording(values) {
     try {
       const response = await request(`${host}/api/channels/recordings/`, {

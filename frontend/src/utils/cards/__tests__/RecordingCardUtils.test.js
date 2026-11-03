@@ -6,6 +6,7 @@ import {
   runComSkip,
   deleteRecordingById,
   deleteSeriesAndRule,
+  downloadRecording,
   getRecordingUrl,
   getSeasonLabel,
   getSeriesInfo,
@@ -292,6 +293,19 @@ describe('RecordingCardUtils', () => {
         expect.any(Error)
       );
       consoleError.mockRestore();
+    });
+  });
+
+  describe('downloadRecording', () => {
+    it('passes the recording ID and filename to the API', async () => {
+      API.downloadRecording.mockResolvedValue();
+
+      await downloadRecording({
+        id: 67,
+        custom_properties: { file_name: 'Test Show.mkv' },
+      });
+
+      expect(API.downloadRecording).toHaveBeenCalledWith(67, 'Test Show.mkv');
     });
   });
 

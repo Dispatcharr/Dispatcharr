@@ -19,6 +19,7 @@ vi.mock('../../../utils/dateTimeUtils.js', () => ({
 vi.mock('../../../utils/cards/RecordingCardUtils.js', () => ({
   deleteRecordingById: vi.fn(),
   deleteSeriesAndRule: vi.fn(),
+  downloadRecording: vi.fn(),
   extendRecordingById: vi.fn(),
   getChannelLogoUrl: vi.fn(),
   getPosterUrl: vi.fn(),
@@ -262,6 +263,9 @@ describe('RecordingCard', () => {
       undefined
     );
     vi.mocked(RecordingCardUtils.runComSkip).mockResolvedValue(undefined);
+    vi.mocked(RecordingCardUtils.downloadRecording).mockResolvedValue(
+      undefined
+    );
     vi.mocked(RecordingCardUtils.removeRecording).mockReturnValue(undefined);
   });
 
@@ -641,6 +645,201 @@ describe('RecordingCard', () => {
       render(<RecordingCard recording={recording} channel={null} />);
       fireEvent.click(screen.getByText('Watch Live'));
       expect(mockShowVideo).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('download recording', () => {
+    it.each(['completed', 'stopped'])(
+      'offers downloads to viewers for %s recordings',
+      (status) => {
+        const recording = makeRecording({
+          end_time: FUTURE,
+          custom_properties: { status, file_url: '/recordings/test.mkv' },
+        });
+        setupMocks({ recording });
+        render(<RecordingCard recording={recording} canManage={false} />);
+
+        expect(screen.getByRole('button', { name: 'Download' })).toBeEnabled();
+      }
+    );
+
+    it.each(['scheduled', 'recording', 'interrupted', undefined])(
+      'hides Download for status %s, even when a file URL exists',
+      (status) => {
+        const recording = makeRecording({
+          custom_properties: { status, file_url: '/recordings/test.mkv' },
+        });
+        setupMocks({ recording });
+        render(<RecordingCard recording={recording} />);
+
+        expect(
+          screen.queryByRole('button', { name: 'Download' })
+        ).not.toBeInTheDocument();
+      }
+    );
+
+    it.each(['completed', 'stopped'])(
+      'downloads %s without opening details, recurring rules, or playback',
+      async (status) => {
+        const recording = makeRecording({
+          custom_properties: {
+            status,
+            file_url: '/recordings/test.mkv',
+            file_name: 'Test Show.mkv',
+            rule: { type: 'recurring' },
+          },
+        });
+        const { mockShowVideo } = setupMocks({ recording });
+        const onOpenDetails = vi.fn();
+        const onOpenRecurring = vi.fn();
+        render(
+          <RecordingCard
+            recording={recording}
+            onOpenDetails={onOpenDetails}
+            onOpenRecurring={onOpenRecurring}
+          />
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+
+        await waitFor(() => {
+          expect(RecordingCardUtils.downloadRecording).toHaveBeenCalledWith(
+            recording
+          );
+        });
+        expect(onOpenDetails).not.toHaveBeenCalled();
+        expect(onOpenRecurring).not.toHaveBeenCalled();
+        expect(mockShowVideo).not.toHaveBeenCalled();
+      }
+    );
+
+    it('supports recordings with only output_file_url', () => {
+      const recording = makeRecording({
+        custom_properties: {
+          status: 'completed',
+          output_file_url: '/recordings/test.mkv',
+        },
+      });
+      setupMocks({ recording });
+      render(<RecordingCard recording={recording} />);
+
+      expect(screen.getByRole('button', { name: 'Download' })).toBeEnabled();
+    });
+
+    it.each([
+      { status: 'completed' },
+      { status: 'completed', file_url: '/recordings/index.m3u8' },
+      {
+        status: 'completed',
+        file_url: '/recordings/test.mkv',
+        remux_success: false,
+      },
+      { status: 'stopped' },
+      { status: 'stopped', file_url: '/recordings/index.m3u8' },
+      {
+        status: 'stopped',
+        file_url: '/recordings/test.mkv',
+        remux_success: false,
+      },
+    ])('disables downloads when no final file is available: %j', (props) => {
+      const recording = makeRecording({ custom_properties: props });
+      setupMocks({ recording });
+      render(<RecordingCard recording={recording} />);
+
+      const button = screen.getByRole('button', { name: 'Download' });
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(RecordingCardUtils.downloadRecording).not.toHaveBeenCalled();
+    });
+
+    it.each(['completed', 'stopped'])(
+      'updates availability after %s finalization succeeds',
+      (status) => {
+        const recording = makeRecording({
+          custom_properties: {
+            status,
+            file_url: '/recordings/test.mkv',
+            remux_success: false,
+          },
+        });
+        setupMocks({ recording });
+        const { rerender } = render(<RecordingCard recording={recording} />);
+        expect(screen.getByRole('button', { name: 'Download' })).toBeDisabled();
+
+        rerender(
+          <RecordingCard
+            recording={{
+              ...recording,
+              custom_properties: {
+                ...recording.custom_properties,
+                remux_success: true,
+              },
+            }}
+          />
+        );
+
+        expect(screen.getByRole('button', { name: 'Download' })).toBeEnabled();
+      }
+    );
+
+    it('uses the latest filename after a store update', async () => {
+      const recording = makeRecording();
+      setupMocks({ recording });
+      const { rerender } = render(<RecordingCard recording={recording} />);
+      const updated = {
+        ...recording,
+        custom_properties: {
+          ...recording.custom_properties,
+          file_name: 'Updated Show.mkv',
+        },
+      };
+
+      rerender(<RecordingCard recording={updated} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+
+      await waitFor(() => {
+        expect(RecordingCardUtils.downloadRecording).toHaveBeenCalledWith(
+          updated
+        );
+      });
+    });
+
+    it('prevents repeat clicks while authentication is pending', async () => {
+      let finish;
+      vi.mocked(RecordingCardUtils.downloadRecording).mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+      );
+      setupMocks();
+      render(<RecordingCard recording={makeRecording()} />);
+
+      const button = screen.getByRole('button', { name: 'Download' });
+      fireEvent.click(button);
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(RecordingCardUtils.downloadRecording).toHaveBeenCalledOnce();
+
+      finish();
+      await waitFor(() => expect(button).toBeEnabled());
+    });
+
+    it('allows retry after a download setup failure', async () => {
+      const error = new Error('Token refresh failed');
+      const consoleError = vi.spyOn(console, 'error').mockImplementation();
+      vi.mocked(RecordingCardUtils.downloadRecording).mockRejectedValue(error);
+      setupMocks();
+      render(<RecordingCard recording={makeRecording()} />);
+
+      const button = screen.getByRole('button', { name: 'Download' });
+      fireEvent.click(button);
+
+      await waitFor(() => expect(button).toBeEnabled());
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to download recording',
+        error
+      );
+      consoleError.mockRestore();
     });
   });
 
