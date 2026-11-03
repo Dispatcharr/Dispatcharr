@@ -420,55 +420,55 @@ const makeEpgs = () => ({
 const makeTvgs = () => [
   {
     id: 'tvg-1',
-    name: 'ESPN',
-    tvg_id: 'espn.us',
+    name: 'Alpha Sports',
+    tvg_id: 'alpha.us',
     epg_source: 10,
-    icon_url: 'http://example.com/espn.png',
+    icon_url: 'http://example.com/alpha.png',
   },
   {
     id: 'tvg-2',
-    name: 'CNN',
-    tvg_id: 'cnn.us',
+    name: 'Beta News',
+    tvg_id: 'beta.us',
     epg_source: 11,
-    icon_url: 'http://example.com/cnn.png',
+    icon_url: 'http://example.com/beta.png',
   },
 ];
 
 const makeTvgsById = () => ({
   'tvg-1': {
     id: 'tvg-1',
-    name: 'ESPN',
-    tvg_id: 'espn.us',
+    name: 'Alpha Sports',
+    tvg_id: 'alpha.us',
     epg_source: 10,
-    icon_url: 'http://example.com/espn.png',
+    icon_url: 'http://example.com/alpha.png',
   },
   'tvg-2': {
     id: 'tvg-2',
-    name: 'CNN',
-    tvg_id: 'cnn.us',
+    name: 'Beta News',
+    tvg_id: 'beta.us',
     epg_source: 11,
-    icon_url: 'http://example.com/cnn.png',
+    icon_url: 'http://example.com/beta.png',
   },
 });
 
 const makeLogos = () => ({
   42: {
     id: 42,
-    name: 'ESPN Logo',
-    url: 'http://example.com/espn.png',
-    cache_url: '/cache/espn.png',
+    name: 'Alpha Sports Logo',
+    url: 'http://example.com/alpha.png',
+    cache_url: '/cache/alpha.png',
   },
   43: {
     id: 43,
-    name: 'CNN Logo',
-    url: 'http://example.com/cnn.png',
-    cache_url: '/cache/cnn.png',
+    name: 'Beta News Logo',
+    url: 'http://example.com/beta.png',
+    cache_url: '/cache/beta.png',
   },
 });
 
 const makeChannelLogos = () => ({
-  42: { id: 42, name: 'ESPN Logo', cache_url: '/cache/espn.png' },
-  43: { id: 43, name: 'CNN Logo', cache_url: '/cache/cnn.png' },
+  42: { id: 42, name: 'Alpha Sports Logo', cache_url: '/cache/alpha.png' },
+  43: { id: 43, name: 'Beta News Logo', cache_url: '/cache/beta.png' },
 });
 
 /** Wire up all store and hook mocks with sensible defaults */
@@ -816,7 +816,7 @@ describe('ChannelForm', () => {
       fireEvent.click(screen.getByText('Use EPG Name'));
 
       await waitFor(() => {
-        expect(formMethods.setValue).toHaveBeenCalledWith('name', 'ESPN');
+        expect(formMethods.setValue).toHaveBeenCalledWith('name', 'Alpha Sports');
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ color: 'green' })
         );
@@ -850,7 +850,7 @@ describe('ChannelForm', () => {
       fireEvent.click(screen.getByText('Use EPG TVG-ID'));
 
       await waitFor(() => {
-        expect(formMethods.setValue).toHaveBeenCalledWith('tvg_id', 'espn.us');
+        expect(formMethods.setValue).toHaveBeenCalledWith('tvg_id', 'alpha.us');
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ color: 'green' })
         );
@@ -899,7 +899,7 @@ describe('ChannelForm', () => {
           watchValues: { epg_data_id: 'tvg-2' },
         },
       });
-      // tvg-2 has icon_url 'http://example.com/cnn.png' — but make allLogos not contain it
+      // tvg-2 has icon_url 'http://example.com/beta.png', but make allLogos not contain it
       vi.mocked(useLogosStore).mockImplementation(
         (sel) => sel({ logos: {} }) // empty logos so no match
       );
@@ -1128,8 +1128,8 @@ describe('ChannelForm', () => {
       setupMocks();
       render(<ChannelForm {...defaultProps()} />);
       // The FixedSizeList mock renders all items; both logo names should appear
-      expect(screen.getByText('ESPN Logo')).toBeInTheDocument();
-      expect(screen.getByText('CNN Logo')).toBeInTheDocument();
+      expect(screen.getByText('Alpha Sports Logo')).toBeInTheDocument();
+      expect(screen.getByText('Beta News Logo')).toBeInTheDocument();
     });
   });
 
@@ -1157,7 +1157,7 @@ describe('ChannelForm', () => {
       setupMocks({ formOverrides: { watchValues: { epg_data_id: 'tvg-1' } } });
       render(<ChannelForm {...defaultProps()} />);
       const epgInput = screen.getByTestId('text-input-epg_data_id');
-      expect(epgInput).toHaveValue('EPG Source 1 - ESPN');
+      expect(epgInput).toHaveValue('EPG Source 1 - Alpha Sports');
     });
   });
 
@@ -1229,30 +1229,30 @@ describe('ChannelForm', () => {
 
   // ── EPG filter search ──────────────────────────────────────────────────────
   describe('EPG filter search', () => {
-    const skyText = 'Sky Sports Ultra HD (SkySportUltraHD.1.uk)';
-    const btText = 'BT Sport 1 (BTSport1.uk)';
+    const alphaText = 'Alpha Sports Ultra HD (AlphaSportUltraHD.1.test)';
+    const betaText = 'Beta Sport 1 (BetaSport1.test)';
 
     const epgTvgs = [
       {
-        id: 'tvg-sky',
-        name: 'Sky Sports Ultra HD',
-        tvg_id: 'SkySportUltraHD.1.uk',
+        id: 'tvg-alpha',
+        name: 'Alpha Sports Ultra HD',
+        tvg_id: 'AlphaSportUltraHD.1.test',
         epg_source: 10,
         icon_url: '',
       },
       {
-        id: 'tvg-bt',
-        name: 'BT Sport 1',
-        tvg_id: 'BTSport1.uk',
+        id: 'tvg-beta',
+        name: 'Beta Sport 1',
+        tvg_id: 'BetaSport1.test',
         epg_source: 10,
         icon_url: '',
       },
       // Accent in the name, but the id does NOT mirror it ("decale"): an ascii
       // query only matches if the haystack is accent-folded.
       {
-        id: 'tvg-canal',
-        name: 'Canal Décalé',
-        tvg_id: 'CPLUS42.fr',
+        id: 'tvg-accent',
+        name: 'Chaîne Décalé',
+        tvg_id: 'GEN42.fr',
         epg_source: 10,
         icon_url: '',
       },
@@ -1266,7 +1266,7 @@ describe('ChannelForm', () => {
         icon_url: '',
       },
     ];
-    const canalText = 'Canal Décalé (CPLUS42.fr)';
+    const accentText = 'Chaîne Décalé (GEN42.fr)';
     const decaleText = 'Decale Plus (DECP.fr)';
 
     // Render the form, point the store at our two same-source tvgs, and pick the
@@ -1293,86 +1293,86 @@ describe('ChannelForm', () => {
 
     it('matches when space-separated terms each appear across name and id', () => {
       renderAndSelectSource();
-      typeFilter('Sky uk');
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('Alpha test');
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('matches regardless of term order', () => {
       renderAndSelectSource();
-      typeFilter('uk sky');
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('test alpha');
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('still matches a single substring term', () => {
       renderAndSelectSource();
-      typeFilter('sky');
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('alpha');
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('shows every row for the source when the filter is empty', () => {
       renderAndSelectSource();
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.getByText(btText)).toBeInTheDocument();
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.getByText(betaText)).toBeInTheDocument();
     });
 
     it('shows no rows when a term matches nothing', () => {
       renderAndSelectSource();
-      typeFilter('sky zzz');
-      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('alpha zzz');
+      expect(screen.queryByText(alphaText)).not.toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('ignores case, including all-caps', () => {
       renderAndSelectSource();
-      typeFilter('SKY UK');
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('ALPHA TEST');
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('matches when one term hits the name and another hits the id', () => {
       renderAndSelectSource();
-      typeFilter('Sports uk');
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('Sports test');
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('tolerates leading, trailing and repeated whitespace', () => {
       renderAndSelectSource();
-      typeFilter('  sky   uk  ');
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('  alpha   test  ');
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('matches an id fragment that is not in the display name', () => {
       renderAndSelectSource();
-      typeFilter('skysport');
-      expect(screen.getByText(skyText)).toBeInTheDocument();
-      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+      typeFilter('alphasport');
+      expect(screen.getByText(alphaText)).toBeInTheDocument();
+      expect(screen.queryByText(betaText)).not.toBeInTheDocument();
     });
 
     it('matches a name word combined with a channel number', () => {
       renderAndSelectSource();
-      typeFilter('bt 1');
-      expect(screen.getByText(btText)).toBeInTheDocument();
-      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
+      typeFilter('beta 1');
+      expect(screen.getByText(betaText)).toBeInTheDocument();
+      expect(screen.queryByText(alphaText)).not.toBeInTheDocument();
     });
 
     it('folds accents in the data so a plain ascii query matches', () => {
       renderAndSelectSource();
-      typeFilter('canal decale');
-      expect(screen.getByText(canalText)).toBeInTheDocument();
+      typeFilter('chaine decale');
+      expect(screen.getByText(accentText)).toBeInTheDocument();
       expect(screen.queryByText(decaleText)).not.toBeInTheDocument();
-      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
+      expect(screen.queryByText(alphaText)).not.toBeInTheDocument();
     });
 
     it('folds accents in the query so it matches plain ascii data', () => {
       renderAndSelectSource();
       typeFilter('décalé');
       expect(screen.getByText(decaleText)).toBeInTheDocument();
-      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
+      expect(screen.queryByText(alphaText)).not.toBeInTheDocument();
     });
   });
 });

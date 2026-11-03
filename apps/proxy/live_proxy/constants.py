@@ -104,6 +104,8 @@ class ChannelMetadataField:
     SAMPLE_RATE = "sample_rate"
     AUDIO_CHANNELS = "audio_channels"
     AUDIO_BITRATE = "audio_bitrate"
+    AUDIO_LANGUAGE = "audio_language"
+    AUDIO_STREAMS = "audio_streams"
 
     # Stream format info
     STREAM_TYPE = "stream_type"
