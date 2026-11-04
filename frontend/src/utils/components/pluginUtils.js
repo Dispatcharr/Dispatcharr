@@ -110,7 +110,7 @@ export function buildVersionSelectItems(
     `v${v.version}` +
     (v.prerelease ? ' (prerelease)' : '') +
     (v.version === latestVersion ? ' (latest)' : '') +
-    (installedVersion && compareVersions(v.version, installedVersion) === 0
+    (installedVersion && compareVersions(v.version, installedVersion) === 0 && !!v.prerelease === !!installedVersionIsPrerelease
       ? ' (installed)'
       : '');
 
@@ -130,7 +130,7 @@ export function buildVersionSelectItems(
 
   const installedMissing =
     installedVersion &&
-    !versions.some((v) => compareVersions(v.version, installedVersion) === 0);
+    !versions.some((v) => compareVersions(v.version, installedVersion) === 0 && !!v.prerelease === !!installedVersionIsPrerelease);
 
   if (installedMissing) {
     const ghost = {

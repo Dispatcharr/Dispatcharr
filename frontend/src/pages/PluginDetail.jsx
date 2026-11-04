@@ -280,7 +280,8 @@ function PluginDetailForKey({ routeKey: key }) {
     isManaged &&
     !!plugin.version &&
     !!selectedVersion &&
-    compareVersions(selectedVersion, plugin.version) === 0;
+    compareVersions(selectedVersion, plugin.version) === 0 &&
+    !!detail?.manifest?.versions?.find((v) => v.version === selectedVersion)?.prerelease === !!plugin.installed_version_is_prerelease;
   const topControlCount = (isManaged ? 1 : 0) + 1 + (versionActionIsUninstall ? 0 : 1);
   const topControlWidth = topControlsWidth / topControlCount;
   const checkIconOnly = topControlWidth > 0 && topControlWidth < 82;
