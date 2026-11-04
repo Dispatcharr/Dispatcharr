@@ -174,7 +174,7 @@ export const PluginActionStatus = ({ running, lastResult }) => {
   );
 };
 
-const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', error: 'red' };
+const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', partial: 'yellow', error: 'red' };
 
 // Relative for anything recent, absolute HH:mm beyond a day (a bare "3d ago"
 // on a stale row isn't much more useful than the badge already showing it's
@@ -228,6 +228,11 @@ const PluginTaskRunRow = ({ task }) => {
           {task.status === 'error' && task.error && (
             <Text size="xs" c="red" style={{ whiteSpace: 'normal' }}>
               {String(task.error)}
+            </Text>
+          )}
+          {task.status === 'partial' && task.result?.message && (
+            <Text size="xs" c="yellow" style={{ whiteSpace: 'normal' }}>
+              {String(task.result.message)}
             </Text>
           )}
         </>

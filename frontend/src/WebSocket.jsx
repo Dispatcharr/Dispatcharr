@@ -1008,8 +1008,8 @@ export const WebsocketProvider = ({ children }) => {
               notifications.update({
                 id: `plugin-task-${task_id}`,
                 title: plugin,
-                message: taskStatus === 'ok' ? (result?.message || 'Completed') : (error || 'Failed'),
-                color: taskStatus === 'ok' ? 'green' : 'red',
+                message: taskStatus === 'partial' ? (result?.message || 'Completed with warnings') : taskStatus === 'ok' ? (result?.message || 'Completed') : (error || 'Failed'),
+                color: taskStatus === 'partial' ? 'yellow' : taskStatus === 'ok' ? 'green' : 'red',
                 loading: false,
                 autoClose: 5000,
               });

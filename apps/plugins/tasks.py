@@ -31,6 +31,8 @@ def run_plugin_action_task(self, key, action_id, params=None):
     task_id = self.request.id
     try:
         result = PluginManager.get().run_action(key, action_id, params or {}, task_id=task_id)
+        if isinstance(result, dict) and result.get("status") == "error":
+            raise RuntimeError(str(result.get("error") or result.get("message") or "Plugin action failed"))
     except Exception as e:
         send_websocket_update("updates", "update", {
             "type": "plugin_task_complete",
@@ -42,15 +44,16 @@ def run_plugin_action_task(self, key, action_id, params=None):
         })
         record_task_complete(key, task_id, "error", error=str(e))
         raise
+    result_status = "partial" if isinstance(result, dict) and result.get("status") == "partial" else "ok"
     send_websocket_update("updates", "update", {
         "type": "plugin_task_complete",
         "plugin": key,
         "task_id": task_id,
-        "status": "ok",
+        "status": result_status,
         "result": result,
         "updatedAt": int(time.time() * 1000),
     })
-    record_task_complete(key, task_id, "ok", result=result)
+    record_task_complete(key, task_id, result_status, result=result)
     return result
 
 
