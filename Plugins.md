@@ -206,6 +206,8 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 
   For example, a plugin installed at `/data/plugins/example_plugin_1_2_3/` with canonical ID `example_plugin` receives `/data/plugins/_data/example_plugin/`. Writes to other directories, such as `/tmp/output.json`, still require `filesystem_write`.
 
+  Dispatcharr creates the data directory when it builds a runtime or leadership context, not when it discovers or imports the plugin. Do not assume the directory exists at module import time or in `Plugin.__init__()`. The directory survives plugin updates. On uninstall, an empty data directory is removed automatically; if it contains data, the user can keep it for a future reinstall or explicitly delete it.
+
 ---
 
 ## Plugin Interface
@@ -251,6 +253,7 @@ Common field keys:
 - `help_text` / `description` (str, optional): Shown under the control.
 - `placeholder` (str, optional): Placeholder text for inputs.
 - `input_type` (str, optional): For `string` fields, set to `"password"` to mask input.
+- `rows` (positive int, optional): Initial visible height of a `text` field in lines. Defaults to 4.
 - `options` (list, for `select`/`multiselect`): List of `{value, label}`.
 - `section` (str, optional): The `id` of a `section` field this field belongs to. If it names a section that isn't declared, the field renders ungrouped rather than being hidden.
 - `columns` (list, for `table`): See "Table Fields" below.
@@ -413,6 +416,14 @@ Each action is a dict:
 
 Clicking an action calls your plugin’s `run(action, params, context)` and shows a notification with the result or error.
 
+For queued actions, a returned dictionary can report its outcome with `status`:
+
+- `{"status": "ok", "message": "Completed"}` reports success. Normal returns without an error or partial status also report success.
+- `{"status": "error", "message": "Scan failed"}` marks the task as failed. Use `error` or `message` to provide a reason; `error` takes precedence. Raising an exception also fails the task.
+- `{"status": "partial", "message": "Some items could not be scanned"}` records a distinct warning outcome without failing the Celery task. Include a message to explain what needs attention.
+
+These outcomes apply to both awaited manual actions and background plugin actions. A partial result remains available in the returned result for awaited actions and in background task history for asynchronous actions.
+
 ### Long-Running Actions (Async Dispatch)
 
 Manual actions are queued on the `plugins` Celery queue and normally wait for the result. Event hooks are queued and return immediately. Use either of the following when the action itself should return immediately and report its work asynchronously:
@@ -502,6 +513,7 @@ Normal ORM work in `run()` and `stop()` is cleaned up by Dispatcharr. Threads or
 - Update settings: `POST /api/plugins/plugins/<key>/settings/` with `{"settings": {...}}`
 - Run action: `POST /api/plugins/plugins/<key>/run/` with `{"action": "id", "params": {...}}`
 - Enable/disable: `POST /api/plugins/plugins/<key>/enabled/` with `{"enabled": true|false}`
+- Uninstall: `DELETE /api/plugins/plugins/<key>/delete/`. If saved plugin data is nonempty and no choice was supplied, the endpoint returns HTTP 409 with `{"success": false, "data_confirmation_required": true}` without uninstalling. Retry with a JSON body of `{"data_action": "keep"}` to retain the data or `{"data_action": "delete"}` to remove it. Empty data directories are removed automatically.
 
 Notes:
 - When disabled, a plugin cannot run actions; backend returns HTTP 403.
