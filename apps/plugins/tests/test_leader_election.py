@@ -221,6 +221,20 @@ class LeaderElectionTransitionTests(SimpleTestCase):
 
 
 class LeadershipContextTests(SimpleTestCase):
+    def test_live_settings_accessor_reads_current_values_and_closes_connections(self):
+        pm = PluginManager()
+        lp, _instance = _plugin_with_leader_hooks("svc")
+        lp.fields = [{"id": "defaulted", "default": "value"}]
+        accessor = pm._build_leadership_context(lp)["get_settings"]
+        with patch("apps.plugins.loader.PluginConfig.objects.get") as get_config, patch(
+            "apps.plugins.loader.close_old_connections"
+        ) as close:
+            get_config.return_value.settings = {"changed": 1}
+            self.assertEqual(accessor(), {"changed": 1, "defaulted": "value"})
+            get_config.return_value.settings = {"changed": 2}
+            self.assertEqual(accessor()["changed"], 2)
+        self.assertEqual(close.call_count, 2)
+
     def test_context_includes_dispatch_task_and_report_progress(self):
         pm = PluginManager()
         lp, _instance = _plugin_with_leader_hooks("svc")

@@ -89,6 +89,19 @@ class DispatchTaskTests(SimpleTestCase):
 
         mock_apply_async.assert_not_called()
 
+    def test_scheduled_dispatch_requires_leadership_and_records_trigger(self):
+        pm = PluginManager()
+        lp = self._lp()
+        dispatch = pm._build_leadership_context(lp)["dispatch_scheduled_task"]
+        with self.assertRaises(RuntimeError):
+            dispatch("do_work")
+        pm._leadership_state[lp.key] = "leader"
+        with patch("apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=MagicMock(id="scheduled")), patch(
+            "apps.plugins.task_history.record_task_started"
+        ) as record:
+            self.assertEqual(dispatch("do_work"), "scheduled")
+        record.assert_called_once_with("my-plugin", ANY, "do_work", "Do Work", trigger="schedule")
+
     def test_legacy_and_transition_manifests_can_dispatch_without_capability(self):
         pm = PluginManager()
         async_result = MagicMock(id="task-legacy")
@@ -119,7 +132,7 @@ class DispatchTaskTests(SimpleTestCase):
         mock_apply_async.assert_called_once_with(
             args=["my-plugin", "do_work", {"limit": 5}], queue="plugins", task_id=ANY
         )
-        mock_record.assert_called_once_with("my-plugin", ANY, "do_work", "Do Work")
+        mock_record.assert_called_once_with("my-plugin", ANY, "do_work", "Do Work", trigger="action")
 
     def test_raises_value_error_for_unknown_action_id(self):
         pm = PluginManager()

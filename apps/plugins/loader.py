@@ -1370,12 +1370,14 @@ class PluginManager:
             os.makedirs(lp.data_dir, exist_ok=True)
         return {
             "settings": lp.cached_settings,
+            "get_settings": self._make_settings_accessor(lp),
             "data_dir": lp.data_dir,
             "code_dir": lp.path or "",
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id=None),
             "dispatch_task": self._make_task_dispatcher(lp),
+            "dispatch_scheduled_task": self._make_task_dispatcher(lp, trigger="schedule"),
             "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
             "start_service": self._make_service_starter(lp),
         }
@@ -1776,6 +1778,16 @@ class PluginManager:
             "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
         }
 
+    def _make_settings_accessor(self, lp: LoadedPlugin):
+        """Read current settings on demand, including field defaults."""
+        def get_settings():
+            try:
+                cfg = PluginConfig.objects.get(key=lp.key)
+                return self._merge_settings_with_defaults(cfg.settings or {}, lp.fields or [])
+            finally:
+                close_old_connections()
+        return get_settings
+
     def _make_progress_reporter(self, plugin_key: str, task_id: Optional[str]):
         """No-op when task_id is None, so plugins can call it unconditionally.
 
@@ -1814,7 +1826,7 @@ class PluginManager:
             record_task_progress(plugin_key, task_id, percent, message)
         return report_progress
 
-    def _make_task_dispatcher(self, lp: LoadedPlugin):
+    def _make_task_dispatcher(self, lp: LoadedPlugin, *, trigger="action"):
         """Lets an action hand work off to the plugins queue at runtime,
         independent of the manifest 'async' flag.
 
@@ -1829,6 +1841,10 @@ class PluginManager:
         declaring background_tasks (directly, or via any async action) at all.
         """
         def dispatch_task(action_id, params=None):
+            if trigger == "schedule":
+                with self._leadership_lock:
+                    if self._leadership_state.get(lp.key) != "leader":
+                        raise RuntimeError(f"Plugin '{lp.key}' no longer holds leadership")
             if (
                 manifest_version_enforces_sandbox(lp.manifest_schema_version)
                 and "background_tasks" not in (lp.capabilities or [])
@@ -1849,7 +1865,7 @@ class PluginManager:
                 )
             from .tasks import dispatch_plugin_action_task
             async_result = dispatch_plugin_action_task(
-                lp.key, action_id, params or {}, action_def.get("label", action_id)
+                lp.key, action_id, params or {}, action_def.get("label", action_id), trigger=trigger
             )
             return async_result.id
         return dispatch_task

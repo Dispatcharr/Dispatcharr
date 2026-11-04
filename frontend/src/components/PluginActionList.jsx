@@ -6,6 +6,7 @@ import {
   Group,
   Modal,
   Progress,
+  Select,
   Stack,
   Text,
   TextInput,
@@ -220,6 +221,7 @@ const PluginTaskRunRow = ({ task }) => {
             </Badge>
           </Group>
           <PluginTaskTimestamp task={task} />
+          <Text size="xs" c="dimmed">Trigger: {task.trigger || 'unknown'}</Text>
           {task.message && (
             <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
               {task.message}
@@ -346,10 +348,30 @@ const PluginTaskGroupRow = ({ group }) => {
 };
 
 export const PluginTaskList = ({ tasks }) => {
-  const groups = useMemo(() => groupPluginTasks(tasks), [tasks]);
-  if (groups.length === 0) return null;
+  const [trigger, setTrigger] = useState('all');
+  const groups = useMemo(() => groupPluginTasks(
+    Object.fromEntries(Object.entries(tasks || {}).filter(([, task]) =>
+      trigger === 'all' || (task?.trigger || 'unknown') === trigger
+    ))
+  ), [tasks, trigger]);
+  if (!Object.keys(tasks || {}).length) return null;
   return (
     <Stack gap="xs">
+      <Select
+        aria-label="Filter task history by trigger"
+        size="xs"
+        value={trigger}
+        onChange={(value) => setTrigger(value || 'all')}
+        data={[
+          { value: 'all', label: 'All triggers' },
+          { value: 'manual', label: 'Manual' },
+          { value: 'schedule', label: 'Scheduled' },
+          { value: 'action', label: 'Action' },
+          { value: 'event', label: 'Event' },
+          { value: 'unknown', label: 'Unknown' },
+        ]}
+      />
+      {groups.length === 0 && <Text size="xs" c="dimmed">No runs match this trigger.</Text>}
       {groups.map((group) => (
         <PluginTaskGroupRow key={group.groupKey} group={group} />
       ))}

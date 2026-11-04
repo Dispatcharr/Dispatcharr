@@ -92,12 +92,18 @@ export const usePluginStore = create((set, get) => ({
       const next = { ...state.pluginTasks };
       for (const t of tasks) {
         if (!t || typeof t.task_id !== 'string' || !t.task_id.trim() || !(t.action_id || t.action_label)) continue;
-        if (next[t.task_id]) continue;
+        if (next[t.task_id]) {
+          if (!next[t.task_id].trigger && t.trigger) {
+            next[t.task_id] = { ...next[t.task_id], trigger: t.trigger };
+          }
+          continue;
+        }
         next[t.task_id] = {
           pluginKey,
           plugin: pluginName,
           actionId: t.action_id,
           actionLabel: t.action_label || t.action_id,
+          trigger: t.trigger || 'unknown',
           status: t.status,
           percent: t.percent,
           message: t.message,
