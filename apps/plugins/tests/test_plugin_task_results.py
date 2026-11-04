@@ -23,8 +23,11 @@ class PluginTaskResultTests(SimpleTestCase):
     @patch("core.utils.send_websocket_update")
     @patch("apps.plugins.loader.PluginManager.get")
     def test_returned_error_fails_task(self, get_manager, send, record):
-        get_manager.return_value.run_action.return_value = {"status": "error", "message": "failed"}
+        result = {"status": "error", "message": "failed", "failed_items": ["one"]}
+        get_manager.return_value.run_action.return_value = result
         with self.assertRaisesRegex(RuntimeError, "failed"):
             run_plugin_action_task.run("example", "run")
         self.assertEqual(send.call_args.args[2]["status"], "error")
+        self.assertEqual(send.call_args.args[2]["result"], result)
         self.assertEqual(record.call_args.args[2], "error")
+        self.assertEqual(record.call_args.kwargs["result"], result)

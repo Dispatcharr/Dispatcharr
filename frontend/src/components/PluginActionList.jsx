@@ -235,6 +235,11 @@ const PluginTaskRunRow = ({ task }) => {
               {String(task.result.message)}
             </Text>
           )}
+          {(task.status === 'error' || task.status === 'partial') && task.result && (
+            <Text component="pre" size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+              {JSON.stringify(task.result, null, 2).slice(0, 4000)}
+            </Text>
+          )}
         </>
       }
       footer={

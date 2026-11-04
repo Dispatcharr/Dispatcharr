@@ -29,6 +29,7 @@ def run_plugin_action_task(self, key, action_id, params=None):
     from core.utils import send_websocket_update
 
     task_id = self.request.id
+    result = None
     try:
         result = PluginManager.get().run_action(key, action_id, params or {}, task_id=task_id)
         if isinstance(result, dict) and result.get("status") == "error":
@@ -40,9 +41,10 @@ def run_plugin_action_task(self, key, action_id, params=None):
             "task_id": task_id,
             "status": "error",
             "error": str(e),
+            "result": result,
             "updatedAt": int(time.time() * 1000),
         })
-        record_task_complete(key, task_id, "error", error=str(e))
+        record_task_complete(key, task_id, "error", result=result, error=str(e))
         raise
     result_status = "partial" if isinstance(result, dict) and result.get("status") == "partial" else "ok"
     send_websocket_update("updates", "update", {
