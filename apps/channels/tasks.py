@@ -19,6 +19,7 @@ from celery import shared_task
 from celery.signals import worker_shutting_down
 from django.utils.text import slugify
 
+from apps.channels.dvr_remux import remux_hls_to_mkv
 from apps.channels.epg_matching import (
     apply_matched_epg_to_channels,
     build_epg_matching_catalog,
@@ -1660,8 +1661,26 @@ def _dvr_build_ffmpeg_cmd(
     ]
 
 
-# Shared ceiling for HLS finalize
-_DVR_HLS_REMUX_TIMEOUT_SECONDS = 30 * 60
+def _dvr_log_remux_success(log_label, output_path, outcome):
+    """Log one finalize success line, naming copy, section repair, or MP4.
+
+    ``outcome`` is ``(success, via_mp4)``. ``repaired`` is set when the MKV
+    was rebuilt per section. A plain tuple (tests, older callers) is a copy.
+    """
+    _success, via_mp4 = outcome
+    repaired = bool(getattr(outcome, "repaired", False))
+    name = os.path.basename(output_path) or output_path
+    try:
+        detail = f"{name} ({os.path.getsize(output_path):,} bytes)"
+    except OSError:
+        detail = name
+    if via_mp4:
+        kind = "HLS\u2192MP4\u2192MKV fallback"
+    elif repaired:
+        kind = "HLS\u2192MKV section repair"
+    else:
+        kind = "HLS\u2192MKV"
+    logger.info(f"{log_label}: {kind} remux succeeded \u2014 {detail}")
 
 
 def _dvr_recording_end_payload(
@@ -1783,204 +1802,6 @@ def _dvr_emit_recording_end(
         )
     except Exception as e:
         logger.error(f"Could not log recording end event: {e}")
-
-
-def _dvr_build_hls_playlist_remux_cmd(m3u8_path, output_path, extra_args=None):
-    """Build an FFmpeg remux command that reads an HLS playlist as a single input."""
-    cmd = [
-        "ffmpeg", "-y",
-        "-fflags", "+genpts+discardcorrupt",
-        "-err_detect", "ignore_err",
-        "-i", m3u8_path,
-        "-map", "0:v?",
-        "-map", "0:a?",
-        "-c", "copy",
-        "-avoid_negative_ts", "make_zero",
-    ]
-    if extra_args:
-        cmd.extend(extra_args)
-    cmd.append(output_path)
-    return cmd
-
-
-def _dvr_ensure_hls_endlist(m3u8_path):
-    """Append ``#EXT-X-ENDLIST`` if missing so ffmpeg treats the playlist as VOD.
-
-    Capture uses ``omit_endlist`` so clients can watch live. A clean SIGINT
-    usually writes the tag; a crash or kill often does not. Without it the
-    HLS demuxer waits for new segments and remux never finishes.
-    """
-    try:
-        with open(m3u8_path) as _f:
-            text = _f.read()
-        if "#EXT-X-ENDLIST" in text:
-            return True
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += "#EXT-X-ENDLIST\n"
-        _tmp = f"{m3u8_path}.endlist.tmp"
-        with open(_tmp, "w") as _f:
-            _f.write(text)
-        os.replace(_tmp, m3u8_path)
-        return True
-    except Exception as _ee:
-        logger.warning(f"DVR: failed to ensure EXT-X-ENDLIST on {m3u8_path}: {_ee}")
-        try:
-            os.remove(f"{m3u8_path}.endlist.tmp")
-        except OSError:
-            pass
-        return False
-
-
-def _dvr_remove_empty_or_partial_output(path):
-    """Remove a remux output file if present so a later attempt can rewrite it."""
-    try:
-        if path and os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
-
-
-def _dvr_output_nonempty(path):
-    return bool(path) and os.path.exists(path) and os.path.getsize(path) > 0
-
-
-def _dvr_run_ffmpeg_with_budget(cmd, log_label, step_label, deadline):
-    """Run ffmpeg under a shared remux deadline. Returns a CompletedProcess or None."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        logger.error(
-            f"{log_label}: {step_label} skipped, remux budget exhausted "
-            f"({_DVR_HLS_REMUX_TIMEOUT_SECONDS}s)"
-        )
-        return None
-    try:
-        return subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=remaining,
-        )
-    except subprocess.TimeoutExpired:
-        logger.error(
-            f"{log_label}: {step_label} timed out after "
-            f"{_DVR_HLS_REMUX_TIMEOUT_SECONDS}s remux budget"
-        )
-        return None
-
-
-def _dvr_remux_hls_to_mkv(m3u8_path, output_path, log_label, recording_id):
-    """Remux ``index.m3u8`` to MKV. Tries direct remux, then MP4 intermediate.
-
-    Returns ``(success, via_mp4_fallback)``.
-    """
-    if not m3u8_path or not os.path.exists(m3u8_path):
-        logger.warning(f"{log_label}: no HLS playlist to remux")
-        return False, False
-    if not _dvr_ensure_hls_endlist(m3u8_path):
-        logger.error(
-            f"{log_label}: playlist is missing EXT-X-ENDLIST and could not be updated"
-        )
-        return False, False
-
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-
-    deadline = time.monotonic() + _DVR_HLS_REMUX_TIMEOUT_SECONDS
-
-    playlist_result = _dvr_run_ffmpeg_with_budget(
-        _dvr_build_hls_playlist_remux_cmd(m3u8_path, output_path),
-        log_label,
-        "HLS\u2192MKV playlist remux",
-        deadline,
-    )
-    if (
-        playlist_result is not None
-        and playlist_result.returncode == 0
-        and _dvr_output_nonempty(output_path)
-    ):
-        return True, False
-
-    _rc = getattr(playlist_result, "returncode", "timeout")
-    _stderr = (getattr(playlist_result, "stderr", None) or "")[:300]
-    logger.warning(
-        f"{log_label}: HLS\u2192MKV playlist remux failed "
-        f"(rc={_rc}); attempting MP4-intermediate "
-        f"fallback. stderr: {_stderr}"
-    )
-    _dvr_remove_empty_or_partial_output(output_path)
-
-    hls_dir = os.path.dirname(m3u8_path)
-    intermediate_mp4 = os.path.join(
-        hls_dir, f".dvr_{recording_id}_intermediate.mp4"
-    )
-    try:
-        if os.path.exists(intermediate_mp4):
-            os.remove(intermediate_mp4)
-    except OSError:
-        pass
-
-    try:
-        mp4_result = _dvr_run_ffmpeg_with_budget(
-            _dvr_build_hls_playlist_remux_cmd(
-                m3u8_path,
-                intermediate_mp4,
-                extra_args=["-bsf:a", "aac_adtstoasc"],
-            ),
-            log_label,
-            "HLS\u2192MP4 remux fallback",
-            deadline,
-        )
-        if not (
-            mp4_result is not None
-            and mp4_result.returncode == 0
-            and _dvr_output_nonempty(intermediate_mp4)
-        ):
-            _rc = getattr(mp4_result, "returncode", "timeout")
-            _stderr = (getattr(mp4_result, "stderr", None) or "")[:300]
-            logger.error(
-                f"{log_label}: HLS\u2192MP4 remux fallback failed "
-                f"(rc={_rc}). stderr: {_stderr}"
-            )
-            return False, False
-
-        mkv_result = _dvr_run_ffmpeg_with_budget(
-            [
-                "ffmpeg", "-y",
-                "-err_detect", "ignore_err",
-                "-i", intermediate_mp4,
-                "-map", "0:v?",
-                "-map", "0:a?",
-                "-c", "copy",
-                output_path,
-            ],
-            log_label,
-            "MP4\u2192MKV remux step",
-            deadline,
-        )
-        if (
-            mkv_result is not None
-            and mkv_result.returncode == 0
-            and _dvr_output_nonempty(output_path)
-        ):
-            return True, True
-
-        _rc = getattr(mkv_result, "returncode", "timeout")
-        _stderr = (getattr(mkv_result, "stderr", None) or "")[:300]
-        logger.error(
-            f"{log_label}: MP4\u2192MKV remux step failed "
-            f"(rc={_rc}). stderr: {_stderr}"
-        )
-        _dvr_remove_empty_or_partial_output(output_path)
-        return False, False
-    finally:
-        try:
-            if os.path.exists(intermediate_mp4):
-                os.remove(intermediate_mp4)
-        except OSError:
-            pass
 
 
 def _dvr_drain_ffmpeg_stderr(proc, rec_id, tail):
@@ -2881,22 +2702,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     if hls_m3u8 and os.path.exists(hls_m3u8):
         try:
-            remux_success, _via_mp4 = _dvr_remux_hls_to_mkv(
+            _remux = remux_hls_to_mkv(
                 hls_m3u8, final_path, _log_label, recording_id
             )
+            remux_success = bool(_remux[0])
             if remux_success:
-                if _via_mp4:
-                    logger.info(
-                        f"{_log_label}: HLS\u2192MP4\u2192MKV fallback remux succeeded "
-                        f"\u2014 {os.path.basename(final_path)} "
-                        f"({os.path.getsize(final_path):,} bytes)"
-                    )
-                else:
-                    logger.info(
-                        f"{_log_label}: HLS\u2192MKV playlist remux succeeded "
-                        f"\u2014 {os.path.basename(final_path)} "
-                        f"({os.path.getsize(final_path):,} bytes)"
-                    )
+                _dvr_log_remux_success(_log_label, final_path, _remux)
                 # Update DB so *new* client requests go to /file/ (the final MKV)
                 # rather than the soon-to-be-removed /hls/ endpoint.  Important:
                 # we do NOT clear _hls_dir here, active viewers still in the
@@ -3269,9 +3080,10 @@ def recover_recordings_on_startup():
                             f"{_log_label} expired during downtime, remuxing HLS \u2192 MKV"
                         )
                         try:
-                            _ok, _via_mp4 = _dvr_remux_hls_to_mkv(
+                            _remux = remux_hls_to_mkv(
                                 _m3u8, mkv_path, _log_label, rec.id
                             )
+                            _ok = bool(_remux[0])
                             cp["status"] = "interrupted"
                             cp["interrupted_reason"] = "server_restarted_after_end"
                             cp["remux_success"] = _ok
@@ -3285,10 +3097,7 @@ def recover_recordings_on_startup():
                                     f"/api/channels/recordings/{rec.id}/file/"
                                 )
                                 cp["output_file_url"] = cp["file_url"]
-                                _how = "MP4 fallback" if _via_mp4 else "playlist"
-                                logger.info(
-                                    f"{_log_label}: HLS\u2192MKV remux succeeded ({_how})"
-                                )
+                                _dvr_log_remux_success(_log_label, mkv_path, _remux)
                             else:
                                 logger.warning(
                                     f"{_log_label}: remux failed, keeping HLS dir"

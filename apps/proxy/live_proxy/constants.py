@@ -3,6 +3,9 @@ Constants used throughout the TS Proxy application.
 Centralizing constants makes it easier to maintain and modify them.
 """
 
+# Re-exported: live proxy modules import the packet size from here.
+from apps.proxy.ts_psi import TS_PACKET_SIZE  # noqa: F401
+
 # Redis related constants
 REDIS_KEY_PREFIX = "live"
 REDIS_TTL_DEFAULT = 3600  # 1 hour
@@ -124,8 +127,6 @@ class ChannelMetadataField:
     CHUNKS_SENT = "chunks_sent"
     STATS_UPDATED_AT = "stats_updated_at"
 
-# TS packet constants
-TS_PACKET_SIZE = 188
 TS_SYNC_BYTE = 0x47
 NULL_PID_HIGH = 0x1F
 NULL_PID_LOW = 0xFF

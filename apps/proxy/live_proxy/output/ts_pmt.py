@@ -5,8 +5,12 @@ and reports the byte offset of the first packet that changes the elementary
 stream layout, so a long-lived profile FFmpeg can be restarted at that boundary.
 """
 
-from ..constants import TS_PACKET_SIZE
-from ..ts_psi import PsiSectionAssembler, parse_pat, parse_pmt_section
+from apps.proxy.ts_psi import (
+    TS_PACKET_SIZE,
+    PsiSectionAssembler,
+    parse_pat,
+    parse_pmt_section,
+)
 
 _SYNC_BYTE = 0x47
 _PAT_PID = 0
