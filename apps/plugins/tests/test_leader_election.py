@@ -140,6 +140,20 @@ class LeaderElectionRedisPrimitiveTests(SimpleTestCase):
 
 
 class LeaderElectionTransitionTests(SimpleTestCase):
+    def test_unexpected_service_exit_releases_lease_and_delays_local_retry(self):
+        pm = PluginManager()
+        lp, _instance = _plugin_with_leader_hooks("svc")
+        pm._registry = {"svc": lp}
+        pm._leadership_state["svc"] = "leader"
+        pm._service_runner.state = MagicMock(return_value="failed")
+        pm._release_plugin_leadership = MagicMock()
+        pm.extend_leadership = MagicMock()
+        pm._leadership_tick()
+        pm._release_plugin_leadership.assert_called_once_with("svc", lp)
+        pm.extend_leadership.assert_not_called()
+        self.assertEqual(pm._service_failures["svc"], 1)
+        self.assertGreater(pm._service_retry_at["svc"], 0)
+
     def test_transition_to_leader_calls_hook_once_and_sets_state(self):
         pm = PluginManager()
         lp, instance = _plugin_with_leader_hooks()

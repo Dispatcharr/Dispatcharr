@@ -191,6 +191,8 @@ class PluginManager:
         self._leadership_lock = threading.RLock()
         self._leadership_thread_started = False
         self._service_runner = PluginServiceRunner(logger)
+        self._service_failures = {}
+        self._service_retry_at = {}
         # Keys already warned about missing the persistent_service capability,
         # so _leadership_tick logs once per plugin instead of every tick.
         self._leadership_capability_warned: set = set()
@@ -1513,9 +1515,26 @@ class PluginManager:
                 with self._leadership_lock:
                     currently_leader = self._leadership_state.get(key) == "leader"
                 if currently_leader:
+                    service_state = self._service_runner.state(key)
+                    if service_state:
+                        from .service_health import publish_service_health
+                        failures = self._service_failures.get(key, 0) + (service_state in ("failed", "exited"))
+                        publish_service_health(self._leader_redis_client(), key, self.worker_id, service_state,
+                                               failures, self.LEADER_LEASE_TTL * 2)
+                    if service_state in ("failed", "exited"):
+                        failures = self._service_failures.get(key, 0) + 1
+                        self._service_failures[key] = failures
+                        self._service_retry_at[key] = time.monotonic() + min(300, 10 * 2 ** min(failures - 1, 5))
+                        logger.warning("Plugin '%s' service %s; releasing leadership (failure %s)", key, service_state, failures)
+                        self._release_plugin_leadership(key, lp)
+                        continue
                     if not self.extend_leadership(key):
                         self._transition_to_follower(key, lp)
                 else:
+                    if time.monotonic() < self._service_retry_at.get(key, 0):
+                        continue
+                    if self._service_runner.state(key) == "stopping":
+                        continue
                     if self.try_acquire_leadership(key):
                         self._transition_to_leader(key, lp)
             except Exception:

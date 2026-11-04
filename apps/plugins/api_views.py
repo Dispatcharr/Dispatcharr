@@ -932,7 +932,19 @@ class PluginTaskHistoryAPIView(PluginAuthMixin, APIView):
     def get(self, request, key):
         from .task_history import get_task_history
         key = normalize_plugin_key(key)
-        return Response({"tasks": get_task_history(key)})
+        trigger = request.query_params.get("trigger")
+        if trigger and trigger not in {"manual", "action", "schedule", "event", "unknown"}:
+            return Response({"error": "Invalid task trigger"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"tasks": get_task_history(key, trigger=trigger)})
+
+
+class PluginServiceHealthAPIView(PluginAuthMixin, APIView):
+    def get_permissions(self):
+        return [IsAdmin()]
+
+    def get(self, request, key):
+        from .service_health import get_service_health
+        return Response(get_service_health(normalize_plugin_key(key)))
 
 
 class PluginEnabledAPIView(PluginAuthMixin, APIView):
