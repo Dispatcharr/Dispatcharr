@@ -1,12 +1,12 @@
 """Shared MPEG-TS Program Specific Information (PSI) helpers.
 
 PAT, PMT, and PSI section reassembly as defined in ISO/IEC 13818-1. Used by
-the HLS segmenter and the output-profile PMT layout watcher. Stdlib only
-(plus the live_proxy TS packet size constant), so it stays unit-testable
-without Django or Redis.
+the HLS segmenter, the output-profile PMT layout watcher, and DVR remux.
+Stdlib only, so it stays unit-testable without Django or Redis.
 """
 
-from .constants import TS_PACKET_SIZE
+# ISO/IEC 13818-1 transport packet size.
+TS_PACKET_SIZE = 188
 
 # ISO 13818-1 / ATSC stream_type values
 VIDEO_STREAM_TYPES = {
