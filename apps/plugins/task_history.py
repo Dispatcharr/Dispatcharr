@@ -119,6 +119,8 @@ def get_task_history(plugin_key: str) -> list:
                 record = json.loads(raw)
             except (TypeError, ValueError):
                 continue
+            if not isinstance(record, dict) or not (record.get("action_id") or record.get("action_label")):
+                continue
             record["task_id"] = task_id
             history.append(record)
         return history

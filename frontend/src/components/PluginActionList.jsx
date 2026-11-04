@@ -258,6 +258,7 @@ const PluginTaskRunRow = ({ task }) => {
 const groupPluginTasks = (tasks) => {
   const groups = {};
   for (const [taskId, task] of Object.entries(tasks || {})) {
+    if (!task || !(task.actionId || task.actionLabel)) continue;
     const groupKey = task.actionId ?? task.actionLabel;
     if (!groups[groupKey]) {
       groups[groupKey] = { groupKey, actionLabel: task.actionLabel, runs: [] };
