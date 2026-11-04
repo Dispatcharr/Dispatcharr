@@ -391,7 +391,13 @@ class Plugin:
 
 **Manifest version 2 and later require the capability.** Unlike `background_tasks`, nothing about `on_leader_acquired` can be inferred from the rest of the manifest, so version `2` plugins without `persistent_service` are skipped by leader election: `on_leader_acquired` is never called. Versions `0` and `1` remain non-enforcing during the transition period. Declaring the capability shows users an itemized capability prompt the first time they enable your plugin, the same as `background_tasks` (see `manifest_version` and `capabilities`, above).
 
-Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read), `code_dir`, `data_dir`, and `logger`, with no `actions`.
+Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here includes `settings` (a snapshot from discovery time), `code_dir`, `data_dir`, `logger`, `actions`, and dispatch helpers. Call `context["get_settings"]()` to read current settings and field defaults on demand. This reads the database and can raise if the plugin has been deleted.
+
+Leader services may call `context["dispatch_scheduled_task"](action_id, params)` to queue one of their own declared actions and label the run as scheduled in task history. It requires the same `background_tasks` capability as `dispatch_task` and checks local leadership at dispatch. This check is not a fencing guarantee. Scheduled runs may overlap, and already dispatched work continues after leadership changes. A queued action checks whether the plugin is still enabled when it starts; disabling a plugin does not forcibly stop an already running action.
+
+If a service exits unexpectedly or raises, the leader loop reports its state and releases leadership. The local process waits before attempting to reacquire leadership, with backoff on repeated failures. Another worker may take over sooner. A service that ignores its stop event can outlive the stop timeout, so plugins must make external effects safe against overlap; the lease does not provide fencing.
+
+The admin-only `GET /api/plugins/plugins/<key>/service-health/` endpoint reports the latest lease-owned service state and failure count when available. Records expire, and `unknown` means no current health information is available, not necessarily that the service is stopped. If the Redis client is unavailable, the existing fallback can elect a leader in every process; a Redis command failure instead causes acquisition or renewal to fail.
 
 Use `context["start_service"](target, name=None)` to start exactly one persistent service. Dispatcharr owns its native OS thread and gives `target` one argument, a `threading.Event` named `stop_event`. Check or wait on that event frequently and release sockets and external resources promptly when it is set. Dispatcharr signals it and waits briefly for the thread whenever leadership is lost, the plugin is disabled or reloaded, or the worker shuts down.
 
@@ -419,10 +425,12 @@ Clicking an action calls your plugin’s `run(action, params, context)` and show
 For queued actions, a returned dictionary can report its outcome with `status`:
 
 - `{"status": "ok", "message": "Completed"}` reports success. Normal returns without an error or partial status also report success.
-- `{"status": "error", "message": "Scan failed"}` marks the task as failed. Use `error` or `message` to provide a reason; `error` takes precedence. Raising an exception also fails the task.
+- `{"status": "error", "message": "Scan failed"}` marks the task as failed. Use `error` or `message` to provide a reason; `error` takes precedence. The returned dictionary is retained in task history. Raising an exception also fails the task.
 - `{"status": "partial", "message": "Some items could not be scanned"}` records a distinct warning outcome without failing the Celery task. Include a message to explain what needs attention.
 
 These outcomes apply to both awaited manual actions and background plugin actions. A partial result remains available in the returned result for awaited actions and in background task history for asynchronous actions.
+
+Background history records the trigger as `manual`, `action`, `schedule`, or `event`; older records can be `unknown`. Set `PLUGIN_TASK_HISTORY_MAX_ENTRIES` to adjust retention per plugin (default 50, maximum 5000) and `PLUGIN_TASK_HISTORY_TTL_SECONDS` to adjust expiry (default seven days, maximum 90 days). Values are clamped to at least 1. The task history endpoint accepts an optional `trigger` query parameter with one of these values.
 
 ### Long-Running Actions (Async Dispatch)
 
