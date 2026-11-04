@@ -53,6 +53,7 @@ class PluginFieldSerializer(serializers.Serializer):
     columns = PluginTableColumnSerializer(many=True, required=False)
     accept = serializers.CharField(required=False, allow_blank=True)
     max_size = serializers.IntegerField(required=False)
+    rows = serializers.IntegerField(required=False, min_value=1)
 
 
 class PluginCapabilitySerializer(serializers.Serializer):

@@ -94,6 +94,7 @@ export const Field = ({ field, value, onChange, pluginKey }) => {
     case 'text':
       return (
         <Textarea
+          rows={field.rows ?? 4}
           value={value ?? field.default ?? ''}
           onChange={(e) => onChange(field.id, e.currentTarget.value)}
           placeholder={field.placeholder}

@@ -34,7 +34,7 @@ class PluginLoaderStorageTests(TestCase):
             )
 
             self.assertIsNotNone(lp)
-            self.assertTrue(os.path.isdir(lp.data_dir))
+            self.assertFalse(os.path.exists(lp.data_dir))
             with running_as_plugin("example"):
                 lp.instance.run("run", {}, pm._build_context(lp, cfg))
             self.assertEqual(Path(lp.data_dir, "cache.json").read_text(encoding="utf-8"), "{}")
