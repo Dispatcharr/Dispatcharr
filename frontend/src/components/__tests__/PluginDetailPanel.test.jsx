@@ -336,7 +336,7 @@ describe('PluginDetailPanel', () => {
 
     it('renders license metadata as a link to spdx.org', () => {
       render(<PluginDetailPanel {...defaultProps()} />);
-      const link = screen.getByRole('link', { name: 'MIT' });
+      const link = screen.getByRole('link', { name: 'License: MIT' });
       expect(link.href).toContain('spdx.org');
       expect(link.href).toContain('MIT');
     });

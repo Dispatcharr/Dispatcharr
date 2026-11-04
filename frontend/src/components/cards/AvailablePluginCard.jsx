@@ -467,20 +467,24 @@ const AvailablePluginCard = ({
             wrap="nowrap"
           >
             {plugin.last_updated && (
+              <Tooltip label={`Updated: ${new Date(plugin.last_updated).toLocaleDateString()}`}>
               <Group
                 className="available-plugin-card__updated"
                 gap={4}
                 align="center"
                 wrap="nowrap"
+                tabIndex={0}
+                aria-label={`Updated: ${new Date(plugin.last_updated).toLocaleDateString()}`}
               >
                 <CalendarClock
                   size={12}
                   color="var(--mantine-color-dimmed)"
                 />
-                <Text size="xs" c="dimmed">
+                <Text className="available-plugin-card__updated-text" size="xs" c="dimmed">
                   {new Date(plugin.last_updated).toLocaleDateString()}
                 </Text>
               </Group>
+              </Tooltip>
             )}
             {hasDownloadCount && plugin.last_updated && (
               <Text

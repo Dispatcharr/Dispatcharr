@@ -8,10 +8,9 @@
 }
 
 @container (max-width: 24rem) {
-  .available-plugin-card__updated,
-  .available-plugin-card__action-separator {
-    display: none;
-  }
+  .available-plugin-card__updated-text,
+  .available-plugin-card__license-text,
+  .plugin-repository__text { display: none; }
 }
 
 @container (max-width: 24rem) {
@@ -19,7 +18,6 @@
     flex: 1 1 auto;
   }
 
-  .available-plugin-card__license,
   .available-plugin-card__license-separator {
     display: none;
   }

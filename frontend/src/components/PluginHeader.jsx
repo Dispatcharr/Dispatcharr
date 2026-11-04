@@ -24,7 +24,7 @@ export const PluginMetadata = ({
       className={className}
       gap={6}
       align="center"
-      wrap="nowrap"
+      wrap="wrap"
       justify={justify}
     >
       {plugin.author && (
@@ -49,16 +49,19 @@ export const PluginMetadata = ({
       )}
       {plugin.author && license && <Text className={separatorClassName} size="xs" c="dimmed">•</Text>}
       {license && (
+        <Tooltip label={`License: ${license}`}>
         <a
           className={licenseClassName}
           href={`https://spdx.org/licenses/${encodeURIComponent(license)}.html`}
           target="_blank"
           rel="noopener noreferrer"
+          aria-label={`License: ${license}`}
           style={{ color: 'var(--mantine-color-dimmed)', display: 'flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
         >
           <Scale size={12} />
-          <Text size="xs" c="dimmed">{license}</Text>
+          <Text className={licenseClassName ? `${licenseClassName}-text` : undefined} size="xs" c="dimmed">{license}</Text>
         </a>
+        </Tooltip>
       )}
       {(plugin.author || license) && sourceRepoName && <Text className={separatorClassName} size="xs" c="dimmed">•</Text>}
       {sourceRepoName && <PluginRepository name={sourceRepoName} />}
@@ -71,10 +74,12 @@ export const PluginMetadata = ({
 export const PluginRepository = ({ name }) => {
   if (!name) return null;
   return (
-    <Group gap={3} align="center" wrap="nowrap">
+    <Tooltip label={`Repository: ${name}`}>
+    <Group gap={3} align="center" wrap="nowrap" className="plugin-repository" tabIndex={0} aria-label={`Repository: ${name}`}>
       <GitBranch size={12} color="var(--mantine-color-dimmed)" />
-      <Text size="xs" c="dimmed">{name}</Text>
+      <Text className="plugin-repository__text" size="xs" c="dimmed">{name}</Text>
     </Group>
+    </Tooltip>
   );
 };
 
@@ -251,6 +256,7 @@ const PluginHeader = ({
   metadataTrailing,
   centered = false,
   hideLinks = false,
+  hideMetadata = false,
 }) => {
   const avatar = (
     <Avatar
@@ -292,7 +298,7 @@ const PluginHeader = ({
           lineClamp={1}
           version={version}
         />
-        <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
+        {!hideMetadata && <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />}
         {!hideLinks && (
           <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} />
         )}

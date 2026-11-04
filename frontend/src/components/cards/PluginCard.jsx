@@ -10,7 +10,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { Ban, Check, ExternalLink, FlaskConical, Pin, PinOff, RefreshCw, Trash2 } from 'lucide-react';
-import PluginHeader from '../PluginHeader.jsx';
+import PluginHeader, { PluginMetadata } from '../PluginHeader.jsx';
 import useAuthStore from '../../store/auth.jsx';
 import { needsCapabilityAck } from '../../store/plugins.jsx';
 
@@ -114,11 +114,12 @@ const PluginCard = ({
       }}
     >
       {/* Header: avatar, name/author, badges, toggle */}
-      <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
         <PluginHeader
           plugin={plugin}
           onClick={openDetail}
           hideLinks
+          hideMetadata
           sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
           metadataTrailing={<InstallStatusIndicator plugin={plugin} />}
         />
@@ -144,6 +145,14 @@ const PluginCard = ({
           />
         </Group>
       </Group>
+      <div style={{ marginBottom: 'var(--mantine-spacing-xs)', minWidth: 0 }}>
+        <PluginMetadata
+          plugin={plugin}
+          onClick={openDetail}
+          sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
+          trailing={<InstallStatusIndicator plugin={plugin} />}
+        />
+      </div>
 
       {/* Description */}
       <div style={{ overflow: 'hidden' }}>
