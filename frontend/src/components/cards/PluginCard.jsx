@@ -5,12 +5,12 @@ import {
   Button,
   Card,
   Group,
-  Switch,
+  SegmentedControl,
   Text,
   Tooltip,
 } from '@mantine/core';
 import { Ban, Check, ExternalLink, FlaskConical, Pin, PinOff, RefreshCw, Trash2 } from 'lucide-react';
-import PluginHeader, { PluginMetadata } from '../PluginHeader.jsx';
+import PluginHeader from '../PluginHeader.jsx';
 import useAuthStore from '../../store/auth.jsx';
 import { needsCapabilityAck } from '../../store/plugins.jsx';
 
@@ -74,8 +74,8 @@ const PluginCard = ({
   const openDetail = () => navigate(`/plugins/${plugin.key}`);
 
   const handleEnableChange = () => {
-    return async (e) => {
-      const next = e.currentTarget.checked;
+    return async (value) => {
+      const next = value === 'on';
       let acknowledgeCapabilities = [];
       if (next && needsCapabilityAck(plugin) && onRequireTrust) {
         const ok = await onRequireTrust(plugin);
@@ -114,44 +114,41 @@ const PluginCard = ({
       }}
     >
       {/* Header: avatar, name/author, badges, toggle */}
-      <Group justify="space-between" align="flex-start" wrap="nowrap">
+      <div style={{ position: 'relative', marginBottom: 'var(--mantine-spacing-xs)' }}>
         <PluginHeader
           plugin={plugin}
           onClick={openDetail}
           hideLinks
-          hideMetadata
+          titleRightPadding={78}
           sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
           metadataTrailing={<InstallStatusIndicator plugin={plugin} />}
         />
-        <Group gap={6} wrap="nowrap" align="center" style={{ flexShrink: 0 }}>
+        <Group gap={4} wrap="nowrap" align="center" style={{ position: 'absolute', top: 0, right: 0, height: 20 }}>
           <Tooltip label={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}>
             <ActionIcon
               variant="subtle"
               color="gray"
-              size="sm"
+              size="xs"
               onClick={() => togglePinnedPlugin(plugin.key)}
               aria-label={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
             >
               {pinned ? <PinOff size={14} /> : <Pin size={14} />}
             </ActionIcon>
           </Tooltip>
-          <Switch
-            checked={!missing && enabled}
+          <SegmentedControl
+            value={!missing && enabled ? 'on' : 'off'}
             onChange={handleEnableChange()}
             size="xs"
-            onLabel="On"
-            offLabel="Off"
+            radius={0}
+            styles={{ root: { height: 20, padding: 1 }, label: { width: 20, height: 18, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 } }}
+            data={[
+              { label: <span style={{ fontSize: 8, lineHeight: 1, position: 'relative', top: -1.5 }}>⭘</span>, value: 'off', 'aria-label': 'Off' },
+              { label: <span style={{ fontSize: 10, lineHeight: 1, position: 'relative', top: -1 }}>⏽</span>, value: 'on', 'aria-label': 'On' },
+            ]}
             disabled={missing}
+            aria-label={`${plugin.name} enabled`}
           />
         </Group>
-      </Group>
-      <div style={{ marginBottom: 'var(--mantine-spacing-xs)', minWidth: 0 }}>
-        <PluginMetadata
-          plugin={plugin}
-          onClick={openDetail}
-          sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
-          trailing={<InstallStatusIndicator plugin={plugin} />}
-        />
       </div>
 
       {/* Description */}

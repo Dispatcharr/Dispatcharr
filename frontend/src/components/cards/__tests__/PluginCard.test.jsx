@@ -28,8 +28,8 @@ vi.mock('@mantine/core', async () => {
     Card: ({ children, ...props }) => <div {...props}>{children}</div>,
     Group: ({ children, ...props }) => <div {...props}>{children}</div>,
     Stack: ({ children, ...props }) => <div {...props}>{children}</div>,
-    Switch: ({ checked, onChange, disabled }) => (
-      <input type="checkbox" checked={checked} onChange={onChange} disabled={disabled} />
+    SegmentedControl: ({ value, onChange, disabled }) => (
+      <input type="checkbox" checked={value === 'on'} onChange={(event) => onChange(event.target.checked ? 'on' : 'off')} disabled={disabled} />
     ),
     Text: ({ children, ...props }) => <span {...props}>{children}</span>,
     Badge: ({ children, ...props }) => <span {...props}>{children}</span>,
@@ -88,6 +88,17 @@ describe('PluginCard', () => {
     expect(screen.getByText('A test plugin')).toBeInTheDocument();
     expect(screen.getByText('v1.0.0')).toBeInTheDocument();
     expect(screen.getByText('Test Author')).toBeInTheDocument();
+  });
+
+  it('keeps the byline beside the logo without reserving switch space', () => {
+    renderCard({ plugin: { ...mockPlugin, is_managed: true, source_repo_name: 'Example repository' } });
+    const title = screen.getByText('Test Plugin');
+    const author = screen.getByText('Test Author');
+    const titleRow = title.parentElement.parentElement;
+    expect(titleRow).toHaveStyle({ paddingRight: '78px' });
+    expect(titleRow.parentElement).toContainElement(author);
+    expect(author.closest('[style*="padding-right"]')).toBeNull();
+    expect(screen.getByText('Example repository')).toBeInTheDocument();
   });
 
   it('renders plugin logo when logo_url is provided', () => {

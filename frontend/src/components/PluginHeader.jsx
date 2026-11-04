@@ -256,7 +256,7 @@ const PluginHeader = ({
   metadataTrailing,
   centered = false,
   hideLinks = false,
-  hideMetadata = false,
+  titleRightPadding = 0,
 }) => {
   const avatar = (
     <Avatar
@@ -291,14 +291,16 @@ const PluginHeader = ({
     <Group gap="sm" align="flex-start" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
       {avatar}
       <Box style={{ minWidth: 0, flex: 1 }}>
-        <TitleWithSignature
-          plugin={plugin}
-          onClick={onClick}
-          signatureVerified={signatureVerified}
-          lineClamp={1}
-          version={version}
-        />
-        {!hideMetadata && <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />}
+        <Box style={{ paddingRight: titleRightPadding }}>
+          <TitleWithSignature
+            plugin={plugin}
+            onClick={onClick}
+            signatureVerified={signatureVerified}
+            lineClamp={1}
+            version={version}
+          />
+        </Box>
+        <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
         {!hideLinks && (
           <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} />
         )}
