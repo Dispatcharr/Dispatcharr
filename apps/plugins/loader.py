@@ -807,10 +807,7 @@ class PluginManager:
             capabilities,
             manifest_schema_version,
         )
-        # Plugins may initialize durable state while importing, before they
-        # receive an action or leadership context containing this path.
         data_dir = stable_plugin_data_path(key, path, storage_key)
-        os.makedirs(data_dir, exist_ok=True)
 
         package_name = self._resolve_package_name(key)
         alias_name = self._resolve_alias_name(folder_name, path)
@@ -1369,6 +1366,8 @@ class PluginManager:
         # snapshot taken at discovery time instead (see LoadedPlugin.cached_settings).
         # report_progress is a no-op here (no task_id), since there's no active
         # task backing a persistent service's calls.
+        if lp.data_dir:
+            os.makedirs(lp.data_dir, exist_ok=True)
         return {
             "settings": lp.cached_settings,
             "data_dir": lp.data_dir,
@@ -1763,6 +1762,8 @@ class PluginManager:
     def _build_context(
         self, lp: LoadedPlugin, cfg: PluginConfig, task_id: Optional[str] = None
     ) -> Dict[str, Any]:
+        if lp.data_dir:
+            os.makedirs(lp.data_dir, exist_ok=True)
         settings = self._merge_settings_with_defaults(cfg.settings or {}, lp.fields or [])
         return {
             "settings": settings,

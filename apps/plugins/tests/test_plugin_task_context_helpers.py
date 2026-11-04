@@ -164,7 +164,7 @@ class RunActionResponseNormalizationTests(SimpleTestCase):
         lp.data_dir = "/data/plugins/_data/my-plugin"
         pm = PluginManager()
         cfg = MagicMock(enabled=True, settings={})
-        with patch.object(pm, "get_plugin", return_value=lp), patch(
+        with patch("apps.plugins.loader.os.makedirs"), patch.object(pm, "get_plugin", return_value=lp), patch(
             "apps.plugins.loader.PluginConfig.objects.get", return_value=cfg
         ):
             result = pm.run_action("my-plugin", "quick")

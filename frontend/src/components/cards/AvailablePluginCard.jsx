@@ -202,6 +202,7 @@ const AvailablePluginCard = ({
   const [enabling, setEnabling] = useState(false);
   const [pluginIsDisabled, setPluginIsDisabled] = useState(false);
   const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
+  const [dataConfirmOpen, setDataConfirmOpen] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [deprecationWarnOpen, setDeprecationWarnOpen] = useState(false);
   const [pendingDeprecatedInstall, setPendingDeprecatedInstall] =
@@ -312,12 +313,17 @@ const AvailablePluginCard = ({
     if (andNavigate) navigate('/plugins');
   };
 
-  const handleUninstall = async () => {
+  const handleUninstall = async (dataAction) => {
     const key = plugin.key || installedKey;
     if (!key) return;
     setUninstalling(true);
     try {
-      const resp = await deletePluginByKey(key);
+      const resp = dataAction ? await deletePluginByKey(key, dataAction) : await deletePluginByKey(key);
+      if (resp?.data_confirmation_required) {
+        setUninstallConfirmOpen(false);
+        setDataConfirmOpen(true);
+        return;
+      }
       if (resp?.success) {
         onUninstalled?.(plugin.slug);
         usePluginStore.getState().invalidatePlugins();
@@ -855,6 +861,18 @@ const AvailablePluginCard = ({
           </Text>
         }
       />
+      {dataConfirmOpen && <ConfirmationDialog
+        opened={dataConfirmOpen}
+        onClose={() => setDataConfirmOpen(false)}
+        onConfirm={(removeData) => { setDataConfirmOpen(false); handleUninstall(removeData ? 'delete' : 'keep'); }}
+        title="Plugin data found"
+        message="This plugin has saved data. Keep it for a future reinstall, or select the option below to permanently delete it."
+        confirmLabel="Uninstall"
+        showDeleteFileOption
+        deleteFileLabel="Also permanently delete saved plugin data"
+        loading={uninstalling}
+        zIndex={300}
+      />}
 
       {/* Post-uninstall notice */}
       <Modal

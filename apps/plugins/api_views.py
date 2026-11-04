@@ -1068,6 +1068,18 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
             if not abs_target.startswith(abs_plugins):
                 return Response({"success": False, "error": "Invalid plugin path"}, status=status.HTTP_400_BAD_REQUEST)
 
+            from .sandbox import stable_plugin_data_path
+            cfg = PluginConfig.objects.filter(key=key).first()
+            data_dir = stable_plugin_data_path(key, target_dir, cfg.slug if cfg and cfg.slug else key)
+            data_root = os.path.join(os.path.abspath(plugins_dir), "_data")
+            if os.path.islink(data_root) or os.path.islink(data_dir) or os.path.commonpath([data_root, os.path.abspath(data_dir)]) != data_root:
+                return Response({"success": False, "error": "Invalid plugin data path"}, status=status.HTTP_400_BAD_REQUEST)
+            data_action = request.data.get("data_action")
+            if data_action not in (None, "keep", "delete"):
+                return Response({"success": False, "error": "Invalid data action"}, status=status.HTTP_400_BAD_REQUEST)
+            if os.path.isdir(data_dir) and os.listdir(data_dir) and data_action is None:
+                return Response({"success": False, "data_confirmation_required": True}, status=status.HTTP_409_CONFLICT)
+
             try:
                 with transaction.atomic():
                     cfg = PluginConfig.objects.select_for_update().filter(key=key).first()
@@ -1083,6 +1095,15 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
                     pm.delete_plugin_periodic_tasks(key, path=target_dir)
                     if cfg is not None:
                         cfg.delete()
+                    if os.path.isdir(data_dir):
+                        if data_action == "delete":
+                            shutil.rmtree(data_dir)
+                        else:
+                            try:
+                                os.rmdir(data_dir)
+                            except OSError:
+                                if not os.listdir(data_dir):
+                                    raise
             except Exception as e:
                 logger.exception("Failed to delete plugin '%s'", key)
                 return Response(

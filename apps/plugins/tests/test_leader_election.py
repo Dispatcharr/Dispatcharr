@@ -229,7 +229,8 @@ class LeadershipContextTests(SimpleTestCase):
         lp.path = "/data/plugins/svc_1_2_3"
         lp.actions = [{"id": "do_thing"}]
 
-        context = pm._build_leadership_context(lp)
+        with patch("apps.plugins.loader.os.makedirs"):
+            context = pm._build_leadership_context(lp)
 
         self.assertEqual(context["settings"], {"foo": "bar"})
         self.assertEqual(context["data_dir"], "/data/plugins/_data/svc")
