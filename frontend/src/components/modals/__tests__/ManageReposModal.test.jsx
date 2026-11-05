@@ -163,12 +163,14 @@ const makeRepo = (overrides = {}) => ({
 });
 
 let mockFetchAvailablePlugins;
+let mockFetchRepos;
 let mockRefreshRepo;
 let mockAddRepo;
 let mockRemoveRepo;
 let mockUpdateRepo;
 
 const setupStore = ({ repos = [], reposLoading = false } = {}) => {
+  mockFetchRepos = vi.fn().mockResolvedValue(undefined);
   mockFetchAvailablePlugins = vi.fn().mockResolvedValue(undefined);
   mockRefreshRepo = vi.fn().mockResolvedValue(undefined);
   mockAddRepo = vi.fn().mockResolvedValue(undefined);
@@ -179,6 +181,7 @@ const setupStore = ({ repos = [], reposLoading = false } = {}) => {
     sel({
       repos,
       reposLoading,
+      fetchRepos: mockFetchRepos,
       fetchAvailablePlugins: mockFetchAvailablePlugins,
       refreshRepo: mockRefreshRepo,
       addRepo: mockAddRepo,
@@ -257,6 +260,19 @@ describe('ManageReposModal', () => {
   // ── Repos list ─────────────────────────────────────────────────────────────
 
   describe('repos list', () => {
+    it('fetches repositories each time the modal opens, but not while closed', () => {
+      const props = defaultProps({ opened: false });
+      const { rerender } = render(<ManageReposModal {...props} />);
+      expect(mockFetchRepos).not.toHaveBeenCalled();
+
+      rerender(<ManageReposModal {...props} opened />);
+      expect(mockFetchRepos).toHaveBeenCalledTimes(1);
+
+      rerender(<ManageReposModal {...props} />);
+      rerender(<ManageReposModal {...props} opened />);
+      expect(mockFetchRepos).toHaveBeenCalledTimes(2);
+    });
+
     it('renders a row for each repo', () => {
       setupStore({
         repos: [
@@ -418,6 +434,7 @@ describe('ManageReposModal', () => {
         sel({
           repos: [makeRepo({ id: 1 })],
           reposLoading: false,
+          fetchRepos: mockFetchRepos,
           fetchAvailablePlugins: mockFetchAvailablePlugins,
           refreshRepo: mockRefreshRepo,
           addRepo: mockAddRepo,

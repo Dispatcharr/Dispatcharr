@@ -26,6 +26,7 @@ import {
 export default function ManageReposModal({ opened, onClose }) {
   const repos = usePluginStore((s) => s.repos);
   const reposLoading = usePluginStore((s) => s.reposLoading);
+  const fetchRepos = usePluginStore((s) => s.fetchRepos);
   const fetchAvailablePlugins = usePluginStore((s) => s.fetchAvailablePlugins);
   const refreshRepo = usePluginStore((s) => s.refreshRepo);
   const addRepo = usePluginStore((s) => s.addRepo);
@@ -163,10 +164,13 @@ export default function ManageReposModal({ opened, onClose }) {
     fetchAvailablePlugins,
   ]);
 
-  // Load settings when modal opens
+  // Load repositories and settings when modal opens
   useEffect(() => {
-    if (opened) loadRepoSettings();
-  }, [opened, loadRepoSettings]);
+    if (opened) {
+      fetchRepos();
+      loadRepoSettings();
+    }
+  }, [opened, fetchRepos, loadRepoSettings]);
 
   // Cleanup any pending timers on unmount
   useEffect(() => {
