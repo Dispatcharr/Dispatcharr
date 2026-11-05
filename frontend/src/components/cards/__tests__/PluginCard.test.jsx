@@ -103,6 +103,28 @@ describe('PluginCard', () => {
     expect(screen.getByText('Example repository')).toBeInTheDocument();
   });
 
+  it('links the repository to its registry URL in a new tab', () => {
+    renderCard({ plugin: { ...mockPlugin, is_managed: true, is_official_repo: true, source_repo_name: 'Example repository', source_repo_url: 'https://example.com/repo' } });
+    const link = screen.getByRole('link', { name: 'Repository: Example repository' });
+    expect(link).toHaveAttribute('href', 'https://example.com/repo');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByTestId('official-repository-icon')).toBeInTheDocument();
+  });
+
+  it('does not link an unsafe repository URL', () => {
+    renderCard({ plugin: { ...mockPlugin, is_managed: true, source_repo_name: 'Example repository', source_repo_url: 'javascript:alert(1)' } });
+    expect(screen.queryByRole('link', { name: 'Repository: Example repository' })).not.toBeInTheDocument();
+  });
+
+  it('passes the author to the author search handler', () => {
+    const onAuthorClick = vi.fn();
+    renderCard({ onAuthorClick });
+    fireEvent.click(screen.getByText('Test Author'));
+    expect(onAuthorClick).toHaveBeenCalledWith('Test Author');
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
   it('renders plugin logo when logo_url is provided', () => {
     renderCard();
 

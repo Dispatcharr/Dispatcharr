@@ -107,8 +107,7 @@ class PluginRepoSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "name", "is_official", "signature_verified", "registry_url", "plugin_count", "last_fetched", "last_fetch_status", "created_at", "updated_at"]
 
     def get_registry_url(self, obj):
-        manifest = (obj.cached_manifest or {}).get("manifest", obj.cached_manifest or {})
-        return manifest.get("registry_url", "") or ""
+        return obj.registry_url
 
     def get_plugin_count(self, obj):
         manifest = (obj.cached_manifest or {}).get("manifest", obj.cached_manifest or {})

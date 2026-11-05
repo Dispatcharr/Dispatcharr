@@ -1679,6 +1679,7 @@ class AvailablePluginsAPIView(PluginAuthMixin, APIView):
                     **plugin_data,
                     "repo_id": repo.id,
                     "repo_name": repo.name,
+                    "source_repo_url": registry_url,
                     "is_official_repo": repo.is_official,
                     "signature_verified": repo.signature_verified,
                     "installed": is_installed,

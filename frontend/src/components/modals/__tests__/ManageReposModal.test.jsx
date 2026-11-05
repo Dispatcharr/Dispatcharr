@@ -42,6 +42,7 @@ vi.mock('../../ConfirmationDialog.jsx', () => ({
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   KeyRound: () => <svg data-testid="icon-key-round" />,
+  GitBranch: () => <svg data-testid="icon-git-branch" />,
   Plus: () => <svg data-testid="icon-plus" />,
   ShieldAlert: () => <svg data-testid="icon-shield-alert" />,
   ShieldCheck: () => <svg data-testid="icon-shield-check" />,
@@ -135,6 +136,7 @@ vi.mock('@mantine/core', () => ({
       placeholder={placeholder}
     />
   ),
+  Tooltip: ({ children }) => children,
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -297,22 +299,25 @@ describe('ManageReposModal', () => {
       expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     });
 
-    it('shows "Official Repo" badge for official repos', () => {
+    it('shows the Dispatcharr icon for official repos', () => {
       setupStore({ repos: [makeRepo({ is_official: true })] });
       render(<ManageReposModal {...defaultProps()} />);
-      expect(screen.getByText('Official Repo')).toBeInTheDocument();
+      expect(screen.getByTestId('official-repository-icon')).toBeInTheDocument();
+      expect(screen.queryByText('Official Repo')).not.toBeInTheDocument();
     });
 
-    it('shows "Verified Signature" badge when signature_verified is true', () => {
+    it('shows a verified shield and branch icon for community repos', () => {
       setupStore({ repos: [makeRepo({ signature_verified: true })] });
       render(<ManageReposModal {...defaultProps()} />);
-      expect(screen.getByText('Verified Signature')).toBeInTheDocument();
+      expect(screen.getByLabelText('Valid Signature')).toBeInTheDocument();
+      expect(screen.getByTestId('icon-git-branch')).toBeInTheDocument();
+      expect(screen.queryByText('Valid Signature')).not.toBeInTheDocument();
     });
 
     it('shows "Invalid Signature" badge when signature_verified is false', () => {
       setupStore({ repos: [makeRepo({ signature_verified: false })] });
       render(<ManageReposModal {...defaultProps()} />);
-      expect(screen.getByText('Invalid Signature')).toBeInTheDocument();
+      expect(screen.getByLabelText('Invalid Signature')).toBeInTheDocument();
     });
 
     it('shows edit and delete buttons only for non-official repos', () => {

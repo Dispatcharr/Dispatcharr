@@ -1,13 +1,16 @@
 import React from 'react';
 import { ActionIcon, Avatar, Box, Button, Group, Text, Tooltip } from '@mantine/core';
-import { BookOpen, GitBranch, Scale, ShieldAlert, ShieldCheck, User } from 'lucide-react';
+import { BookOpen, Scale, ShieldAlert, ShieldCheck, User } from 'lucide-react';
 import { DiscordIcon, GitHubIcon } from './icons.jsx';
+import PluginRepositoryIcon from './PluginRepositoryIcon.jsx';
+import CollapsedTooltip from './CollapsedTooltip.jsx';
 import { isSafeHttpUrl } from '../utils/url.js';
 
 /** Author name row, reused by both header layouts below. */
 export const PluginMetadata = ({
   plugin,
   onClick,
+  onAuthorClick,
   justify = 'flex-start',
   sourceRepoName,
   license,
@@ -37,11 +40,13 @@ export const PluginMetadata = ({
         >
           <User size={12} color="var(--mantine-color-dimmed)" />
           <Text
+            component={onAuthorClick ? 'button' : undefined}
+            type={onAuthorClick ? 'button' : undefined}
             size="xs"
             c="dimmed"
             truncate
-            onClick={onClick}
-            style={{ minWidth: 0, maxWidth: '100%', ...(onClick ? { cursor: 'pointer' } : {}) }}
+            onClick={onAuthorClick ? () => onAuthorClick(plugin.author) : onClick}
+            style={{ minWidth: 0, maxWidth: '100%', ...(onAuthorClick ? { cursor: 'pointer', background: 'none', border: 0, padding: 0, textAlign: 'left' } : onClick ? { cursor: 'pointer' } : {}) }}
           >
             {plugin.author}
           </Text>
@@ -49,7 +54,7 @@ export const PluginMetadata = ({
       )}
       {plugin.author && license && <Text className={separatorClassName} size="xs" c="dimmed">•</Text>}
       {license && (
-        <Tooltip label={`License: ${license}`}>
+        <CollapsedTooltip label={`License: ${license}`} textSelector={`.${licenseClassName || 'plugin-license'}-text`}>
         <a
           className={licenseClassName}
           href={`https://spdx.org/licenses/${encodeURIComponent(license)}.html`}
@@ -59,27 +64,37 @@ export const PluginMetadata = ({
           style={{ color: 'var(--mantine-color-dimmed)', display: 'flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
         >
           <Scale size={12} />
-          <Text className={licenseClassName ? `${licenseClassName}-text` : undefined} size="xs" c="dimmed">{license}</Text>
+          <Text className={`${licenseClassName || 'plugin-license'}-text`} size="xs" c="dimmed">{license}</Text>
         </a>
-        </Tooltip>
+        </CollapsedTooltip>
       )}
       {(plugin.author || license) && sourceRepoName && <Text className={separatorClassName} size="xs" c="dimmed">•</Text>}
-      {sourceRepoName && <PluginRepository name={sourceRepoName} />}
+      {sourceRepoName && <PluginRepository name={sourceRepoName} isOfficial={plugin.is_official_repo} url={plugin.source_repo_url} />}
       <SignatureIndicator signatureVerified={signatureVerified} />
       {trailing}
     </Group>
   );
 };
 
-export const PluginRepository = ({ name }) => {
+export const PluginRepository = ({ name, isOfficial, url }) => {
   if (!name) return null;
-  return (
-    <Tooltip label={`Repository: ${name}`}>
-    <Group gap={3} align="center" wrap="nowrap" className="plugin-repository" tabIndex={0} aria-label={`Repository: ${name}`}>
-      <GitBranch size={12} color="var(--mantine-color-dimmed)" />
+  const safeUrl = isSafeHttpUrl(url) ? url : null;
+  const content = (
+    <Group gap={3} align="center" wrap="nowrap" className="plugin-repository" style={{ color: 'var(--mantine-color-dimmed)' }}>
+      <PluginRepositoryIcon isOfficial={isOfficial} />
       <Text className="plugin-repository__text" size="xs" c="dimmed">{name}</Text>
     </Group>
-    </Tooltip>
+  );
+  return (
+    <CollapsedTooltip label={`Repository: ${name}`} textSelector=".plugin-repository__text">
+      {safeUrl ? (
+        <a href={safeUrl} target="_blank" rel="noopener noreferrer" aria-label={`Repository: ${name}`} onClick={(event) => event.stopPropagation()} style={{ color: 'inherit', textDecoration: 'none', minWidth: 0 }}>
+          {content}
+        </a>
+      ) : (
+        <div tabIndex={0} aria-label={`Repository: ${name}`}>{content}</div>
+      )}
+    </CollapsedTooltip>
   );
 };
 
@@ -88,7 +103,7 @@ export const PluginRepository = ({ name }) => {
 export const SignatureIndicator = ({ signatureVerified }) => {
   if (signatureVerified == null) return null;
   return signatureVerified ? (
-    <Tooltip label="Verified Signature">
+    <Tooltip label="Valid Signature">
       <ShieldCheck size={14} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
     </Tooltip>
   ) : (
@@ -252,6 +267,7 @@ const PluginHeader = ({
   signatureVerified,
   version = plugin.version,
   sourceRepoName,
+  onAuthorClick,
   license,
   metadataTrailing,
   centered = false,
@@ -279,7 +295,7 @@ const PluginHeader = ({
         <Box mt="xs">
           <TitleWithSignature plugin={plugin} onClick={onClick} signatureVerified={signatureVerified} version={version} />
         </Box>
-        <PluginMetadata plugin={plugin} onClick={onClick} justify="center" sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
+        <PluginMetadata plugin={plugin} onClick={onClick} onAuthorClick={onAuthorClick} justify="center" sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
         {!hideLinks && (
           <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} justify="center" />
         )}
@@ -300,7 +316,7 @@ const PluginHeader = ({
             version={version}
           />
         </Box>
-        <PluginMetadata plugin={plugin} onClick={onClick} sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
+        <PluginMetadata plugin={plugin} onClick={onClick} onAuthorClick={onAuthorClick} sourceRepoName={sourceRepoName} license={license} trailing={metadataTrailing} />
         {!hideLinks && (
           <PluginLinks helpUrl={plugin.help_url} repoUrl={repoUrl} discordThread={discordThread} />
         )}

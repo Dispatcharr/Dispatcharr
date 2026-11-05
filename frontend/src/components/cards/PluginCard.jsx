@@ -55,6 +55,7 @@ const PluginCard = ({
   onToggleEnabled,
   onRequireTrust,
   onRequestDelete,
+  onAuthorClick,
 }) => {
   const navigate = useNavigate();
   const [enabled, setEnabled] = useState(!!plugin.enabled);
@@ -115,6 +116,7 @@ const PluginCard = ({
         <PluginHeader
           plugin={plugin}
           onClick={openDetail}
+          onAuthorClick={onAuthorClick}
           hideLinks
           titleRightPadding={24}
           sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}

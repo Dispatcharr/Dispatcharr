@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  ActionIcon,
   Alert,
   AppShellMain,
   Badge,
@@ -36,7 +37,7 @@ import {
   reloadPlugins,
   setPluginEnabled,
 } from '../utils/pages/PluginsUtils.js';
-import { RotateCw, Search, Upload } from 'lucide-react';
+import { RotateCw, Search, Upload, X } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   PluginRestartWarning,
@@ -142,6 +143,7 @@ const PluginsList = ({
           leftSection={<Search size={14} />}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.currentTarget.value)}
+          rightSection={searchQuery ? <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Clear search" onClick={() => setSearchQuery('')}><X size={14} /></ActionIcon> : null}
           style={{ flex: 1, minWidth: 180, maxWidth: 300 }}
           size="xs"
         />
@@ -184,6 +186,7 @@ const PluginsList = ({
                 <PluginCard
                   key={p.key}
                   plugin={p}
+                  onAuthorClick={setSearchQuery}
                   onToggleEnabled={handleTogglePluginEnabled}
                   onRequireTrust={onRequireTrust}
                   onRequestDelete={onRequestDelete}

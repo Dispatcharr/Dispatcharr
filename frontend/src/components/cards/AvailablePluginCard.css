@@ -8,9 +8,16 @@
 }
 
 @container (max-width: 24rem) {
+  .available-plugin-card__activity { gap: 8px; }
+
   .available-plugin-card__updated-text,
+  .available-plugin-card__action-separator,
   .available-plugin-card__license-text,
   .plugin-repository__text { display: none; }
+}
+
+@container (max-width: 20rem) {
+  .available-plugin-card__downloads { display: none; }
 }
 
 @container (max-width: 24rem) {
@@ -19,13 +26,6 @@
   }
 
   .available-plugin-card__license-separator {
-    display: none;
-  }
-}
-
-@container (max-width: 20rem) {
-  .available-plugin-card__downloads,
-  .available-plugin-card__action-separator {
     display: none;
   }
 }
