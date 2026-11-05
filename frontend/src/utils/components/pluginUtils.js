@@ -114,7 +114,15 @@ export function buildVersionSelectItems(
       ? ' (installed)'
       : '');
 
-  let sorted = [...versions];
+  // Selection resolves to the first matching manifest entry, so keep the same
+  // entry when a repository advertises the same version more than once.
+  const seen = new Set();
+  let sorted = versions.filter((v) => {
+    if (seen.has(v.version)) return false;
+    seen.add(v.version);
+    return true;
+  });
+  const uniqueVersions = sorted;
   if (installedVersionIsPrerelease) {
     sorted = [
       ...sorted.filter((v) => v.prerelease),
@@ -130,11 +138,13 @@ export function buildVersionSelectItems(
 
   const installedMissing =
     installedVersion &&
-    !versions.some((v) => compareVersions(v.version, installedVersion) === 0 && !!v.prerelease === !!installedVersionIsPrerelease);
+    !uniqueVersions.some((v) => compareVersions(v.version, installedVersion) === 0 && !!v.prerelease === !!installedVersionIsPrerelease);
 
   if (installedMissing) {
+    let ghostValue = installedVersion;
+    while (seen.has(ghostValue)) ghostValue = `installed:${ghostValue}`;
     const ghost = {
-      value: installedVersion,
+      value: ghostValue,
       label: `v${installedVersion} (installed)`,
       disabled: true,
     };
