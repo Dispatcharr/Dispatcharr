@@ -52,6 +52,7 @@ from core.utils import (
     RedisClient,
     build_absolute_uri_with_port,
     resolve_safe_local_data_path,
+    to_fs_path,
     safe_upload_path,
 )
 from core.image_proxy import (
@@ -3788,15 +3789,17 @@ class RecordingViewSet(viewsets.ModelViewSet):
         file_path = _resolve_recording_storage_path(cp.get("file_path"))
         file_name = cp.get("file_name") or "recording"
         hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
+        fs_file_path = to_fs_path(file_path) if file_path else None
+        fs_hls_dir = to_fs_path(hls_dir) if hls_dir else None
 
-        if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+        if not fs_file_path or not os.path.exists(fs_file_path) or os.path.getsize(fs_file_path) == 0:
             # Redirect to HLS if recording is still in progress
-            if hls_dir and os.path.isdir(hls_dir):
+            if fs_hls_dir and os.path.isdir(fs_hls_dir):
                 hls_url = build_absolute_uri_with_port(
                     request, f"/api/channels/recordings/{pk}/hls/index.m3u8"
                 ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(hls_url)
-            if not file_path or not os.path.exists(file_path):
+            if not fs_file_path or not os.path.exists(fs_file_path):
                 raise Http404("Recording file not found")
 
         # Guess content type
@@ -3808,7 +3811,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
         else:
             content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
 
-        file_size = os.path.getsize(file_path)
+        file_size = os.path.getsize(fs_file_path)
         range_header = request.META.get("HTTP_RANGE", "").strip()
 
         def file_iterator(path, start=0, end=None, chunk_size=8192):
@@ -3838,7 +3841,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 length = end - start + 1
 
                 resp = StreamingHttpResponse(
-                    file_iterator(file_path, start, end),
+                    file_iterator(fs_file_path, start, end),
                     status=206,
                     content_type=content_type,
                 )
@@ -3852,7 +3855,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 pass
 
         # Full file response
-        response = FileResponse(open(file_path, "rb"), content_type=content_type)
+        response = FileResponse(open(fs_file_path, "rb"), content_type=content_type)
         response["Content-Length"] = str(file_size)
         response["Accept-Ranges"] = "bytes"
         response["Content-Disposition"] = f"inline; filename=\"{file_name}\""
@@ -3879,13 +3882,15 @@ class RecordingViewSet(viewsets.ModelViewSet):
             return denied
         cp = recording.custom_properties or {}
         hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
+        fs_hls_dir = to_fs_path(hls_dir) if hls_dir else None
 
-        if not hls_dir or not os.path.isdir(hls_dir):
+        if not fs_hls_dir or not os.path.isdir(fs_hls_dir):
             # HLS dir is gone, recording is likely complete.  Redirect to the
             # permanent MKV endpoint for .m3u8 requests so clients that still
             # have the HLS URL bookmarked get a useful response.
             file_path = _resolve_recording_storage_path(cp.get("file_path"))
-            if seg_path.endswith(".m3u8") and file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            fs_file_path = to_fs_path(file_path) if file_path else None
+            if seg_path.endswith(".m3u8") and fs_file_path and os.path.exists(fs_file_path) and os.path.getsize(fs_file_path) > 0:
                 file_url = build_absolute_uri_with_port(
                     request, f"/api/channels/recordings/{pk}/file/"
                 ) + _recording_auth_query_suffix(request)
@@ -3893,8 +3898,9 @@ class RecordingViewSet(viewsets.ModelViewSet):
             raise Http404("HLS content not available for this recording")
 
         # Security: prevent path traversal outside the HLS directory
-        safe_dir = os.path.realpath(hls_dir)
-        requested = os.path.realpath(os.path.join(hls_dir, seg_path))
+        fs_seg_path = to_fs_path(seg_path)
+        safe_dir = os.path.realpath(fs_hls_dir)
+        requested = os.path.realpath(os.path.join(fs_hls_dir, fs_seg_path))
         if not requested.startswith(safe_dir + os.sep) and requested != safe_dir:
             return Response({"error": "Forbidden"}, status=403)
 
@@ -3909,7 +3915,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
             )
             auth_suffix = _recording_auth_query_suffix(request)
             lines = []
-            with open(requested) as _f:
+            with open(requested, "r", encoding="utf-8", errors="replace") as _f:
                 for line in _f:
                     stripped = line.strip()
                     if stripped and not stripped.startswith("#"):

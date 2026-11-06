@@ -3,6 +3,7 @@ import redis
 import logging
 import time
 import os
+import sys
 import threading
 from pathlib import Path
 import re
@@ -725,6 +726,36 @@ def safe_upload_path(filename: str, base_dir) -> str:
     return str(file_path)
 
 
+def to_fs_path(p: str) -> str:
+    """Ensure path string is encodable with the active filesystem encoding.
+
+    When Python runs in a POSIX/C locale (common in embedded uWSGI environments),
+    sys.getfilesystemencoding() may default to 'ascii'. Non-ASCII characters in
+    filenames (accents, cedillas, non-Latin scripts) trigger UnicodeEncodeError
+    inside os.path and Path operations. Re-encoding via UTF-8 with surrogateescape
+    (PEP 383) produces a string that POSIX syscalls accept and map to the exact UTF-8 bytes.
+    """
+    if not isinstance(p, str):
+        return p
+    enc = sys.getfilesystemencoding() or "utf-8"
+    try:
+        p.encode(enc)
+        return p
+    except UnicodeEncodeError:
+        return p.encode("utf-8", "surrogateescape").decode(enc, "surrogateescape")
+
+
+def from_fs_path(p: str) -> str:
+    """Restore a clean UTF-8 string from a filesystem path that may carry surrogates."""
+    if not isinstance(p, str):
+        return p
+    enc = sys.getfilesystemencoding() or "utf-8"
+    try:
+        return p.encode(enc, "surrogateescape").decode("utf-8", "replace")
+    except Exception:
+        return p
+
+
 def resolve_safe_local_data_path(path: str, allowed_roots=("/data/logos",)):
     """Return a realpath under one of *allowed_roots*, or None if unsafe.
 
@@ -737,16 +768,18 @@ def resolve_safe_local_data_path(path: str, allowed_roots=("/data/logos",)):
     if not path.startswith("/data"):
         return None
     try:
-        real = Path(path).resolve()
+        fs_path = to_fs_path(path)
+        real = Path(fs_path).resolve()
     except (OSError, RuntimeError, ValueError):
         return None
     for root in allowed_roots:
         try:
-            root_real = Path(root).resolve()
+            fs_root = to_fs_path(root)
+            root_real = Path(fs_root).resolve()
         except (OSError, RuntimeError, ValueError):
             continue
         if real == root_real or real.is_relative_to(root_real):
-            return str(real)
+            return from_fs_path(str(real))
     return None
 
 
