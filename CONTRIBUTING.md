@@ -20,7 +20,12 @@ Thank you for your interest in contributing. Dispatcharr is a complex, productio
 
 ## Before You Start
 
-**Open an issue before writing code.** If you want to add a feature or fix a non-trivial bug, open a GitHub issue first. This lets us tell you whether it aligns with the project's direction, whether it's already being worked on, and how it should be approached — before you invest time writing code.
+Start with an issue for any feature or non-trivial bug fix. The issue explains the problem, gives maintainers a chance to confirm that it fits Dispatcharr, and helps avoid duplicate work.
+
+> [!WARNING]
+> **An issue is not approval to start a large change.** If you are planning a significant feature, a broad change across the codebase, or a substantial refactor, open a [proposal discussion](https://github.com/Dispatcharr/Dispatcharr/discussions/new?category=proposals) before writing code.
+>
+> A feature request tells us what problem needs solving. A proposal tells us how you plan to solve it, what else it could affect, how you will avoid regressions, and how you will validate the result. Wait for maintainer signoff on the proposal before you begin. Large PRs opened without that conversation may be closed without review.
 
 For small, obvious bug fixes (a typo, an off-by-one error, a missing validation) you can go straight to a PR.
 
@@ -230,6 +235,7 @@ Using an AI tool to help you understand the codebase, generate a first draft, or
 To save your time and ours, the following types of PRs will be closed without extended review:
 
 - **Undiscussed feature additions.** If there is no linked issue where the feature was agreed upon, we will close the PR and ask you to open one.
+- **Large changes without an approved proposal.** Significant features and substantial refactors must have maintainer signoff in a linked proposal discussion before implementation begins.
 - **Large, unfocused diffs.** A PR that touches 20 files across 5 apps to "improve code quality" is almost never reviewable. Scope your changes.
 - **Dependency bumps without justification.** Don't open a PR just to bump a library version unless you have identified a specific bug or security issue it resolves.
 - **Cosmetic/style-only changes.** Reformatting files, renaming variables for preference, or reorganizing imports with no functional change.

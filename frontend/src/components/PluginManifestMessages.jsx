@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { ActionIcon, Alert, Button, Group, Stack, Text, Tooltip } from '@mantine/core';
-import { AlertTriangle, CheckCircle2, CircleAlert, Info, ExternalLink, GitBranch, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CircleAlert, Info, ExternalLink, X } from 'lucide-react';
 import API from '../api.js';
+import PluginRepositoryIcon from './PluginRepositoryIcon.jsx';
 
 const severityPresentation = {
   info: { color: 'blue', icon: <Info size={18} /> },
@@ -89,7 +90,7 @@ export default function PluginManifestMessages() {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          <GitBranch size={14} />
+                          <PluginRepositoryIcon isOfficial size={14} />
                           <span>{sourceRepo}</span>
                         </span>
                       </Tooltip>

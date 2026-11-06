@@ -377,9 +377,9 @@ class LogoGuardTests(TestCase):
 
     @patch("apps.channels.tasks.requests.get")
     def test_channel_name_as_title_skips_external_apis(self, mock_get):
-        """Title = 'USA A&E SD*', channel = 'USA A&E SD*' → no external calls."""
-        program = {"title": "USA A&E SD*"}
-        logo_id, url = self._call("USA A&E SD*", program, channel_logo_id=42)
+        """Title = 'US Test Channel SD*', channel = 'US Test Channel SD*' → no external calls."""
+        program = {"title": "US Test Channel SD*"}
+        logo_id, url = self._call("US Test Channel SD*", program, channel_logo_id=42)
 
         # Should NOT have called any external APIs
         mock_get.assert_not_called()
@@ -389,25 +389,25 @@ class LogoGuardTests(TestCase):
 
     @patch("apps.channels.tasks.requests.get")
     def test_channel_name_normalized_match(self, mock_get):
-        """Title = 'fox news', channel = 'FOX-News*' → normalized match, skip APIs."""
-        program = {"title": "fox news"}
-        logo_id, url = self._call("FOX-News*", program, channel_logo_id=99)
+        """Title = 'alpha news', channel = 'ALPHA-News*' → normalized match, skip APIs."""
+        program = {"title": "alpha news"}
+        logo_id, url = self._call("ALPHA-News*", program, channel_logo_id=99)
 
         mock_get.assert_not_called()
         self.assertEqual(logo_id, 99)
 
     @patch("apps.channels.tasks.requests.get")
     def test_real_title_still_searched(self, mock_get):
-        """Title = 'Breaking Bad' on channel 'AMC' → should try external APIs."""
+        """Title = 'Sample Show' on channel 'TestNet' → should try external APIs."""
         # Mock TVMaze returning a result
         mock_resp = MagicMock(ok=True, status_code=200)
         mock_resp.json.return_value = {
-            "image": {"original": "https://tvmaze.com/breaking-bad.jpg"}
+            "image": {"original": "https://example.com/sample-show.jpg"}
         }
         mock_get.return_value = mock_resp
 
-        program = {"title": "Breaking Bad"}
-        logo_id, url = self._call("AMC", program)
+        program = {"title": "Sample Show"}
+        logo_id, url = self._call("TestNet", program)
 
         # Should have made at least one external API call
         self.assertTrue(mock_get.called, "Should search external APIs for real titles")
@@ -537,10 +537,30 @@ class RecordingStatusLifecycleTests(TestCase):
 class PlaylistRemuxTests(TestCase):
     """Verify FFmpeg finalize helpers for HLS playlist remux."""
 
-    def test_hls_playlist_remux_cmd_structure(self):
-        from apps.channels.tasks import _dvr_build_hls_playlist_remux_cmd
+    def test_remux_success_log_names_the_path(self):
+        from apps.channels.dvr_remux import RemuxResult
+        from apps.channels.tasks import _dvr_log_remux_success
 
-        cmd = _dvr_build_hls_playlist_remux_cmd("/data/hls/index.m3u8", "/data/out.mkv")
+        with self.assertLogs("apps.channels.tasks", level="INFO") as copied:
+            _dvr_log_remux_success("rec 1", "/tmp/copied.mkv", RemuxResult(True, False))
+        with self.assertLogs("apps.channels.tasks", level="INFO") as repaired:
+            _dvr_log_remux_success(
+                "recover_recordings_on_startup: recording 2",
+                "/tmp/rebuilt.mkv",
+                RemuxResult(True, False, True),
+            )
+        with self.assertLogs("apps.channels.tasks", level="INFO") as fallback:
+            _dvr_log_remux_success("rec 3", "/tmp/fallback.mkv", (True, True))
+
+        self.assertIn("HLS→MKV remux succeeded — copied.mkv", copied.output[0])
+        self.assertNotIn("section repair", copied.output[0])
+        self.assertIn("HLS→MKV section repair remux succeeded — rebuilt.mkv", repaired.output[0])
+        self.assertIn("HLS→MP4→MKV fallback remux succeeded — fallback.mkv", fallback.output[0])
+
+    def test_hls_playlist_remux_cmd_structure(self):
+        from apps.channels.dvr_remux import _build_hls_playlist_remux_cmd
+
+        cmd = _build_hls_playlist_remux_cmd("/data/hls/index.m3u8", "/data/out.mkv")
         self.assertEqual(cmd[0], "ffmpeg")
         self.assertIn("-fflags", cmd)
         self.assertEqual(cmd[cmd.index("-fflags") + 1], "+genpts+discardcorrupt")
@@ -560,25 +580,14 @@ class PlaylistRemuxTests(TestCase):
         self.assertNotIn("concat", cmd)
         self.assertNotIn("igndts", cmd)
 
-    def test_hls_playlist_remux_cmd_supports_extra_args(self):
-        from apps.channels.tasks import _dvr_build_hls_playlist_remux_cmd
-
-        cmd = _dvr_build_hls_playlist_remux_cmd(
-            "/data/hls/index.m3u8",
-            "/data/intermediate.mp4",
-            extra_args=["-bsf:a", "aac_adtstoasc"],
-        )
-        self.assertIn("aac_adtstoasc", cmd)
-        self.assertEqual(cmd[-1], "/data/intermediate.mp4")
-
     def test_remux_timeout_budget_is_thirty_minutes(self):
-        from apps.channels.tasks import _DVR_HLS_REMUX_TIMEOUT_SECONDS
+        from apps.channels.dvr_remux import HLS_REMUX_TIMEOUT_SECONDS
 
-        self.assertEqual(_DVR_HLS_REMUX_TIMEOUT_SECONDS, 30 * 60)
+        self.assertEqual(HLS_REMUX_TIMEOUT_SECONDS, 30 * 60)
 
     def test_ensure_hls_endlist_appends_when_missing(self):
         import tempfile
-        from apps.channels.tasks import _dvr_ensure_hls_endlist
+        from apps.channels.dvr_remux import _ensure_hls_endlist
 
         body = (
             "#EXTM3U\n#EXT-X-TARGETDURATION:4\n"
@@ -588,12 +597,12 @@ class PlaylistRemuxTests(TestCase):
             path = os.path.join(tmp, "index.m3u8")
             with open(path, "w") as f:
                 f.write(body)
-            self.assertTrue(_dvr_ensure_hls_endlist(path))
+            self.assertTrue(_ensure_hls_endlist(path))
             text = open(path).read()
             self.assertEqual(text.count("#EXT-X-ENDLIST"), 1)
             self.assertTrue(text.endswith("#EXT-X-ENDLIST\n"))
             # Second call is a no-op.
-            self.assertTrue(_dvr_ensure_hls_endlist(path))
+            self.assertTrue(_ensure_hls_endlist(path))
             self.assertEqual(open(path).read().count("#EXT-X-ENDLIST"), 1)
 
     def test_run_recording_uses_shared_remux_helper(self):
@@ -601,14 +610,14 @@ class PlaylistRemuxTests(TestCase):
         from apps.channels.tasks import run_recording
 
         source = inspect.getsource(run_recording)
-        self.assertIn("_dvr_remux_hls_to_mkv", source)
+        self.assertIn("remux_hls_to_mkv", source)
 
     def test_recover_recordings_uses_shared_remux_helper(self):
         import inspect
         from apps.channels.tasks import recover_recordings_on_startup
 
         source = inspect.getsource(recover_recordings_on_startup)
-        self.assertIn("_dvr_remux_hls_to_mkv", source)
+        self.assertIn("remux_hls_to_mkv", source)
         self.assertIn('cp.pop("_hls_dir"', source)
         self.assertIn("/file/", source)
 
@@ -619,7 +628,7 @@ class PlaylistRemuxTests(TestCase):
         import tempfile
         import unittest
 
-        from apps.channels.tasks import _dvr_remux_hls_to_mkv
+        from apps.channels.dvr_remux import remux_hls_to_mkv
 
         if not shutil.which("ffmpeg"):
             raise unittest.SkipTest("ffmpeg not available")
@@ -661,7 +670,7 @@ class PlaylistRemuxTests(TestCase):
             )
             self.assertNotIn("#EXT-X-ENDLIST", open(m3u8).read())
 
-            ok, via_mp4 = _dvr_remux_hls_to_mkv(m3u8, out, "test-remux", 4242)
+            ok, via_mp4 = remux_hls_to_mkv(m3u8, out, "test-remux", 4242)
             self.assertTrue(ok)
             self.assertFalse(via_mp4)
             self.assertTrue(os.path.getsize(out) > 0)
@@ -672,7 +681,7 @@ class PlaylistRemuxTests(TestCase):
 
     def test_mp4_fallback_uses_recording_id_in_intermediate_name(self):
         import tempfile
-        from apps.channels.tasks import _dvr_remux_hls_to_mkv
+        from apps.channels.dvr_remux import remux_hls_to_mkv
 
         with tempfile.TemporaryDirectory() as tmp:
             hls = os.path.join(tmp, "hls")
@@ -687,13 +696,13 @@ class PlaylistRemuxTests(TestCase):
             open(os.path.join(hls, "seg_00000.ts"), "wb").write(b"\x00")
 
             intermediate = os.path.join(hls, ".dvr_99_intermediate.mp4")
-            seen = []
+            seen_cmds = []
 
             def fake_budget(cmd, log_label, step_label, deadline):
-                seen.append(cmd[-1])
+                seen_cmds.append(list(cmd))
                 result = MagicMock()
                 result.stderr = ""
-                if len(seen) == 1:
+                if len(seen_cmds) == 1:
                     result.returncode = 1
                     return result
                 if cmd[-1] == intermediate:
@@ -708,20 +717,24 @@ class PlaylistRemuxTests(TestCase):
                 return result
 
             with patch(
-                "apps.channels.tasks._dvr_run_ffmpeg_with_budget",
+                "apps.channels.dvr_remux._run_ffmpeg_with_budget",
                 side_effect=fake_budget,
             ):
-                ok, via_mp4 = _dvr_remux_hls_to_mkv(m3u8, out, "test-mp4", 99)
+                ok, via_mp4 = remux_hls_to_mkv(m3u8, out, "test-mp4", 99)
 
             self.assertTrue(ok)
             self.assertTrue(via_mp4)
-            self.assertIn(intermediate, seen)
+            self.assertTrue(any(cmd[-1] == intermediate for cmd in seen_cmds))
+            # MP4 muxer inserts aac_adtstoasc itself for AAC; a blanket
+            # -bsf:a fails immediately on AC-3/E-AC-3/MP2.
+            for cmd in seen_cmds:
+                self.assertNotIn("aac_adtstoasc", cmd)
             self.assertFalse(os.path.exists(intermediate))
 
     @patch("core.utils.RedisClient")
     @patch("apps.channels.tasks.run_recording")
     @patch("core.utils.send_websocket_update", side_effect=lambda *a, **kw: None)
-    @patch("apps.channels.tasks._dvr_remux_hls_to_mkv", return_value=(True, False))
+    @patch("apps.channels.tasks.remux_hls_to_mkv", return_value=(True, False))
     def test_expired_recovery_points_at_file_after_remux(
         self, mock_remux, _ws, mock_run, mock_redis_cls
     ):

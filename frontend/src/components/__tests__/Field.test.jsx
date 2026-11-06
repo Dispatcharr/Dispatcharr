@@ -33,7 +33,7 @@ vi.mock('@mantine/core', async () => {
         {description && <div>{description}</div>}
       </div>
     ),
-    Textarea: ({ label, description, value, onChange, placeholder }) => (
+    Textarea: ({ label, description, value, onChange, placeholder, rows }) => (
       <div>
         <label htmlFor="textarea-input">{label}</label>
         <textarea
@@ -41,6 +41,7 @@ vi.mock('@mantine/core', async () => {
           value={value}
           onChange={onChange}
           placeholder={placeholder}
+          rows={rows}
           aria-describedby={description}
         />
         {description && <div>{description}</div>}
@@ -91,6 +92,11 @@ describe('Field', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each([[undefined, 4], [8, 8]])('renders text fields with rows %s', (rows, expected) => {
+    render(<Field field={{ id: 'notes', type: 'text', label: 'Notes', rows }} onChange={mockOnChange} />);
+    expect(screen.getByLabelText('Notes')).toHaveAttribute('rows', String(expected));
   });
 
   describe('TextInput (string type)', () => {

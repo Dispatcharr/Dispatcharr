@@ -1,12 +1,12 @@
-name: "PR: Freshness"
+name: "PR: Lifecycle"
 
 on:
   schedule:
-    - cron: '0 16 */2 * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
-  freshness:
+  lifecycle:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@v3
@@ -14,6 +14,37 @@ jobs:
         with:
           client-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - uses: Dispatcharr/repo-bot/actions/pr-intake@v1
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          dry-run: false
+          review-label: In Review
+          closed-lookback-days: 7
+          intake-comment: |
+            ## Pull request received
+
+            Thanks for contributing. Please review the [contribution guidelines](https://github.com/${{ github.repository }}/blob/dev/CONTRIBUTING.md) while your pull request is triaged.
+
+            Maintainers review pull requests as time allows and may take them in any order. Large or poorly scoped pull requests may take significantly longer to review or be declined.
+
+            Keep drafts local until they are actively being prepared for review. Open a pull request only when you intend to carry it through to a merge decision.
+
+      - uses: Dispatcharr/repo-bot/actions/proposal-guard@v1
+        id: proposal-guard
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          max-net-delta-without-discussion: 600
+          created-after: '2026-10-29T23:59:00Z'
+          triage-label: Triage
+          enforcement: close
+          bypass-for-members: true
+          comment: |
+            ## Large proposal requires discussion
+
+            Significant features and substantial refactors require maintainer signoff in a linked proposal discussion before implementation begins.
+
+            Please read the [contribution guidelines](https://github.com/Dispatcharr/Dispatcharr/blob/dev/CONTRIBUTING.md), [open a proposal discussion](https://github.com/Dispatcharr/Dispatcharr/discussions/new?category=proposals), wait for maintainer signoff, then reopen or submit your pull request.
 
       - uses: Dispatcharr/repo-bot/actions/pr-freshness@v1
         with:

@@ -63,7 +63,7 @@ class PluginRunAPIViewAsyncTests(TestCase):
         self.assertEqual(
             response.data, {"success": True, "status": "started", "task_id": "task-123"}
         )
-        mock_record.assert_called_once_with("my-plugin", ANY, "slow", "Slow")
+        mock_record.assert_called_once_with("my-plugin", ANY, "slow", "Slow", trigger="manual")
         mock_apply_async.assert_called_once_with(
             args=["my-plugin", "slow", {}], queue="plugins", task_id=ANY
         )

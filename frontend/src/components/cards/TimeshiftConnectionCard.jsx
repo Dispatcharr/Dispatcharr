@@ -28,6 +28,7 @@ import {
 } from '../../utils/cards/TimeshiftConnectionCardUtils.js';
 import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 import useUsersStore from '../../store/users.jsx';
+import AudioStreamBadge from '../AudioStreamBadge.jsx';
 
 const ClientDetails = ({ connection, connectionStartTime }) => (
   <Stack
@@ -324,20 +325,7 @@ const TimeshiftConnectionCard = ({
               </Badge>
             </Tooltip>
           )}
-          {timeshiftSession.audio_codec && (
-            <Tooltip label="Audio codec">
-              <Badge size="sm" variant="light" color="pink">
-                {timeshiftSession.audio_codec.toUpperCase()}
-              </Badge>
-            </Tooltip>
-          )}
-          {timeshiftSession.audio_channels && (
-            <Tooltip label="Audio channel configuration">
-              <Badge size="sm" variant="light" color="pink">
-                {timeshiftSession.audio_channels}
-              </Badge>
-            </Tooltip>
-          )}
+          <AudioStreamBadge stats={timeshiftSession} />
           {timeshiftSession.stream_type && (
             <Tooltip label="Stream type">
               <Badge size="sm" variant="light" color="cyan">
