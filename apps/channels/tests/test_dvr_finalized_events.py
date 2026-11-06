@@ -192,6 +192,7 @@ class DvrCancelEmitsRecordingEndTests(SimpleTestCase):
         view = RecordingViewSet()
         request = SimpleNamespace(user=SimpleNamespace(username="admin", pk=3))
         with mock.patch.object(RecordingViewSet, "get_object", return_value=instance), \
+                mock.patch.object(RecordingViewSet, "_user_owns_recording", return_value=False), \
                 mock.patch("rest_framework.viewsets.ModelViewSet.destroy", return_value="deleted"), \
                 mock.patch("core.utils.RedisClient.get_client", return_value=None), \
                 mock.patch("core.utils.send_websocket_update"), \

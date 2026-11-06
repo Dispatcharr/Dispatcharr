@@ -105,7 +105,7 @@ const ProgramDetailModal = React.lazy(
 import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import useAuthStore from '../store/auth';
-import { canManageDvr } from '../utils/dvrAccess';
+import { canManageDvr, canRequestDvr } from '../utils/dvrAccess';
 
 export default function TVChannelGuide({ startDate, endDate }) {
   const [isChannelsLoading, setIsChannelsLoading] = useState(false);
@@ -118,6 +118,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
   const authUser = useAuthStore((s) => s.user);
   const canManage = canManageDvr(authUser);
+  const canRequest = canRequestDvr(authUser);
 
   const enableLogoRendering = useLogosStore((s) => s.enableLogoRendering);
   useEffect(() => {
@@ -1746,6 +1747,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 saveSeriesRule(recordChoiceProgram, 'new')
               }
               onExistingRuleModeChange={setExistingRuleMode}
+              allowSeries={canManage}
             />
           </Suspense>
         </ErrorBoundary>
@@ -1776,7 +1778,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               opened={!!selectedProgram}
               onClose={handleCloseModal}
               onRecord={
-                canManage
+                canManage || canRequest
                   ? (program) => openRecordChoice(program, selectedChannel)
                   : undefined
               }

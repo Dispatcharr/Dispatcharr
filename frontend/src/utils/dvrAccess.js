@@ -4,6 +4,7 @@ import { USER_LEVELS } from '../constants';
 export const DVR_ACCESS = {
   NONE: 'none',
   VIEW: 'view',
+  REQUEST: 'request',
   MANAGE: 'manage',
 };
 
@@ -20,6 +21,7 @@ export const getDvrAccess = (user) => {
   if (
     raw === DVR_ACCESS.NONE ||
     raw === DVR_ACCESS.VIEW ||
+    raw === DVR_ACCESS.REQUEST ||
     raw === DVR_ACCESS.MANAGE
   ) {
     return raw;
@@ -32,6 +34,14 @@ export const getDvrAccess = (user) => {
  * DVR endpoints.
  */
 export const canManageDvr = (user) => getDvrAccess(user) === DVR_ACCESS.MANAGE;
+
+/**
+ * Whether the user may schedule/delete recordings they own themselves
+ * (without full manage rights over other users' recordings or settings).
+ * True for 'request' and 'manage' (manage implies request).
+ */
+export const canRequestDvr = (user) =>
+  [DVR_ACCESS.REQUEST, DVR_ACCESS.MANAGE].includes(getDvrAccess(user));
 
 /**
  * Whether the user may list/play DVR recordings and see the DVR nav item.

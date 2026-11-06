@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DVR_ACCESS,
   canManageDvr,
+  canRequestDvr,
   canViewDvr,
   getDvrAccess,
 } from '../dvrAccess';
@@ -64,5 +65,32 @@ describe('dvrAccess', () => {
     expect(getDvrAccess(user)).toBe(DVR_ACCESS.NONE);
     expect(canViewDvr(user)).toBe(false);
     expect(canManageDvr(user)).toBe(false);
+  });
+
+  it('grants request and view but not manage when dvr_access is request', () => {
+    const user = {
+      user_level: USER_LEVELS.STANDARD,
+      custom_properties: { dvr_access: DVR_ACCESS.REQUEST },
+    };
+    expect(getDvrAccess(user)).toBe(DVR_ACCESS.REQUEST);
+    expect(canRequestDvr(user)).toBe(true);
+    expect(canViewDvr(user)).toBe(true);
+    expect(canManageDvr(user)).toBe(false);
+  });
+
+  it('manage implies request', () => {
+    const user = {
+      user_level: USER_LEVELS.STANDARD,
+      custom_properties: { dvr_access: DVR_ACCESS.MANAGE },
+    };
+    expect(canRequestDvr(user)).toBe(true);
+  });
+
+  it('view does not imply request', () => {
+    const user = {
+      user_level: USER_LEVELS.STANDARD,
+      custom_properties: { dvr_access: DVR_ACCESS.VIEW },
+    };
+    expect(canRequestDvr(user)).toBe(false);
   });
 });
