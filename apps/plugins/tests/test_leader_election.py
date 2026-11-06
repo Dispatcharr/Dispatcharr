@@ -140,6 +140,20 @@ class LeaderElectionRedisPrimitiveTests(SimpleTestCase):
 
 
 class LeaderElectionTransitionTests(SimpleTestCase):
+    def test_unexpected_service_exit_releases_lease_and_delays_local_retry(self):
+        pm = PluginManager()
+        lp, _instance = _plugin_with_leader_hooks("svc")
+        pm._registry = {"svc": lp}
+        pm._leadership_state["svc"] = "leader"
+        pm._service_runner.state = MagicMock(return_value="failed")
+        pm._release_plugin_leadership = MagicMock()
+        pm.extend_leadership = MagicMock()
+        pm._leadership_tick()
+        pm._release_plugin_leadership.assert_called_once_with("svc", lp)
+        pm.extend_leadership.assert_not_called()
+        self.assertEqual(pm._service_failures["svc"], 1)
+        self.assertGreater(pm._service_retry_at["svc"], 0)
+
     def test_transition_to_leader_calls_hook_once_and_sets_state(self):
         pm = PluginManager()
         lp, instance = _plugin_with_leader_hooks()
@@ -221,6 +235,20 @@ class LeaderElectionTransitionTests(SimpleTestCase):
 
 
 class LeadershipContextTests(SimpleTestCase):
+    def test_live_settings_accessor_reads_current_values_and_closes_connections(self):
+        pm = PluginManager()
+        lp, _instance = _plugin_with_leader_hooks("svc")
+        lp.fields = [{"id": "defaulted", "default": "value"}]
+        accessor = pm._build_leadership_context(lp)["get_settings"]
+        with patch("apps.plugins.loader.PluginConfig.objects.get") as get_config, patch(
+            "apps.plugins.loader.close_old_connections"
+        ) as close:
+            get_config.return_value.settings = {"changed": 1}
+            self.assertEqual(accessor(), {"changed": 1, "defaulted": "value"})
+            get_config.return_value.settings = {"changed": 2}
+            self.assertEqual(accessor()["changed"], 2)
+        self.assertEqual(close.call_count, 2)
+
     def test_context_includes_dispatch_task_and_report_progress(self):
         pm = PluginManager()
         lp, _instance = _plugin_with_leader_hooks("svc")
@@ -229,7 +257,8 @@ class LeadershipContextTests(SimpleTestCase):
         lp.path = "/data/plugins/svc_1_2_3"
         lp.actions = [{"id": "do_thing"}]
 
-        context = pm._build_leadership_context(lp)
+        with patch("apps.plugins.loader.os.makedirs"):
+            context = pm._build_leadership_context(lp)
 
         self.assertEqual(context["settings"], {"foo": "bar"})
         self.assertEqual(context["data_dir"], "/data/plugins/_data/svc")

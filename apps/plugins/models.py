@@ -66,6 +66,11 @@ class PluginRepo(models.Model):
     class Meta:
         ordering = ["-is_official", "name"]
 
+    @property
+    def registry_url(self):
+        data = self.cached_manifest or {}
+        return (data.get("manifest", data) or {}).get("registry_url", "") or ""
+
     def __str__(self) -> str:
         return self.name
 

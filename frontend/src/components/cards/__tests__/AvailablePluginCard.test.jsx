@@ -406,15 +406,14 @@ describe('AvailablePluginCard', () => {
       expect(screen.getByTestId('icon-scale')).toBeInTheDocument();
     });
 
-    it('renders a last_updated badge', () => {
+    it('does not show the update date on the card', () => {
       setupMocks();
       render(
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
       );
-      // The date badge is rendered from last_updated via toLocaleDateString()
       expect(
-        screen.getByText(new Date('2024-01-01T00:00:00Z').toLocaleDateString())
-      ).toBeInTheDocument();
+        screen.queryByText(new Date('2024-01-01T00:00:00Z').toLocaleDateString())
+      ).not.toBeInTheDocument();
     });
 
     it('renders the More Info button', () => {

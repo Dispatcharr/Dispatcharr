@@ -311,6 +311,35 @@ class _PrependStream:
 # Only the last few KB are needed to confirm the root </tv> closed. Keeps
 # multi-hundred-MB guide checks constant-memory and cheap on I/O.
 _XMLTV_COMPLETENESS_TAIL_BYTES = 8192
+_XMLTV_SCRIPT_OPEN = re.compile(rb'<script\b[^>]*>', re.IGNORECASE)
+_XMLTV_SCRIPT_CLOSE = re.compile(rb'</script\s*>', re.IGNORECASE)
+
+
+def _xmltv_trailer_is_allowed(trailer: bytes) -> bool:
+    """Recognize XML Misc and complete CDN script elements after the root."""
+    pos = 0
+    while pos < len(trailer):
+        if trailer[pos] in b' \t\r\n':
+            pos += 1
+        elif trailer.startswith(b'<!--', pos):
+            end = trailer.find(b'--', pos + 4)
+            if end < 0 or not trailer.startswith(b'-->', end):
+                return False
+            pos = end + 3
+        elif trailer.startswith(b'<?', pos):
+            end = trailer.find(b'?>', pos + 2)
+            if end < 0:
+                return False
+            pos = end + 2
+        else:
+            opening = _XMLTV_SCRIPT_OPEN.match(trailer, pos)
+            if not opening:
+                return False
+            closing = _XMLTV_SCRIPT_CLOSE.search(trailer, opening.end())
+            if not closing:
+                return False
+            pos = closing.end()
+    return True
 
 
 def _xmltv_file_is_complete(file_path: str) -> bool:
@@ -332,7 +361,16 @@ def _xmltv_file_is_complete(file_path: str) -> bool:
             tail = f.read()
     except OSError:
         return False
-    return tail.rstrip().endswith(b'</tv>')
+    pos = tail.find(b'</tv>')
+    while pos >= 0:
+        # Avoid mistaking an obvious unfinished comment or CDATA for the root.
+        prefix = tail[:pos]
+        in_comment = prefix.rfind(b'<!--') > prefix.rfind(b'-->')
+        in_cdata = prefix.rfind(b'<![CDATA[') > prefix.rfind(b']]>')
+        if not in_comment and not in_cdata and _xmltv_trailer_is_allowed(tail[pos + 5:]):
+            return True
+        pos = tail.find(b'</tv>', pos + 5)
+    return False
 
 
 def _unlink_quiet(path: str | None) -> None:
@@ -354,10 +392,10 @@ def _reject_incomplete_xmltv(source, file_path: str, *, ws_action: str) -> bool:
         pass
     logger.error(
         f"Incomplete XMLTV for source {source.name}: {file_path} "
-        f"({size} bytes) does not end with </tv>"
+        f"({size} bytes) has no closing </tv> with a supported trailer"
     )
     msg = (
-        f"EPG file appears incomplete (missing closing </tv>). "
+        f"EPG file appears incomplete (missing closing </tv> or unsupported trailing content). "
         f"Keeping previous data when available; will retry on next refresh."
     )
     _set_epg_source_status(

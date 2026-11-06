@@ -350,5 +350,16 @@ describe('usePluginStore', () => {
         status: 'ok',
       });
     });
+
+    it('ignores malformed history while preserving an action id as a fallback label', () => {
+      act(() => {
+        usePluginStore.getState().hydratePluginTasks('my-plugin', 'My Plugin', [
+          null, {}, { task_id: 'missing-action' },
+          { task_id: 'valid', action_id: 'sync', status: 'partial' },
+        ]);
+      });
+      expect(Object.keys(usePluginStore.getState().pluginTasks)).toEqual(['valid']);
+      expect(usePluginStore.getState().pluginTasks.valid.actionLabel).toBe('sync');
+    });
   });
 });

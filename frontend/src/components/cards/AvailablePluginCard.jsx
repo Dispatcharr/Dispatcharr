@@ -15,7 +15,6 @@ import {
 import {
   AlertTriangle,
   Ban,
-  CalendarClock,
   Check,
   Download,
   FlaskConical,
@@ -111,6 +110,7 @@ const InstallStatusIndicator = ({
 
 const AvailablePluginCardHeader = ({
   plugin,
+  onAuthorClick,
   signatureVerified = plugin.signature_verified,
 }) => (
   <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
@@ -144,6 +144,7 @@ const AvailablePluginCardHeader = ({
         <Group gap={6} align="center" wrap="nowrap">
           <PluginMetadata
             plugin={plugin}
+            onAuthorClick={onAuthorClick}
             license={plugin.license}
             sourceRepoName={plugin.repo_name}
             trailing={
@@ -166,6 +167,7 @@ const AvailablePluginCardHeader = ({
 
 const AvailablePluginCard = ({
   plugin,
+  onAuthorClick,
   appVersion,
   appVersionTimestamp,
   autoOpenDetail = false,
@@ -202,6 +204,7 @@ const AvailablePluginCard = ({
   const [enabling, setEnabling] = useState(false);
   const [pluginIsDisabled, setPluginIsDisabled] = useState(false);
   const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
+  const [dataConfirmOpen, setDataConfirmOpen] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [deprecationWarnOpen, setDeprecationWarnOpen] = useState(false);
   const [pendingDeprecatedInstall, setPendingDeprecatedInstall] =
@@ -312,12 +315,17 @@ const AvailablePluginCard = ({
     if (andNavigate) navigate('/plugins');
   };
 
-  const handleUninstall = async () => {
+  const handleUninstall = async (dataAction) => {
     const key = plugin.key || installedKey;
     if (!key) return;
     setUninstalling(true);
     try {
-      const resp = await deletePluginByKey(key);
+      const resp = dataAction ? await deletePluginByKey(key, dataAction) : await deletePluginByKey(key);
+      if (resp?.data_confirmation_required) {
+        setUninstallConfirmOpen(false);
+        setDataConfirmOpen(true);
+        return;
+      }
       if (resp?.success) {
         onUninstalled?.(plugin.slug);
         usePluginStore.getState().invalidatePlugins();
@@ -409,7 +417,7 @@ const AvailablePluginCard = ({
         backgroundColor: '#27272A',
       }}
     >
-      <AvailablePluginCardHeader plugin={plugin} />
+      <AvailablePluginCardHeader plugin={plugin} onAuthorClick={onAuthorClick} />
 
       <Box
         style={{
@@ -454,53 +462,41 @@ const AvailablePluginCard = ({
               </Tooltip>
             );
           })()}
-        {meetsVersion && (plugin.last_updated || hasDownloadCount) && (
-          <Group
-            gap={4}
-            align="center"
-            wrap="nowrap"
-          >
+        {meetsVersion && hasDownloadCount && (
+          <Group className="available-plugin-card__activity" gap={4} align="center" wrap="nowrap">
+            {/* Keep the update date available for a future card layout.
             {plugin.last_updated && (
+              <CollapsedTooltip label={`Updated: ${new Date(plugin.last_updated).toLocaleDateString()}`} textSelector=".available-plugin-card__updated-text">
               <Group
                 className="available-plugin-card__updated"
                 gap={4}
                 align="center"
                 wrap="nowrap"
+                tabIndex={0}
+                aria-label={`Updated: ${new Date(plugin.last_updated).toLocaleDateString()}`}
               >
                 <CalendarClock
                   size={12}
                   color="var(--mantine-color-dimmed)"
                 />
-                <Text size="xs" c="dimmed">
+                <Text className="available-plugin-card__updated-text" size="xs" c="dimmed">
                   {new Date(plugin.last_updated).toLocaleDateString()}
                 </Text>
               </Group>
+              </CollapsedTooltip>
             )}
             {hasDownloadCount && plugin.last_updated && (
-              <Text
-                className="available-plugin-card__action-separator"
-                size="xs"
-                c="dimmed"
-              >
-                •
-              </Text>
-            )}
+              <Text className="available-plugin-card__action-separator" size="xs" c="dimmed">•</Text>
+            )} */}
             {hasDownloadCount && (
-              <Group
-                className="available-plugin-card__downloads"
-                gap={3}
-                align="center"
-                wrap="nowrap"
-              >
+              <Group className="available-plugin-card__downloads" gap={3} align="center" wrap="nowrap">
                 <Download size={12} color="var(--mantine-color-dimmed)" />
-                <Text size="xs" c="dimmed">
-                  {plugin.download_count.toLocaleString()}
-                </Text>
+                <Text size="xs" c="dimmed">{plugin.download_count.toLocaleString()}</Text>
               </Group>
             )}
           </Group>
         )}
-        {meetsVersion && !plugin.last_updated && !hasDownloadCount && <span />}
+        {meetsVersion && !hasDownloadCount && <span />}
         <Group gap="xs" wrap="nowrap">
           <Button
             size="xs"
@@ -640,7 +636,7 @@ const AvailablePluginCard = ({
                 />
               </Group>
               <PluginMetadata
-                plugin={{ author: detail?.manifest?.author ?? plugin.author }}
+                plugin={{ ...plugin, author: detail?.manifest?.author ?? plugin.author }}
                 license={detail?.manifest?.license ?? plugin.license}
                 sourceRepoName={plugin.repo_name}
                 trailing={<PluginLinks helpUrl={detail?.manifest?.help_url} compact />}
@@ -855,6 +851,18 @@ const AvailablePluginCard = ({
           </Text>
         }
       />
+      {dataConfirmOpen && <ConfirmationDialog
+        opened={dataConfirmOpen}
+        onClose={() => setDataConfirmOpen(false)}
+        onConfirm={(removeData) => { setDataConfirmOpen(false); handleUninstall(removeData ? 'delete' : 'keep'); }}
+        title="Plugin data found"
+        message="This plugin has saved data. Keep it for a future reinstall, or select the option below to permanently delete it."
+        confirmLabel="Uninstall"
+        showDeleteFileOption
+        deleteFileLabel="Also permanently delete saved plugin data"
+        loading={uninstalling}
+        zIndex={300}
+      />}
 
       {/* Post-uninstall notice */}
       <Modal

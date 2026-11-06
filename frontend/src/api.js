@@ -2418,16 +2418,18 @@ export default class API {
     }
   }
 
-  static async deletePlugin(key) {
+  static async deletePlugin(key, dataAction) {
     try {
       const response = await request(
         `${host}/api/plugins/plugins/${key}/delete/`,
         {
           method: 'DELETE',
+          ...(dataAction && { body: { data_action: dataAction } }),
         }
       );
       return response;
     } catch (e) {
+      if (e?.body?.data_confirmation_required) return e.body;
       errorNotification('Failed to delete plugin', e);
     }
   }
