@@ -180,6 +180,19 @@ class PmtLayoutWatcherTests(unittest.TestCase):
         extra = make_pmt([(H264, VIDEO_PID), (AAC, AUDIO_PID), (AC3, 258)])
         self.assertEqual(watcher.find_layout_change(extra), 0)
 
+    def test_reordered_streams_are_a_layout_change(self):
+        """Program order decides each stream's index downstream, so it is part of the layout."""
+        watcher = seeded([(H264, VIDEO_PID), (AC3, AUDIO_PID), (AAC, AUDIO_PID + 1)])
+        reordered = make_pmt([(H264, VIDEO_PID), (AAC, AUDIO_PID + 1), (AC3, AUDIO_PID)])
+        self.assertEqual(watcher.find_layout_change(reordered), 0)
+
+    def test_fingerprint_keeps_the_program_order(self):
+        watcher = seeded([(H264, VIDEO_PID), (AC3, 0x300), (AAC, 0x200)])
+        self.assertEqual(
+            [stream_type for stream_type, _pid, _desc in watcher.fingerprint[1]],
+            [H264, AC3, AAC],
+        )
+
     def test_pmt_pid_change_via_pat_is_a_layout_change(self):
         watcher = seeded([(H264, VIDEO_PID), (AAC, AUDIO_PID)])
         moved = (

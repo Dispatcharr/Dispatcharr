@@ -147,9 +147,9 @@ class RedisKeys:
     def output_buffer_discontinuities(channel_id, fmt):
         """Sorted set of output buffer chunk indices where a new era begins.
 
-        Used when an output-profile FFmpeg restarts (codec/PMT change or input
-        failover) so downstream consumers such as HLS-on-profile can cut
-        before reading that chunk.
+        Used when an output-profile or fMP4 remux FFmpeg restarts (codec/PMT
+        change or input failover) so downstream consumers can cut before
+        reading that chunk. An open fMP4 response is given the new init there.
         """
         return f"live:channel:{channel_id}:output:{fmt}:buffer:discontinuities"
 

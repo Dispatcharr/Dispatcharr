@@ -20,6 +20,35 @@ import struct
 from collections import namedtuple
 
 from apps.proxy.ts_psi import (
+    DESCRIPTOR_AAC,
+    DESCRIPTOR_AC3,
+    DESCRIPTOR_DTS,
+    DESCRIPTOR_EAC3,
+    DESCRIPTOR_ISO_639_LANGUAGE,
+    DESCRIPTOR_REGISTRATION,
+    REGISTRATION_AC3,
+    REGISTRATION_DTS1,
+    REGISTRATION_DTS2,
+    REGISTRATION_DTS3,
+    REGISTRATION_EAC3,
+    STREAM_TYPE_AAC_ADTS,
+    STREAM_TYPE_AAC_LATM,
+    STREAM_TYPE_AC3,
+    STREAM_TYPE_AVS,
+    STREAM_TYPE_BLURAY_DTS,
+    STREAM_TYPE_BLURAY_DTS_HD,
+    STREAM_TYPE_BLURAY_DTS_HD_MASTER,
+    STREAM_TYPE_BLURAY_EAC3,
+    STREAM_TYPE_BLURAY_TRUEHD,
+    STREAM_TYPE_EAC3,
+    STREAM_TYPE_H264,
+    STREAM_TYPE_HEVC,
+    STREAM_TYPE_MPEG1_AUDIO,
+    STREAM_TYPE_MPEG1_VIDEO,
+    STREAM_TYPE_MPEG2_AUDIO,
+    STREAM_TYPE_MPEG2_VIDEO,
+    STREAM_TYPE_MPEG4_VIDEO,
+    STREAM_TYPE_PRIVATE_DATA,
     TS_PACKET_SIZE,
     PsiSectionAssembler,
     packet_payload_offset,
@@ -52,22 +81,51 @@ _EAC3_HALF_RATES = (24000, 22050, 16000)
 _AC3_FULL_CHANNELS = (2, 1, 2, 3, 3, 4, 4, 5)
 _MPEG_RATES = {3: (44100, 48000, 32000), 2: (22050, 24000, 16000), 0: (11025, 12000, 8000)}
 
-_VIDEO_TYPES = frozenset({0x01, 0x02, 0x10, 0x1B, 0x24, 0x42})
-_AUDIO_TYPES = frozenset({0x03, 0x04, 0x0F, 0x11, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87})
-# Private PES (0x06) carries audio when one of these descriptors says so.
-_PRIVATE_AUDIO_DESCRIPTORS = frozenset({0x6A, 0x7A, 0x7B, 0x7C})
-_REGISTRATION_TAG = 0x05
-_LANGUAGE_TAG = 0x0A
-_REGISTRATION_AUDIO = (b"AC-3", b"EAC3", b"DTS1", b"DTS2", b"DTS3")
+_VIDEO_TYPES = frozenset({
+    STREAM_TYPE_MPEG1_VIDEO,
+    STREAM_TYPE_MPEG2_VIDEO,
+    STREAM_TYPE_MPEG4_VIDEO,
+    STREAM_TYPE_H264,
+    STREAM_TYPE_HEVC,
+    STREAM_TYPE_AVS,
+})
+# Includes the Blu-ray audio types. 0x86 in that range is also SCTE-35.
+_AUDIO_TYPES = frozenset({
+    STREAM_TYPE_MPEG1_AUDIO,
+    STREAM_TYPE_MPEG2_AUDIO,
+    STREAM_TYPE_AAC_ADTS,
+    STREAM_TYPE_AAC_LATM,
+    STREAM_TYPE_AC3,
+    STREAM_TYPE_BLURAY_DTS,
+    STREAM_TYPE_BLURAY_TRUEHD,
+    STREAM_TYPE_BLURAY_EAC3,
+    STREAM_TYPE_BLURAY_DTS_HD,
+    STREAM_TYPE_BLURAY_DTS_HD_MASTER,
+    STREAM_TYPE_EAC3,
+})
+# Private PES carries audio when one of these descriptors says so.
+_PRIVATE_AUDIO_DESCRIPTORS = frozenset({
+    DESCRIPTOR_AC3,
+    DESCRIPTOR_EAC3,
+    DESCRIPTOR_DTS,
+    DESCRIPTOR_AAC,
+})
+_REGISTRATION_AUDIO = (
+    REGISTRATION_AC3,
+    REGISTRATION_EAC3,
+    REGISTRATION_DTS1,
+    REGISTRATION_DTS2,
+    REGISTRATION_DTS3,
+)
 
 # What FFmpeg's own MPEG-TS muxer writes per codec, so FFmpeg's demuxer
 # recognizes it: codec -> (stream_type, descriptors).
 _RELABEL_ENTRIES = {
-    "aac": (0x0F, b""),
-    "ac3": (0x81, bytes([_REGISTRATION_TAG, 4]) + b"AC-3"),
-    "eac3": (0x87, bytes([_REGISTRATION_TAG, 4]) + b"EAC3"),
-    "mp2": (0x03, b""),
-    "mp3": (0x03, b""),
+    "aac": (STREAM_TYPE_AAC_ADTS, b""),
+    "ac3": (STREAM_TYPE_AC3, bytes([DESCRIPTOR_REGISTRATION, 4]) + REGISTRATION_AC3),
+    "eac3": (STREAM_TYPE_EAC3, bytes([DESCRIPTOR_REGISTRATION, 4]) + REGISTRATION_EAC3),
+    "mp2": (STREAM_TYPE_MPEG1_AUDIO, b""),
+    "mp3": (STREAM_TYPE_MPEG1_AUDIO, b""),
 }
 
 
@@ -150,11 +208,11 @@ def entry_kind(entry):
         return "video"
     if entry.stream_type in _AUDIO_TYPES:
         return "audio"
-    if entry.stream_type == 0x06:
+    if entry.stream_type == STREAM_TYPE_PRIVATE_DATA:
         for tag, data in _parse_descriptors(entry.descriptors):
             if tag in _PRIVATE_AUDIO_DESCRIPTORS:
                 return "audio"
-            if tag == _REGISTRATION_TAG and data in _REGISTRATION_AUDIO:
+            if tag == DESCRIPTOR_REGISTRATION and data in _REGISTRATION_AUDIO:
                 return "audio"
     return None
 
@@ -174,21 +232,22 @@ def entry_codec(entry):
     from Layer III.
     """
     stream_type = entry.stream_type
-    if stream_type == 0x0F:
+    if stream_type == STREAM_TYPE_AAC_ADTS:
         return "aac"
-    if stream_type == 0x11:
+    if stream_type == STREAM_TYPE_AAC_LATM:
         return "latm"
-    if stream_type == 0x81:
+    if stream_type == STREAM_TYPE_AC3:
         return "ac3"
-    if stream_type == 0x87:
+    if stream_type == STREAM_TYPE_EAC3:
         return "eac3"
-    if stream_type in (0x03, 0x04):
+    if stream_type in (STREAM_TYPE_MPEG1_AUDIO, STREAM_TYPE_MPEG2_AUDIO):
         return "mpeg"
-    if stream_type == 0x06:
+    if stream_type == STREAM_TYPE_PRIVATE_DATA:
         for tag, data in _parse_descriptors(entry.descriptors):
-            if tag == 0x6A or (tag == _REGISTRATION_TAG and data == b"AC-3"):
+            registered = tag == DESCRIPTOR_REGISTRATION
+            if tag == DESCRIPTOR_AC3 or (registered and data == REGISTRATION_AC3):
                 return "ac3"
-            if tag == 0x7A or (tag == _REGISTRATION_TAG and data == b"EAC3"):
+            if tag == DESCRIPTOR_EAC3 or (registered and data == REGISTRATION_EAC3):
                 return "eac3"
     return None
 
@@ -214,7 +273,7 @@ def relabeled_entry(entry, shape):
         return entry
     stream_type, descriptors = template
     for tag, data in _parse_descriptors(entry.descriptors):
-        if tag == _LANGUAGE_TAG:
+        if tag == DESCRIPTOR_ISO_639_LANGUAGE:
             descriptors += bytes([tag, len(data)]) + data
     return PmtEntry(stream_type, entry.pid, descriptors)
 
