@@ -368,7 +368,25 @@ describe('M3UGroupFilter', () => {
             auto_enable_new_groups_live: true,
             auto_enable_new_groups_vod: true,
             auto_enable_new_groups_series: true,
-          })
+          }),
+          false
+        );
+      });
+    });
+
+    it('marks only the initial group save for a combined first refresh', async () => {
+      setupStores();
+      render(<M3UGroupFilter {...defaultProps({ isInitialSetup: true })} />);
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => {
+        expect(M3uGroupFilterUtils.saveAndRefreshPlaylist).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 1 }),
+          expect.any(Array),
+          expect.any(Array),
+          expect.any(Array),
+          expect.any(Object),
+          true
         );
       });
     });
@@ -393,6 +411,45 @@ describe('M3UGroupFilter', () => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({
             color: expect.stringMatching(/green|teal/),
+          })
+        );
+      });
+    });
+
+    it('explains that VOD follows the initial Live TV refresh', async () => {
+      setupStores();
+      render(<M3UGroupFilter {...defaultProps({ isInitialSetup: true })} />);
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Live TV Refresh Started',
+            message: expect.stringContaining(
+              'VOD will be queued in the background after Live TV completes'
+            ),
+          })
+        );
+      });
+    });
+
+    it('does not promise a VOD refresh when the account has VOD disabled', async () => {
+      setupStores();
+      render(
+        <M3UGroupFilter
+          {...defaultProps({
+            playlist: makePlaylist({ enable_vod: false }),
+            isInitialSetup: true,
+          })}
+        />
+      );
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Live TV Refresh Started',
+            message: expect.not.stringContaining('VOD'),
           })
         );
       });

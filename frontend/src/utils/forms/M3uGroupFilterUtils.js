@@ -40,7 +40,8 @@ export const saveAndRefreshPlaylist = async (
   groupStates,
   movieCategoryStates,
   seriesCategoryStates,
-  autoEnableSettings
+  autoEnableSettings,
+  isInitialSetup = false
 ) => {
   const groupSettings = prepareGroupSettings(groupStates);
   const categorySettings = prepareCategorySettings(
@@ -50,7 +51,16 @@ export const saveAndRefreshPlaylist = async (
 
   await updatePlaylist(playlist, autoEnableSettings);
   await updateM3UGroupSettings(playlist, groupSettings, categorySettings);
-  await refreshPlaylist(playlist);
+  if (
+    isInitialSetup &&
+    playlist.account_type === 'XC' &&
+    playlist.enable_vod &&
+    playlist.is_active !== false
+  ) {
+    await refreshPlaylist(playlist, true);
+  } else {
+    await refreshPlaylist(playlist);
+  }
 };
 
 const prepareGroupSettings = (groupStates) => {

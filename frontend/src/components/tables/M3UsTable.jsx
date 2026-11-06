@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useCallback,
-} from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import usePlaylistsStore from '../../store/playlists';
 import M3UForm from '../forms/M3U';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
@@ -29,6 +23,7 @@ import {
   SquareMinus,
   SquarePen,
   RefreshCcw,
+  Film,
   RotateCcw,
   SquarePlus,
   Filter,
@@ -54,7 +49,8 @@ import {
   getStatusColor,
   getStatusContent,
   formatStatusText,
-  refreshPlaylist,
+  refreshLivePlaylist,
+  refreshVODContent,
   updatePlaylist,
 } from '../../utils/tables/M3UsTableUtils.js';
 import {
@@ -64,16 +60,47 @@ import {
 
 const ALL_ACCOUNT_TYPES = ['STD', 'XC'];
 
+const formatRefreshDuration = (seconds) => {
+  if (
+    seconds == null ||
+    !Number.isFinite(Number(seconds)) ||
+    Number(seconds) < 0
+  )
+    return '—';
+  const total = Math.max(0, Math.round(Number(seconds)));
+  if (total >= 3600)
+    return `${Math.floor(total / 3600)}h ${Math.floor((total % 3600) / 60)}m`;
+  if (total >= 60) return `${Math.floor(total / 60)}m ${total % 60}s`;
+  return `${Math.round(Number(seconds) * 10) / 10}s`;
+};
+
+const refreshKinds = (account) => {
+  const kinds = [['live', 'Live TV']];
+  if (
+    account.account_type === 'XC' &&
+    (account.enable_vod !== false ||
+      account.custom_properties?.refresh_timings?.vod_completed_at)
+  ) {
+    kinds.push(['vod', 'VOD']);
+  }
+  return kinds;
+};
+
 const StatusRow = ({ label, value }) => (
   <Flex justify="space-between" align="center">
-    <Text size="xs" fw={500}>{label}{value ? ':' : ''}</Text>
+    <Text size="xs" fw={500}>
+      {label}
+      {value ? ':' : ''}
+    </Text>
     {value && <Text size="xs">{value}</Text>}
   </Flex>
 );
 
 const StatusBox = ({ children }) => (
   <Box>
-    <Flex direction="column" gap={2}>{children}</Flex>
+    <Flex direction="column" gap={2}>
+      {children}
+    </Flex>
   </Box>
 );
 
@@ -83,6 +110,7 @@ const RowActions = ({
   handleDeletePlaylist,
   row,
   handleRefreshPlaylist,
+  handleRefreshVOD,
 }) => {
   const iconSize =
     tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
@@ -107,19 +135,33 @@ const RowActions = ({
       >
         <SquareMinus size={tableSize === 'compact' ? 16 : 18} />
       </ActionIcon>
-      <ActionIcon
-        variant="transparent"
-        size={iconSize}
-        color="blue.5"
-        onClick={() => handleRefreshPlaylist(row.original.id)}
-        disabled={!row.original.is_active}
-      >
-        <RefreshCcw size={tableSize === 'compact' ? 16 : 18} />
-      </ActionIcon>
+      <Tooltip label="Refresh Live TV">
+        <ActionIcon
+          variant="transparent"
+          size={iconSize}
+          color="blue.5"
+          onClick={() => handleRefreshPlaylist(row.original.id)}
+          disabled={!row.original.is_active}
+        >
+          <RefreshCcw size={tableSize === 'compact' ? 16 : 18} />
+        </ActionIcon>
+      </Tooltip>
+      {row.original.account_type === 'XC' && (
+        <Tooltip label="Refresh VOD">
+          <ActionIcon
+            variant="transparent"
+            size={iconSize}
+            color="blue.5"
+            onClick={() => handleRefreshVOD(row.original.id)}
+            disabled={!row.original.is_active || !row.original.enable_vod}
+          >
+            <Film size={tableSize === 'compact' ? 16 : 18} />
+          </ActionIcon>
+        </Tooltip>
+      )}
     </>
   );
 };
-
 
 const M3UTable = () => {
   const [playlist, setPlaylist] = useState(null);
@@ -181,7 +223,9 @@ const M3UTable = () => {
     switch (content.type) {
       case 'initializing':
         return (
-          <StatusBox><StatusRow label="Initializing refresh..." /></StatusBox>
+          <StatusBox>
+            <StatusRow label="Initializing refresh..." />
+          </StatusBox>
         );
       case 'downloading':
         return (
@@ -194,24 +238,39 @@ const M3UTable = () => {
       case 'groups':
         return (
           <StatusBox>
-            <StatusRow label="Processing groups" value={`${content.progress}%`} />
-            {content.elapsedTime && <StatusRow label="Elapsed" value={content.elapsedTime} />}
-            {content.groupsProcessed && <StatusRow label="Groups" value={content.groupsProcessed} />}
+            <StatusRow
+              label="Processing groups"
+              value={`${content.progress}%`}
+            />
+            {content.elapsedTime && (
+              <StatusRow label="Elapsed" value={content.elapsedTime} />
+            )}
+            {content.groupsProcessed && (
+              <StatusRow label="Groups" value={content.groupsProcessed} />
+            )}
           </StatusBox>
         );
       case 'parsing':
         return (
           <StatusBox>
             <StatusRow label="Parsing" value={`${content.progress}%`} />
-            {content.elapsedTime && <StatusRow label="Elapsed" value={content.elapsedTime} />}
-            {content.timeRemaining && <StatusRow label="Remaining" value={content.timeRemaining} />}
-            {content.streamsProcessed && <StatusRow label="Streams" value={content.streamsProcessed} />}
+            {content.elapsedTime && (
+              <StatusRow label="Elapsed" value={content.elapsedTime} />
+            )}
+            {content.timeRemaining && (
+              <StatusRow label="Remaining" value={content.timeRemaining} />
+            )}
+            {content.streamsProcessed && (
+              <StatusRow label="Streams" value={content.streamsProcessed} />
+            )}
           </StatusBox>
         );
       case 'error':
         return (
           <StatusBox>
-            <Text size="xs" fw={500} color="red">Error:</Text>
+            <Text size="xs" fw={500} color="red">
+              Error:
+            </Text>
             <Text size="xs" color="red" style={{ lineHeight: 1.3 }}>
               {content.error || 'Unknown error occurred'}
             </Text>
@@ -237,7 +296,7 @@ const M3UTable = () => {
     });
 
     try {
-      await refreshPlaylist(id);
+      await refreshLivePlaylist(id);
       // No need to set again since WebSocket will update us once the task starts
     } catch {
       // If the API call fails, show an error state
@@ -247,6 +306,28 @@ const M3UTable = () => {
         account: id,
         type: 'm3u_refresh',
         error: 'Failed to start refresh task',
+        status: 'error',
+      });
+    }
+  };
+
+  const handleRefreshVOD = async (id) => {
+    setRefreshProgress(id, {
+      action: 'vod_refresh',
+      progress: 0,
+      account: id,
+      type: 'm3u_refresh',
+    });
+
+    try {
+      await refreshVODContent(id);
+    } catch {
+      setRefreshProgress(id, {
+        action: 'error',
+        progress: 0,
+        account: id,
+        type: 'm3u_refresh',
+        error: 'Failed to start VOD refresh task',
         status: 'error',
       });
     }
@@ -325,8 +406,43 @@ const M3UTable = () => {
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 200,
+        size: 300,
         sortable: true,
+        cell: ({ cell, row }) => {
+          const custom = row.original.custom_properties || {};
+          const live = custom.live_catalog_counts;
+          const vod = custom.vod_catalog_counts || {};
+          const summaries =
+            row.original.account_type === 'XC'
+              ? [
+                  ['Live TV', live],
+                  ['Movies', vod.movies],
+                  ['Series', vod.series],
+                ]
+              : [['Live TV', live]];
+          return (
+            <Box>
+              <Text size="sm">{cell.getValue()}</Text>
+              <Tooltip label="Provider entries / imported entries from the last successful refresh">
+                <Box style={{ cursor: 'help' }}>
+                  {summaries.map(([label, counts]) => (
+                    <Text
+                      key={label}
+                      size="xs"
+                      c="dimmed"
+                      style={{ whiteSpace: 'nowrap' }}
+                    >
+                      {label}:{' '}
+                      {counts
+                        ? `${counts.provider_total} / ${counts.selected_total}`
+                        : '— / —'}
+                    </Text>
+                  ))}
+                </Box>
+              </Tooltip>
+            </Box>
+          );
+        },
       },
       {
         header: 'Type',
@@ -377,13 +493,60 @@ const M3UTable = () => {
         },
       },
       {
-        header: 'Status Message',
+        header: 'Refresh details',
         accessorKey: 'last_message',
         grow: true,
-        minSize: 250,
+        minSize: 350,
         cell: ({ cell, row }) => {
-          const value = cell.getValue();
+          const value = cell
+            .getValue()
+            ?.replace(
+              /^Processing completed in [\d.]+ seconds\.\s*/,
+              'Live TV refresh completed. '
+            );
           const data = row.original;
+          const timings = data.custom_properties?.refresh_timings || {};
+          const autoSync = data.custom_properties?.live_auto_sync_result;
+          const autoSyncWarning = autoSync
+            ? autoSync.status === 'error'
+              ? `Auto-sync failed: ${autoSync.error || 'Unknown error'}`
+              : autoSync.channels_failed > 0
+                ? `Auto-sync: ${autoSync.channels_failed} channel(s) failed`
+                : null
+            : value?.match(
+                /Auto-sync error: .+|Auto-sync: .*\b\d+ failed\./
+              )?.[0];
+          const hasRefreshSummary =
+            Object.keys(timings).length > 0 || data.enable_vod;
+          const durationLine =
+            hasRefreshSummary || autoSyncWarning ? (
+              <Box>
+                {hasRefreshSummary && (
+                  <Tooltip label="Duration of the last successful Live TV and VOD refresh; — means no duration has been recorded yet">
+                    <Box>
+                      {refreshKinds(data).map(([kind, label]) => (
+                        <Text
+                          key={kind}
+                          size="xs"
+                          c="dimmed"
+                          style={{ whiteSpace: 'nowrap' }}
+                        >
+                          {label}:{' '}
+                          {formatRefreshDuration(timings[`${kind}_seconds`])}
+                        </Text>
+                      ))}
+                    </Box>
+                  </Tooltip>
+                )}
+                {autoSyncWarning && (
+                  <Tooltip label={autoSyncWarning} multiline width={300}>
+                    <Text size="xs" c="yellow" lineClamp={2}>
+                      {autoSyncWarning}
+                    </Text>
+                  </Tooltip>
+                )}
+              </Box>
+            ) : null;
 
           // Get account id to check for refresh progress
           const accountId = data.id;
@@ -398,69 +561,79 @@ const M3UTable = () => {
                   height: '100%',
                   width: '100%',
                   display: 'flex',
-                  alignItems: 'center',
+                  flexDirection: 'column',
                   justifyContent: 'flex-start',
                   // Add some padding to give content room to breathe
                   padding: '4px 0',
                 }}
               >
                 {generateStatusString(progressData)}
+                {durationLine}
               </Box>
             );
           }
 
           // No progress data, display normal status message
-          if (!value) return null;
+          if (!value) return durationLine;
 
           // Show error message with red styling for errors
           if (data.status === 'error') {
             return (
-              <Tooltip label={value} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
-                >
-                  {value}
-                </Text>
-              </Tooltip>
+              <Box>
+                <Tooltip label={value} multiline width={300}>
+                  <Text
+                    c="dimmed"
+                    size="xs"
+                    lineClamp={2}
+                    style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
+                  >
+                    {value}
+                  </Text>
+                </Tooltip>
+                {durationLine}
+              </Box>
             );
           }
 
-          // Show success message with green styling for success
           if (data.status === 'success') {
+            if (durationLine) return durationLine;
             return (
-              <Tooltip label={value} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  style={{
-                    color: theme.colors.green[6],
-                    lineHeight: 1.3,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {value}
-                </Text>
-              </Tooltip>
+              <Box>
+                <Tooltip label={value} multiline width={300}>
+                  <Text
+                    c="dimmed"
+                    size="xs"
+                    style={{
+                      color: theme.colors.green[6],
+                      lineHeight: 1.3,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {value}
+                  </Text>
+                </Tooltip>
+                {durationLine}
+              </Box>
             );
           }
 
           // For all other status values, just use dimmed text
           return (
-            <Tooltip label={value} multiline width={300}>
-              <Text
-                c="dimmed"
-                size="xs"
-                lineClamp={2}
-                style={{ lineHeight: 1.1 }}
-              >
-                {value}
-              </Text>
-            </Tooltip>
+            <Box>
+              <Tooltip label={value} multiline width={300}>
+                <Text
+                  c="dimmed"
+                  size="xs"
+                  lineClamp={2}
+                  style={{ lineHeight: 1.1 }}
+                >
+                  {value}
+                </Text>
+              </Tooltip>
+              {durationLine}
+            </Box>
           );
         },
       },
@@ -553,16 +726,29 @@ const M3UTable = () => {
         },
       },
       {
-        header: 'Updated',
+        header: 'Last refresh',
         accessorKey: 'updated_at',
-        size: 175,
-        cell: ({ cell }) => {
-          const value = cell.getValue();
-          if (!value) {
-            return <Text size="xs">Never</Text>;
-          }
-          const formatted = format(value, fullDateTimeFormat);
-          return <Text size="xs">{formatted}</Text>;
+        size: 230,
+        cell: ({ cell, row }) => {
+          const data = row.original;
+          const timings = data.custom_properties?.refresh_timings || {};
+          return (
+            <Box>
+              {refreshKinds(data).map(([kind, label]) => {
+                const completedAt =
+                  timings[`${kind}_completed_at`] ||
+                  (kind === 'live' ? cell.getValue() : null);
+                return (
+                  <Text key={kind} size="xs" style={{ whiteSpace: 'nowrap' }}>
+                    {label}:{' '}
+                    {completedAt
+                      ? format(completedAt, fullDateTimeFormat)
+                      : 'Never'}
+                  </Text>
+                );
+              })}
+            </Box>
+          );
         },
       },
       {
@@ -594,6 +780,7 @@ const M3UTable = () => {
       toggleActive,
       fullDateFormat,
       fullDateTimeFormat,
+      refreshProgress,
     ]
   );
 
@@ -642,7 +829,7 @@ const M3UTable = () => {
 
   const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
 
-  const renderBodyCell = useCallback(({ cell, row }) => {
+  const renderBodyCell = ({ cell, row }) => {
     switch (cell.column.id) {
       case 'actions':
         return (
@@ -652,10 +839,11 @@ const M3UTable = () => {
             handleDeletePlaylist={handleDeletePlaylist}
             row={row}
             handleRefreshPlaylist={handleRefreshPlaylist}
+            handleRefreshVOD={handleRefreshVOD}
           />
         );
     }
-  }, []);
+  };
 
   // Mirrors the Type column's own STD-vs-XC display logic so the filter labels
   // and the rendered values can't drift apart.
@@ -710,7 +898,7 @@ const M3UTable = () => {
       className: `table-size-${tableSize}`,
     },
     // Add custom cell styles to match CustomTable's sizing
-    tableCellProps: ({ cell }) => {
+    tableCellProps: () => {
       return {
         fontSize:
           tableSize === 'compact'

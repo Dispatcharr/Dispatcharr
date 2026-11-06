@@ -65,7 +65,7 @@ class XCEmptyFetchGuardTests(TransactionTestCase):
         return account, group, stream, channel
 
     @patch("apps.m3u.tasks.sync_auto_channels")
-    @patch("apps.m3u.tasks.collect_xc_streams", return_value=[])
+    @patch("apps.m3u.tasks.collect_xc_streams", return_value=([], 0))
     @patch("apps.m3u.tasks.refresh_m3u_groups")
     def test_empty_xc_fetch_aborts_before_sync_and_preserves_channels(
         self, mock_refresh_groups, _mock_collect, mock_sync
@@ -123,7 +123,7 @@ class XCEmptyFetchGuardTests(TransactionTestCase):
             "attributes": {"group-title": "Sports", "stream_id": "1"},
         }
 
-        with patch("apps.m3u.tasks.collect_xc_streams", return_value=[xc_stream]):
+        with patch("apps.m3u.tasks.collect_xc_streams", return_value=([xc_stream], 1)):
             _refresh_single_m3u_account_impl(account.id)
 
         mock_sync.assert_called_once()
