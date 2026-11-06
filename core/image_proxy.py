@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import re
 import time
 from urllib.parse import urljoin
 
@@ -136,6 +137,77 @@ def _read_limited_body(remote_response, *, url: str, failure_cache: dict, fail_t
     return b"".join(chunks)
 
 
+class RemoteImageStatusError(Http404):
+    """The remote host answered with a non-200 status (or a redirect with no target)."""
+
+
+# scheme://authority | path | ?query#fragment
+_URL_PARTS = re.compile(
+    r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*)([^?#]*)(.*)",
+    re.DOTALL,
+)
+
+
+def _collapse_repeated_path_slashes(url: str) -> str:
+    """Return *url* with runs of ``/`` in the path collapsed to one.
+
+    Scheme, host, query and fragment are left exactly as given. Returns *url*
+    unchanged when the path has no repeated slash.
+    """
+    match = _URL_PARTS.fullmatch(url)
+    if not match:
+        return url
+    prefix, path, rest = match.groups()
+    return prefix + re.sub(r"/{2,}", "/", path) + rest
+
+
+def _fetch_with_double_slash_retry(
+    url: str,
+    *,
+    failure_cache: dict,
+    fail_ttl: int,
+    user_agent: str,
+) -> tuple[bytes, str, dict]:
+    """Fetch *url* as stored; if that fails, retry once with ``//`` in the path collapsed.
+
+    Some hosts reject a double slash in the path, others use it on purpose, so
+    the stored URL is never rewritten and the collapsed form is only a fallback.
+    The raw failure is not negative-cached while the retry is still to come.
+    """
+    retry_url = _collapse_repeated_path_slashes(url)
+    if retry_url == url:
+        return _fetch_remote_image(
+            url,
+            failure_cache=failure_cache,
+            fail_ttl=fail_ttl,
+            user_agent=user_agent,
+        )
+
+    try:
+        return _fetch_remote_image(
+            url,
+            failure_cache={},
+            fail_ttl=fail_ttl,
+            user_agent=user_agent,
+        )
+    except (RemoteImageStatusError, requests.exceptions.RequestException) as exc:
+        logger.info("Remote image %s failed (%s); retrying as %s", url, exc, retry_url)
+    except Http404:
+        _remember_fetch_failure(url, failure_cache, fail_ttl)
+        raise
+
+    try:
+        return _fetch_remote_image(
+            retry_url,
+            failure_cache=failure_cache,
+            fail_ttl=fail_ttl,
+            user_agent=user_agent,
+        )
+    except (Http404, requests.exceptions.RequestException):
+        _remember_fetch_failure(url, failure_cache, fail_ttl)
+        raise
+
+
 def _fetch_remote_image(
     url: str,
     *,
@@ -168,13 +240,13 @@ def _fetch_remote_image(
                 location = remote_response.headers.get("Location")
                 if not location:
                     _remember_fetch_failure(url, failure_cache, fail_ttl)
-                    raise Http404("Remote image not found")
+                    raise RemoteImageStatusError("Remote image not found")
                 current_url = urljoin(current_url, location)
                 continue
 
             if status != 200:
                 _remember_fetch_failure(url, failure_cache, fail_ttl)
-                raise Http404("Remote image not found")
+                raise RemoteImageStatusError("Remote image not found")
 
             body = _read_limited_body(
                 remote_response,
@@ -217,6 +289,9 @@ def serve_local_or_remote_image(
     allow private LAN addresses (for locally hosted artwork), and reject
     loopback/link-local/metadata targets. Response types are taken from
     magic bytes (JPEG/PNG/GIF/WebP/ICO/BMP/SVG), not upstream Content-Type.
+
+    A URL whose fetch fails (non-200 or request error) is retried once with
+    repeated slashes in its path collapsed; the stored URL is never changed.
 
     Missing or unreachable images raise ``Http404``
     """
@@ -262,7 +337,7 @@ def serve_local_or_remote_image(
         raise Http404("Remote image temporarily unavailable")
 
     try:
-        body, content_type, upstream_headers = _fetch_remote_image(
+        body, content_type, upstream_headers = _fetch_with_double_slash_retry(
             url,
             failure_cache=failure_cache,
             fail_ttl=fail_ttl,

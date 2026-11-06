@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import requests
 from django.http import Http404
 from django.test import SimpleTestCase
 
@@ -199,3 +200,185 @@ class ServeLocalOrRemoteImageTests(SimpleTestCase):
         with self.assertRaises(Http404):
             serve_local_or_remote_image("http://127.0.0.1/logo.png")
         mock_get.assert_not_called()
+
+
+def _status_response(status_code: int):
+    mock_response = MagicMock()
+    mock_response.status_code = status_code
+    mock_response.headers = {}
+    return mock_response
+
+
+def _host_that_rejects_double_slash():
+    """requests.get stand-in: 400 for a path with ``//``, otherwise a PNG."""
+
+    def fake_get(url, **kwargs):
+        path = url.split("://", 1)[1].split("?", 1)[0].split("#", 1)[0]
+        if "//" in path.split("/", 1)[1]:
+            return _status_response(400)
+        return _mock_ok_response(PNG_BYTES)
+
+    return fake_get
+
+
+@patch("core.image_proxy.validate_outbound_http_url")
+@patch(
+    "core.image_proxy.CoreSettings.get_default_user_agent",
+    return_value="Dispatcharr-Test/1.0",
+)
+class DoubleSlashRetryTests(SimpleTestCase):
+    """A failed fetch is retried once with repeated path slashes collapsed."""
+
+    RAW = "https://logos.example.com/logos//New_Zealand/CNN.nz.png"
+    COLLAPSED = "https://logos.example.com/logos/New_Zealand/CNN.nz.png"
+
+    def setUp(self):
+        image_fetch_failures.clear()
+
+    @patch("core.image_proxy.requests.get")
+    def test_raw_400_then_collapsed_200_is_served(self, mock_get, _ua, _validate):
+        mock_get.side_effect = _host_that_rejects_double_slash()
+
+        response = serve_local_or_remote_image(self.RAW)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, PNG_BYTES)
+        self.assertEqual(
+            [call.args[0] for call in mock_get.call_args_list],
+            [self.RAW, self.COLLAPSED],
+        )
+        # Neither URL is remembered as a failure.
+        self.assertNotIn(self.RAW, image_fetch_failures)
+        self.assertNotIn(self.COLLAPSED, image_fetch_failures)
+
+        # A second request is not blocked by the earlier raw failure.
+        mock_get.reset_mock()
+        response = serve_local_or_remote_image(self.RAW)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("core.image_proxy.requests.get")
+    def test_both_urls_validated_for_ssrf(self, mock_get, _ua, mock_validate):
+        mock_get.side_effect = _host_that_rejects_double_slash()
+
+        serve_local_or_remote_image(self.RAW)
+
+        self.assertEqual(
+            [call.args[0] for call in mock_validate.call_args_list],
+            [self.RAW, self.COLLAPSED],
+        )
+
+    @patch("core.image_proxy.requests.get")
+    def test_raw_success_is_never_retried(self, mock_get, _ua, _validate):
+        mock_get.return_value = _mock_ok_response(PNG_BYTES)
+
+        response = serve_local_or_remote_image(self.RAW)
+
+        self.assertEqual(response.status_code, 200)
+        mock_get.assert_called_once()
+        self.assertEqual(mock_get.call_args.args[0], self.RAW)
+
+    @patch("core.image_proxy.requests.get")
+    def test_request_error_on_raw_triggers_the_retry(self, mock_get, _ua, _validate):
+        mock_get.side_effect = [
+            requests.exceptions.ConnectionError("reset"),
+            _mock_ok_response(PNG_BYTES),
+        ]
+
+        response = serve_local_or_remote_image(self.RAW)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_get.call_args_list[1].args[0], self.COLLAPSED)
+        self.assertNotIn(self.RAW, image_fetch_failures)
+
+    @patch("core.image_proxy.requests.get")
+    def test_query_string_is_never_changed(self, mock_get, _ua, _validate):
+        mock_get.return_value = _status_response(404)
+
+        # No repeated slash in the path: a "//" in the query must not retry.
+        with self.assertRaises(Http404):
+            serve_local_or_remote_image("https://logos.example.com/a/b.png?x=/y//z")
+        mock_get.assert_called_once()
+        self.assertEqual(
+            mock_get.call_args.args[0],
+            "https://logos.example.com/a/b.png?x=/y//z",
+        )
+
+        # Repeated slash in the path: only the path is collapsed on the retry.
+        mock_get.reset_mock()
+        with self.assertRaises(Http404):
+            serve_local_or_remote_image(
+                "https://logos.example.com/a//b.png?x=/y//z#f//g"
+            )
+        self.assertEqual(
+            [call.args[0] for call in mock_get.call_args_list],
+            [
+                "https://logos.example.com/a//b.png?x=/y//z#f//g",
+                "https://logos.example.com/a/b.png?x=/y//z#f//g",
+            ],
+        )
+
+    @patch("core.image_proxy.requests.get")
+    def test_no_retry_when_path_has_no_repeated_slash(self, mock_get, _ua, _validate):
+        mock_get.return_value = _status_response(404)
+
+        with self.assertRaises(Http404):
+            serve_local_or_remote_image("https://logos.example.com/logos/a.png")
+
+        mock_get.assert_called_once()
+
+    @patch("core.image_proxy.requests.get")
+    def test_at_most_one_retry_and_failure_is_cached(self, mock_get, _ua, _validate):
+        mock_get.return_value = _status_response(400)
+        url = "https://logos.example.com/a///b//c.png"
+
+        with self.assertRaises(Http404):
+            serve_local_or_remote_image(url)
+        self.assertEqual(
+            [call.args[0] for call in mock_get.call_args_list],
+            [url, "https://logos.example.com/a/b/c.png"],
+        )
+
+        # Both attempts failed: the negative cache now short-circuits the URL.
+        mock_get.reset_mock()
+        with self.assertRaises(Http404):
+            serve_local_or_remote_image(url)
+        mock_get.assert_not_called()
+
+    @patch("core.image_proxy.requests.get")
+    def test_blocked_url_is_not_retried(self, mock_get, _ua, mock_validate):
+        mock_validate.side_effect = ValueError("blocked")
+
+        with self.assertRaises(Http404):
+            serve_local_or_remote_image("http://127.0.0.1/a//b.png")
+
+        mock_get.assert_not_called()
+        mock_validate.assert_called_once()
+
+
+class CollapseRepeatedPathSlashesTests(SimpleTestCase):
+    def collapse(self, url):
+        from core import image_proxy
+
+        return image_proxy._collapse_repeated_path_slashes(url)
+
+    def test_collapses_path_only(self):
+        self.assertEqual(
+            self.collapse("https://h.example.com:8080/a//b///c.png?x=//y#z//"),
+            "https://h.example.com:8080/a/b/c.png?x=//y#z//",
+        )
+
+    def test_scheme_and_host_are_untouched(self):
+        self.assertEqual(
+            self.collapse("http://h.example.com//a.png"),
+            "http://h.example.com/a.png",
+        )
+
+    def test_unchanged_when_nothing_to_collapse(self):
+        for url in (
+            "https://h.example.com/a/b.png",
+            "https://h.example.com/a/b.png?x=/y//z",
+            "https://h.example.com",
+            "not a url",
+        ):
+            self.assertEqual(self.collapse(url), url)
