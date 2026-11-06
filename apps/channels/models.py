@@ -518,7 +518,53 @@ class Stream(models.Model):
         )
 
 
-class ChannelManager(models.Manager):
+class ChannelQuerySet(models.QuerySet):
+    """
+    Reports bulk writes, which skip post_save, for the ``channels_updated``
+    event (see apps.channels.change_events). bulk_update() goes through
+    update(). Single saves and deletes are reported by signals.
+    """
+
+    def bulk_create(self, objs, *args, **kwargs):
+        from apps.channels.change_events import note_channels_changed
+
+        created = super().bulk_create(objs, *args, **kwargs)
+        note_channels_changed(created=[obj.pk for obj in created])
+        return created
+
+    def update(self, **kwargs):
+        from apps.channels.change_events import note_channels_changed
+
+        ids = list(self.values_list("pk", flat=True))
+        rows = super().update(**kwargs)
+        note_channels_changed(updated=ids)
+        return rows
+
+
+class ChannelChildQuerySet(models.QuerySet):
+    """
+    Reports bulk writes to rows that belong to one channel (its streams, its
+    overrides) as updates of that channel, for the ``channels_updated`` event.
+    """
+
+    def bulk_create(self, objs, *args, **kwargs):
+        from apps.channels.change_events import note_channels_changed
+
+        objs = list(objs)
+        created = super().bulk_create(objs, *args, **kwargs)
+        note_channels_changed(updated={obj.channel_id for obj in objs})
+        return created
+
+    def update(self, **kwargs):
+        from apps.channels.change_events import note_channels_changed
+
+        ids = set(self.values_list("channel_id", flat=True))
+        rows = super().update(**kwargs)
+        note_channels_changed(updated=ids)
+        return rows
+
+
+class ChannelManager(models.Manager.from_queryset(ChannelQuerySet)):
     def active(self):
         return self.all()
 
@@ -1304,6 +1350,8 @@ class ChannelOverride(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = ChannelChildQuerySet.as_manager()
+
     def __str__(self):
         return f"Override for channel {self.channel_id}"
 
@@ -1343,6 +1391,8 @@ class ChannelStream(models.Model):
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE)
     stream = models.ForeignKey(Stream, on_delete=models.CASCADE)
     order = models.PositiveIntegerField(default=0)  # Ordering field
+
+    objects = ChannelChildQuerySet.as_manager()
 
     class Meta:
         ordering = ["order"]  # Ensure streams are retrieved in order
