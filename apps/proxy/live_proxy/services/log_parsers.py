@@ -5,6 +5,15 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
 
+from apps.proxy.ts_psi import (
+    STREAM_TYPE_AAC_ADTS,
+    STREAM_TYPE_AAC_LATM,
+    STREAM_TYPE_AC3,
+    STREAM_TYPE_EAC3,
+    STREAM_TYPE_MPEG1_AUDIO,
+    STREAM_TYPE_MPEG2_AUDIO,
+)
+
 logger = logging.getLogger(__name__)
 
 # Named layouts ordered by usefulness for a "best audio" summary badge.
@@ -458,16 +467,14 @@ _VLC_DECODER_CODEC_RE = re.compile(
     r"\b(A/?52B?|e?ac-?3|AAC|MP3|MPGA|DTS|LPCM|PCM)\b",
     re.IGNORECASE,
 )
-# MPEG-TS stream_type values that identify an audio codec (ISO 13818-1 / ATSC).
-# 0x06 (private PES) is deliberately absent: it can carry AC-3, DTS, AAC or
-# subtitles, so it says nothing about the codec on its own.
+# Private PES (0x06) is absent: the same type carries AC-3, DTS, AAC, or subtitles.
 _VLC_AUDIO_STREAM_TYPES = {
-    0x03: "mp3",
-    0x04: "mp3",
-    0x0F: "aac",
-    0x11: "aac",
-    0x81: "ac3",
-    0x87: "eac3",
+    STREAM_TYPE_MPEG1_AUDIO: "mp3",
+    STREAM_TYPE_MPEG2_AUDIO: "mp3",
+    STREAM_TYPE_AAC_ADTS: "aac",
+    STREAM_TYPE_AAC_LATM: "aac",
+    STREAM_TYPE_AC3: "ac3",
+    STREAM_TYPE_EAC3: "eac3",
 }
 
 
