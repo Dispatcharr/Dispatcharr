@@ -98,6 +98,7 @@ const M3U = ({
       priority: 0,
       enable_vod: false,
       hash_key: [],
+      vary_user_agent: false,
     },
 
     validate: {
@@ -133,6 +134,7 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        vary_user_agent: m3uAccount.vary_user_agent || false,
         hash_key: m3uAccount.hash_key
           ? m3uAccount.hash_key.split(',').filter(Boolean)
           : [],
@@ -410,6 +412,14 @@ const M3U = ({
                     value: `${ua.id}`,
                   }))
                 )}
+              />
+              <Switch
+                id="vary_user_agent"
+                name="vary_user_agent"
+                label="Vary User-Agent per connection"
+                description="Append a number to the User-Agent for each concurrent stream on this account, so simultaneous connections don't present an identical UA. Needed by some providers that mishandle duplicate UAs. Put {#} in the User-Agent to control where the number goes; otherwise it's appended as a suffix."
+                key={form.key('vary_user_agent')}
+                {...form.getInputProps('vary_user_agent', { type: 'checkbox' })}
               />
               <MultiSelect
                 id="hash_key"
