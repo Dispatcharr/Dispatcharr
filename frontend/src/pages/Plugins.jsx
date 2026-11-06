@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  ActionIcon,
   Alert,
   AppShellMain,
   Badge,
@@ -36,7 +37,7 @@ import {
   reloadPlugins,
   setPluginEnabled,
 } from '../utils/pages/PluginsUtils.js';
-import { RotateCw, Search, Upload } from 'lucide-react';
+import { RotateCw, Search, Upload, X } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   PluginRestartWarning,
@@ -142,6 +143,7 @@ const PluginsList = ({
           leftSection={<Search size={14} />}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.currentTarget.value)}
+          rightSection={searchQuery ? <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Clear search" onClick={() => setSearchQuery('')}><X size={14} /></ActionIcon> : null}
           style={{ flex: 1, minWidth: 180, maxWidth: 300 }}
           size="xs"
         />
@@ -184,6 +186,7 @@ const PluginsList = ({
                 <PluginCard
                   key={p.key}
                   plugin={p}
+                  onAuthorClick={setSearchQuery}
                   onToggleEnabled={handleTogglePluginEnabled}
                   onRequireTrust={onRequireTrust}
                   onRequestDelete={onRequestDelete}
@@ -219,6 +222,7 @@ export default function PluginsPage() {
   const [imported, setImported] = useState(null);
   const [enableAfterImport, setEnableAfterImport] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [dataConfirmOpen, setDataConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -415,12 +419,17 @@ export default function PluginsPage() {
     };
   };
 
-  const handleDeletePlugin = () => {
+  const handleDeletePlugin = (dataAction) => {
     return async () => {
       if (!deleteTarget) return;
       setDeleting(true);
       try {
-        const resp = await deletePluginByKey(deleteTarget.key);
+        const resp = dataAction ? await deletePluginByKey(deleteTarget.key, dataAction) : await deletePluginByKey(deleteTarget.key);
+        if (resp?.data_confirmation_required) {
+          setDeleteOpen(false);
+          setDataConfirmOpen(true);
+          return;
+        }
         if (resp?.success) {
           usePluginStore.getState().removePlugin(deleteTarget.key);
 
@@ -431,6 +440,7 @@ export default function PluginsPage() {
           });
         }
         setDeleteOpen(false);
+        setDataConfirmOpen(false);
         setDeleteTarget(null);
       } finally {
         setDeleting(false);
@@ -599,6 +609,19 @@ export default function PluginsPage() {
         confirmLabel="Delete"
         loading={deleting}
       />
+
+      {dataConfirmOpen && <ConfirmationDialog
+        opened={dataConfirmOpen}
+        onClose={() => { setDataConfirmOpen(false); setDeleteTarget(null); }}
+        onConfirm={(removeData) => handleDeletePlugin(removeData ? 'delete' : 'keep')()}
+        title="Plugin data found"
+        message="This plugin has saved data. Keep it for a future reinstall, or select the option below to permanently delete it."
+        confirmLabel="Uninstall"
+        showDeleteFileOption
+        deleteFileLabel="Also permanently delete saved plugin data"
+        loading={deleting}
+        zIndex={300}
+      />}
 
       <ConfirmationDialog
         opened={confirmOpen}

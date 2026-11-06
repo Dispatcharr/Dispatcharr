@@ -6,6 +6,7 @@ import {
   Group,
   Modal,
   Progress,
+  Select,
   Stack,
   Text,
   TextInput,
@@ -174,7 +175,7 @@ export const PluginActionStatus = ({ running, lastResult }) => {
   );
 };
 
-const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', error: 'red' };
+const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', partial: 'yellow', error: 'red' };
 
 // Relative for anything recent, absolute HH:mm beyond a day (a bare "3d ago"
 // on a stale row isn't much more useful than the badge already showing it's
@@ -220,6 +221,7 @@ const PluginTaskRunRow = ({ task }) => {
             </Badge>
           </Group>
           <PluginTaskTimestamp task={task} />
+          <Text size="xs" c="dimmed">Trigger: {task.trigger || 'unknown'}</Text>
           {task.message && (
             <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
               {task.message}
@@ -228,6 +230,16 @@ const PluginTaskRunRow = ({ task }) => {
           {task.status === 'error' && task.error && (
             <Text size="xs" c="red" style={{ whiteSpace: 'normal' }}>
               {String(task.error)}
+            </Text>
+          )}
+          {task.status === 'partial' && task.result?.message && (
+            <Text size="xs" c="yellow" style={{ whiteSpace: 'normal' }}>
+              {String(task.result.message)}
+            </Text>
+          )}
+          {(task.status === 'error' || task.status === 'partial') && task.result && (
+            <Text component="pre" size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+              {JSON.stringify(task.result, null, 2).slice(0, 4000)}
             </Text>
           )}
         </>
@@ -253,6 +265,7 @@ const PluginTaskRunRow = ({ task }) => {
 const groupPluginTasks = (tasks) => {
   const groups = {};
   for (const [taskId, task] of Object.entries(tasks || {})) {
+    if (!task || !(task.actionId || task.actionLabel)) continue;
     const groupKey = task.actionId ?? task.actionLabel;
     if (!groups[groupKey]) {
       groups[groupKey] = { groupKey, actionLabel: task.actionLabel, runs: [] };
@@ -335,10 +348,30 @@ const PluginTaskGroupRow = ({ group }) => {
 };
 
 export const PluginTaskList = ({ tasks }) => {
-  const groups = useMemo(() => groupPluginTasks(tasks), [tasks]);
-  if (groups.length === 0) return null;
+  const [trigger, setTrigger] = useState('all');
+  const groups = useMemo(() => groupPluginTasks(
+    Object.fromEntries(Object.entries(tasks || {}).filter(([, task]) =>
+      trigger === 'all' || (task?.trigger || 'unknown') === trigger
+    ))
+  ), [tasks, trigger]);
+  if (!Object.keys(tasks || {}).length) return null;
   return (
     <Stack gap="xs">
+      <Select
+        aria-label="Filter task history by trigger"
+        size="xs"
+        value={trigger}
+        onChange={(value) => setTrigger(value || 'all')}
+        data={[
+          { value: 'all', label: 'All triggers' },
+          { value: 'manual', label: 'Manual' },
+          { value: 'schedule', label: 'Scheduled' },
+          { value: 'action', label: 'Action' },
+          { value: 'event', label: 'Event' },
+          { value: 'unknown', label: 'Unknown' },
+        ]}
+      />
+      {groups.length === 0 && <Text size="xs" c="dimmed">No runs match this trigger.</Text>}
       {groups.map((group) => (
         <PluginTaskGroupRow key={group.groupKey} group={group} />
       ))}

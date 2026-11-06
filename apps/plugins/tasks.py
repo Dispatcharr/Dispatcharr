@@ -29,8 +29,11 @@ def run_plugin_action_task(self, key, action_id, params=None):
     from core.utils import send_websocket_update
 
     task_id = self.request.id
+    result = None
     try:
         result = PluginManager.get().run_action(key, action_id, params or {}, task_id=task_id)
+        if isinstance(result, dict) and result.get("status") == "error":
+            raise RuntimeError(str(result.get("error") or result.get("message") or "Plugin action failed"))
     except Exception as e:
         send_websocket_update("updates", "update", {
             "type": "plugin_task_complete",
@@ -38,32 +41,41 @@ def run_plugin_action_task(self, key, action_id, params=None):
             "task_id": task_id,
             "status": "error",
             "error": str(e),
+            "result": result,
             "updatedAt": int(time.time() * 1000),
         })
-        record_task_complete(key, task_id, "error", error=str(e))
+        record_task_complete(key, task_id, "error", result=result, error=str(e))
         raise
+    result_status = "partial" if isinstance(result, dict) and result.get("status") == "partial" else "ok"
     send_websocket_update("updates", "update", {
         "type": "plugin_task_complete",
         "plugin": key,
         "task_id": task_id,
-        "status": "ok",
+        "status": result_status,
         "result": result,
         "updatedAt": int(time.time() * 1000),
     })
-    record_task_complete(key, task_id, "ok", result=result)
+    record_task_complete(key, task_id, result_status, result=result)
     return result
 
 
-def dispatch_plugin_action_task(key, action_id, params, action_label):
+def dispatch_plugin_action_task(key, action_id, params, action_label, *, trigger="manual"):
     """Record task history before publishing so a fast worker cannot replace
     a terminal status with a later `running` update."""
     from apps.plugins.task_history import record_task_started
 
     task_id = str(uuid.uuid4())
-    record_task_started(key, task_id, action_id, action_label)
-    return run_plugin_action_task.apply_async(
-        args=[key, action_id, params], queue="plugins", task_id=task_id
-    )
+    if trigger not in {"manual", "action", "schedule", "event"}:
+        raise ValueError("Invalid plugin task trigger")
+    record_task_started(key, task_id, action_id, action_label, trigger=trigger)
+    try:
+        return run_plugin_action_task.apply_async(
+            args=[key, action_id, params], queue="plugins", task_id=task_id
+        )
+    except Exception as exc:
+        from apps.plugins.task_history import record_task_complete
+        record_task_complete(key, task_id, "error", error=f"Failed to dispatch task: {exc}")
+        raise
 
 
 def evaluate_plugin_update_notification(plugin_key, name, installed_version, latest_version, install_status):

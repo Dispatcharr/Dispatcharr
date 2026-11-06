@@ -122,6 +122,7 @@ function PluginDetailForKey({ routeKey: key }) {
   const [installConfirmOpen, setInstallConfirmOpen] = useState(false);
   const [pendingInstallParams, setPendingInstallParams] = useState(null);
   const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
+  const [dataConfirmOpen, setDataConfirmOpen] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
@@ -280,7 +281,8 @@ function PluginDetailForKey({ routeKey: key }) {
     isManaged &&
     !!plugin.version &&
     !!selectedVersion &&
-    compareVersions(selectedVersion, plugin.version) === 0;
+    compareVersions(selectedVersion, plugin.version) === 0 &&
+    !!detail?.manifest?.versions?.find((v) => v.version === selectedVersion)?.prerelease === !!plugin.installed_version_is_prerelease;
   const topControlCount = (isManaged ? 1 : 0) + 1 + (versionActionIsUninstall ? 0 : 1);
   const topControlWidth = topControlsWidth / topControlCount;
   const checkIconOnly = topControlWidth > 0 && topControlWidth < 82;
@@ -464,10 +466,14 @@ function PluginDetailForKey({ routeKey: key }) {
     }
   };
 
-  const handleUninstall = async () => {
+  const handleUninstall = async (dataAction) => {
     setUninstalling(true);
     try {
-      const resp = await deletePluginByKey(plugin.key);
+      const resp = dataAction ? await deletePluginByKey(plugin.key, dataAction) : await deletePluginByKey(plugin.key);
+      if (resp?.data_confirmation_required) {
+        setDataConfirmOpen(true);
+        return;
+      }
       if (resp?.success) {
         usePluginStore.getState().removePlugin(plugin.key);
         showNotification({ title: plugin.name, message: 'Plugin deleted', color: 'green' });
@@ -801,6 +807,18 @@ function PluginDetailForKey({ routeKey: key }) {
         confirmLabel="Delete"
         loading={uninstalling}
       />
+      {dataConfirmOpen && <ConfirmationDialog
+        opened={dataConfirmOpen}
+        onClose={() => setDataConfirmOpen(false)}
+        onConfirm={(removeData) => { setDataConfirmOpen(false); handleUninstall(removeData ? 'delete' : 'keep'); }}
+        title="Plugin data found"
+        message="This plugin has saved data. Keep it for a future reinstall, or select the option below to permanently delete it."
+        confirmLabel="Uninstall"
+        showDeleteFileOption
+        deleteFileLabel="Also permanently delete saved plugin data"
+        loading={uninstalling}
+        zIndex={300}
+      />}
 
       <PluginEnableConfirmModal />
     </AppShellMain>
