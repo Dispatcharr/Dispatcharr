@@ -5252,10 +5252,10 @@ class RollupSelfHealDbTests(TestCase):
         return channel, stream
 
     def test_bulk_stream_delete_resets_channel_flags_via_signal(self):
-        # cleanup_streams() removes stale streams with a queryset bulk delete;
-        # the cascaded ChannelStream rows still fire post_delete (signal
-        # listeners disable Django's fast-delete path), which must reset the
-        # channel's denormalized catch-up fields.
+        # Queryset deletes still cascade through ChannelStream post_delete
+        # (signal listeners disable Django's fast-delete path), which must reset
+        # the channel's denormalized catch-up fields. cleanup_streams() does not
+        # use this path; it raw-deletes and rolls the affected channels up once.
         from apps.channels.models import Stream
 
         channel, stream = self._make_channel_with_catchup_stream("ts-rollup-bulk")

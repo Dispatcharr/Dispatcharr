@@ -17,6 +17,7 @@ from apps.channels.models import (
     Stream,
     ChannelGroup,
     ChannelGroupM3UAccount,
+    ChannelStream,
 )
 from django.utils import timezone
 import time
@@ -1659,8 +1660,59 @@ def _process_stream_batches_with_retry(
     return streams_created, streams_updated, streams_unchanged, failed_batch_count
 
 
+def _delete_streams_by_ids(stream_ids):
+    """Delete streams and their channel links under row locks.
+
+    ``ChannelStream.stream`` FKs are DEFERRABLE INITIALLY DEFERRED. Django's
+    collector snapshots related links before deleting, so a concurrent
+    ``ChannelStream`` insert after collect and before commit fails the cleanup
+    COMMIT with ForeignKeyViolation. ``select_for_update`` on the stream rows
+    blocks those inserts (they need KEY SHARE on the stream) until we commit.
+
+    Links are removed with ``_raw_delete`` so cascaded per-row catch-up signals
+    do not hold the lock open. Catch-up is rolled up in the same transaction as
+    the deletes: a rollup failure rolls the batch back instead of leaving streams
+    gone with stale channel flags. Deadlock retry is unavailable inside that
+    atomic block; a deadlock fails the batch and the next refresh retries it.
+    """
+    from apps.channels.utils import rollup_catchup_for_channels
+
+    ids = list(stream_ids)
+    if not ids:
+        return 0
+
+    deleted = 0
+    using = Stream.objects.db
+
+    for offset in range(0, len(ids), BATCH_SIZE):
+        batch = ids[offset : offset + BATCH_SIZE]
+        with transaction.atomic():
+            locked_ids = list(
+                Stream.objects.select_for_update()
+                .filter(id__in=batch)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if not locked_ids:
+                continue
+            affected_channel_ids = list(
+                ChannelStream.objects.filter(stream_id__in=locked_ids)
+                .values_list("channel_id", flat=True)
+                .distinct()
+            )
+            ChannelStream.objects.filter(stream_id__in=locked_ids)._raw_delete(using)
+            Stream.objects.filter(id__in=locked_ids)._raw_delete(using)
+            if affected_channel_ids:
+                # Same transaction as the deletes. retry_on_deadlock cannot run
+                # here; a deadlock aborts the batch and leaves streams in place.
+                rollup_catchup_for_channels(affected_channel_ids)
+            deleted += len(locked_ids)
+
+    return deleted
+
+
 def cleanup_streams(account_id, scan_start_time=timezone.now):
-    account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
+    account = M3UAccount.objects.get(id=account_id, is_active=True)
     existing_groups = ChannelGroup.objects.filter(
         m3u_accounts__m3u_account=account,
         m3u_accounts__enabled=True,
@@ -1675,28 +1727,32 @@ def cleanup_streams(account_id, scan_start_time=timezone.now):
         f"Removing streams not seen since {stale_cutoff} for M3U account {account_id}"
     )
 
-    # Delete streams that are not in active groups
-    streams_to_delete = Stream.objects.filter(m3u_account=account).exclude(
-        channel_group__in=existing_groups
+    # Streams that are not in active groups
+    group_filtered_ids = list(
+        Stream.objects.filter(m3u_account=account)
+        .exclude(channel_group__in=existing_groups)
+        .values_list("id", flat=True)
     )
 
-    # Also delete streams that haven't been seen for longer than stale_stream_days
-    stale_streams = Stream.objects.filter(
-        m3u_account=account, last_seen__lt=stale_cutoff
+    # Streams that haven't been seen for longer than stale_stream_days
+    stale_ids = list(
+        Stream.objects.filter(
+            m3u_account=account, last_seen__lt=stale_cutoff
+        ).values_list("id", flat=True)
     )
 
-    deleted_count = streams_to_delete.count()
-    stale_count = stale_streams.count()
+    deleted_count = len(group_filtered_ids)
+    stale_count = len(stale_ids)
 
-    streams_to_delete.delete()
-    stale_streams.delete()
+    # A stream can match both filters; delete each id once.
+    stream_ids = list(dict.fromkeys(group_filtered_ids + stale_ids))
+    total_deleted = _delete_streams_by_ids(stream_ids)
 
-    total_deleted = deleted_count + stale_count
     logger.info(
-        f"Cleanup for M3U account {account_id} complete: {deleted_count} streams removed due to group filter, {stale_count} removed as stale"
+        f"Cleanup for M3U account {account_id} complete: {total_deleted} streams removed "
+        f"({deleted_count} matched the group filter, {stale_count} matched the stale cutoff)"
     )
 
-    # Return the total count of deleted streams
     return total_deleted
 
 
