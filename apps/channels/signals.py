@@ -430,7 +430,7 @@ def revoke_task_on_delete(sender, instance, **kwargs):
 
 @receiver([post_save, post_delete], sender=ChannelStream)
 def update_channel_catchup_fields(sender, instance, **kwargs):
-    """Roll up catch-up flags from active streams (UI path; import uses SQL rollup)."""
+    """Roll up catch-up flags for the channel a stream link was added to or removed from."""
     from apps.channels.utils import rollup_catchup_for_channels
 
     rollup_catchup_for_channels([instance.channel_id])
