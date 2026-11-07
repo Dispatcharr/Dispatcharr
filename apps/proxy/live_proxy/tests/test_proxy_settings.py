@@ -13,7 +13,7 @@ from core.models import CoreSettings
 from core.serializers import ProxySettingsSerializer
 
 MIGRATION_0026 = import_module("core.migrations.0026_add_channel_client_wait_period")
-MIGRATION_0032 = import_module("core.migrations.0032_add_retry_settings_to_proxy_settings")
+MIGRATION_0035 = import_module("core.migrations.0035_add_retry_settings_to_proxy_settings")
 
 
 class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
@@ -298,9 +298,9 @@ class Migration0026ProxySettingsTests(TestCase):
         self.assertEqual(settings_obj.value["channel_client_wait_period"], 5)
 
 
-class Migration0032ProxySettingsTests(TestCase):
+class Migration0035ProxySettingsTests(TestCase):
     def _run_migration_forward(self):
-        MIGRATION_0032.add_retry_settings_to_proxy_settings(apps, None)
+        MIGRATION_0035.add_retry_settings_to_proxy_settings(apps, None)
 
     def _set_proxy_settings(self, value):
         settings_obj, _ = CoreSettings.objects.get_or_create(

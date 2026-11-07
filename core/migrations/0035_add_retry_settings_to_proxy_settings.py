@@ -35,7 +35,7 @@ def remove_retry_settings_from_proxy_settings(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0031_default_reverse_proxy_auth_settings"),
+        ("core", "0034_drop_output_profile_nobuffer"),
     ]
 
     operations = [
