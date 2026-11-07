@@ -1985,7 +1985,7 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                 program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True, recover=True)
     
                 for _, elem in program_parser:
-                    if elem.get('channel') == epg.tvg_id:
+                    if (elem.get('channel') or '').strip() == epg.tvg_id:
                         try:
                             start_time = parse_xmltv_time(elem.get('start'))
                             end_time = parse_xmltv_time(elem.get('stop'))
@@ -2647,7 +2647,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                 )
 
                 for _, elem in program_parser:
-                    channel_id = elem.get('channel')
+                    channel_id = (elem.get('channel') or '').strip()
 
                     if channel_id not in mapped_tvg_ids:
                         skipped_programs += 1
