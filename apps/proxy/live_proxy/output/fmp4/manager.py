@@ -715,7 +715,11 @@ class FMP4RemuxManager:
                         break
                     continue
 
+                # FileIO.read returns None on EAGAIN. It does not raise. b"" is EOF.
+                # Treating None as EOF would drop the output on a stale select.
                 data = process.stdout.read(read_size)
+                if data is None:
+                    continue
                 if not data:
                     logger.log(
                         logging.DEBUG if slot.closing.is_set() else logging.INFO,
@@ -773,7 +777,10 @@ class FMP4RemuxManager:
                     if process.poll() is not None:
                         break
                     continue
-                chunk = os.read(stderr_fd, 4096)
+                try:
+                    chunk = os.read(stderr_fd, 4096)
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     break
                 buf += chunk

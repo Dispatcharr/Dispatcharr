@@ -877,8 +877,12 @@ class StreamManager:
             import time as _time
 
             relay_read, relay_write = _os.pipe()
-            self.socket = _os.fdopen(relay_read, 'rb', buffering=0)
             stderr_read, stderr_write = _os.pipe()
+            # Parent read ends are nonblocking so fetch_chunk / stderr select+read
+            # cannot freeze the gevent hub if an fd is closed and reused mid-wait.
+            _os.set_blocking(relay_read, False)
+            _os.set_blocking(stderr_read, False)
+            self.socket = _os.fdopen(relay_read, 'rb', buffering=0)
             _stderr_read_transferred = False
             try:
                 _t0 = _time.monotonic()
@@ -1030,7 +1034,16 @@ class StreamManager:
                             break
                         continue
 
-                    chunk = _os.read(stderr_fd, 4096)
+                    # _close_socket closes this file object while we wait. The
+                    # cached fd number may already belong to another channel's
+                    # pipe, and reading it would take that channel's bytes.
+                    if stderr.closed:
+                        break
+
+                    try:
+                        chunk = _os.read(stderr_fd, 4096)
+                    except BlockingIOError:
+                        continue
                     if not chunk:
                         break
 
@@ -2237,11 +2250,18 @@ class StreamManager:
                 else:
                     # Non-socket file object (io.FileIO from os.fdopen) - use raw
                     # fd + os.read to stay cooperative under gevent.
+                    #
+                    # Critical: capture the FileIO identity before select yields.
+                    # A concurrent stop can close this fd while another channel in
+                    # the same worker gets the same number from os.pipe(). Reading
+                    # without re-checking would either steal that channel's bytes
+                    # or (on a blocking fd) hang the whole worker forever.
                     import select as _select
                     import os as _os
 
+                    sock = self.socket
                     try:
-                        fd = self.socket.fileno()
+                        fd = sock.fileno()
                     except (ValueError, OSError):
                         self.connected = False
                         return False
@@ -2252,17 +2272,21 @@ class StreamManager:
                         self.connected = False
                         return False
 
+                    # Stop closed or replaced the FileIO while we waited. The
+                    # fd number may already belong to another channel's pipe.
+                    if self.socket is not sock or sock.closed:
+                        return False
+
                     if not ready:
                         logger.debug(f"Chunk read timeout ({chunk_timeout}s) for channel {self.channel_id}")
                         return False
 
                     try:
                         chunk = _os.read(fd, Config.CHUNK_SIZE)
+                    except BlockingIOError:
+                        # Nonblocking pipe, select was stale or raced with a drain.
+                        return False
                     except OSError as e:
-                        import errno as _errno
-                        if e.errno == _errno.EAGAIN and (self.stop_requested or not self.running):
-                            self.connected = False
-                            return False
                         logger.warning(f"Read error for channel {self.channel_id}: {e}")
                         self.connected = False
                         return False
