@@ -406,11 +406,19 @@ def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_pr
             logger.info(f"[{client_id}] Redirect URL validation disabled; handing off to {stream_url}")
             return _redirect_response(stream_url)
 
-        from .url_utils import validate_stream_url, get_alternate_streams
+        from .url_utils import (
+            validate_stream_url,
+            get_alternate_streams,
+            get_proxy_for_stream,
+        )
 
         logger.info(f"[{client_id}] Validating redirect URL: {stream_url}")
+        primary_proxy = get_proxy_for_stream(stream_id=resolved_stream_id)
         is_valid, final_url, status_code, message = validate_stream_url(
-            stream_url, user_agent=stream_user_agent, timeout=(5, 5)
+            stream_url,
+            user_agent=stream_user_agent,
+            timeout=(5, 5),
+            **({"proxy": primary_proxy} if primary_proxy else {}),
         )
 
         if not is_valid:
@@ -438,8 +446,12 @@ def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_pr
                 logger.info(
                     f"[{client_id}] Trying alternate stream #{alt['stream_id']}: {alt_info['url']}"
                 )
+                alt_proxy = alt_info.get("proxy")
                 is_valid, final_url, status_code, message = validate_stream_url(
-                    alt_info["url"], user_agent=alt_info["user_agent"], timeout=(5, 5)
+                    alt_info["url"],
+                    user_agent=alt_info["user_agent"],
+                    timeout=(5, 5),
+                    **({"proxy": alt_proxy} if alt_proxy else {}),
                 )
 
                 if is_valid:

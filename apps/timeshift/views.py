@@ -2570,6 +2570,14 @@ def _attempt_timeshift_stream(
             "cached" if final_url else "portal",
         )
 
+    proxy = None
+    try:
+        from apps.m3u.utils import get_account_effective_proxy
+
+        proxy = get_account_effective_proxy(m3u_account)
+    except Exception:
+        proxy = None
+
     return _stream_from_provider(
         candidate_urls=candidate_urls,
         user_agent=user_agent,
@@ -2595,6 +2603,7 @@ def _attempt_timeshift_stream(
         stream_stats=stream_stats,
         duration_minutes=duration_minutes,
         final_url=final_url,
+        **({"proxy": proxy} if proxy else {}),
     )
 
 
@@ -2907,7 +2916,7 @@ def _unregister_stats_client(redis_client, stats_channel_id, client_id):
         logger.warning("Timeshift stats unregister failed: %s", exc)
 
 
-def _open_upstream(url, user_agent, range_header, *, allow_redirects=True):
+def _open_upstream(url, user_agent, range_header, *, allow_redirects=True, proxy=None):
     """Open upstream HTTP.
 
     Portal URLs need ``allow_redirects=True`` (XC → CDN). Cached CDN
@@ -2920,6 +2929,9 @@ def _open_upstream(url, user_agent, range_header, *, allow_redirects=True):
         headers["User-Agent"] = user_agent
     if range_header:
         headers["Range"] = range_header
+    from apps.m3u.utils import build_requests_proxies
+
+    proxies = build_requests_proxies(proxy)
     return requests.get(
         url,
         headers=headers,
@@ -2929,6 +2941,7 @@ def _open_upstream(url, user_agent, range_header, *, allow_redirects=True):
             ConfigHelper.chunk_timeout(),
         ),
         allow_redirects=allow_redirects,
+        **({"proxies": proxies} if proxies else {}),
     )
 
 
@@ -2988,6 +3001,7 @@ def _stream_from_provider(
     stream_stats=None,
     duration_minutes=None,
     final_url=None,
+    proxy=None,
 ):
     """Try each upstream URL until one returns streamable MPEG-TS.
 
@@ -3034,7 +3048,11 @@ def _stream_from_provider(
     for url, follow_redirects, cached_final, orig_idx in attempts:
         try:
             response = _open_upstream(
-                url, user_agent, range_header, allow_redirects=follow_redirects,
+                url,
+                user_agent,
+                range_header,
+                allow_redirects=follow_redirects,
+                **({"proxy": proxy} if proxy else {}),
             )
         except requests.exceptions.RequestException as exc:
             if cached_final:

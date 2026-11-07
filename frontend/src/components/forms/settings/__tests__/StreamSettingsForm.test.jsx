@@ -146,6 +146,19 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
+  TextInput: ({ label, id, placeholder, ...rest }) => (
+    <div>
+      <label htmlFor={id}>{label}</label>
+      <input
+        data-testid={id}
+        id={id}
+        aria-label={label}
+        placeholder={placeholder}
+        value={rest.value ?? ''}
+        onChange={(e) => rest.onChange?.(e.target.value)}
+      />
+    </div>
+  ),
 }));
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -295,6 +308,11 @@ describe('StreamSettingsForm', () => {
     it('renders the M3U Hash Key multiselect', () => {
       render(<StreamSettingsForm active={true} />);
       expect(screen.getByTestId('m3u_hash_key')).toBeInTheDocument();
+    });
+
+    it('renders the Default Proxy input', () => {
+      render(<StreamSettingsForm active={true} />);
+      expect(screen.getByTestId('default_proxy')).toBeInTheDocument();
     });
 
     it('populates user agent options from store', () => {

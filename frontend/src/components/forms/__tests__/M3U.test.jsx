@@ -693,6 +693,32 @@ describe('M3U', () => {
     });
   });
 
+  // ── Proxy override ───────────────────────────────────────────────────────
+
+  describe('proxy override', () => {
+    it('renders the proxy override input with "Use global default" placeholder', () => {
+      setupStores();
+      render(<M3U {...defaultProps()} />);
+      const input = screen.getByTestId('text-input-proxy');
+      expect(input).toBeInTheDocument();
+      expect(input).toHaveAttribute('placeholder', 'Use global default');
+    });
+
+    it('pre-fills proxy when editing an account with a proxy override', () => {
+      setupStores();
+      render(
+        <M3U
+          {...defaultProps({
+            m3uAccount: makeM3uAccount({ proxy: 'http://proxy.local:8080' }),
+          })}
+        />
+      );
+      expect(
+        screen.getByDisplayValue('http://proxy.local:8080')
+      ).toBeInTheDocument();
+    });
+  });
+
   // ── Cancel behaviour ───────────────────────────────────────────────────────
 
   describe('cancel behaviour', () => {

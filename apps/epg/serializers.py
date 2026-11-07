@@ -3,11 +3,15 @@ from apps.epg.sd_utils import (
     sd_credential_fingerprint,
 )
 from apps.epg.utils import sd_poster_proxy_path
+from apps.m3u.utils import normalize_proxy_url
 from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
 from apps.channels.access import channels_queryset_for_user, is_admin_user
 from apps.channels.models import Channel, Stream
+
+_UNSET = object()
+
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -20,6 +24,16 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         validators=[validate_flexible_url]
     )
     cron_expression = serializers.CharField(required=False, allow_blank=True, default='')
+    proxy = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+        write_only=True,
+        help_text=(
+            "Per-source proxy URL override (e.g. http://host:port or socks5://host:port). "
+            "Leave empty or null to inherit the linked M3U account or global default proxy."
+        ),
+    )
 
     class Meta:
         model = EPGSource
@@ -42,8 +56,17 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'custom_properties',
             'epg_data_count',
             'has_channels',
+            'proxy',
         ]
         extra_kwargs = {'password': {'write_only': True}}
+
+    def validate_proxy(self, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            return normalize_proxy_url(value, strict=True)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     def get_epg_data_count(self, obj):
         """Return the count of EPG data entries instead of all IDs to prevent large payloads"""
@@ -60,9 +83,48 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             ct = instance.refresh_task.crontab
             cron_expr = f'{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}'
         data['cron_expression'] = cron_expr
+        custom_props = (
+            instance.custom_properties
+            if isinstance(instance.custom_properties, dict)
+            else {}
+        )
+        raw_proxy = custom_props.get('proxy')
+        data['proxy'] = normalize_proxy_url(raw_proxy) or None
         return data
 
+    def _apply_proxy_to_custom_properties(self, validated_data, proxy, existing_props=None):
+        existing_dict = dict(existing_props) if isinstance(existing_props, dict) else {}
+        incoming_props = validated_data.get('custom_properties', _UNSET)
+        if isinstance(incoming_props, dict):
+            custom_props = dict(incoming_props)
+            if proxy is _UNSET and 'proxy' in custom_props:
+                raw_cp_proxy = custom_props.pop('proxy', None)
+                if raw_cp_proxy is not None and str(raw_cp_proxy).strip():
+                    try:
+                        custom_props['proxy'] = normalize_proxy_url(raw_cp_proxy, strict=True)
+                    except ValueError as exc:
+                        raise serializers.ValidationError({'proxy': str(exc)}) from exc
+            elif proxy is _UNSET and 'proxy' in existing_dict:
+                custom_props['proxy'] = existing_dict['proxy']
+            else:
+                custom_props.pop('proxy', None)
+        else:
+            custom_props = existing_dict
+
+        if proxy is not _UNSET:
+            if proxy:
+                custom_props['proxy'] = proxy
+            else:
+                custom_props.pop('proxy', None)
+
+        if proxy is not _UNSET or isinstance(incoming_props, dict):
+            validated_data['custom_properties'] = custom_props
+
     def update(self, instance, validated_data):
+        proxy = validated_data.pop('proxy', _UNSET)
+        self._apply_proxy_to_custom_properties(
+            validated_data, proxy, existing_props=instance.custom_properties
+        )
         # Pop cron_expression before it reaches model fields
         # If not present (partial update), preserve the existing cron from the PeriodicTask
         if 'cron_expression' in validated_data:
@@ -86,6 +148,8 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         return instance
 
     def create(self, validated_data):
+        proxy = validated_data.pop('proxy', _UNSET)
+        self._apply_proxy_to_custom_properties(validated_data, proxy)
         cron_expr = validated_data.pop('cron_expression', '')
         instance = EPGSource(**validated_data)
         instance._cron_expression = cron_expr
