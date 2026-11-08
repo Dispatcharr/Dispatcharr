@@ -15,6 +15,7 @@ import {
   getPlayerPrefs,
   savePlayerPrefs,
 } from '../utils/components/FloatingVideoUtils.js';
+import { computeBackoffDelay } from '../utils/backoff';
 
 // Native <video src> cannot send Authorization headers. Append ?token= at playback
 // time (not when building the URL in cards/modals) so the JWT is fresh. hls.js
@@ -547,10 +548,14 @@ export default function FloatingVideo() {
 
           reconnectAttemptsRef.current += 1;
           const attempt = reconnectAttemptsRef.current;
-          const delay = Math.min(
-            LIVE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
-            LIVE_RECONNECT_MAX_DELAY_MS
-          );
+          // attempt is 1-based; backoff helper is 0-based. No jitter: live
+          // playback prefers a predictable recreate cadence.
+          const delay = computeBackoffDelay(attempt - 1, {
+            initialMs: LIVE_RECONNECT_BASE_DELAY_MS,
+            maxMs: LIVE_RECONNECT_MAX_DELAY_MS,
+            factor: 2,
+            jitter: 0,
+          });
 
           // Destroy first (frees the failed session); set message after because
           // safeDestroyPlayer clears loadError.
