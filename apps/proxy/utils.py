@@ -280,20 +280,37 @@ def get_user_active_connections(user_id):
                     except (ValueError, TypeError):
                         pass
 
-        # Grab VOD
+        # Grab VOD. Only sessions with a stream running count: idle hashes stay
+        # around for the settle window (and up to connection_ttl) so a reconnect
+        # can resume them, but they hold no provider slot and no client.
         for key in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):
             parts = key.split(':')
             if len(parts) >= 2:
                 client_id = parts[1]
 
-                client_user_id, connected_at, content_uuid = redis_client.hmget(
-                    key, 'user_id', 'created_at', 'content_uuid'
+                client_user_id, connected_at, content_uuid, active_streams = redis_client.hmget(
+                    key, 'user_id', 'created_at', 'content_uuid', 'active_streams'
                 )
 
                 logger.debug(f"[stream limits] user_id = {user_id}")
                 logger.debug(f"[stream limits] client_id = {client_id}")
 
-                if user_id is None or (client_user_id and int(client_user_id) == user_id):
+                try:
+                    if int(active_streams or 0) <= 0:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+
+                try:
+                    owner_matches = user_id is None or (
+                        client_user_id and int(client_user_id) == user_id
+                    )
+                except (ValueError, TypeError):
+                    # A session opened without a user stores a non-numeric owner.
+                    # It belongs to no user, and must not abort the whole scan.
+                    owner_matches = False
+
+                if owner_matches:
                     try:
                         logger.debug(f"[stream limits] Found VOD connection for user {user_id} on content {content_uuid} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0
@@ -313,6 +330,34 @@ def get_user_active_connections(user_id):
         return []
 
 
+def _count_user_streams(active_connections, ignore_same_channel):
+    """Streams counted toward a user's limit: unique channels, or every connection."""
+    if ignore_same_channel:
+        return len({conn['media_id'] for conn in active_connections})
+    return len(active_connections)
+
+
+def user_limit_evicts_oldest_stream(user):
+    """True when a new stream for ``user`` is made room for by ending their oldest.
+
+    That is the case when the user has a stream limit, the limit settings end
+    the oldest stream once it is reached, and the user is at the limit.
+    """
+    if not user or user.stream_limit <= 0:
+        return False
+
+    user_limit_settings = CoreSettings.get_user_limits_settings()
+    if not (user_limit_settings.get("terminate_on_limit_exceeded", True)
+            and user_limit_settings.get("terminate_oldest", True)):
+        return False
+
+    user_stream_count = _count_user_streams(
+        get_user_active_connections(user.id),
+        user_limit_settings.get("ignore_same_channel_connections", False),
+    )
+    return user_stream_count >= user.stream_limit
+
+
 def check_user_stream_limits(user, client_id, media_id=None):
     # Check user stream limits
     if user and user.stream_limit > 0:
@@ -320,11 +365,15 @@ def check_user_stream_limits(user, client_id, media_id=None):
         user_limit_settings = CoreSettings.get_user_limits_settings()
         ignore_same_channel = user_limit_settings.get("ignore_same_channel_connections", False)
 
-        active_connections = get_user_active_connections(user.id)
-        unique_channel_count = set([conn['media_id'] for conn in active_connections])
-        user_stream_count = len(unique_channel_count) if ignore_same_channel else len(active_connections)
+        # A request on a VOD session the user already holds reuses that session,
+        # so it must not count against the limit or end the session it belongs to.
+        active_connections = [
+            conn for conn in get_user_active_connections(user.id)
+            if not (conn['type'] == 'vod' and conn['client_id'] == client_id)
+        ]
+        user_stream_count = _count_user_streams(active_connections, ignore_same_channel)
 
-        logger.debug(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections across {len(unique_channel_count)} unique channels (counting method: {'unique channels' if ignore_same_channel else 'total connections'})")
+        logger.debug(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections (counting method: {'unique channels' if ignore_same_channel else 'total connections'}, counted: {user_stream_count})")
 
         # If ignore_same_channel is enabled and this request is for a live channel the user
         # is already watching, allow it through without counting against the limit.
@@ -367,17 +416,21 @@ def check_user_stream_limits(user, client_id, media_id=None):
                         return True
 
         if user_stream_count >= user.stream_limit:
-            if user_limit_settings.get("terminate_on_limit_exceeded", True) == False:
+            if user_limit_settings.get("terminate_on_limit_exceeded", True) is False:
                 return False
 
-            if user_stream_count >= user.stream_limit:
-                logger.warning("[stream limits]"
-                    f"[{client_id}] User {user.username} (ID: {user.id}) has reached stream limit "
-                    f"({user_stream_count}/{user.stream_limit} streams), attempting to free up slot"
-                )
+            logger.warning(
+                "[stream limits][%s] User %s (ID: %s) has reached stream limit "
+                "(%s/%s streams), attempting to free up slot",
+                client_id,
+                user.username,
+                user.id,
+                user_stream_count,
+                user.stream_limit,
+            )
 
-                if not attempt_stream_termination(user.id, client_id, active_connections):
-                    return False
+            if not attempt_stream_termination(user.id, client_id, active_connections):
+                return False
 
     return True
 

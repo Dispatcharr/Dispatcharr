@@ -9,6 +9,11 @@ from dispatcharr.utils import get_client_ip
 
 logger = logging.getLogger(__name__)
 
+# Stored in place of a client address or user agent the request did not carry.
+# Two such requests are not the same client, so session matching never treats
+# this value as an identity.
+UNKNOWN_CLIENT = "unknown"
+
 
 def get_client_info(request):
     """
@@ -18,10 +23,10 @@ def get_client_info(request):
         request: Django HttpRequest object
 
     Returns:
-        tuple: (client_ip, user_agent)
+        tuple: (client_ip, user_agent), each ``UNKNOWN_CLIENT`` when missing
     """
-    client_ip = get_client_ip(request) or "unknown"
-    user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
+    client_ip = get_client_ip(request) or UNKNOWN_CLIENT
+    user_agent = request.META.get("HTTP_USER_AGENT", UNKNOWN_CLIENT)
 
     return client_ip, user_agent
 
