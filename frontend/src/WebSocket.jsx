@@ -2,8 +2,6 @@ import React, {
   useState,
   useEffect,
   useRef,
-  createContext,
-  useContext,
   useMemo,
   useCallback,
 } from 'react';
@@ -12,14 +10,23 @@ import useChannelsStore from './store/channels';
 import useLogosStore from './store/logos';
 import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
-import { Box, Button, Stack, Alert, Group } from '@mantine/core';
+import { Button, Alert } from '@mantine/core';
 import API from './api';
 import useSettingsStore from './store/settings';
 import useAuthStore from './store/auth';
 import useUsersStore from './store/users';
 import { usePluginStore } from './store/plugins.jsx';
+import { computeBackoffDelay } from './utils/backoff';
+import { WebsocketContext } from './WebSocketContext';
 
-export const WebsocketContext = createContext([false, () => {}, null]);
+// UI WebSocket reconnect: grow slowly, cap at 30s, half-jitter so many tabs
+// recovering together do not hammer DNS in lockstep.
+const WS_RECONNECT_BACKOFF = {
+  initialMs: 1000,
+  maxMs: 30000,
+  factor: 1.5,
+  jitter: 0.5,
+};
 
 // Debounce: coalesces rapid recording WS events into a single fetchRecordings()
 // call (400 ms window) to prevent redundant re-renders in the TV Guide.
@@ -41,28 +48,24 @@ export const WebsocketProvider = ({ children }) => {
   const [val, setVal] = useState(null);
   const ws = useRef(null);
   const reconnectTimerRef = useRef(null);
+  // Attempt / ready / close intent live in refs so reconnect scheduling is not
+  // tied to React effect identity. Putting these in useCallback/effect deps
+  // previously cancelled backoff timers and reconnected in a tight loop.
+  const reconnectAttemptsRef = useRef(0);
+  const isReadyRef = useRef(false);
+  const intentionalCloseRef = useRef(false);
+  const connectRef = useRef(null);
+  const accessTokenRef = useRef(null);
+  const envModeRef = useRef('aio');
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [connectionError, setConnectionError] = useState(null);
-  const maxReconnectAttempts = 5;
-  const initialBackoffDelay = 1000; // 1 second initial delay
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const accessToken = useAuthStore((s) => s.accessToken);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
 
-  const epgs = useEPGsStore((s) => s.epgs);
-  const updateEPG = useEPGsStore((s) => s.updateEPG);
+  accessTokenRef.current = accessToken;
+  envModeRef.current = env_mode;
 
-  const updatePlaylist = usePlaylistsStore((s) => s.updatePlaylist);
-
-  // Calculate reconnection delay with exponential backoff
-  const getReconnectDelay = useCallback(() => {
-    return Math.min(
-      initialBackoffDelay * Math.pow(1.5, reconnectAttempts),
-      30000
-    ); // max 30 seconds
-  }, [reconnectAttempts]);
-
-  // Clear any existing reconnect timers
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -70,28 +73,69 @@ export const WebsocketProvider = ({ children }) => {
     }
   }, []);
 
-  // Function to get WebSocket URL that works with both HTTP and HTTPS
   const getWebSocketUrl = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
     const appPort = window.location.port;
+    const token = accessTokenRef.current;
+    const mode = envModeRef.current;
 
     // In development mode, connect directly to the WebSocket server on port 8001
-    if (env_mode === 'dev') {
-      return `${protocol}//${host}:8001/ws/?token=${accessToken}`;
-    } else {
-      // In production mode, use the same port as the main application
-      // This allows nginx to handle the WebSocket forwarding
-      return appPort
-        ? `${protocol}//${host}:${appPort}/ws/?token=${accessToken}`
-        : `${protocol}//${host}/ws/?token=${accessToken}`;
+    if (mode === 'dev') {
+      return `${protocol}//${host}:8001/ws/?token=${token}`;
     }
-  }, [env_mode, accessToken]);
+    // In production mode, use the same port as the main application so nginx
+    // can forward the WebSocket upgrade.
+    return appPort
+      ? `${protocol}//${host}:${appPort}/ws/?token=${token}`
+      : `${protocol}//${host}/ws/?token=${token}`;
+  }, []);
 
-  // Function to handle websocket connection
+  const scheduleReconnect = useCallback(() => {
+    if (intentionalCloseRef.current) return;
+    // Only one pending retry; avoids stacking timers if close races fire twice.
+    if (reconnectTimerRef.current) return;
+
+    const attempt = reconnectAttemptsRef.current;
+    const delay = computeBackoffDelay(attempt, WS_RECONNECT_BACKOFF);
+    reconnectAttemptsRef.current = attempt + 1;
+    // Banner visibility only needs a non-zero attempts state once. Later
+    // retries update the message text, not this counter.
+    if (attempt === 0) {
+      setReconnectAttempts(reconnectAttemptsRef.current);
+    }
+    const seconds = Math.max(1, Math.ceil(delay / 1000));
+    setConnectionError(
+      `Connection lost. Reconnecting in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}...`
+    );
+    console.log(
+      `Scheduling WebSocket reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current})...`
+    );
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      // Logout or unmount may have landed after this timer was queued.
+      if (intentionalCloseRef.current) return;
+      connectRef.current?.();
+    }, delay);
+  }, []);
+
   const connectWebSocket = useCallback(() => {
+    // Auth / unmount own intentionalCloseRef. Never clear it here: a logout
+    // can land between a timer's guard and this call, and clearing would
+    // open a socket after the user signed out.
+    if (intentionalCloseRef.current) return;
+
     // Clear any existing timers to avoid multiple reconnection attempts
     clearReconnectTimer();
+
+    // Drop ready before swapping sockets. Otherwise a token or env change
+    // replaces the socket while isReady stays true, and context keeps send()
+    // bound to the closed socket.
+    if (isReadyRef.current) {
+      isReadyRef.current = false;
+      setIsReady(false);
+    }
 
     // Clear old websocket if exists
     if (ws.current) {
@@ -106,66 +150,47 @@ export const WebsocketProvider = ({ children }) => {
       } catch (e) {
         console.warn('Error closing existing WebSocket:', e);
       }
+      ws.current = null;
     }
 
     try {
-      console.log(
-        `Attempting WebSocket connection (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})...`
-      );
+      const attemptLabel = reconnectAttemptsRef.current + 1;
+      console.log(`Attempting WebSocket connection (attempt ${attemptLabel})...`);
 
-      // Use the function to get the correct WebSocket URL
       const wsUrl = getWebSocketUrl();
       console.log(`Connecting to WebSocket at: ${wsUrl.split('?')[0]}`);
 
-      // Create new WebSocket connection
       const socket = new WebSocket(wsUrl);
+      ws.current = socket;
 
       socket.onopen = () => {
+        if (ws.current !== socket) return;
         console.log('WebSocket connected successfully');
+        isReadyRef.current = true;
         setIsReady(true);
         setConnectionError(null);
+        reconnectAttemptsRef.current = 0;
         setReconnectAttempts(0);
       };
 
       socket.onerror = (error) => {
         console.error('WebSocket connection error:', error);
-
-        // Don't show error notification on initial page load,
-        // only show it after a connection was established then lost
-        if (reconnectAttempts > 0 || isReady) {
-          setConnectionError('Failed to connect to WebSocket server.');
-        } else {
+        // Close follows error and owns the banner. Setting it here only
+        // forces an extra render with a message that close immediately replaces.
+        if (reconnectAttemptsRef.current === 0 && !isReadyRef.current) {
           console.log('Initial connection attempt failed, will retry...');
         }
       };
 
       socket.onclose = (event) => {
+        // Ignore a close from a socket this provider already replaced.
+        if (ws.current !== socket) return;
+
         console.warn('WebSocket connection closed', event);
+        ws.current = null;
+        isReadyRef.current = false;
         setIsReady(false);
-
-        // Only attempt reconnect if we haven't reached max attempts
-        if (reconnectAttempts < maxReconnectAttempts) {
-          const delay = getReconnectDelay();
-          setConnectionError(
-            `Connection lost. Reconnecting in ${Math.ceil(delay / 1000)} seconds...`
-          );
-          console.log(
-            `Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})...`
-          );
-
-          // Store timer reference so we can cancel it if needed
-          reconnectTimerRef.current = setTimeout(() => {
-            setReconnectAttempts((prev) => prev + 1);
-            connectWebSocket();
-          }, delay);
-        } else {
-          setConnectionError(
-            'Maximum reconnection attempts reached. Please reload the page.'
-          );
-          console.error(
-            'Maximum reconnection attempts reached. WebSocket connection failed.'
-          );
-        }
+        scheduleReconnect();
       };
 
       // Message handler
@@ -243,7 +268,7 @@ export const WebsocketProvider = ({ children }) => {
               break;
             }
             case 'epg_file':
-              fetchEPGs();
+              useEPGsStore.getState().fetchEPGs();
               notifications.show({
                 title: 'EPG File Detected',
                 message: `Processing ${parsedEvent.data.filename}`,
@@ -251,7 +276,7 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'm3u_file':
-              fetchPlaylists();
+              usePlaylistsStore.getState().fetchPlaylists();
               notifications.show({
                 title: 'M3U File Detected',
                 message: `Processing ${parsedEvent.data.filename}`,
@@ -260,7 +285,7 @@ export const WebsocketProvider = ({ children }) => {
 
             case 'm3u_refresh':
               // Update the store with progress information
-              setRefreshProgress(parsedEvent.data);
+              usePlaylistsStore.getState().setRefreshProgress(parsedEvent.data);
 
               // Update the playlist status whenever we receive a status update
               // Not just when progress is 100% or status is pending_setup
@@ -295,11 +320,11 @@ export const WebsocketProvider = ({ children }) => {
                       'M3U refresh completed successfully:',
                       updateData
                     );
-                    fetchPlaylists(); // Refresh playlists to ensure UI is up-to-date
-                    fetchChannelProfiles(); // Ensure channel profiles are updated
+                    usePlaylistsStore.getState().fetchPlaylists();
+                    useChannelsStore.getState().fetchChannelProfiles();
                   }
 
-                  updatePlaylist(updateData);
+                  usePlaylistsStore.getState().updatePlaylist(updateData);
                 } else {
                   // Playlist not in store yet - this happens when backend sends websocket
                   // updates immediately after creating the playlist, before the API response
@@ -314,15 +339,21 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'channel_stats':
-              setChannelStats(JSON.parse(parsedEvent.data.stats));
+              useChannelsStore
+                .getState()
+                .setChannelStats(JSON.parse(parsedEvent.data.stats));
               break;
 
             case 'vod_stats':
-              setVodStats(JSON.parse(parsedEvent.data.stats));
+              useChannelsStore
+                .getState()
+                .setVodStats(JSON.parse(parsedEvent.data.stats));
               break;
 
             case 'timeshift_stats':
-              setTimeshiftStats(JSON.parse(parsedEvent.data.stats));
+              useChannelsStore
+                .getState()
+                .setTimeshiftStats(JSON.parse(parsedEvent.data.stats));
               break;
 
             case 'vod_started':
@@ -359,16 +390,18 @@ export const WebsocketProvider = ({ children }) => {
 
               // If source_id is provided, update that specific EPG's status
               if (parsedEvent.data.source_id) {
-                const epg = epgs[parsedEvent.data.source_id];
+                const { epgs: epgsState, updateEPG: patchEPG } =
+                  useEPGsStore.getState();
+                const epg = epgsState[parsedEvent.data.source_id];
                 if (epg) {
-                  updateEPG({
+                  patchEPG({
                     ...epg,
                     status: 'success',
                   });
                 }
               }
 
-              fetchEPGData();
+              useEPGsStore.getState().fetchEPGData();
               break;
 
             case 'single_channel_epg_match': {
@@ -391,7 +424,7 @@ export const WebsocketProvider = ({ children }) => {
               });
 
               // Celery already applied assignments server-side; refresh local state.
-              fetchEPGData();
+              useEPGsStore.getState().fetchEPGData();
               API.requeryChannels();
               break;
 
@@ -563,10 +596,12 @@ export const WebsocketProvider = ({ children }) => {
             }
 
             case 'm3u_profile_test':
-              setProfilePreview(
-                parsedEvent.data.search_preview,
-                parsedEvent.data.result
-              );
+              usePlaylistsStore
+                .getState()
+                .setProfilePreview(
+                  parsedEvent.data.search_preview,
+                  parsedEvent.data.result
+                );
               break;
 
             case 'recording_updated':
@@ -637,9 +672,11 @@ export const WebsocketProvider = ({ children }) => {
 
               // Update EPG status in store
               if (parsedEvent.data.source_id) {
-                const epg = epgs[parsedEvent.data.source_id];
+                const { epgs: epgsState, updateEPG: patchEPG } =
+                  useEPGsStore.getState();
+                const epg = epgsState[parsedEvent.data.source_id];
                 if (epg) {
-                  updateEPG({
+                  patchEPG({
                     ...epg,
                     status: 'error',
                     last_message: parsedEvent.data.message,
@@ -653,9 +690,8 @@ export const WebsocketProvider = ({ children }) => {
                 parsedEvent.data.source || parsedEvent.data.account;
               if (!sourceId) break;
 
-              // Read from the store directly. connectWebSocket closes over a stale
-              // epgs snapshot, so a newly created source is missed and the old early-
-              // return path never reached fetchEPGData on parsing_channels completion.
+              // Always read EPG state fresh; a newly created source is otherwise
+              // missed and parsing_channels completion never refreshes programs.
               let {
                 epgs: epgsState,
                 updateEPG,
@@ -737,7 +773,7 @@ export const WebsocketProvider = ({ children }) => {
             case 'epg_sources_changed':
               // A plugin or backend process signaled that the EPG sources changed
               try {
-                await fetchEPGs();
+                await useEPGsStore.getState().fetchEPGs();
               } catch (e) {
                 console.warn(
                   'Failed to refresh EPG sources after change notification:',
@@ -750,7 +786,7 @@ export const WebsocketProvider = ({ children }) => {
               // A new EPG data entry was created (e.g., for a dummy EPG)
               // Fetch EPG data so the channel form can immediately assign it
               try {
-                await fetchEPGData();
+                await useEPGsStore.getState().fetchEPGData();
               } catch (e) {
                 console.warn('Failed to refresh EPG data after creation:', e);
               }
@@ -819,7 +855,7 @@ export const WebsocketProvider = ({ children }) => {
                 color: 'blue',
                 autoClose: 5000,
               });
-              fetchLogos();
+              useLogosStore.getState().fetchAllLogos();
               break;
 
             case 'account_info_refresh_success':
@@ -830,7 +866,7 @@ export const WebsocketProvider = ({ children }) => {
                 autoClose: 4000,
               });
               // Trigger refresh of playlists to update the UI
-              fetchPlaylists();
+              usePlaylistsStore.getState().fetchPlaylists();
               break;
 
             case 'account_info_refresh_error':
@@ -858,7 +894,7 @@ export const WebsocketProvider = ({ children }) => {
                 await API.requeryChannels();
                 await API.requeryStreams();
                 useChannelsStore.getState().fetchChannelIds();
-                await fetchChannelProfiles();
+                await useChannelsStore.getState().fetchChannelProfiles();
                 console.log('Channels refreshed after bulk creation');
               } catch (error) {
                 console.error(
@@ -874,7 +910,7 @@ export const WebsocketProvider = ({ children }) => {
               console.log(
                 'Playlist created event received, refreshing playlists...'
               );
-              fetchPlaylists();
+              usePlaylistsStore.getState().fetchPlaylists();
               break;
 
             case 'bulk_channel_creation_progress': {
@@ -1030,124 +1066,87 @@ export const WebsocketProvider = ({ children }) => {
           );
         }
       };
-
-      ws.current = socket;
     } catch (error) {
       console.error('Error creating WebSocket connection:', error);
-      setConnectionError(`WebSocket error: ${error.message}`);
-
-      // Schedule a reconnect if we haven't reached max attempts
-      if (reconnectAttempts < maxReconnectAttempts) {
-        const delay = getReconnectDelay();
-        reconnectTimerRef.current = setTimeout(() => {
-          setReconnectAttempts((prev) => prev + 1);
-          connectWebSocket();
-        }, delay);
-      }
+      scheduleReconnect();
     }
-  }, [
-    reconnectAttempts,
-    clearReconnectTimer,
-    getReconnectDelay,
-    getWebSocketUrl,
-    isReady,
-  ]);
+  }, [clearReconnectTimer, getWebSocketUrl, scheduleReconnect]);
 
-  // Initial connection and cleanup
+  // Always point at the latest connect implementation. Reconnect timers and the
+  // auth effect call through this ref so they do not need connectWebSocket in
+  // their dependency lists (which previously caused reconnect storms).
+  connectRef.current = connectWebSocket;
+
+  // Connect when authenticated. Reconnect once if the token or dev/prod URL
+  // mode changes. Do not depend on connectWebSocket: isReady / attempt state
+  // must not re-run this effect, or backoff timers get cleared and replaced
+  // with an instant retry.
   useEffect(() => {
-    // Only attempt to connect if the user is authenticated
     if (isAuthenticated && accessToken) {
-      connectWebSocket();
-    } else if (ws.current) {
-      // Close the connection if the user logs out
+      intentionalCloseRef.current = false;
+      reconnectAttemptsRef.current = 0;
+      setReconnectAttempts(0);
+      connectRef.current?.();
+    } else {
+      intentionalCloseRef.current = true;
       clearReconnectTimer();
-      console.log('Closing WebSocket connection due to logout');
-      ws.current.onclose = null;
-      ws.current.close();
-      ws.current = null;
+      if (ws.current) {
+        console.log('Closing WebSocket connection due to logout');
+        ws.current.onclose = null;
+        ws.current.close();
+        ws.current = null;
+      }
+      isReadyRef.current = false;
       setIsReady(false);
+      setConnectionError(null);
     }
 
     return () => {
-      clearReconnectTimer(); // Clear any pending reconnect timers
+      intentionalCloseRef.current = true;
+      clearReconnectTimer();
 
       if (ws.current) {
-        console.log('Closing WebSocket connection due to component unmount');
-        ws.current.onclose = null; // Remove handlers to avoid reconnection
+        console.log('Closing WebSocket connection');
+        ws.current.onclose = null;
         ws.current.close();
         ws.current = null;
       }
     };
-  }, [connectWebSocket, clearReconnectTimer, isAuthenticated, accessToken]);
-
-  const setChannelStats = useChannelsStore((s) => s.setChannelStats);
-  const setVodStats = useChannelsStore((s) => s.setVodStats);
-  const setTimeshiftStats = useChannelsStore((s) => s.setTimeshiftStats);
-  const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
-  const setRefreshProgress = usePlaylistsStore((s) => s.setRefreshProgress);
-  const setProfilePreview = usePlaylistsStore((s) => s.setProfilePreview);
-  const fetchEPGData = useEPGsStore((s) => s.fetchEPGData);
-  const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
-  const fetchLogos = useLogosStore((s) => s.fetchAllLogos);
-  const fetchChannelProfiles = useChannelsStore((s) => s.fetchChannelProfiles);
+  }, [clearReconnectTimer, isAuthenticated, accessToken, env_mode]);
 
   const ret = useMemo(() => {
     return [isReady, ws.current?.send.bind(ws.current), val];
   }, [isReady, val]);
 
+  const reconnectNow = useCallback(() => {
+    if (intentionalCloseRef.current) return;
+    // Reset backoff for the next failure, but leave reconnectAttempts state
+    // alone so the banner stays visible while this manual attempt runs.
+    reconnectAttemptsRef.current = 0;
+    connectRef.current?.();
+  }, []);
+
   return (
     <WebsocketContext.Provider value={ret}>
-      {connectionError &&
-        !isReady &&
-        reconnectAttempts >= maxReconnectAttempts && (
-          <Alert
-            color="red"
-            title="WebSocket Connection Failed"
-            style={{
-              position: 'fixed',
-              bottom: 10,
-              right: 10,
-              zIndex: 1000,
-              maxWidth: 350,
-            }}
-          >
-            {connectionError}
-            <Button
-              size="xs"
-              mt={10}
-              onClick={() => {
-                setReconnectAttempts(0);
-                connectWebSocket();
-              }}
-            >
-              Try Again
-            </Button>
-          </Alert>
-        )}
-      {connectionError &&
-        !isReady &&
-        reconnectAttempts < maxReconnectAttempts &&
-        reconnectAttempts > 0 && (
-          <Alert
-            color="orange"
-            title="WebSocket Reconnecting"
-            style={{
-              position: 'fixed',
-              bottom: 10,
-              right: 10,
-              zIndex: 1000,
-              maxWidth: 350,
-            }}
-          >
-            {connectionError}
-          </Alert>
-        )}
+      {connectionError && !isReady && reconnectAttempts > 0 && (
+        <Alert
+          color="orange"
+          title="WebSocket Reconnecting"
+          style={{
+            position: 'fixed',
+            bottom: 10,
+            right: 10,
+            zIndex: 1000,
+            maxWidth: 350,
+          }}
+        >
+          {connectionError}
+          <Button size="xs" mt={10} onClick={reconnectNow}>
+            Reconnect Now
+          </Button>
+        </Alert>
+      )}
       {children}
     </WebsocketContext.Provider>
   );
-};
-
-export const useWebSocket = () => {
-  const socket = useContext(WebsocketContext);
-  return socket;
 };

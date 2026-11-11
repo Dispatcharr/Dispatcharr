@@ -19,7 +19,7 @@ import {
 } from '@mantine/core';
 import { TriangleAlert } from 'lucide-react';
 import { DateTimePicker } from '@mantine/dates';
-import { useWebSocket } from '../../WebSocket';
+import { useWebSocket } from '../../WebSocketContext';
 import {
   addM3UProfile,
   applyRegex,

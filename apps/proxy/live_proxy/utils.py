@@ -190,8 +190,13 @@ def posix_spawn_proc(cmd):
             setsid=True,
         )
 
-        import fcntl
-        fcntl.fcntl(stdin_w, fcntl.F_SETFL, fcntl.fcntl(stdin_w, fcntl.F_GETFL) | os.O_NONBLOCK)
+        # Parent ends must be nonblocking: greenlets select then read/write, and
+        # os.read / FileIO.read are not gevent-cooperative. A full stdin pipe or
+        # a select-then-read race on a reused empty pipe would otherwise block
+        # the whole worker thread.
+        os.set_blocking(stdin_w, False)
+        os.set_blocking(stdout_r, False)
+        os.set_blocking(stderr_r, False)
         stdin_file  = os.fdopen(stdin_w,  'wb', buffering=0)
         stdin_w_ok  = True
         stdout_file = os.fdopen(stdout_r, 'rb', buffering=0)

@@ -11,12 +11,13 @@ import os
 import mimetypes
 from types import SimpleNamespace
 from urllib.parse import urlparse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, NamedTuple
 from django.http import StreamingHttpResponse, HttpResponse
 from core.utils import RedisClient
 from apps.vod.models import Movie, Episode
 from apps.m3u.models import M3UAccountProfile
 from apps.m3u.utils import build_requests_proxies, get_account_effective_proxy
+from apps.proxy.vod_proxy.utils import UNKNOWN_CLIENT
 
 logger = logging.getLogger("vod_proxy")
 
@@ -62,6 +63,72 @@ except ImportError:
 
 # Consecutive failed reopens before giving up. Successful chunks reset the count.
 _MAX_CONSECUTIVE_UPSTREAM_RETRIES = 3
+
+# Window for a session's previous connection to close. It is how long an idle
+# session's state outlives its last stream (so a reconnect can rejoin it) and
+# how long a new request from the same viewer waits for a connection that is
+# still closing before it starts a session of its own.
+SESSION_SETTLE_SECONDS = 1
+_SETTLE_POLL_SECONDS = 0.05
+
+# A stop signalled to hand a session over only matters while that stream is
+# still running, so it expires quickly instead of lingering for a later reuse.
+_HANDOFF_STOP_TTL_SECONDS = 5
+
+# Chunks between checks of the stop signal. At 8 KiB per chunk this is 256 KiB,
+# about 0.4 s at 5 Mbps, so a handoff still finishes inside the one-second
+# settle window without hitting Redis on every few chunks.
+_STOP_CHECK_INTERVAL_CHUNKS = 32
+# Chunks between refreshes of the session's activity and byte counters.
+_STATE_REFRESH_INTERVAL_CHUNKS = 100
+
+# user_id stored on sessions that have no authenticated user.
+ANONYMOUS_USER_ID = "unknown"
+
+
+class SessionMatch(NamedTuple):
+    """An earlier session of the same viewer on the same content."""
+
+    session_id: str
+    active: bool
+
+
+def session_user_id(user):
+    """The user_id stored on a session for ``user``, or the anonymous marker if none."""
+    return str(user.id) if user else ANONYMOUS_USER_ID
+
+
+def _client_identity(stored, current):
+    """True when both sides name the same client, and that name is a real one.
+
+    ``get_client_info`` stores ``UNKNOWN_CLIENT`` when the address or user agent
+    is missing. Two such requests are not the same client, so that value never
+    matches, any more than an empty one does.
+    """
+    return bool(stored and stored != UNKNOWN_CLIENT and stored == current)
+
+
+def _session_matches(data, client_ip, client_user_agent, utc_start, utc_end, offset):
+    """True when an earlier session was opened by the same kind of request.
+
+    ``data`` is the session hash, already known to be for the same content and
+    user. The client address and user agent must both be real and equal, and
+    so must the timeshift fields, which are all empty for an ordinary movie
+    or episode.
+
+    Idle and active resumes both need every field to match, so the settle
+    window after one viewer stops cannot hand that session to another viewer.
+    """
+    stored_client_ip = data.get('client_ip', '')
+    stored_user_agent = data.get('client_user_agent', '')
+    return bool(
+        _client_identity(stored_client_ip, client_ip)
+        and _client_identity(stored_user_agent, client_user_agent)
+        and data.get('utc_start', '') == (utc_start or "")
+        and data.get('utc_end', '') == (utc_end or "")
+        and data.get('offset', '') == (str(offset) if offset else "")
+    )
+
 
 # Atomic active_streams mutations. These run as Redis Lua so INCR/DECR never
 # contend with the session metadata lock used for ownership, seek info, and
@@ -202,7 +269,7 @@ class SerializableConnectionState:
                  content_name: str = None, client_ip: str = None,
                  client_user_agent: str = None, utc_start: str = None,
                  utc_end: str = None, offset: str = None,
-                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = "unknown",
+                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = ANONYMOUS_USER_ID,
                  proxy: str = None):
         self.session_id = session_id
         self.stream_url = stream_url
@@ -300,7 +367,7 @@ class SerializableConnectionState:
             offset=data.get('offset') or '',
             worker_id=data.get('worker_id') or None,
             connection_type=data.get('connection_type', 'redis_backed'),
-            user_id=data.get('user_id', 'unknown')
+            user_id=data.get('user_id', ANONYMOUS_USER_ID)
         )
         obj.last_activity = float(data.get('last_activity', time.time()))
         obj.request_count = int(data.get('request_count', 0))
@@ -511,7 +578,7 @@ class RedisBackedVODConnection:
                 utc_end=utc_end,
                 offset=offset,
                 worker_id=worker_id,
-                user_id=user.id if user else "unknown"
+                user_id=session_user_id(user)
             )
             # Seed 1 so the profile slot is never held while the session looks idle.
             state.active_streams = 1
@@ -1178,7 +1245,7 @@ class MultiWorkerVODConnectionManager:
             if cleanup_session and conn:
                 # 1s settle window; cleanup() is a no-op if a reconnect INCRs first.
                 def delayed_cleanup():
-                    time.sleep(1)
+                    time.sleep(SESSION_SETTLE_SECONDS)
                     try:
                         logger.info(
                             f"[{client_id}] Worker {self.worker_id} - "
@@ -1223,45 +1290,75 @@ class MultiWorkerVODConnectionManager:
         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed streaming request for {content_type} {content_name}")
 
         try:
-            # First, try to find an existing idle session that matches our criteria
-            matching_session_id = self.find_matching_idle_session(
-                content_type=content_type,
-                content_uuid=content_uuid,
-                client_ip=client_ip,
-                client_user_agent=client_user_agent,
-                utc_start=utc_start,
-                utc_end=utc_end,
-                offset=offset
-            )
-
+            # Prefer the session_id in the URL. The bare-URL path already chose
+            # it (resume or mint) and redirected here; scanning for another
+            # fingerprint match would only risk adopting the wrong idle hash.
+            # Match only when that session is gone (expired settle window, or a
+            # client still holding a stale id), then mint under session_id if
+            # nothing matches.
             idle_stream_count = 0
-
-            # Use matching session if found, otherwise use the provided session_id
-            if matching_session_id:
-                logger.info(f"[{client_id}] Worker {self.worker_id} - Found matching idle session: {matching_session_id}")
-                effective_session_id = matching_session_id
-                client_id = matching_session_id  # Update client_id for logging consistency
-
-                # IMMEDIATELY reserve this session by incrementing active streams to prevent cleanup
-                temp_connection = RedisBackedVODConnection(effective_session_id, self.redis_client)
-                idle_stream_count = temp_connection.increment_active_streams()
-                if idle_stream_count:
-                    logger.info(f"[{client_id}] Reserved idle session - incremented active streams")
-                    active_streams_reserved = True
-                else:
-                    logger.warning(f"[{client_id}] Failed to reserve idle session - falling back to new session")
-                    effective_session_id = session_id
-                    matching_session_id = None  # Clear the match so we create a new connection
-                    idle_stream_count = 0
-            else:
-                logger.info(f"[{client_id}] Worker {self.worker_id} - No matching idle session found, using new session")
-                effective_session_id = session_id
-
-            # Create Redis-backed connection
-            redis_connection = RedisBackedVODConnection(effective_session_id, self.redis_client)
-
-            # Check if connection exists, create if not
+            matching_session_id = None
+            redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
             existing_state = redis_connection._get_connection_state()
+
+            if existing_state:
+                logger.info(
+                    f"[{client_id}] Worker {self.worker_id} - Using session from URL"
+                )
+                effective_session_id = session_id
+            else:
+                matching_session_id = self.find_matching_idle_session(
+                    content_type=content_type,
+                    content_uuid=content_uuid,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    user_id=session_user_id(user),
+                    utc_start=utc_start,
+                    utc_end=utc_end,
+                    offset=offset,
+                )
+                if matching_session_id:
+                    logger.info(
+                        f"[{client_id}] Worker {self.worker_id} - "
+                        f"URL session missing; adopting idle session "
+                        f"{matching_session_id}"
+                    )
+                    effective_session_id = matching_session_id
+                    client_id = matching_session_id
+
+                    # Reserve immediately so cleanup cannot delete the hash
+                    # between the match and the create/reuse path below.
+                    temp_connection = RedisBackedVODConnection(
+                        effective_session_id, self.redis_client
+                    )
+                    idle_stream_count = temp_connection.increment_active_streams()
+                    if idle_stream_count:
+                        logger.info(
+                            f"[{client_id}] Reserved idle session - "
+                            f"incremented active streams"
+                        )
+                        active_streams_reserved = True
+                        redis_connection = temp_connection
+                        existing_state = redis_connection._get_connection_state()
+                    else:
+                        logger.warning(
+                            f"[{client_id}] Failed to reserve idle session - "
+                            f"falling back to new session"
+                        )
+                        effective_session_id = session_id
+                        matching_session_id = None
+                        idle_stream_count = 0
+                        redis_connection = RedisBackedVODConnection(
+                            effective_session_id, self.redis_client
+                        )
+                        existing_state = None
+                else:
+                    logger.info(
+                        f"[{client_id}] Worker {self.worker_id} - "
+                        f"No matching idle session; creating under URL session"
+                    )
+                    effective_session_id = session_id
+
             if matching_session_id and not existing_state:
                 # Idle INCR succeeded but the hash is unreadable. Do not create
                 # a second active_streams reservation on the same session.
@@ -1516,14 +1613,16 @@ class MultiWorkerVODConnectionManager:
                                     # Data flowing again: clear the consecutive failure streak.
                                     consecutive_upstream_failures = 0
 
-                                    # Check for stop signal every 100 chunks
-                                    if chunk_count % 100 == 0:
+                                    # Poll for a stop signal often, so a viewer handing this
+                                    # session over to a new connection is not kept waiting.
+                                    if chunk_count % _STOP_CHECK_INTERVAL_CHUNKS == 0:
                                         if self.redis_client and self.redis_client.exists(stop_key):
                                             logger.info(f"[{client_id}] Worker {self.worker_id} - Stop signal detected, terminating stream")
                                             self.redis_client.delete(stop_key)
                                             stop_signal_detected = True
                                             break
 
+                                    if chunk_count % _STATE_REFRESH_INTERVAL_CHUNKS == 0:
                                         logger.debug(f"Client: [{client_id}] Worker: {self.worker_id} sent {chunk_count} chunks for VOD: {content_name}")
                                         if redis_connection._acquire_lock():
                                             try:
@@ -1584,7 +1683,7 @@ class MultiWorkerVODConnectionManager:
                             logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} on normal completion")
 
                         def delayed_cleanup():
-                            time.sleep(1)  # Wait 1 second
+                            time.sleep(SESSION_SETTLE_SECONDS)
                             # Re-check active_streams: a seeking/reconnecting client may
                             # have incremented it within the settle window.
                             if not redis_connection.has_active_streams():
@@ -1618,7 +1717,7 @@ class MultiWorkerVODConnectionManager:
                             logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} on client disconnect")
 
                         def delayed_cleanup():
-                            time.sleep(1)  # Wait 1 second
+                            time.sleep(SESSION_SETTLE_SECONDS)
                             # Re-check active_streams: a seeking/reconnecting client may
                             # have incremented it within the settle window.
                             if not redis_connection.has_active_streams():
@@ -1651,7 +1750,7 @@ class MultiWorkerVODConnectionManager:
                             logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} on stream error")
 
                         def delayed_cleanup():
-                            time.sleep(1)
+                            time.sleep(SESSION_SETTLE_SECONDS)
                             logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after stream error")
                             # Do not pass connection_manager: profile already released.
                             redis_connection.cleanup(current_worker_id=self.worker_id)
@@ -1672,13 +1771,13 @@ class MultiWorkerVODConnectionManager:
                                 profile_decremented = True
                                 logger.info(f"[{client_id}] Profile counter decremented for profile {profile_id} in finally block")
 
-                            # Delayed cleanup: wait 1s for seeking clients to reconnect
+                            # Delayed cleanup: wait out the settle window for seeking clients to reconnect
                             # before closing the provider connection and Redis keys.
                             # cleanup() atomically re-checks active_streams (Lua), so a
                             # reconnecting client that increments active_streams in
                             # time will prevent Redis key deletion.
                             def delayed_cleanup():
-                                time.sleep(1)
+                                time.sleep(SESSION_SETTLE_SECONDS)
                                 logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup in finally block")
                                 # No connection_manager; profile already decremented above
                                 redis_connection.cleanup(current_worker_id=self.worker_id)
@@ -1708,7 +1807,7 @@ class MultiWorkerVODConnectionManager:
                     )
 
                 def delayed_cleanup():
-                    time.sleep(1)
+                    time.sleep(SESSION_SETTLE_SECONDS)
                     # vod_started is only sent when the body runs, so a session
                     # this request created was never announced.
                     if not session_is_new and not redis_connection.has_active_streams():
@@ -2085,107 +2184,142 @@ class MultiWorkerVODConnectionManager:
         except Exception as e:
             logger.error(f"Error updating connection activity: {e}")
 
-    def find_matching_idle_session(self, content_type: str, content_uuid: str,
-                                 client_ip: str, client_user_agent: str,
-                                 utc_start=None, utc_end=None, offset=None) -> Optional[str]:
-        """Find existing Redis-backed session that matches criteria using consolidated connection state"""
+    def find_matching_sessions(self, content_type: str, content_uuid: str,
+                               client_ip: str, client_user_agent: str, user_id: str,
+                               utc_start=None, utc_end=None, offset=None,
+                               include_active: bool = False) -> list[SessionMatch]:
+        """Every earlier session of this viewer on this content, best first.
+
+        The content and the user must match, and the rest of the fingerprint
+        (address, user agent, timeshift) must match as well. A session that
+        still has a stream running is only listed when ``include_active`` is
+        set.
+
+        Idle sessions come first, most recently active first. An idle session
+        holds no provider slot and no client, and its stored provider URL is
+        kept only for the settle window so that it can be handed back, so it is
+        the one to take. Running sessions follow, also most recently active
+        first, and are never taken: they can only be waited on.
+        """
         if not self.redis_client:
-            return None
+            return []
 
         try:
-            # Search for connections with consolidated session data
-            pattern = "vod_persistent_connection:*"
+            prefix = 'vod_persistent_connection:'
             cursor = 0
             matching_sessions = []
 
             while True:
-                cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
+                cursor, keys = self.redis_client.scan(cursor, match=f'{prefix}*', count=100)
 
                 for key in keys:
-                    try:
-                        connection_data = self.redis_client.hgetall(key)
-                        if not connection_data:
-                            continue
-
-                        # Convert bytes keys/values to strings if needed
-                        if isinstance(list(connection_data.keys())[0], bytes):
-                            connection_data = {k: v for k, v in connection_data.items()}
-
-                        # Check if content matches (using consolidated data)
-                        stored_content_type = connection_data.get('content_obj_type', '')
-                        stored_content_uuid = connection_data.get('content_uuid', '')
-
-                        if stored_content_type != content_type or stored_content_uuid != content_uuid:
-                            continue
-
-                        # Extract session ID
-                        session_id = key.replace('vod_persistent_connection:', '')
-
-                        # Check if Redis-backed connection exists and has no active streams
-                        redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
-                        if redis_connection.has_active_streams():
-                            continue
-
-                        # Calculate match score
-                        score = 10  # Content match
-                        match_reasons = ["content"]
-
-                        # Check other criteria (using consolidated data)
-                        stored_client_ip = connection_data.get('client_ip', '')
-                        stored_user_agent = connection_data.get('client_user_agent', '') or connection_data.get('user_agent', '')
-
-                        if stored_client_ip and stored_client_ip == client_ip:
-                            score += 5
-                            match_reasons.append("ip")
-
-                        if stored_user_agent and stored_user_agent == client_user_agent:
-                            score += 3
-                            match_reasons.append("user-agent")
-
-                        # Check timeshift parameters (using consolidated data)
-                        stored_utc_start = connection_data.get('utc_start', '')
-                        stored_utc_end = connection_data.get('utc_end', '')
-                        stored_offset = connection_data.get('offset', '')
-
-                        current_utc_start = utc_start or ""
-                        current_utc_end = utc_end or ""
-                        current_offset = str(offset) if offset else ""
-
-                        if (stored_utc_start == current_utc_start and
-                            stored_utc_end == current_utc_end and
-                            stored_offset == current_offset):
-                            score += 7
-                            match_reasons.append("timeshift")
-
-                        if score >= 13:  # Good match threshold
-                            matching_sessions.append({
-                                'session_id': session_id,
-                                'score': score,
-                                'reasons': match_reasons,
-                                'last_activity': float(connection_data.get('last_activity', '0'))
-                            })
-
-                    except Exception as e:
-                        logger.debug(f"Error processing connection key {key}: {e}")
+                    # Content and user first, on their own: sessions of other
+                    # titles or users then cost one small read, not the full hash.
+                    stored_type, stored_uuid, stored_user = self.redis_client.hmget(
+                        key, 'content_obj_type', 'content_uuid', 'user_id'
+                    )
+                    if (stored_type, stored_uuid) != (content_type, content_uuid):
                         continue
+                    if (stored_user or ANONYMOUS_USER_ID) != user_id:
+                        continue
+
+                    connection_data = self.redis_client.hgetall(key)
+                    if not connection_data:
+                        continue
+
+                    active = int(connection_data.get('active_streams') or 0) > 0
+                    if active and not include_active:
+                        continue
+
+                    if not _session_matches(
+                        connection_data, client_ip, client_user_agent,
+                        utc_start, utc_end, offset
+                    ):
+                        continue
+
+                    matching_sessions.append({
+                        'session_id': key[len(prefix):],
+                        'active': active,
+                        'last_activity': float(connection_data.get('last_activity') or 0),
+                    })
 
                 if cursor == 0:
                     break
 
-            # Sort by score and last activity
-            matching_sessions.sort(key=lambda x: (x['score'], x['last_activity']), reverse=True)
-
+            matching_sessions.sort(key=lambda m: (m['active'], -m['last_activity']))
             if matching_sessions:
                 best_match = matching_sessions[0]
-                logger.info(f"Found matching Redis-backed idle session: {best_match['session_id']} "
-                          f"(score: {best_match['score']}, reasons: {', '.join(best_match['reasons'])})")
-                return best_match['session_id']
-
-            return None
+                logger.info(
+                    f"Found {len(matching_sessions)} matching Redis-backed session(s), best is "
+                    f"{'active' if best_match['active'] else 'idle'}: {best_match['session_id']}"
+                )
+            return [SessionMatch(m['session_id'], m['active']) for m in matching_sessions]
 
         except Exception as e:
-            logger.error(f"Error finding matching idle session: {e}")
-            return None
+            logger.error(f"Error finding matching sessions: {e}")
+            return []
+
+    def find_matching_idle_session(self, content_type: str, content_uuid: str,
+                                   client_ip: str, client_user_agent: str, user_id: str,
+                                   utc_start=None, utc_end=None, offset=None) -> Optional[str]:
+        """Find an idle session of this viewer on this content to resume."""
+        matches = self.find_matching_sessions(
+            content_type, content_uuid, client_ip, client_user_agent, user_id,
+            utc_start=utc_start, utc_end=utc_end, offset=offset,
+        )
+        return matches[0].session_id if matches else None
+
+    def wait_for_any_session_idle(self, session_ids: list[str],
+                                  signal_stop: bool = False) -> Optional[str]:
+        """Wait up to the settle window for one of these sessions to go idle.
+
+        Returns the id of the first session found with no stream running, or
+        None if every one of them is still streaming when the window ends.
+        Which of several sessions is the viewer's previous connection cannot be
+        known, so all of them are watched and whichever closes is taken.
+
+        With ``signal_stop`` each listed session's stream is told to stop, so
+        a viewer replacing it does not wait for its client to drop the
+        connection. Callers should only pass ``signal_stop`` when the list is
+        a single session that limits will end (the viewer's lone running
+        match at their stream limit). Leaving the key behind on timeout is
+        intentional in that case: the old stream should still stop.
+
+        Sleeps are gevent-patched in production, so other greenlets on the same
+        worker keep running; only this request pays the settle latency.
+        """
+        connections = {
+            session_id: RedisBackedVODConnection(session_id, self.redis_client)
+            for session_id in session_ids
+        }
+
+        def first_idle():
+            return next(
+                (sid for sid, conn in connections.items() if not conn.has_active_streams()),
+                None,
+            )
+
+        idle = first_idle()
+        if idle is not None:
+            return idle
+
+        if signal_stop:
+            for session_id in session_ids:
+                self.redis_client.setex(
+                    get_vod_client_stop_key(session_id), _HANDOFF_STOP_TTL_SECONDS, "true"
+                )
+
+        deadline = time.monotonic() + SESSION_SETTLE_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(_SETTLE_POLL_SECONDS)
+            idle = first_idle()
+            if idle is not None:
+                if signal_stop:
+                    # The stream that would have read the signal is gone. Do
+                    # not leave it behind to stop a stream that resumes this session.
+                    self.redis_client.delete(get_vod_client_stop_key(idle))
+                return idle
+        return None
 
     def get_session_info(self, session_id: str) -> Optional[dict]:
         """Get session information from consolidated connection state (compatibility method)"""

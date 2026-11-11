@@ -15,7 +15,7 @@ class StreamVodRedirectTests(SimpleTestCase):
         request.user = MagicMock(is_authenticated=False)
         return request
 
-    @patch("apps.proxy.vod_proxy.views._find_idle_vod_session", return_value=None)
+    @patch("apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None)
     @patch("apps.proxy.vod_proxy.views._select_vod_stream")
     @patch(
         "core.models.CoreSettings.is_default_stream_profile_redirect",
@@ -57,7 +57,7 @@ class StreamVodRedirectTests(SimpleTestCase):
     @patch("apps.proxy.vod_proxy.views.close_old_connections")
     @patch("apps.proxy.vod_proxy.views.MultiWorkerVODConnectionManager")
     @patch("apps.proxy.vod_proxy.views._select_vod_stream")
-    @patch("apps.proxy.vod_proxy.views._find_idle_vod_session", return_value=None)
+    @patch("apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None)
     @patch(
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=False,
@@ -105,7 +105,7 @@ class StreamVodRedirectTests(SimpleTestCase):
         mock_manager.stream_content_with_session.assert_called_once()
         mock_close.assert_called_once()
 
-    @patch("apps.proxy.vod_proxy.views._find_idle_vod_session", return_value=None)
+    @patch("apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None)
     @patch("apps.proxy.vod_proxy.views._select_vod_stream", return_value=None)
     @patch(
         "core.models.CoreSettings.is_default_stream_profile_redirect",
@@ -190,7 +190,7 @@ class StreamVodRedirectTests(SimpleTestCase):
     @patch("apps.proxy.vod_proxy.views._vod_session_path_redirect")
     @patch("apps.proxy.vod_proxy.views._select_vod_stream")
     @patch(
-        "apps.proxy.vod_proxy.views._find_idle_vod_session",
+        "apps.proxy.vod_proxy.views._find_resumable_vod_session",
         return_value="idle_session_abc",
     )
     @patch(
@@ -198,17 +198,16 @@ class StreamVodRedirectTests(SimpleTestCase):
         return_value=True,
     )
     @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
-    def test_idle_session_match_skips_redirect(
+    def test_resumable_session_skips_redirect(
         self,
         _network_ok,
         _is_redirect,
-        mock_idle,
+        mock_resume,
         mock_select,
         mock_path_redirect,
     ):
-        """Idle fingerprint match (ip/user-agent/content, same check the
-        connection manager already uses for reconnects) wins over Redirect
-        and adopts that session directly instead of hopping to the provider."""
+        """A session of the same viewer on this content wins over Redirect and
+        is resumed directly instead of hopping to the provider."""
         expected = HttpResponse(
             status=301, headers={"Location": "/proxy/vod/movie/uuid/idle_session_abc"}
         )
@@ -224,27 +223,29 @@ class StreamVodRedirectTests(SimpleTestCase):
         )
 
         self.assertIs(response, expected)
-        mock_idle.assert_called_once()
+        mock_resume.assert_called_once()
         mock_select.assert_not_called()
         mock_path_redirect.assert_called_once()
         self.assertEqual(mock_path_redirect.call_args.args[1], "idle_session_abc")
 
     @patch("apps.proxy.vod_proxy.views._select_vod_stream")
-    @patch("apps.proxy.vod_proxy.views._find_idle_vod_session")
+    @patch(
+        "apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None
+    )
     @patch(
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=False,
     )
     @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
-    def test_no_idle_check_when_not_redirect(
+    def test_proxy_mode_mints_when_nothing_to_resume(
         self,
         _network_ok,
         _is_redirect,
-        mock_idle,
+        mock_resume,
         mock_select,
     ):
-        """Proxy-mode installs never pay for the idle-session scan; the mint
-        path is unchanged from before Redirect existed."""
+        """Proxy mode looks for a session to resume too (waiting for a running
+        one to close), and mints when there is none."""
         from apps.proxy.vod_proxy.views import stream_vod
 
         response = stream_vod(
@@ -261,8 +262,72 @@ class StreamVodRedirectTests(SimpleTestCase):
             response["Cache-Control"],
             f"private, max-age={VOD_SESSION_REDIRECT_CACHE_SECONDS}",
         )
-        mock_idle.assert_not_called()
+        mock_resume.assert_called_once()
+        self.assertTrue(mock_resume.call_args.kwargs["wait_for_active"])
         mock_select.assert_not_called()
+
+    @patch("apps.proxy.vod_proxy.views._select_vod_stream")
+    @patch(
+        "apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None
+    )
+    @patch(
+        "core.models.CoreSettings.is_default_stream_profile_redirect",
+        return_value=False,
+    )
+    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    def test_resume_is_matched_on_the_requests_timeshift_params(
+        self,
+        _network_ok,
+        _is_redirect,
+        mock_resume,
+        _mock_select,
+    ):
+        from apps.proxy.vod_proxy.views import stream_vod
+
+        stream_vod(
+            self._request(
+                "/proxy/vod/movie/uuid/"
+                "?utc_start=2026-11-07T20:00:00Z&end=2026-11-07T21:00:00Z&seek=300"
+            ),
+            content_type="movie",
+            content_id="uuid",
+            session_id=None,
+        )
+
+        kwargs = mock_resume.call_args.kwargs
+        self.assertEqual(
+            {name: kwargs.get(name) for name in ("utc_start", "utc_end", "offset")},
+            {
+                "utc_start": "2026-11-07T20:00:00Z",
+                "utc_end": "2026-11-07T21:00:00Z",
+                "offset": "300",
+            },
+        )
+
+
+class ParseTimeshiftParamsTests(SimpleTestCase):
+    def _parse(self, query):
+        from apps.proxy.vod_proxy.views import _parse_timeshift_params
+
+        return _parse_timeshift_params(RequestFactory().get(f"/proxy/vod/movie/uuid/{query}"))
+
+    def test_an_ordinary_request_has_no_timeshift(self):
+        self.assertEqual(self._parse(""), (None, None, None))
+
+    def test_each_spelling_is_accepted(self):
+        self.assertEqual(
+            self._parse("?utc_start=a&utc_end=b&offset=1"), ("a", "b", "1")
+        )
+        self.assertEqual(self._parse("?start=a&end=b&seek=1"), ("a", "b", "1"))
+        self.assertEqual(
+            self._parse("?playliststart=a&playlistend=b&t=1"), ("a", "b", "1")
+        )
+
+    def test_vlc_timestamp_is_an_offset_only_without_a_start_or_offset(self):
+        self.assertEqual(self._parse("?timestamp=30"), (None, None, "30"))
+        self.assertEqual(self._parse("?time=45"), (None, None, "45"))
+        self.assertEqual(self._parse("?utc_start=a&time=45"), ("a", None, None))
+        self.assertEqual(self._parse("?offset=1&time=45"), (None, None, "1"))
 
 
 class SessionRedirectCacheControlTests(SimpleTestCase):
@@ -320,7 +385,7 @@ class HeadVodRedirectTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    @patch("apps.proxy.vod_proxy.views._find_idle_vod_session", return_value=None)
+    @patch("apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None)
     @patch("apps.proxy.vod_proxy.views._select_vod_stream")
     @patch(
         "core.models.CoreSettings.is_default_stream_profile_redirect",
@@ -354,9 +419,41 @@ class HeadVodRedirectTests(SimpleTestCase):
         mock_select.assert_called_once()
         mock_manager_cls.get_instance.assert_not_called()
 
+    @patch("apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None)
+    @patch(
+        "apps.proxy.vod_proxy.views._select_vod_stream",
+        return_value={"final_stream_url": "http://provider.example/movie.mp4"},
+    )
+    @patch(
+        "core.models.CoreSettings.is_default_stream_profile_redirect",
+        return_value=True,
+    )
+    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    def test_head_vod_matches_resume_on_the_requests_timeshift_params(
+        self,
+        _network_ok,
+        _is_redirect,
+        _mock_select,
+        mock_resume,
+    ):
+        from apps.proxy.vod_proxy.views import head_vod
+
+        request = self.factory.head(
+            "/proxy/vod/movie/uuid/?utc_start=2026-11-07T20:00:00Z&t=300",
+            HTTP_USER_AGENT="test-agent",
+        )
+
+        head_vod(request, content_type="movie", content_id="uuid")
+
+        kwargs = mock_resume.call_args.kwargs
+        self.assertEqual(
+            {name: kwargs.get(name) for name in ("utc_start", "utc_end", "offset")},
+            {"utc_start": "2026-11-07T20:00:00Z", "utc_end": None, "offset": "300"},
+        )
+
     @patch("apps.proxy.vod_proxy.views._select_vod_stream")
     @patch(
-        "apps.proxy.vod_proxy.views._find_idle_vod_session",
+        "apps.proxy.vod_proxy.views._find_resumable_vod_session",
         return_value="idle_session_abc",
     )
     @patch(
@@ -408,23 +505,23 @@ class HeadVodRedirectTests(SimpleTestCase):
         mock_select.assert_called_once()
         self.assertEqual(mock_select.call_args.args[-1], "idle_session_abc")
 
-    @patch("apps.proxy.vod_proxy.views._find_idle_vod_session", return_value=None)
+    @patch("apps.proxy.vod_proxy.views._find_resumable_vod_session", return_value=None)
     @patch("apps.proxy.vod_proxy.views._select_vod_stream", return_value=None)
     @patch(
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=False,
     )
     @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
-    def test_head_vod_no_idle_check_when_not_redirect(
+    def test_proxy_mode_head_looks_for_an_idle_session_then_mints(
         self,
         _network_ok,
         _is_redirect,
         mock_select,
-        mock_idle,
+        mock_resume,
     ):
-        """Proxy-mode HEAD requests never pay for the idle-session scan; the
-        mint path is taken directly and falls through to normal profile
-        selection (503 here, since _select_vod_stream is stubbed to None)."""
+        """Proxy-mode HEAD resumes an idle session when there is one, and only
+        mints when there is not. It never waits on a running stream. Selection
+        returns 503 here because _select_vod_stream is stubbed to None."""
         request = self.factory.head(
             "/proxy/vod/movie/uuid/",
             HTTP_USER_AGENT="test-agent",
@@ -434,8 +531,65 @@ class HeadVodRedirectTests(SimpleTestCase):
 
         response = head_vod(request, content_type="movie", content_id="uuid")
 
-        mock_idle.assert_not_called()
+        mock_resume.assert_called_once()
+        self.assertFalse(mock_resume.call_args.kwargs.get("wait_for_active", False))
+        mock_select.assert_called_once()
         self.assertEqual(response.status_code, 503)
+
+    @patch("apps.proxy.vod_proxy.views._select_vod_stream")
+    @patch(
+        "apps.proxy.vod_proxy.views._find_resumable_vod_session",
+        return_value="idle_session_abc",
+    )
+    @patch(
+        "core.models.CoreSettings.is_default_stream_profile_redirect",
+        return_value=False,
+    )
+    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    def test_proxy_mode_head_adopts_an_idle_session(
+        self,
+        _network_ok,
+        _is_redirect,
+        mock_resume,
+        mock_select,
+    ):
+        """FUSE HEAD must return the same session id a bare-URL GET would
+        resume, so the follow-up GET does not mint a second session."""
+        movie = MagicMock()
+        movie.name = "Test Movie"
+        m3u_account = MagicMock(name="Provider")
+        m3u_account.get_user_agent_string.return_value = "test-agent"
+        mock_select.return_value = {
+            "content_obj": movie,
+            "m3u_account": m3u_account,
+            "m3u_profile": MagicMock(),
+            "current_connections": 0,
+            "final_stream_url": "http://example.com/movie.mp4",
+        }
+        provider_response = MagicMock()
+        provider_response.status_code = 200
+        provider_response.headers = {
+            "Content-Length": "1234",
+            "Content-Type": "video/mp4",
+        }
+
+        request = self.factory.head(
+            "/proxy/vod/movie/uuid/",
+            HTTP_USER_AGENT="test-agent",
+        )
+
+        with patch(
+            "apps.proxy.vod_proxy.views.requests.get", return_value=provider_response
+        ), patch("apps.proxy.vod_proxy.views.MultiWorkerVODConnectionManager"):
+            from apps.proxy.vod_proxy.views import head_vod
+
+            response = head_vod(request, content_type="movie", content_id="uuid")
+
+        mock_resume.assert_called_once()
+        self.assertFalse(mock_resume.call_args.kwargs.get("wait_for_active", False))
+        self.assertEqual(response["X-Dispatcharr-Session"], "idle_session_abc")
+        self.assertIn("idle_session_abc", response["X-Session-URL"])
+        self.assertEqual(mock_select.call_args.args[-1], "idle_session_abc")
 
 
 class SelectVodStreamTests(SimpleTestCase):

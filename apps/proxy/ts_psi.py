@@ -1,29 +1,74 @@
-"""Shared MPEG-TS Program Specific Information (PSI) helpers.
+"""MPEG-TS PSI helpers (ISO/IEC 13818-1).
 
-PAT, PMT, and PSI section reassembly as defined in ISO/IEC 13818-1. Used by
-the HLS segmenter, the output-profile PMT layout watcher, and DVR remux.
+Stream types, descriptor tags, PAT/PMT parsing, and section reassembly.
 Stdlib only, so it stays unit-testable without Django or Redis.
 """
 
 # ISO/IEC 13818-1 transport packet size.
 TS_PACKET_SIZE = 188
 
-# ISO 13818-1 / ATSC stream_type values
-VIDEO_STREAM_TYPES = {
-    0x01: "mpeg1",
-    0x02: "mpeg2",
-    0x1B: "h264",
-    0x24: "h265",
-}
+STREAM_TYPE_MPEG1_VIDEO = 0x01
+STREAM_TYPE_MPEG2_VIDEO = 0x02
+STREAM_TYPE_MPEG1_AUDIO = 0x03
+STREAM_TYPE_MPEG2_AUDIO = 0x04
+STREAM_TYPE_PRIVATE_DATA = 0x06
+STREAM_TYPE_AAC_ADTS = 0x0F
+STREAM_TYPE_MPEG4_VIDEO = 0x10
+STREAM_TYPE_AAC_LATM = 0x11
+STREAM_TYPE_H264 = 0x1B
+# ISO/IEC 14496-3 audio with no extra transport syntax.
+STREAM_TYPE_MPEG4_AUDIO = 0x1C
+STREAM_TYPE_HEVC = 0x24
+# FFmpeg calls this CAVS.
+STREAM_TYPE_AVS = 0x42
 
-# Common audio elementary stream types in live MPEG-TS
+# Also Blu-ray AC-3.
+STREAM_TYPE_AC3 = 0x81
+STREAM_TYPE_EAC3 = 0x87
+# User private. FFmpeg maps it to DTS.
+STREAM_TYPE_DTS = 0x8A
+
+# FFmpeg applies these only for an HDMV registration. In cable, 0x82 is
+# subtitles, 0x83 is isochronous data, and 0x86 is SCTE-35.
+STREAM_TYPE_BLURAY_DTS = 0x82
+STREAM_TYPE_BLURAY_TRUEHD = 0x83
+STREAM_TYPE_BLURAY_EAC3 = 0x84
+STREAM_TYPE_BLURAY_DTS_HD = 0x85
+STREAM_TYPE_BLURAY_DTS_HD_MASTER = 0x86
+
+# HLS sample encryption. FFmpeg demuxes these as audio from the type.
+STREAM_TYPE_SAMPLE_AES_AC3 = 0xC1
+STREAM_TYPE_SAMPLE_AES_EAC3 = 0xC2
+STREAM_TYPE_SAMPLE_AES_AAC = 0xCF
+
+DESCRIPTOR_REGISTRATION = 0x05
+DESCRIPTOR_ISO_639_LANGUAGE = 0x0A
+# DVB audio descriptors (ETSI EN 300 468).
+DESCRIPTOR_AC3 = 0x6A
+DESCRIPTOR_EAC3 = 0x7A
+DESCRIPTOR_DTS = 0x7B
+DESCRIPTOR_AAC = 0x7C
+
+REGISTRATION_AC3 = b"AC-3"
+REGISTRATION_EAC3 = b"EAC3"
+REGISTRATION_DTS1 = b"DTS1"
+REGISTRATION_DTS2 = b"DTS2"
+REGISTRATION_DTS3 = b"DTS3"
+
+# Narrow set the HLS segmenter uses to pick one video PID and one audio PID.
+VIDEO_STREAM_TYPES = {
+    STREAM_TYPE_MPEG1_VIDEO: "mpeg1",
+    STREAM_TYPE_MPEG2_VIDEO: "mpeg2",
+    STREAM_TYPE_H264: "h264",
+    STREAM_TYPE_HEVC: "h265",
+}
 AUDIO_STREAM_TYPES = {
-    0x03: "mpeg1-audio",
-    0x04: "mpeg2-audio",
-    0x0F: "aac-adts",
-    0x11: "aac-latm",
-    0x81: "ac3",
-    0x87: "eac3",
+    STREAM_TYPE_MPEG1_AUDIO: "mpeg1-audio",
+    STREAM_TYPE_MPEG2_AUDIO: "mpeg2-audio",
+    STREAM_TYPE_AAC_ADTS: "aac-adts",
+    STREAM_TYPE_AAC_LATM: "aac-latm",
+    STREAM_TYPE_AC3: "ac3",
+    STREAM_TYPE_EAC3: "eac3",
 }
 
 
