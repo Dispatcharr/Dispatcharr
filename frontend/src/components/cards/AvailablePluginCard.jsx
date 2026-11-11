@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -202,6 +202,8 @@ const AvailablePluginCard = ({
   const [installedPlugin, setInstalledPlugin] = useState(null);
   const [enableNow, setEnableNow] = useState(false);
   const [enabling, setEnabling] = useState(false);
+  const [enableError, setEnableError] = useState(false);
+  const dismissInProgress = useRef(false);
   const [pluginIsDisabled, setPluginIsDisabled] = useState(false);
   const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
   const [dataConfirmOpen, setDataConfirmOpen] = useState(false);
@@ -280,6 +282,7 @@ const AvailablePluginCard = ({
         setInstalledPlugin(result.plugin || null);
         setPluginIsDisabled(result.plugin?.enabled === false);
         setEnableNow(false);
+        setEnableError(false);
         setRestartPromptOpen(true);
         onInstalled?.(plugin.slug);
       }
@@ -292,27 +295,42 @@ const AvailablePluginCard = ({
   const [uninstallDoneOpen, setUninstallDoneOpen] = useState(false);
 
   const handleDismissRestart = async (andNavigate = false) => {
-    if (enableNow && installedKey) {
-      const proceed =
-        !needsCapabilityAck(installedPlugin) ||
-        (await usePluginStore
-          .getState()
-          .requestEnableConfirmation(installedPlugin || { key: installedKey }));
-      if (proceed) {
-        setEnabling(true);
-        try {
-          await setPluginEnabled(
-            installedKey,
-            true,
-            (installedPlugin?.capabilities || []).map((capability) => capability.id)
-          );
-        } finally {
-          setEnabling(false);
+    if (dismissInProgress.current) return;
+    dismissInProgress.current = true;
+    setEnabling(true);
+    setEnableError(false);
+    try {
+      if (enableNow && installedKey) {
+        if (needsCapabilityAck(installedPlugin)) {
+          setRestartPromptOpen(false);
+          const proceed = await usePluginStore
+            .getState()
+            .requestEnableConfirmation(installedPlugin || { key: installedKey });
+          if (!proceed) {
+            setRestartPromptOpen(true);
+            return;
+          }
+        }
+        const result = await setPluginEnabled(
+          installedKey,
+          true,
+          (installedPlugin?.capabilities || []).map((capability) => capability.id)
+        );
+        if (!result?.success) {
+          setEnableError(true);
+          setRestartPromptOpen(true);
+          return;
         }
       }
+      setRestartPromptOpen(false);
+      if (andNavigate) navigate('/plugins');
+    } catch {
+      setEnableError(true);
+      setRestartPromptOpen(true);
+    } finally {
+      dismissInProgress.current = false;
+      setEnabling(false);
     }
-    setRestartPromptOpen(false);
-    if (andNavigate) navigate('/plugins');
   };
 
   const handleUninstall = async (dataAction) => {
@@ -940,6 +958,9 @@ const AvailablePluginCard = ({
                 />
               </Group>
             </>
+          )}
+          {enableError && (
+            <Text size="sm" c="red">Could not enable the plugin. Please try again.</Text>
           )}
           <Group justify="flex-end" gap="xs">
             <Button
