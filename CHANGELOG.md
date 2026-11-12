@@ -69,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Plugin execution context distinguishes code from persistent data.** Plugins now receive a replaceable `code_dir` and a version-stable `data_dir`, so update-safe storage has an explicit API. Uninstalling a plugin with saved data now asks whether to keep it for a future reinstall or permanently delete it.
+- **Plugin execution context distinguishes code from persistent data.** Plugins now receive a replaceable `code_dir` and a version-stable `data_dir`, so update-safe storage has an explicit API. Plugins can build fields at discovery with saved settings and these paths, and use host-provided helpers to create watched directories or remove directory trees within permitted locations. Shared-directory writes require the `filesystem_write` capability for manifest version 2 plugins. Uninstalling a plugin with saved data now asks whether to keep it for a future reinstall or permanently delete it.
 - **Marketplace update state is shared across plugin surfaces.** Version comparison and update status now drive the marketplace, installed-plugin cards, notifications, and the plugin detail page consistently. Page-level and detail update checks refresh repository manifests through the same path. Stable and prerelease installs are distinguished, and selecting a managed release over an unmanaged install replaces it instead of offering to uninstall it.
 
 ## [0.33.0] - 2026-10-24

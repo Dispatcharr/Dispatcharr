@@ -208,6 +208,10 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 
   Dispatcharr creates the data directory when it builds a runtime or leadership context, not when it discovers or imports the plugin. Do not assume the directory exists at module import time or in `Plugin.__init__()`. The directory survives plugin updates. On uninstall, an empty data directory is removed automatically; if it contains data, the user can keep it for a future reinstall or explicitly delete it.
 
+  Plugins can optionally define `get_fields(self, context)` to build fields at discovery time. Its context contains `settings`, `data_dir`, `code_dir`, `logger`, and `dispatcharr`. Settings are the saved values before field defaults are merged. The data directory may not exist yet. When present, `get_fields` takes precedence over the `fields` attribute; an empty result falls back to manifest fields. Fields are rebuilt on discovery or reload, not automatically when a catalog changes.
+
+  `context["dispatcharr"]["directories"]` provides the watched `logos`, `m3u`, and `epg` paths. `context["dispatcharr"]["ensure_directory"](name)` creates a named watched directory on demand and returns its path. `context["dispatcharr"]["remove_directory"](path)` removes a directory tree beneath the plugin data directory or a watched directory; it rejects the roots themselves, paths outside them, and symlink traversal. A missing target raises `FileNotFoundError`. Plugins must still check that shared-directory content belongs to them before removing it. Shared directory creation and deletion require `filesystem_write` for manifest version 2 or later; versions 0 and 1 remain advisory. Runtime helpers stop working when their loaded plugin instance is replaced or removed. Discovery helpers expire when `get_fields` returns. These helpers do not make the plugin sandbox an isolation boundary.
+
 ---
 
 ## Plugin Interface
