@@ -365,18 +365,20 @@ const PluginTaskGroupRow = ({ group }) => {
 
 export const PluginTaskList = ({ tasks }) => {
   const [trigger, setTrigger] = useState('all');
+  const triggers = new Set(Object.values(tasks || {}).filter(Boolean).map((task) => task.trigger || 'unknown'));
+  const activeTrigger = triggers.size > 1 && triggers.has(trigger) ? trigger : 'all';
   const groups = useMemo(() => groupPluginTasks(
     Object.fromEntries(Object.entries(tasks || {}).filter(([, task]) =>
-      trigger === 'all' || (task?.trigger || 'unknown') === trigger
+      activeTrigger === 'all' || (task?.trigger || 'unknown') === activeTrigger
     ))
-  ), [tasks, trigger]);
+  ), [tasks, activeTrigger]);
   if (!Object.keys(tasks || {}).length) return null;
   return (
     <Stack gap="xs">
-      <Select
+      {triggers.size > 1 && <Select
         aria-label="Filter task history by trigger"
         size="xs"
-        value={trigger}
+        value={activeTrigger}
         onChange={(value) => setTrigger(value || 'all')}
         data={[
           { value: 'all', label: 'All triggers' },
@@ -386,7 +388,7 @@ export const PluginTaskList = ({ tasks }) => {
           { value: 'event', label: 'Event' },
           { value: 'unknown', label: 'Unknown' },
         ]}
-      />
+      />}
       {groups.length === 0 && <Text size="xs" c="dimmed">No runs match this trigger.</Text>}
       {groups.map((group) => (
         <PluginTaskGroupRow key={group.groupKey} group={group} />

@@ -25,7 +25,7 @@ export const usePluginStore = create((set, get) => ({
   availableError: null,
 
   // Async plugin action tasks (see WebSocket.jsx plugin_task_progress/
-  // plugin_task_complete and PluginDetail.jsx's "Background Tasks" section). Keyed by
+  // plugin_task_complete and PluginDetail.jsx's "Tasks" section). Keyed by
   // task_id (globally unique Celery id), so this map can hold entries for
   // more than one plugin at once without collision.
   //

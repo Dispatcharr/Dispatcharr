@@ -83,6 +83,7 @@ vi.mock('../../components/PluginFieldList.jsx', () => ({
 vi.mock('../../components/PluginActionList.jsx', () => ({
   PluginActionList: () => <div data-testid="plugin-action-list" />,
   PluginActionStatus: () => null,
+  PluginTaskList: () => <div data-testid="plugin-task-list" />,
 }));
 
 vi.mock('@mantine/core', async () => {
@@ -190,6 +191,16 @@ describe('PluginDetail', () => {
     render(<PluginDetail />);
     expect(screen.getByText('Test Plugin')).toBeInTheDocument();
     expect(screen.getByText('A test plugin')).toBeInTheDocument();
+  });
+
+  it('labels the plugin task history section Tasks', () => {
+    usePluginStore.mockImplementation((selector) => selector({
+      plugins: [mockPlugin], loading: false, ...enableConfirmDefaults,
+      pluginTasks: { run: { pluginKey: 'test-plugin', status: 'ok' } },
+    }));
+    render(<PluginDetail />);
+    expect(screen.getByText('Tasks')).toBeInTheDocument();
+    expect(screen.queryByText('Background Tasks')).not.toBeInTheDocument();
   });
 
   it('toggles pinning from the Plugin Control pane', () => {

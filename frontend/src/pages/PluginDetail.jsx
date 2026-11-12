@@ -629,7 +629,7 @@ function PluginDetailForKey({ routeKey: key }) {
             {hasPluginTasks && (
               <Stack gap="sm">
                 <CollapsibleHeading
-                  label="Background Tasks"
+                  label="Tasks"
                   isSingleCol
                   opened={tasksOpened}
                   onToggle={toggleTasks}

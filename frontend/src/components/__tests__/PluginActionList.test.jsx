@@ -9,7 +9,11 @@ vi.mock('@mantine/core', () => ({
   Group: ({ children }) => <div>{children}</div>,
   Modal: ({ children, opened }) => opened ? <div role="dialog">{children}</div> : null,
   Progress: () => <div>Progress</div>,
-  Select: () => null,
+  Select: ({ 'aria-label': label, value, onChange, data }) => (
+    <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
+      {data.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select>
+  ),
   Stack: ({ children }) => <div>{children}</div>,
   Text: ({ children }) => <div>{children}</div>,
   TextInput: () => null,
@@ -71,5 +75,21 @@ describe('plugin run history output', () => {
     }} />);
     fireEvent.click(screen.getByText('View history'));
     expect(within(screen.getByRole('dialog')).getAllByText('Download output')).toHaveLength(3);
+  });
+
+  it('shows the trigger filter only for multiple triggers and handles changing runs', () => {
+    const manual = task('ok', null);
+    const scheduled = task('ok', null, { actionId: 'scheduled', actionLabel: 'Scheduled run', trigger: 'schedule' });
+    const { rerender } = render(<PluginTaskList tasks={{ manual }} />);
+    expect(screen.queryByLabelText('Filter task history by trigger')).not.toBeInTheDocument();
+
+    rerender(<PluginTaskList tasks={{ manual, scheduled }} />);
+    fireEvent.change(screen.getByLabelText('Filter task history by trigger'), { target: { value: 'schedule' } });
+    expect(screen.getByText('Scheduled run')).toBeInTheDocument();
+    expect(screen.queryByText('Scan')).not.toBeInTheDocument();
+
+    rerender(<PluginTaskList tasks={{ manual }} />);
+    expect(screen.queryByLabelText('Filter task history by trigger')).not.toBeInTheDocument();
+    expect(screen.getByText('Scan')).toBeInTheDocument();
   });
 });
