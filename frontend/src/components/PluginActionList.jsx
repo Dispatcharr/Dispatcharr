@@ -210,6 +210,22 @@ const PluginTaskTimestamp = ({ task }) => {
 // One individual run, shown inside PluginTaskGroupModal's history list.
 const PluginTaskRunRow = ({ task }) => {
   const isDone = task.status !== 'running';
+  const resultMessage = task.result?.message;
+  const showResultMessage = resultMessage && !(task.status === 'error' && String(resultMessage) === String(task.error));
+  const downloadResult = () => {
+    const blob = new Blob([JSON.stringify(task.result, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `plugin-task-${task.taskId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
+    document.body.appendChild(link);
+    try {
+      link.click();
+    } finally {
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+  };
   return (
     <PluginListRow
       left={
@@ -232,18 +248,18 @@ const PluginTaskRunRow = ({ task }) => {
               {String(task.error)}
             </Text>
           )}
-          {task.status === 'partial' && task.result?.message && (
-            <Text size="xs" c="yellow" style={{ whiteSpace: 'normal' }}>
-              {String(task.result.message)}
-            </Text>
-          )}
-          {(task.status === 'error' || task.status === 'partial') && task.result && (
-            <Text component="pre" size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-              {JSON.stringify(task.result, null, 2).slice(0, 4000)}
+          {showResultMessage && (
+            <Text size="xs" c={task.status === 'partial' ? 'yellow' : task.status === 'error' ? 'red' : 'dimmed'} style={{ whiteSpace: 'normal' }}>
+              {String(resultMessage)}
             </Text>
           )}
         </>
       }
+      right={isDone && task.result != null && (
+        <Button size="xs" variant="light" color="gray" onClick={downloadResult}>
+          Download output
+        </Button>
+      )}
       footer={
         !isDone && (
           <Progress

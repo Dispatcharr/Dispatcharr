@@ -428,7 +428,7 @@ For queued actions, a returned dictionary can report its outcome with `status`:
 - `{"status": "error", "message": "Scan failed"}` marks the task as failed. Use `error` or `message` to provide a reason; `error` takes precedence. The returned dictionary is retained in task history. Raising an exception also fails the task.
 - `{"status": "partial", "message": "Some items could not be scanned"}` records a distinct warning outcome without failing the Celery task. Include a message to explain what needs attention.
 
-These outcomes apply to both awaited manual actions and background plugin actions. A partial result remains available in the returned result for awaited actions and in background task history for asynchronous actions.
+These outcomes apply to both awaited manual actions and background plugin actions. Returned results are available to awaited actions and retained in background task history for all outcomes, including plugin-returned errors. JSON-serializable results can be downloaded from run history as JSON, subject to the retention limits below. An exception without a returned result does not produce a result file.
 
 Background history records the trigger as `manual`, `action`, `schedule`, or `event`; older records can be `unknown`. Set `PLUGIN_TASK_HISTORY_MAX_ENTRIES` to adjust retention per plugin (default 50, maximum 5000) and `PLUGIN_TASK_HISTORY_TTL_SECONDS` to adjust expiry (default seven days, maximum 90 days). Values are clamped to at least 1. The task history endpoint accepts an optional `trigger` query parameter with one of these values.
 
