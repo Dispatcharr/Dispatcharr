@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import importlib
 import importlib.machinery
 import importlib.util
@@ -541,6 +542,7 @@ class PluginManager:
                     storage_key=cfg.slug or cfg.key,
                     capabilities=previous.capabilities if previous else (),
                     manifest_schema_version=previous.manifest_schema_version if previous else 0,
+                    saved_settings=cfg.settings or {},
                 )
                 if loaded is None:
                     raise ValueError(f"Plugin '{cfg.key}' could not be loaded")
@@ -735,6 +737,7 @@ class PluginManager:
                 storage_key=cfg.slug if cfg and cfg.slug else plugin_key,
                 capabilities=manifest_capabilities,
                 manifest_schema_version=manifest_schema_version,
+                saved_settings=cfg.settings or {},
             )
             if not lp:
                 return _make_placeholder(), None, None
@@ -792,6 +795,7 @@ class PluginManager:
         storage_key: str,
         capabilities: Sequence[str] = (),
         manifest_schema_version: int = 0,
+        saved_settings: Optional[Dict[str, Any]] = None,
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
         path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
@@ -889,7 +893,27 @@ class PluginManager:
         description = getattr(instance, "description", "")
         author = getattr(instance, "author", "")
         help_url = getattr(instance, "help_url", "")
-        fields = getattr(instance, "fields", [])
+        get_fields = getattr(instance, "get_fields", None)
+        if callable(get_fields):
+            active = [True]
+            def authorize_discovery(shared):
+                if not active[0]:
+                    raise PermissionError("Plugin discovery context has expired")
+                if shared and manifest_version_enforces_sandbox(manifest_schema_version) and "filesystem_write" not in capabilities:
+                    raise PermissionError(f"Plugin '{key}' requires the 'filesystem_write' capability")
+            from .filesystem import make_filesystem_context
+            discovery_context = {
+                "settings": copy.deepcopy(saved_settings or {}), "data_dir": data_dir,
+                "code_dir": path, "logger": logger,
+                "dispatcharr": make_filesystem_context(data_dir, authorize_discovery),
+            }
+            try:
+                with running_as_plugin(key, capabilities=capabilities, manifest_schema_version=manifest_schema_version):
+                    fields = get_fields(discovery_context)
+            finally:
+                active[0] = False
+        else:
+            fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
         fields = self._normalize_fields(fields)
         actions = self._normalize_actions(actions)
@@ -1377,6 +1401,7 @@ class PluginManager:
             "get_settings": self._make_settings_accessor(lp),
             "data_dir": lp.data_dir,
             "code_dir": lp.path or "",
+            "dispatcharr": self._plugin_filesystem_context(lp),
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id=None),
@@ -1792,12 +1817,25 @@ class PluginManager:
             "settings": settings,
             "data_dir": lp.data_dir,
             "code_dir": lp.path or "",
+            "dispatcharr": self._plugin_filesystem_context(lp),
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id),
             "dispatch_task": self._make_task_dispatcher(lp),
             "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
         }
+
+    def _plugin_filesystem_context(self, lp: LoadedPlugin):
+        from .filesystem import make_filesystem_context
+
+        def authorize(shared):
+            current = self.get_plugin(lp.key)
+            if current is not lp or not current.instance:
+                raise PermissionError(f"Plugin '{lp.key}' context is no longer active")
+            if shared and manifest_version_enforces_sandbox(current.manifest_schema_version) and "filesystem_write" not in (current.capabilities or []):
+                raise PermissionError(f"Plugin '{lp.key}' requires the 'filesystem_write' capability")
+
+        return make_filesystem_context(lp.data_dir, authorize)
 
     def _make_settings_accessor(self, lp: LoadedPlugin):
         """Read current settings on demand, including field defaults."""
