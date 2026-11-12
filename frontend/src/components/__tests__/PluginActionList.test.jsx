@@ -20,7 +20,10 @@ const task = (status, result, extra = {}) => ({
   actionId: 'scan', actionLabel: 'Scan', status, result, trigger: 'manual', ...extra,
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe('plugin run history output', () => {
   it('shows outcome messages without inline JSON and downloads complete results', () => {
@@ -35,7 +38,9 @@ describe('plugin run history output', () => {
     vi.stubGlobal('URL', { createObjectURL: createUrl, revokeObjectURL: revokeUrl });
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     const OriginalBlob = globalThis.Blob;
-    const blob = vi.spyOn(globalThis, 'Blob').mockImplementation((parts, options) => new OriginalBlob(parts, options));
+    const blob = vi.spyOn(globalThis, 'Blob').mockImplementation(function (parts, options) {
+      return new OriginalBlob(parts, options);
+    });
 
     render(<PluginTaskList tasks={tasks} />);
     fireEvent.click(screen.getByText('View history'));
@@ -49,10 +54,10 @@ describe('plugin run history output', () => {
     fireEvent.click(buttons[0]);
     expect(JSON.parse(blob.mock.calls[0][0][0])).toEqual(tasks.success.result);
     expect(blob.mock.calls[0][1]).toEqual({ type: 'application/json' });
-    expect(click.mock.instances[0].download).toBe('plugin-task-success.json');
-    expect(click.mock.instances[0].isConnected).toBe(false);
+    expect(click).toHaveBeenCalledOnce();
+    expect(click.mock.contexts[0].download).toBe('plugin-task-success.json');
+    expect(click.mock.contexts[0].isConnected).toBe(false);
     expect(revokeUrl).toHaveBeenCalledWith('blob:test');
-    vi.unstubAllGlobals();
   });
 
   it('offers downloads for falsy results but not missing results or running tasks', () => {
