@@ -201,6 +201,7 @@ class TSConfig(BaseConfig):
         settings = cls.get_proxy_settings()
         return settings.get("connection_timeout", cls.CONNECTION_TIMEOUT)
 
+    @classmethod
     def get_max_retries(cls):
         """Get maximum retry attempts from database or default"""
         settings = cls.get_proxy_settings()
