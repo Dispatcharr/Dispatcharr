@@ -265,6 +265,7 @@ class ProxySettingsSerializer(serializers.Serializer):
     def validate_connection_timeout(self, value):
         if value < 1 or value > 120:
             raise serializers.ValidationError("Stream idle timeout must be between 1 and 120 seconds")
+        return value
 
     def validate_max_retries(self, value):
         if value < 0 or value > 100:
