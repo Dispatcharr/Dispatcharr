@@ -229,8 +229,9 @@ const StreamSettingsForm = React.memo(({ active }) => {
           id="hdhr_output_format"
           name="hdhr_output_format"
           label="HDHR Default Output Format"
-          description="Container format used for HDHR stream URLs, independent of the Default Output Format above. Most HDHR clients expect MPEG-TS, like a real HDHomeRun tuner. HLS serves a playlist instead of a continuous stream, which most HDHR clients can't play. Only choose fMP4 or HLS if every HDHR client you use supports it."
+          description="Override Default Output Format for HDHR stream URLs. Most HDHR clients expect MPEG-TS."
           data={[
+            { value: 'system', label: 'System Default' },
             { value: 'mpegts', label: 'MPEG-TS' },
             { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
             { value: 'hls', label: 'HLS' },

@@ -176,6 +176,7 @@ const mockFormValues = {
   default_stream_profile: '2',
   m3u_hash_key: ['name'],
   hdhr_output_profile_id: null,
+  hdhr_output_format: 'mpegts',
 };
 
 const makeFormMock = (overrides = {}) => ({
@@ -297,7 +298,7 @@ describe('StreamSettingsForm', () => {
       expect(screen.getByTestId('m3u_hash_key')).toBeInTheDocument();
     });
 
-    it('renders the HDHR Default Output Format select with MPEG-TS, fMP4, and HLS', () => {
+    it('renders the HDHR Default Output Format select with MPEG-TS, fMP4, HLS, and system', () => {
       render(<StreamSettingsForm active={true} />);
       const select = screen.getByTestId('hdhr_output_format');
       expect(
@@ -306,7 +307,7 @@ describe('StreamSettingsForm', () => {
       const options = within(select)
         .getAllByRole('option')
         .map((o) => o.value);
-      expect(options).toEqual(['mpegts', 'fmp4', 'hls']);
+      expect(options).toEqual(['system', 'mpegts', 'fmp4', 'hls']);
     });
 
     it('populates user agent options from store', () => {

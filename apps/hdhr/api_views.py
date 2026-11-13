@@ -154,10 +154,14 @@ class LineupAPIView(APIView):
         resolved_output_profile_id = _resolve_hdhr_output_profile_id(output_profile_id)
 
         _stream_url_prefix = build_absolute_uri_with_port(request, "/proxy/ts/stream/")
-        # Use the HDHR format instead of the global Default Output Format.
-        _stream_qs = f"?output_format={CoreSettings.get_hdhr_output_format()}"
+        # Pin an explicit HDHR format when set; omit it to inherit Default Output Format.
+        _qs_parts = []
+        hdhr_output_format = CoreSettings.get_hdhr_output_format()
+        if hdhr_output_format is not None:
+            _qs_parts.append(f"output_format={hdhr_output_format}")
         if resolved_output_profile_id is not None:
-            _stream_qs += f"&output_profile={resolved_output_profile_id}"
+            _qs_parts.append(f"output_profile={resolved_output_profile_id}")
+        _stream_qs = f"?{'&'.join(_qs_parts)}" if _qs_parts else ""
 
         lineup = []
         for ch in channels:

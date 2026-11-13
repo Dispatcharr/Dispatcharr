@@ -1,7 +1,8 @@
-"""HDHR lineup stream URLs pin their own output format.
+"""HDHR lineup stream URLs can pin their own output format.
 
-Most HDHR clients expect MPEG-TS from a tuner URL, so
-the lineup must not inherit the global Default Output Format.
+Most HDHR clients expect MPEG-TS from a tuner URL. The HDHR setting
+defaults to mpegts when unset, can pin fMP4 or HLS, or can use the
+explicit ``system`` sentinel to inherit Default Output Format.
 """
 
 from unittest.mock import patch
@@ -43,6 +44,18 @@ class HDHROutputFormatSettingTests(TestCase):
         settings.save()
         self.assertEqual(CoreSettings.get_hdhr_output_format(), "mpegts")
 
+    def test_null_and_empty_default_to_mpegts(self):
+        for bad in (None, ""):
+            with self.subTest(value=bad):
+                _set_stream_settings(hdhr_output_format=bad)
+                self.assertEqual(CoreSettings.get_hdhr_output_format(), "mpegts")
+
+    def test_system_inherits_default_output_format(self):
+        _set_stream_settings(
+            default_output_format="fmp4", hdhr_output_format="system"
+        )
+        self.assertIsNone(CoreSettings.get_hdhr_output_format())
+
     def test_returns_configured_format(self):
         for fmt in ("fmp4", "hls"):
             with self.subTest(fmt=fmt):
@@ -50,7 +63,7 @@ class HDHROutputFormatSettingTests(TestCase):
                 self.assertEqual(CoreSettings.get_hdhr_output_format(), fmt)
 
     def test_invalid_values_fall_back_to_mpegts(self):
-        for bad in ("", None, "garbage", 5):
+        for bad in ("garbage", 5):
             with self.subTest(value=bad):
                 _set_stream_settings(hdhr_output_format=bad)
                 self.assertEqual(CoreSettings.get_hdhr_output_format(), "mpegts")
@@ -100,6 +113,14 @@ class HDHRLineupOutputFormatTests(TestCase):
         self.assertEqual(query.get("output_format"), ["mpegts"])
         self.assertNotIn("output_profile", query)
 
+    def test_lineup_omits_format_when_set_to_system(self):
+        _set_stream_settings(
+            default_output_format="fmp4", hdhr_output_format="system"
+        )
+        query = self._lineup_query()
+        self.assertNotIn("output_format", query)
+        self.assertNotIn("output_profile", query)
+
     def test_lineup_honours_configured_hdhr_format(self):
         for fmt in ("fmp4", "hls"):
             with self.subTest(fmt=fmt):
@@ -118,6 +139,16 @@ class HDHRLineupOutputFormatTests(TestCase):
         query = self._lineup_query()
         self.assertEqual(query.get("output_profile"), [str(self.profile.id)])
         self.assertEqual(query.get("output_format"), ["mpegts"])
+
+    def test_lineup_profile_only_when_format_is_system(self):
+        _set_stream_settings(
+            default_output_format="fmp4",
+            hdhr_output_profile_id=self.profile.id,
+            hdhr_output_format="system",
+        )
+        query = self._lineup_query()
+        self.assertEqual(query.get("output_profile"), [str(self.profile.id)])
+        self.assertNotIn("output_format", query)
 
     def test_lineup_with_url_output_profile_keeps_format(self):
         _set_stream_settings(default_output_format="fmp4")

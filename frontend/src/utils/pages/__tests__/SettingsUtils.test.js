@@ -100,6 +100,22 @@ describe('SettingsUtils', () => {
       expect(result.hdhr_output_format).toBe('mpegts');
     });
 
+    it('parses hdhr_output_format system sentinel', () => {
+      const result = SettingsUtils.parseGroupSettings(
+        {
+          stream_settings: {
+            value: {
+              default_output_format: 'fmp4',
+              hdhr_output_format: 'system',
+            },
+          },
+        },
+        'stream_settings'
+      );
+
+      expect(result.hdhr_output_format).toBe('system');
+    });
+
     it('parses dvr output_profile_id as a string and maps qsv to hwassist', () => {
       const settings = {
         dvr_settings: {
@@ -261,6 +277,25 @@ describe('SettingsUtils', () => {
       );
 
       expect(changes).toEqual({ hdhr_output_format: 'fmp4' });
+    });
+
+    it('emits system when switching hdhr_output_format to inherit the system default', () => {
+      const settings = {
+        stream_settings: {
+          value: {
+            default_output_format: 'fmp4',
+            hdhr_output_format: 'mpegts',
+          },
+        },
+      };
+
+      const changes = SettingsUtils.getChangedGroupSettings(
+        { default_output_format: 'fmp4', hdhr_output_format: 'system' },
+        settings,
+        'stream_settings'
+      );
+
+      expect(changes).toEqual({ hdhr_output_format: 'system' });
     });
 
     it('includes only changed fields for the group', () => {
