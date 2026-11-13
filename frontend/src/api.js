@@ -2025,6 +2025,13 @@ export default class API {
     }
   }
 
+  static async searchPrograms(params, { signal } = {}) {
+    // Throws on error so callers can ignore aborted requests vs real failures.
+    return request(`${host}/api/epg/programs/search/?${params.toString()}`, {
+      signal,
+    });
+  }
+
   static async addM3UProfile(accountId, values) {
     try {
       const response = await request(
