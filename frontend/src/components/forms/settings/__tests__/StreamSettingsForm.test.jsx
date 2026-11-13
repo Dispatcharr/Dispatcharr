@@ -15,6 +15,11 @@ vi.mock('../../../../constants.js', () => ({
     { label: 'US', value: 'us' },
     { label: 'EU', value: 'eu' },
   ],
+  OUTPUT_FORMAT_OPTIONS: [
+    { value: 'mpegts', label: 'MPEG-TS' },
+    { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+    { value: 'hls', label: 'HLS' },
+  ],
 }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
