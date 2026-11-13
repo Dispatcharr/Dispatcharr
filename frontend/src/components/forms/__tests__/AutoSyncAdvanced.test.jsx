@@ -333,11 +333,11 @@ describe('AutoSyncAdvanced', () => {
         1: {
           findResult: {
             matches: [
-              { before: 'BBC News', after: 'BBC' },
-              { before: 'Sky News', after: 'Sky' },
-              { before: 'CNN News', after: 'CNN' },
-              { before: 'Fox News', after: 'Fox' },
-              { before: 'Al Jazeera News', after: 'Al Jazeera' },
+              { before: 'Alpha News', after: 'Alpha' },
+              { before: 'Beta News', after: 'Beta' },
+              { before: 'Gamma News', after: 'Gamma' },
+              { before: 'Delta News', after: 'Delta' },
+              { before: 'Epsilon News', after: 'Epsilon' },
             ],
             total_in_group: 50,
           },

@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import importlib
 import importlib.machinery
 import importlib.util
@@ -191,6 +192,8 @@ class PluginManager:
         self._leadership_lock = threading.RLock()
         self._leadership_thread_started = False
         self._service_runner = PluginServiceRunner(logger)
+        self._service_failures = {}
+        self._service_retry_at = {}
         # Keys already warned about missing the persistent_service capability,
         # so _leadership_tick logs once per plugin instead of every tick.
         self._leadership_capability_warned: set = set()
@@ -539,6 +542,7 @@ class PluginManager:
                     storage_key=cfg.slug or cfg.key,
                     capabilities=previous.capabilities if previous else (),
                     manifest_schema_version=previous.manifest_schema_version if previous else 0,
+                    saved_settings=cfg.settings or {},
                 )
                 if loaded is None:
                     raise ValueError(f"Plugin '{cfg.key}' could not be loaded")
@@ -733,6 +737,7 @@ class PluginManager:
                 storage_key=cfg.slug if cfg and cfg.slug else plugin_key,
                 capabilities=manifest_capabilities,
                 manifest_schema_version=manifest_schema_version,
+                saved_settings=cfg.settings or {},
             )
             if not lp:
                 return _make_placeholder(), None, None
@@ -790,6 +795,7 @@ class PluginManager:
         storage_key: str,
         capabilities: Sequence[str] = (),
         manifest_schema_version: int = 0,
+        saved_settings: Optional[Dict[str, Any]] = None,
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
         path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
@@ -807,10 +813,7 @@ class PluginManager:
             capabilities,
             manifest_schema_version,
         )
-        # Plugins may initialize durable state while importing, before they
-        # receive an action or leadership context containing this path.
         data_dir = stable_plugin_data_path(key, path, storage_key)
-        os.makedirs(data_dir, exist_ok=True)
 
         package_name = self._resolve_package_name(key)
         alias_name = self._resolve_alias_name(folder_name, path)
@@ -890,7 +893,27 @@ class PluginManager:
         description = getattr(instance, "description", "")
         author = getattr(instance, "author", "")
         help_url = getattr(instance, "help_url", "")
-        fields = getattr(instance, "fields", [])
+        get_fields = getattr(instance, "get_fields", None)
+        if callable(get_fields):
+            active = [True]
+            def authorize_discovery(shared):
+                if not active[0]:
+                    raise PermissionError("Plugin discovery context has expired")
+                if shared and manifest_version_enforces_sandbox(manifest_schema_version) and "filesystem_write" not in capabilities:
+                    raise PermissionError(f"Plugin '{key}' requires the 'filesystem_write' capability")
+            from .filesystem import make_filesystem_context
+            discovery_context = {
+                "settings": copy.deepcopy(saved_settings or {}), "data_dir": data_dir,
+                "code_dir": path, "logger": logger,
+                "dispatcharr": make_filesystem_context(data_dir, authorize_discovery),
+            }
+            try:
+                with running_as_plugin(key, capabilities=capabilities, manifest_schema_version=manifest_schema_version):
+                    fields = get_fields(discovery_context)
+            finally:
+                active[0] = False
+        else:
+            fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
         fields = self._normalize_fields(fields)
         actions = self._normalize_actions(actions)
@@ -1002,6 +1025,7 @@ class PluginManager:
                     "logo_url": logo_url,
                     "source_repo": conf.source_repo_id if conf else None,
                     "source_repo_name": conf.source_repo.name if conf and conf.source_repo else None,
+                    "source_repo_url": conf.source_repo.registry_url if conf and conf.source_repo else None,
                     "is_official_repo": bool(conf and conf.source_repo and conf.source_repo.is_official),
                     "slug": conf_slug,
                     "is_managed": bool(conf and conf.source_repo_id),
@@ -1049,6 +1073,7 @@ class PluginManager:
                     "logo_url": self._get_logo_url(key),
                     "source_repo": conf.source_repo_id,
                     "source_repo_name": conf.source_repo.name if conf.source_repo else None,
+                    "source_repo_url": conf.source_repo.registry_url if conf.source_repo else None,
                     "is_official_repo": bool(conf.source_repo and conf.source_repo.is_official),
                     "slug": conf.slug,
                     "is_managed": bool(conf.source_repo_id),
@@ -1369,14 +1394,19 @@ class PluginManager:
         # snapshot taken at discovery time instead (see LoadedPlugin.cached_settings).
         # report_progress is a no-op here (no task_id), since there's no active
         # task backing a persistent service's calls.
+        if lp.data_dir:
+            os.makedirs(lp.data_dir, exist_ok=True)
         return {
             "settings": lp.cached_settings,
+            "get_settings": self._make_settings_accessor(lp),
             "data_dir": lp.data_dir,
             "code_dir": lp.path or "",
+            "dispatcharr": self._plugin_filesystem_context(lp),
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id=None),
             "dispatch_task": self._make_task_dispatcher(lp),
+            "dispatch_scheduled_task": self._make_task_dispatcher(lp, trigger="schedule"),
             "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
             "start_service": self._make_service_starter(lp),
         }
@@ -1512,9 +1542,26 @@ class PluginManager:
                 with self._leadership_lock:
                     currently_leader = self._leadership_state.get(key) == "leader"
                 if currently_leader:
+                    service_state = self._service_runner.state(key)
+                    if service_state:
+                        from .service_health import publish_service_health
+                        failures = self._service_failures.get(key, 0) + (service_state in ("failed", "exited"))
+                        publish_service_health(self._leader_redis_client(), key, self.worker_id, service_state,
+                                               failures, self.LEADER_LEASE_TTL * 2)
+                    if service_state in ("failed", "exited"):
+                        failures = self._service_failures.get(key, 0) + 1
+                        self._service_failures[key] = failures
+                        self._service_retry_at[key] = time.monotonic() + min(300, 10 * 2 ** min(failures - 1, 5))
+                        logger.warning("Plugin '%s' service %s; releasing leadership (failure %s)", key, service_state, failures)
+                        self._release_plugin_leadership(key, lp)
+                        continue
                     if not self.extend_leadership(key):
                         self._transition_to_follower(key, lp)
                 else:
+                    if time.monotonic() < self._service_retry_at.get(key, 0):
+                        continue
+                    if self._service_runner.state(key) == "stopping":
+                        continue
                     if self.try_acquire_leadership(key):
                         self._transition_to_leader(key, lp)
             except Exception:
@@ -1763,17 +1810,42 @@ class PluginManager:
     def _build_context(
         self, lp: LoadedPlugin, cfg: PluginConfig, task_id: Optional[str] = None
     ) -> Dict[str, Any]:
+        if lp.data_dir:
+            os.makedirs(lp.data_dir, exist_ok=True)
         settings = self._merge_settings_with_defaults(cfg.settings or {}, lp.fields or [])
         return {
             "settings": settings,
             "data_dir": lp.data_dir,
             "code_dir": lp.path or "",
+            "dispatcharr": self._plugin_filesystem_context(lp),
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id),
             "dispatch_task": self._make_task_dispatcher(lp),
             "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
         }
+
+    def _plugin_filesystem_context(self, lp: LoadedPlugin):
+        from .filesystem import make_filesystem_context
+
+        def authorize(shared):
+            current = self.get_plugin(lp.key)
+            if current is not lp or not current.instance:
+                raise PermissionError(f"Plugin '{lp.key}' context is no longer active")
+            if shared and manifest_version_enforces_sandbox(current.manifest_schema_version) and "filesystem_write" not in (current.capabilities or []):
+                raise PermissionError(f"Plugin '{lp.key}' requires the 'filesystem_write' capability")
+
+        return make_filesystem_context(lp.data_dir, authorize)
+
+    def _make_settings_accessor(self, lp: LoadedPlugin):
+        """Read current settings on demand, including field defaults."""
+        def get_settings():
+            try:
+                cfg = PluginConfig.objects.get(key=lp.key)
+                return self._merge_settings_with_defaults(cfg.settings or {}, lp.fields or [])
+            finally:
+                close_old_connections()
+        return get_settings
 
     def _make_progress_reporter(self, plugin_key: str, task_id: Optional[str]):
         """No-op when task_id is None, so plugins can call it unconditionally.
@@ -1813,7 +1885,7 @@ class PluginManager:
             record_task_progress(plugin_key, task_id, percent, message)
         return report_progress
 
-    def _make_task_dispatcher(self, lp: LoadedPlugin):
+    def _make_task_dispatcher(self, lp: LoadedPlugin, *, trigger="action"):
         """Lets an action hand work off to the plugins queue at runtime,
         independent of the manifest 'async' flag.
 
@@ -1828,6 +1900,10 @@ class PluginManager:
         declaring background_tasks (directly, or via any async action) at all.
         """
         def dispatch_task(action_id, params=None):
+            if trigger == "schedule":
+                with self._leadership_lock:
+                    if self._leadership_state.get(lp.key) != "leader":
+                        raise RuntimeError(f"Plugin '{lp.key}' no longer holds leadership")
             if (
                 manifest_version_enforces_sandbox(lp.manifest_schema_version)
                 and "background_tasks" not in (lp.capabilities or [])
@@ -1848,7 +1924,7 @@ class PluginManager:
                 )
             from .tasks import dispatch_plugin_action_task
             async_result = dispatch_plugin_action_task(
-                lp.key, action_id, params or {}, action_def.get("label", action_id)
+                lp.key, action_id, params or {}, action_def.get("label", action_id), trigger=trigger
             )
             return async_result.id
         return dispatch_task

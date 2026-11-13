@@ -206,6 +206,12 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 
   For example, a plugin installed at `/data/plugins/example_plugin_1_2_3/` with canonical ID `example_plugin` receives `/data/plugins/_data/example_plugin/`. Writes to other directories, such as `/tmp/output.json`, still require `filesystem_write`.
 
+  Dispatcharr creates the data directory when it builds a runtime or leadership context, not when it discovers or imports the plugin. Do not assume the directory exists at module import time or in `Plugin.__init__()`. The directory survives plugin updates. On uninstall, an empty data directory is removed automatically; if it contains data, the user can keep it for a future reinstall or explicitly delete it.
+
+  Plugins can optionally define `get_fields(self, context)` to build fields at discovery time. Its context contains `settings`, `data_dir`, `code_dir`, `logger`, and `dispatcharr`. Settings are the saved values before field defaults are merged. The data directory may not exist yet. When present, `get_fields` takes precedence over the `fields` attribute; an empty result falls back to manifest fields. Fields are rebuilt on discovery or reload, not automatically when a catalog changes.
+
+  `context["dispatcharr"]["directories"]` provides the watched `logos`, `m3u`, and `epg` paths. `context["dispatcharr"]["ensure_directory"](name)` creates a named watched directory on demand and returns its path. `context["dispatcharr"]["remove_directory"](path)` removes a directory tree beneath the plugin data directory or a watched directory; it rejects the roots themselves, paths outside them, and symlink traversal. A missing target raises `FileNotFoundError`. Plugins must still check that shared-directory content belongs to them before removing it. Shared directory creation and deletion require `filesystem_write` for manifest version 2 or later; versions 0 and 1 remain advisory. Runtime helpers stop working when their loaded plugin instance is replaced or removed. Discovery helpers expire when `get_fields` returns. These helpers do not make the plugin sandbox an isolation boundary.
+
 ---
 
 ## Plugin Interface
@@ -251,6 +257,7 @@ Common field keys:
 - `help_text` / `description` (str, optional): Shown under the control.
 - `placeholder` (str, optional): Placeholder text for inputs.
 - `input_type` (str, optional): For `string` fields, set to `"password"` to mask input.
+- `rows` (positive int, optional): Initial visible height of a `text` field in lines. Defaults to 4.
 - `options` (list, for `select`/`multiselect`): List of `{value, label}`.
 - `section` (str, optional): The `id` of a `section` field this field belongs to. If it names a section that isn't declared, the field renders ungrouped rather than being hidden.
 - `columns` (list, for `table`): See "Table Fields" below.
@@ -388,7 +395,13 @@ class Plugin:
 
 **Manifest version 2 and later require the capability.** Unlike `background_tasks`, nothing about `on_leader_acquired` can be inferred from the rest of the manifest, so version `2` plugins without `persistent_service` are skipped by leader election: `on_leader_acquired` is never called. Versions `0` and `1` remain non-enforcing during the transition period. Declaring the capability shows users an itemized capability prompt the first time they enable your plugin, the same as `background_tasks` (see `manifest_version` and `capabilities`, above).
 
-Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read), `code_dir`, `data_dir`, and `logger`, with no `actions`.
+Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here includes `settings` (a snapshot from discovery time), `code_dir`, `data_dir`, `logger`, `actions`, and dispatch helpers. Call `context["get_settings"]()` to read current settings and field defaults on demand. This reads the database and can raise if the plugin has been deleted.
+
+Leader services may call `context["dispatch_scheduled_task"](action_id, params)` to queue one of their own declared actions and label the run as scheduled in task history. It requires the same `background_tasks` capability as `dispatch_task` and checks local leadership at dispatch. This check is not a fencing guarantee. Scheduled runs may overlap, and already dispatched work continues after leadership changes. A queued action checks whether the plugin is still enabled when it starts; disabling a plugin does not forcibly stop an already running action.
+
+If a service exits unexpectedly or raises, the leader loop reports its state and releases leadership. The local process waits before attempting to reacquire leadership, with backoff on repeated failures. Another worker may take over sooner. A service that ignores its stop event can outlive the stop timeout, so plugins must make external effects safe against overlap; the lease does not provide fencing.
+
+The admin-only `GET /api/plugins/plugins/<key>/service-health/` endpoint reports the latest lease-owned service state and failure count when available. Records expire, and `unknown` means no current health information is available, not necessarily that the service is stopped. If the Redis client is unavailable, the existing fallback can elect a leader in every process; a Redis command failure instead causes acquisition or renewal to fail.
 
 Use `context["start_service"](target, name=None)` to start exactly one persistent service. Dispatcharr owns its native OS thread and gives `target` one argument, a `threading.Event` named `stop_event`. Check or wait on that event frequently and release sockets and external resources promptly when it is set. Dispatcharr signals it and waits briefly for the thread whenever leadership is lost, the plugin is disabled or reloaded, or the worker shuts down.
 
@@ -412,6 +425,16 @@ Each action is a dict:
 - `async` (bool, optional): See "Long-Running Actions" below.
 
 Clicking an action calls your plugin’s `run(action, params, context)` and shows a notification with the result or error.
+
+For queued actions, a returned dictionary can report its outcome with `status`:
+
+- `{"status": "ok", "message": "Completed"}` reports success. Normal returns without an error or partial status also report success.
+- `{"status": "error", "message": "Scan failed"}` marks the task as failed. Use `error` or `message` to provide a reason; `error` takes precedence. The returned dictionary is retained in task history. Raising an exception also fails the task.
+- `{"status": "partial", "message": "Some items could not be scanned"}` records a distinct warning outcome without failing the Celery task. Include a message to explain what needs attention.
+
+These outcomes apply to both awaited manual actions and background plugin actions. Returned results are available to awaited actions and retained in background task history for all outcomes, including plugin-returned errors. JSON-serializable results can be downloaded from run history as JSON, subject to the retention limits below. An exception without a returned result does not produce a result file.
+
+Background history records the trigger as `manual`, `action`, `schedule`, or `event`; older records can be `unknown`. Set `PLUGIN_TASK_HISTORY_MAX_ENTRIES` to adjust retention per plugin (default 50, maximum 5000) and `PLUGIN_TASK_HISTORY_TTL_SECONDS` to adjust expiry (default seven days, maximum 90 days). Values are clamped to at least 1. The task history endpoint accepts an optional `trigger` query parameter with one of these values.
 
 ### Long-Running Actions (Async Dispatch)
 
@@ -502,6 +525,7 @@ Normal ORM work in `run()` and `stop()` is cleaned up by Dispatcharr. Threads or
 - Update settings: `POST /api/plugins/plugins/<key>/settings/` with `{"settings": {...}}`
 - Run action: `POST /api/plugins/plugins/<key>/run/` with `{"action": "id", "params": {...}}`
 - Enable/disable: `POST /api/plugins/plugins/<key>/enabled/` with `{"enabled": true|false}`
+- Uninstall: `DELETE /api/plugins/plugins/<key>/delete/`. If saved plugin data is nonempty and no choice was supplied, the endpoint returns HTTP 409 with `{"success": false, "data_confirmation_required": true}` without uninstalling. Retry with a JSON body of `{"data_action": "keep"}` to retain the data or `{"data_action": "delete"}` to remove it. Empty data directories are removed automatically.
 
 Notes:
 - When disabled, a plugin cannot run actions; backend returns HTTP 403.

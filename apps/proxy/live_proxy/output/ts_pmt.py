@@ -1,33 +1,27 @@
-"""Lightweight MPEG-TS PAT/PMT layout fingerprinting for output-profile restarts.
+"""Fingerprint PAT/PMT layout and report the first packet where it changes."""
 
-Reassembles PMT sections (including ones that span packets, or share a packet)
-and reports the byte offset of the first packet that changes the elementary
-stream layout, so a long-lived profile FFmpeg can be restarted at that boundary.
-"""
-
-from ..constants import TS_PACKET_SIZE
-from ..ts_psi import PsiSectionAssembler, parse_pat, parse_pmt_section
+from apps.proxy.ts_psi import (
+    DESCRIPTOR_ISO_639_LANGUAGE,
+    DESCRIPTOR_REGISTRATION,
+    TS_PACKET_SIZE,
+    PsiSectionAssembler,
+    parse_pat,
+    parse_pmt_section,
+)
+from ..psi_scan import locate_psi_packets
 
 _SYNC_BYTE = 0x47
 _PAT_PID = 0
 _PUSI_BIT = 0x40
 
-# Descriptor tags that do not describe the codec and may change between
-# programs without the elementary stream changing shape.
+# Language can change without the elementary stream changing shape.
 _IGNORED_DESCRIPTOR_TAGS = frozenset({
-    0x0A,  # ISO 639 language
+    DESCRIPTOR_ISO_639_LANGUAGE,
 })
-_REGISTRATION_DESCRIPTOR_TAG = 0x05
 
 
 def _descriptor_signature(descriptors: bytes):
-    """Sorted (tag, detail) pairs for the codec-relevant descriptors in an ES loop.
-
-    Streams that share a stream_type (private PES, 0x06) are told apart by
-    their descriptors, e.g. AC-3 (0x6A) versus E-AC-3 (0x7A). Only the tag is
-    kept, except for registration descriptors where the 4-byte format
-    identifier is what names the codec.
-    """
+    """Codec-relevant descriptors. A registration descriptor keeps its format identifier. The rest keep the tag."""
     signature = []
     offset = 0
     total = len(descriptors)
@@ -38,7 +32,7 @@ def _descriptor_signature(descriptors: bytes):
         offset += 2 + length
         if tag in _IGNORED_DESCRIPTOR_TAGS:
             continue
-        if tag == _REGISTRATION_DESCRIPTOR_TAG:
+        if tag == DESCRIPTOR_REGISTRATION:
             signature.append((tag, bytes(body[:4])))
         else:
             signature.append((tag, b""))
@@ -46,20 +40,17 @@ def _descriptor_signature(descriptors: bytes):
 
 
 class PmtLayoutWatcher:
-    """Learn PAT/PMT layout and detect mid-stream fingerprint changes.
+    """The first complete PMT seeds the fingerprint. A later one that differs is a layout change.
 
-    The first complete PMT section seeds the fingerprint silently. A later
-    section whose fingerprint (PMT PID plus, per elementary stream, its type,
-    PID and codec-relevant descriptors) differs is a layout change. Sections
-    that span TS packets are reassembled before they count; a partial section
-    never does.
-
-    The most recent PAT packet is kept so a restarted process can be handed the
-    PAT first. ``leading_section`` holds PMT packets from earlier input that
-    belong in front of the restarted stream when the section began there.
+    Sections that span packets are reassembled before they count, and a
+    partial section never does. The latest PAT is kept so a restarted process
+    can be handed it first. ``leading_section`` holds PMT packets from earlier
+    input when the section that changed began there.
     """
 
-    def __init__(self):
+    def __init__(self, scan_cache=None):
+        """``scan_cache`` is the channel's shared scan cache, if any."""
+        self._scan_cache = scan_cache
         self._pmt_pid = None
         self._fingerprint = None
         self._fingerprint_before_change = None
@@ -77,11 +68,7 @@ class PmtLayoutWatcher:
         self.leading_section = b""
 
     def revert_layout_change(self):
-        """Undo the fingerprint update from the most recent change detection.
-
-        Used when a process replacement cannot be spawned: the current process
-        keeps running, and a later copy of the new PMT should try again.
-        """
+        """Undo the last change so a later copy of the new PMT can retry the spawn."""
         if self._fingerprint_before_change is not None:
             self._fingerprint = self._fingerprint_before_change
         self._fingerprint_before_change = None
@@ -93,17 +80,22 @@ class PmtLayoutWatcher:
         return self._fingerprint
 
     @property
+    def fingerprint_before_change(self):
+        """Layout this change replaced, or None when no change is in progress."""
+        return self._fingerprint_before_change
+
+    @property
     def pat_packet(self):
         """Most recent PAT packet (bytes), or b"" if none has been seen."""
         return self._pat_packet or b""
 
-    def find_layout_change(self, data: bytes):
-        """Return the byte offset of the first packet that changes PMT layout.
+    def find_layout_change(self, data: bytes, chunk_index=None):
+        """Byte offset of the first packet that changes the layout, or None.
 
-        Returns None when there is no change, including when the first layout
-        is being seeded. On a change, updates the stored fingerprint to the
-        new layout so the caller can resume without re-seeding; scanning stops
-        at the change, so call again on the remainder to find further changes.
+        None also covers the first layout being seeded. On a change the stored
+        fingerprint is already the new one and scanning stops, so call again
+        on the remainder. ``chunk_index`` is set only for an unmodified input
+        chunk, so the scan cache can be reused. A remainder passes None.
         """
         if not data:
             return None
@@ -112,6 +104,51 @@ class PmtLayoutWatcher:
         # Packets held from an earlier chunk are no longer in `data`.
         self._pmt_sections.retag_origins(None)
 
+        located = self._locate(data, chunk_index)
+        if located is None:
+            return self._walk_packets(data)
+
+        start = 0
+        while True:
+            for offset, is_pat in located:
+                if offset < start:
+                    continue
+                packet = data[offset:offset + TS_PACKET_SIZE]
+                if is_pat:
+                    if self._note_pat_packet(packet):
+                        # PMT packets later in `data` may be on the new PID.
+                        start = offset + TS_PACKET_SIZE
+                        located = self._locate(data, chunk_index)
+                        break
+                else:
+                    change = self._note_pmt_packet(packet, offset)
+                    if change is not None:
+                        return change
+            else:
+                return None
+
+    def _locate(self, data, chunk_index):
+        """PAT/PMT offsets, or None when ``data`` is not packet-aligned."""
+        if self._scan_cache is not None and chunk_index is not None:
+            return self._scan_cache.locate(chunk_index, data, self._pmt_pid)
+        return locate_psi_packets(data, self._pmt_pid)
+
+    def _note_pat_packet(self, packet):
+        """Learn the PMT PID from a PAT packet. True when that PID changed."""
+        pmt_pid = parse_pat(packet)
+        if pmt_pid is None:
+            return False
+        changed = pmt_pid != self._pmt_pid
+        self._pmt_pid = pmt_pid
+        self._pat_packet = bytes(packet)
+        return changed
+
+    def _walk_packets(self, data):
+        """Per-packet walk used when ``locate_psi_packets`` returns None.
+
+        That is input which is not a whole number of packets starting on a
+        sync byte, so the strided scan would land mid-packet.
+        """
         offset = 0
         length = len(data)
         while offset + TS_PACKET_SIZE <= length:
@@ -130,14 +167,9 @@ class PmtLayoutWatcher:
                 continue
 
             pid = ((data[offset + 1] & 0x1F) << 8) | data[offset + 2]
-            # Only PAT and PMT packets are sliced out; media packets (nearly
-            # all of them) cost no allocation.
+            # Media packets, nearly all of them, are not copied.
             if pid == _PAT_PID and data[offset + 1] & _PUSI_BIT:
-                packet = data[offset:next_offset]
-                pmt_pid = parse_pat(packet)
-                if pmt_pid is not None:
-                    self._pmt_pid = pmt_pid
-                    self._pat_packet = bytes(packet)
+                self._note_pat_packet(data[offset:next_offset])
             elif self._pmt_pid is not None and pid == self._pmt_pid:
                 change = self._note_pmt_packet(data[offset:next_offset], offset)
                 if change is not None:
@@ -163,24 +195,24 @@ class PmtLayoutWatcher:
             prior = b"".join(pkt for pkt, origin in packets if origin is None)
             here = [origin for _pkt, origin in packets if origin is not None]
             self.leading_section = prior
-            # Rescan rebuilds the section. Keeping it would feed the same
-            # packets to the assembler twice.
+            # A rescan would otherwise feed these packets to the assembler again.
             self._pmt_sections = PsiSectionAssembler()
             return here[0] if here else 0
         return None
 
     def accept_layout_change(self):
-        """Keep the new fingerprint after a successful process replacement."""
+        """Drop the saved fingerprint once the replacement has spawned."""
         self._fingerprint_before_change = None
 
     def _fingerprint_of(self, section):
         streams = parse_pmt_section(section)
         if streams is None:
             return None
+        # PMT order. fMP4 names aac_adtstoasc by audio index, which is this position.
         return (
             self._pmt_pid,
-            tuple(sorted(
+            tuple(
                 (stream_type, es_pid, _descriptor_signature(descriptors))
                 for stream_type, es_pid, descriptors in streams
-            )),
+            ),
         )

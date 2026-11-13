@@ -1,10 +1,7 @@
-"""
-fMP4 Stream Generator
+"""Yield the fMP4 init, then buffer chunks, for one client.
 
-Yields the fMP4 init segment followed by fMP4 buffer chunks to a single client.
-Mirrors StreamGenerator's structure: same resource checks, same cleanup path,
-same client registration in the main ClientManager so that the existing
-zero-clients → stop_channel shutdown chain works for all client types.
+Registered on the main ClientManager with the same cleanup as a TS client,
+so the zero-clients shutdown path applies here too.
 """
 
 import time
@@ -15,7 +12,7 @@ from ...server import ProxyServer
 from ...redis_keys import RedisKeys
 from ...constants import ChannelMetadataField
 from ..buffer import OutputStreamBuffer
-from .manager import FMP4_STATE_ACTIVE, INIT_SEGMENT_TIMEOUT
+from .manager import INIT_SEGMENT_TIMEOUT
 from ...config_helper import ConfigHelper
 from ...utils import get_logger, resolve_channel_display_name
 
@@ -71,6 +68,8 @@ class FMP4StreamGenerator:
         self.bytes_sent = 0
         self.chunks_sent = 0
         self.local_index = 0
+        # Restarts at or before this index were covered by the init sent at connect.
+        self._init_covers_through = 0
         self.last_yield_time = time.time()
         self.consecutive_empty = 0
 
@@ -90,16 +89,13 @@ class FMP4StreamGenerator:
         try:
             logger.info(f"[{self.client_id}] fMP4 stream generator started")
 
-            # Wait for the main TS channel to be ready (reuses existing init wait logic)
             if self.channel_initializing:
                 if not self._wait_for_channel_ready():
                     return
 
-            # Wait for fMP4 remux to be ready and init segment available
             if not self._wait_for_fmp4_ready():
                 return
 
-            # Set up local references
             if not self._setup_streaming():
                 return
 
@@ -116,7 +112,6 @@ class FMP4StreamGenerator:
             except Exception:
                 pass
 
-            # Yield init segment first - every new client needs it
             init_segment = self._fetch_init_segment()
             if not init_segment:
                 logger.error(f"[{self.client_id}] fMP4 init segment disappeared, aborting")
@@ -124,7 +119,6 @@ class FMP4StreamGenerator:
             yield init_segment
             self.bytes_sent += len(init_segment)
 
-            # Main data loop
             for chunk in self._stream_data_generator():
                 yield chunk
 
@@ -138,7 +132,6 @@ class FMP4StreamGenerator:
     # ------------------------------------------------------------------
 
     def _wait_for_channel_ready(self) -> bool:
-        """Wait for the main TS channel to reach active/waiting_for_clients state."""
         proxy_server = ProxyServer.get_instance()
         deadline = time.time() + ConfigHelper.client_wait_timeout()
 
@@ -162,7 +155,6 @@ class FMP4StreamGenerator:
         return False
 
     def _wait_for_fmp4_ready(self) -> bool:
-        """Wait for FMP4RemuxManager to store the init segment in Redis."""
         proxy_server = ProxyServer.get_instance()
         if not proxy_server.redis_client:
             return False
@@ -196,26 +188,24 @@ class FMP4StreamGenerator:
         proxy_server = ProxyServer.get_instance()
         self.proxy_server = proxy_server
 
-        # Build a local OutputStreamBuffer reader (shares Redis keyspace, no local state)
         from core.utils import RedisClient
         self.fmp4_buffer = OutputStreamBuffer(
             self.channel_id, redis_client=RedisClient.get_buffer(), fmt=self.fmt
         )
 
-        # Determine start position
+        # The buffer object's index is stale from construction. Read the live head once.
+        try:
+            raw = RedisClient.get_buffer().get(self.fmp4_buffer.buffer_index_key)
+            current = int(raw) if raw else 0
+        except Exception:
+            current = self.fmp4_buffer.index
         if self.channel_initializing:
-            # First client on a new channel - start from the very beginning
+            # A failover while the channel was starting is applied below, so the init matches the fragments.
             self.local_index = 0
             logger.info(f"[{self.client_id}] fMP4 channel initializer: starting at index 0")
         else:
-            # Joining an existing stream - use time-based positioning (same as TS clients)
+            # Same time-based join as a TS client.
             behind_seconds = ConfigHelper.new_client_behind_seconds()
-            # Read live head fresh from Redis (self.fmp4_buffer.index is stale from __init__)
-            try:
-                raw = RedisClient.get_buffer().get(self.fmp4_buffer.buffer_index_key)
-                current = int(raw) if raw else 0
-            except Exception:
-                current = self.fmp4_buffer.index
             if behind_seconds > 0:
                 time_index = self.fmp4_buffer.find_chunk_index_by_time(behind_seconds)
                 if time_index is not None:
@@ -226,7 +216,7 @@ class FMP4StreamGenerator:
                         f"(buffer head at {current})"
                     )
                 else:
-                    # Not enough buffer - start at oldest available fragment
+                    # Shorter than the behind window.
                     self.local_index = 0
                     logger.info(
                         f"[{self.client_id}] fMP4 buffer shorter than {behind_seconds}s, "
@@ -239,12 +229,27 @@ class FMP4StreamGenerator:
                     f"[{self.client_id}] fMP4 live start (behind_seconds=0), "
                     f"index {self.local_index} (buffer head at {current})"
                 )
+        self._align_start_to_current_era(current)
 
         logger.info(
             f"[{self.client_id}] fMP4 streaming setup complete, "
             f"starting at index {self.local_index}"
         )
         return True
+
+    def _align_start_to_current_era(self, head):
+        """Start on the newest remux era. Earlier fragments were muxed against the previous init."""
+        newest = self.fmp4_buffer.discontinuities_in_range(self.local_index, head)
+        if not newest:
+            return
+        era_start = max(newest)
+        self._init_covers_through = era_start
+        if era_start - 1 > self.local_index:
+            logger.debug(
+                f"[{self.client_id}] fMP4 start moved from index {self.local_index} "
+                f"to {era_start - 1} to begin at the latest remux restart"
+            )
+            self.local_index = era_start - 1
 
     def _fetch_init_segment(self) -> bytes:
         from core.utils import RedisClient
@@ -253,6 +258,21 @@ class FMP4StreamGenerator:
             return b''
         data = redis_buf.get(RedisKeys.output_init(self.channel_id, self.fmt))
         return data if data else b''
+
+    def _wait_for_init_segment(self) -> bytes:
+        """Fetch init, waiting briefly when a remux restart has cleared it."""
+        deadline = time.time() + INIT_SEGMENT_TIMEOUT
+        while time.time() < deadline:
+            data = self._fetch_init_segment()
+            if data:
+                return data
+            if self.proxy_server and self.proxy_server.redis_client:
+                if self.proxy_server.redis_client.exists(
+                    RedisKeys.channel_stopping(self.channel_id)
+                ):
+                    return b''
+            gevent.sleep(0.05)
+        return b''
 
     def _stream_data_generator(self):
         proxy_server = self.proxy_server or ProxyServer.get_instance()
@@ -263,14 +283,37 @@ class FMP4StreamGenerator:
             if not self._check_resources():
                 break
 
-            chunks, new_index = self.fmp4_buffer.get_chunks(start_index=self.local_index)
+            indexed, new_index = self.fmp4_buffer.get_chunks_indexed(
+                start_index=self.local_index
+            )
 
-            if chunks:
+            if indexed:
                 self.consecutive_empty = 0
-                for chunk in chunks:
+                disc_at = {
+                    disc
+                    for disc in self.fmp4_buffer.discontinuities_in_range(
+                        self.local_index, new_index
+                    )
+                    if disc > self._init_covers_through
+                }
+                prev_index = self.local_index
+                for chunk_index, chunk in indexed:
+                    # New init for this era, on the same response. The client stays connected.
+                    if any(prev_index < disc <= chunk_index for disc in disc_at):
+                        init_segment = self._wait_for_init_segment()
+                        if not init_segment:
+                            logger.error(
+                                f"[{self.client_id}] fMP4 init missing after "
+                                f"discontinuity at {chunk_index}, aborting"
+                            )
+                            return
+                        yield init_segment
+                        self.bytes_sent += len(init_segment)
+                        self.last_yield_time = time.time()
                     yield chunk
                     self.bytes_sent += len(chunk)
                     self.chunks_sent += 1
+                    prev_index = chunk_index
                 self.local_index = new_index
                 self.last_yield_time = time.time()
 
@@ -345,17 +388,11 @@ class FMP4StreamGenerator:
             return True
         return False
 
-    # ------------------------------------------------------------------
-    # Cleanup - mirrors StreamGenerator._cleanup() exactly so shutdown
-    # chain fires identically for fMP4 clients
-    # ------------------------------------------------------------------
-
     def _cleanup(self):
         try:
             elapsed = time.time() - self.stream_start_time
             proxy_server = ProxyServer.get_instance()
 
-            # Release stream allocation if last client (mirrors StreamGenerator)
             if proxy_server.redis_client:
                 try:
                     meta_key = RedisKeys.channel_metadata(self.channel_id)
@@ -383,8 +420,7 @@ class FMP4StreamGenerator:
                 except Exception as e:
                     logger.error(f"[{self.client_id}] Error in stream release check: {e}")
 
-            # Remove from MAIN ClientManager - this is what triggers handle_client_disconnect
-            # and the zero-clients → stop_channel path, same as TS clients.
+            # This removal is what runs the zero-clients shutdown, same as a TS client.
             local_clients = 0
             total_clients = 0
             if self.channel_id in proxy_server.client_managers:

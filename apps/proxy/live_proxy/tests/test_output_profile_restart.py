@@ -15,10 +15,10 @@ from apps.proxy.live_proxy import utils as live_utils
 from apps.proxy.live_proxy.constants import TS_PACKET_SIZE
 from apps.proxy.live_proxy.input.buffer import StreamBuffer
 from apps.proxy.live_proxy.output.profile import manager as manager_module
-from apps.proxy.live_proxy.output.profile.manager import (
-    OutputProfileManager,
-    _Restart,
-)
+from apps.proxy.live_proxy.output import pipe_restart
+from apps.proxy.live_proxy.output.pipe_restart import RestartOutcome
+from apps.proxy.live_proxy.output.profile.manager import OutputProfileManager
+from apps.proxy.live_proxy.psi_scan import PsiScanCache
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.tests.test_buffer_discontinuity import _FakeRedis
 from apps.proxy.live_proxy.tests.test_ts_pmt_watcher import (
@@ -285,6 +285,19 @@ class ProcessReplacementTests(ProcessHarness):
         self.assertEqual(new_era, chunk2)
         self.assertEqual(len(self.spawned), 2)
 
+    def test_writer_scans_through_the_buffers_shared_cache(self):
+        chunk = PAT + PMT_AAC + FILLER
+        ts = ScriptedInput([([chunk, chunk], 2)], index=2)
+        ts.psi_scan_cache = PsiScanCache()
+
+        self.start(ts)
+        # Chunk 1 is cached twice (before and after its PAT names the PMT PID),
+        # so wait for chunk 2 rather than for a count of two.
+        self.assertTrue(wait_until(
+            lambda: any(key[0] == 2 for key in ts.psi_scan_cache._items)
+        ))
+        self.assertEqual({key[0] for key in ts.psi_scan_cache._items}, {1, 2})
+
     def test_matching_layout_does_not_restart(self):
         chunk = PAT + PMT_AAC + FILLER
         ts = ScriptedInput([([chunk, chunk, chunk], 3)], index=3)
@@ -393,7 +406,7 @@ class FailurePathTests(ProcessHarness):
         self.assertTrue(wait_until(lambda: self.output.stopped))
         self.assertTrue(wait_until(lambda: self.spawned[0].poll() is not None))
 
-        self.assertEqual(manager._restart_transcode(reason="test"), _Restart.STOP)
+        self.assertEqual(manager._restart_transcode(reason="test"), RestartOutcome.STOP)
         self.assertEqual(len(self.spawned), 1)
         self.assertFalse(manager.running)
 
@@ -407,7 +420,7 @@ class FailurePathTests(ProcessHarness):
         prefix = FILLER * 1200  # ~225 KB
         ts = ScriptedInput([([PAT + PMT_AAC, prefix + PMT_AC3 + FILLER], 2)], index=2)
 
-        with patch.object(manager_module, "_DRAIN_TIMEOUT_SECONDS", 0.3):
+        with patch.object(pipe_restart, "DRAIN_TIMEOUT_SECONDS", 0.3):
             started = time.monotonic()
             self.start(ts)
             self.assertTrue(wait_until(lambda: len(self.spawned) == 2 and self.output.total()))

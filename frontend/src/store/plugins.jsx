@@ -25,7 +25,7 @@ export const usePluginStore = create((set, get) => ({
   availableError: null,
 
   // Async plugin action tasks (see WebSocket.jsx plugin_task_progress/
-  // plugin_task_complete and PluginDetail.jsx's "Background Tasks" section). Keyed by
+  // plugin_task_complete and PluginDetail.jsx's "Tasks" section). Keyed by
   // task_id (globally unique Celery id), so this map can hold entries for
   // more than one plugin at once without collision.
   //
@@ -91,12 +91,19 @@ export const usePluginStore = create((set, get) => ({
     set((state) => {
       const next = { ...state.pluginTasks };
       for (const t of tasks) {
-        if (next[t.task_id]) continue;
+        if (!t || typeof t.task_id !== 'string' || !t.task_id.trim() || !(t.action_id || t.action_label)) continue;
+        if (next[t.task_id]) {
+          if (!next[t.task_id].trigger && t.trigger) {
+            next[t.task_id] = { ...next[t.task_id], trigger: t.trigger };
+          }
+          continue;
+        }
         next[t.task_id] = {
           pluginKey,
           plugin: pluginName,
           actionId: t.action_id,
-          actionLabel: t.action_label,
+          actionLabel: t.action_label || t.action_id,
+          trigger: t.trigger || 'unknown',
           status: t.status,
           percent: t.percent,
           message: t.message,

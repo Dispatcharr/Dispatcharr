@@ -218,7 +218,7 @@ class BufferingEventAttributionTests(SimpleTestCase):
 def _make_switchable_manager(current_stream_id=100, url="http://current", redis_client=None):
     sm = StreamManager.__new__(StreamManager)
     sm.channel_id = CHANNEL_ID
-    sm.channel_name = "BBC News"
+    sm.channel_name = "Test Channel"
     sm.url = url
     sm.user_agent = "ua"
     sm.transcode = False

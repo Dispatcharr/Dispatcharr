@@ -4,7 +4,7 @@ import M3UProfile from '../M3UProfile';
 import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
 
 // ── WebSocket mock ─────────────────────────────────────────────────────────────
-vi.mock('../../../WebSocket', () => ({
+vi.mock('../../../WebSocketContext', () => ({
   useWebSocket: vi.fn(),
 }));
 
@@ -188,7 +188,7 @@ vi.mock('@mantine/core', () => ({
 // ──────────────────────────────────────────────────────────────────────────────
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
-import { useWebSocket } from '../../../WebSocket';
+import { useWebSocket } from '../../../WebSocketContext';
 import { useForm } from 'react-hook-form';
 import * as M3uProfileUtils from '../../../utils/forms/M3uProfileUtils.js';
 

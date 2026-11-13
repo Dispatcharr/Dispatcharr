@@ -1312,8 +1312,20 @@ class ProxyServer:
         Only the TS-owning worker starts the manager; non-owners read the shared buffer.
         Returns True if a manager is active (locally or on another worker).
         """
-        if channel_id in self.output_managers and fmt in self.output_managers[channel_id]:
-            return True
+        existing = self.output_managers.get(channel_id, {}).get(fmt)
+        if existing is not None:
+            # fMP4 owns a subprocess, but it is spawned only once a chunk's
+            # PMT chooses the command. output_process_healthy treats that
+            # wait as alive. A remux that stopped, or whose process has
+            # exited, would keep clients on a silent output until the channel
+            # restarted. HLS has no such method and is left alone.
+            healthy = getattr(existing, "output_process_healthy", None)
+            if healthy is None or healthy():
+                return True
+            logger.warning(
+                f"[output:{fmt}] Channel {channel_id}: remux is not running, restarting"
+            )
+            self.stop_output_format(channel_id, fmt)
 
         if not self.redis_client:
             return False

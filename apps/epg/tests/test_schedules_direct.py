@@ -24,7 +24,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.channels.models import Channel
-from apps.epg.models import EPGSource, EPGData, ProgramData, SDScheduleMD5
+from apps.epg.models import EPGSource, EPGData, ProgramData, SDProgramMD5, SDScheduleMD5
 from apps.epg.serializers import EPGSourceSerializer
 from apps.epg.tasks import (
     _sd_backfill_schedule_dates_without_data,
@@ -1317,6 +1317,147 @@ class SDScheduleDeltaIntegrationTests(TestCase):
             {'EP0001'},
         )
         self.assertEqual(needed, set())
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_cached_program_applies_per_slot_airing_flags(
+        self, mock_post, mock_get, mock_send_epg_update,
+    ):
+        """Cached program metadata must not carry another slot's airing flags."""
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+
+        date_list = self._build_date_list(3)
+        today = date.today()
+        pid = 'EP062700991016'
+        prog_md5 = 'prog-md5-stable'
+
+        prior_start = datetime(
+            today.year, today.month, today.day, 4, 30, tzinfo=dt_timezone.utc,
+        )
+        ProgramData.objects.create(
+            epg=mapped_epg,
+            start_time=prior_start,
+            end_time=prior_start + timedelta(hours=3),
+            title='College Football: California at SMU',
+            description='ACC Network game',
+            tvg_id=self.MAPPED_STATION,
+            program_id=pid,
+            custom_properties={
+                'live': True,
+                'new': True,
+                'categories': ['Sports', 'Football'],
+            },
+        )
+        SDProgramMD5.objects.create(
+            epg_source=source,
+            program_id=pid,
+            md5=prog_md5,
+        )
+        for i, ds in enumerate(date_list):
+            SDScheduleMD5.objects.create(
+                epg_source=source,
+                station_id=self.MAPPED_STATION,
+                date=today + timedelta(days=i),
+                md5=f'md5-old-{ds}' if i == 0 else f'md5-{ds}',
+                last_modified=timezone.now(),
+            )
+
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        schedule_payload = [{
+            'stationID': self.MAPPED_STATION,
+            'metadata': {
+                'startDate': date_list[0],
+                'md5': f'md5-{date_list[0]}',
+                'modified': '2026-06-11T00:00:00Z',
+            },
+            'programs': [
+                {
+                    'programID': pid,
+                    'airDateTime': f'{date_list[0]}T00:00:00Z',
+                    'duration': 3600,
+                    'md5': prog_md5,
+                    'liveTapeDelay': 'Live',
+                    'new': True,
+                },
+                {
+                    'programID': pid,
+                    'airDateTime': f'{date_list[0]}T04:30:00Z',
+                    'duration': 10800,
+                    'md5': prog_md5,
+                    'repeat': True,
+                },
+            ],
+        }]
+
+        programs_calls = []
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={'code': 0, 'token': 'tok'}),
+                )
+            if url.endswith('/schedules/md5'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={
+                        self.MAPPED_STATION: {
+                            ds: {
+                                'code': 0,
+                                'md5': f'md5-{ds}',
+                                'lastModified': '2026-06-11T00:00:00Z',
+                            }
+                            for ds in date_list
+                        },
+                    }),
+                )
+            if url.endswith('/schedules'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=schedule_payload),
+                )
+            if url.endswith('/programs'):
+                programs_calls.append(kwargs.get('json'))
+                raise AssertionError(
+                    'Unchanged program MD5 must not re-fetch /programs'
+                )
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        self.assertEqual(programs_calls, [])
+        rows = list(
+            ProgramData.objects.filter(epg=mapped_epg, program_id=pid)
+            .order_by('start_time')
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].title, 'College Football: California at SMU')
+        self.assertEqual(rows[1].title, 'College Football: California at SMU')
+
+        live_props = rows[0].custom_properties or {}
+        repeat_props = rows[1].custom_properties or {}
+        self.assertTrue(live_props.get('live'))
+        self.assertTrue(live_props.get('new'))
+        self.assertFalse(live_props.get('previously_shown'))
+        self.assertEqual(live_props.get('categories'), ['Sports', 'Football'])
+
+        self.assertTrue(repeat_props.get('previously_shown'))
+        self.assertFalse(repeat_props.get('live'))
+        self.assertFalse(repeat_props.get('new'))
+        self.assertEqual(repeat_props.get('categories'), ['Sports', 'Football'])
 
 
 # ---------------------------------------------------------------------------

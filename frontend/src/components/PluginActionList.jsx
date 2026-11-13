@@ -6,6 +6,7 @@ import {
   Group,
   Modal,
   Progress,
+  Select,
   Stack,
   Text,
   TextInput,
@@ -174,7 +175,7 @@ export const PluginActionStatus = ({ running, lastResult }) => {
   );
 };
 
-const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', error: 'red' };
+const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', partial: 'yellow', error: 'red' };
 
 // Relative for anything recent, absolute HH:mm beyond a day (a bare "3d ago"
 // on a stale row isn't much more useful than the badge already showing it's
@@ -209,6 +210,22 @@ const PluginTaskTimestamp = ({ task }) => {
 // One individual run, shown inside PluginTaskGroupModal's history list.
 const PluginTaskRunRow = ({ task }) => {
   const isDone = task.status !== 'running';
+  const resultMessage = task.result?.message;
+  const showResultMessage = resultMessage && !(task.status === 'error' && String(resultMessage) === String(task.error));
+  const downloadResult = () => {
+    const blob = new Blob([JSON.stringify(task.result, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `plugin-task-${task.taskId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
+    document.body.appendChild(link);
+    try {
+      link.click();
+    } finally {
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+  };
   return (
     <PluginListRow
       left={
@@ -220,6 +237,7 @@ const PluginTaskRunRow = ({ task }) => {
             </Badge>
           </Group>
           <PluginTaskTimestamp task={task} />
+          <Text size="xs" c="dimmed">Trigger: {task.trigger || 'unknown'}</Text>
           {task.message && (
             <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
               {task.message}
@@ -230,8 +248,18 @@ const PluginTaskRunRow = ({ task }) => {
               {String(task.error)}
             </Text>
           )}
+          {showResultMessage && (
+            <Text size="xs" c={task.status === 'partial' ? 'yellow' : task.status === 'error' ? 'red' : 'dimmed'} style={{ whiteSpace: 'normal' }}>
+              {String(resultMessage)}
+            </Text>
+          )}
         </>
       }
+      right={isDone && task.result != null && (
+        <Button size="xs" variant="light" color="gray" onClick={downloadResult}>
+          Download output
+        </Button>
+      )}
       footer={
         !isDone && (
           <Progress
@@ -253,6 +281,7 @@ const PluginTaskRunRow = ({ task }) => {
 const groupPluginTasks = (tasks) => {
   const groups = {};
   for (const [taskId, task] of Object.entries(tasks || {})) {
+    if (!task || !(task.actionId || task.actionLabel)) continue;
     const groupKey = task.actionId ?? task.actionLabel;
     if (!groups[groupKey]) {
       groups[groupKey] = { groupKey, actionLabel: task.actionLabel, runs: [] };
@@ -335,10 +364,32 @@ const PluginTaskGroupRow = ({ group }) => {
 };
 
 export const PluginTaskList = ({ tasks }) => {
-  const groups = useMemo(() => groupPluginTasks(tasks), [tasks]);
-  if (groups.length === 0) return null;
+  const [trigger, setTrigger] = useState('all');
+  const triggers = new Set(Object.values(tasks || {}).filter(Boolean).map((task) => task.trigger || 'unknown'));
+  const activeTrigger = triggers.size > 1 && triggers.has(trigger) ? trigger : 'all';
+  const groups = useMemo(() => groupPluginTasks(
+    Object.fromEntries(Object.entries(tasks || {}).filter(([, task]) =>
+      activeTrigger === 'all' || (task?.trigger || 'unknown') === activeTrigger
+    ))
+  ), [tasks, activeTrigger]);
+  if (!Object.keys(tasks || {}).length) return null;
   return (
     <Stack gap="xs">
+      {triggers.size > 1 && <Select
+        aria-label="Filter task history by trigger"
+        size="xs"
+        value={activeTrigger}
+        onChange={(value) => setTrigger(value || 'all')}
+        data={[
+          { value: 'all', label: 'All triggers' },
+          { value: 'manual', label: 'Manual' },
+          { value: 'schedule', label: 'Scheduled' },
+          { value: 'action', label: 'Action' },
+          { value: 'event', label: 'Event' },
+          { value: 'unknown', label: 'Unknown' },
+        ]}
+      />}
+      {groups.length === 0 && <Text size="xs" c="dimmed">No runs match this trigger.</Text>}
       {groups.map((group) => (
         <PluginTaskGroupRow key={group.groupKey} group={group} />
       ))}

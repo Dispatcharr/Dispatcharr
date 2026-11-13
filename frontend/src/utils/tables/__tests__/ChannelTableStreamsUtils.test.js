@@ -89,6 +89,28 @@ describe('ChannelTableStreamsUtils', () => {
       expect(result.audio).toEqual(stats);
     });
 
+    it('omits best-track bitrate and sample_rate when audio_streams is present', () => {
+      const stats = {
+        audio_bitrate: 384,
+        sample_rate: 48000,
+        audio_format: 'flac',
+        audio_streams: [
+          {
+            audio_language: 'eng',
+            audio_channels: '5.1',
+            audio_codec: 'ac3',
+            audio_bitrate: 384,
+            sample_rate: 48000,
+          },
+        ],
+      };
+      const result = ChannelTableStreamsUtils.categorizeStreamStats(stats);
+      expect(result.audio.audio_streams).toEqual(stats.audio_streams);
+      expect(result.audio.audio_format).toBe('flac');
+      expect(result.audio.sample_rate).toBeUndefined();
+      expect(result.audio.audio_bitrate).toBeUndefined();
+    });
+
     it('categorizes technical fields correctly', () => {
       const stats = {
         stream_type: 'video',
@@ -251,6 +273,12 @@ describe('ChannelTableStreamsUtils', () => {
 
     it('handles already-capitalized keys', () => {
       expect(ChannelTableStreamsUtils.formatStatKey('FPS')).toBe('FPS');
+    });
+
+    it('labels ffmpeg_output_bitrate as Output Bitrate', () => {
+      expect(
+        ChannelTableStreamsUtils.formatStatKey('ffmpeg_output_bitrate')
+      ).toBe('Output Bitrate');
     });
   });
 

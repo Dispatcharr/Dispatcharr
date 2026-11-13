@@ -7,6 +7,7 @@ from django.db.models.functions import Coalesce, Lower
 from apps.m3u.models import M3UAccount
 from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
+from core.utils import truncate_with_warning
 from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
@@ -501,8 +502,14 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
         try:
             stream_id = str(movie_data.get('stream_id'))
             # Skip blank names: Movie.name is NOT NULL, and one null in this
-            # atomic batch would roll back every other row.
-            name = str(movie_data.get('name') or '').strip()
+            # atomic batch would roll back every other row. Clamp length before
+            # identity keys / bulk_create so one over-long title cannot abort
+            # the whole chunk.
+            name = truncate_with_warning(
+                str(movie_data.get('name') or '').strip(),
+                max_length=Movie._meta.get_field('name').max_length,
+                label='Movie name',
+            )
             if not name:
                 logger.warning(
                     "Skipping movie with blank name (stream_id=%s, account=%s)",
@@ -871,8 +878,14 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         try:
             series_id = str(series_data.get('series_id'))
             # Skip blank names: Series.name is NOT NULL, and one null in this
-            # atomic batch would roll back every other row.
-            name = str(series_data.get('name') or '').strip()
+            # atomic batch would roll back every other row. Clamp length before
+            # identity keys / bulk_create so one over-long title cannot abort
+            # the whole chunk.
+            name = truncate_with_warning(
+                str(series_data.get('name') or '').strip(),
+                max_length=Series._meta.get_field('name').max_length,
+                label='Series name',
+            )
             if not name:
                 logger.warning(
                     "Skipping series with blank name (series_id=%s, account=%s)",
@@ -1466,7 +1479,11 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                             series.rating = normalized_rating
                             updated = True
                         if should_update_field(series.genre, info.get('genre')):
-                            series.genre = extract_string_from_array_or_string(info.get('genre'))
+                            series.genre = truncate_with_warning(
+                                extract_string_from_array_or_string(info.get('genre')),
+                                max_length=Series._meta.get_field('genre').max_length,
+                                label='Series genre',
+                            )
                             updated = True
 
                         year = extract_year_from_data(info)
@@ -3212,7 +3229,13 @@ def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id, language=''
     """Build Movie list-sync props and logo URL from a provider row."""
     description = movie_data.get('description') or movie_data.get('plot') or ''
     rating = normalize_rating(movie_data.get('rating') or movie_data.get('vote_average'))
-    genre = movie_data.get('genre') or movie_data.get('category_name') or ''
+    # genre (and sometimes category_name) can exceed varchar(255); clamp so
+    # bulk_create inside the atomic movie batch cannot roll back the chunk.
+    genre = truncate_with_warning(
+        movie_data.get('genre') or movie_data.get('category_name') or '',
+        max_length=Movie._meta.get_field('genre').max_length,
+        label='Movie genre',
+    )
     duration_secs = extract_duration_from_data(movie_data)
     trailer_raw = movie_data.get('trailer') or movie_data.get('youtube_trailer') or ''
     trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
@@ -3264,7 +3287,12 @@ def build_series_list_props(series_data, name, year, tmdb_id, imdb_id, language=
     """Build Series list-sync props and logo URL from a provider row."""
     description = series_data.get('plot', '')
     rating = normalize_rating(series_data.get('rating'))
-    genre = series_data.get('genre', '')
+    # Same varchar(255) limit as Movie.genre; clamp before bulk_create.
+    genre = truncate_with_warning(
+        series_data.get('genre', '') or '',
+        max_length=Series._meta.get_field('genre').max_length,
+        label='Series genre',
+    )
     logo_url = series_data.get('cover') or ''
 
     additional_metadata = {}
@@ -3375,7 +3403,11 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                     movie.rating = normalized_rating
                     updated = True
                 if info.get('genre') and info.get('genre') != movie.genre:
-                    movie.genre = info.get('genre')
+                    movie.genre = truncate_with_warning(
+                        info.get('genre'),
+                        max_length=Movie._meta.get_field('genre').max_length,
+                        label='Movie genre',
+                    )
                     updated = True
                 # Keep an existing duration when the provider sends missing or
                 # invalid data, including 0. Only apply a successfully extracted value.

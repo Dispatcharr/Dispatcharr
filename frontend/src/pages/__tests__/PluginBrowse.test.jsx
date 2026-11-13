@@ -14,9 +14,10 @@ vi.mock('../../store/settings.jsx', () => ({
 
 // ── Component mocks ────────────────────────────────────────────────────────────
 vi.mock('../../components/cards/AvailablePluginCard.jsx', () => ({
-  default: ({ plugin }) => (
+  default: ({ plugin, onAuthorClick }) => (
     <div data-testid="plugin-card" data-slug={plugin.slug}>
       {plugin.name}
+      <button onClick={() => onAuthorClick(plugin.author)}>Author: {plugin.author}</button>
     </div>
   ),
 }));
@@ -59,10 +60,12 @@ vi.mock('lucide-react', () => ({
   GitFork: () => <svg data-testid="icon-git-fork" />,
   RefreshCw: () => <svg data-testid="icon-refresh" />,
   Search: () => <svg data-testid="icon-search" />,
+  X: () => <svg />,
 }));
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  ActionIcon: ({ children, onClick, ...props }) => <button onClick={onClick} aria-label={props['aria-label']}>{children}</button>,
   AppShellMain: ({ children }) => <main>{children}</main>,
   Badge: ({ children, color, variant }) => (
     <span data-testid="badge" data-color={color} data-variant={variant}>
@@ -133,13 +136,13 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
-  TextInput: ({ value, onChange, placeholder }) => (
+  TextInput: ({ value, onChange, placeholder, rightSection }) => (<>
     <input
       data-testid="search-input"
       value={value ?? ''}
       onChange={onChange}
       placeholder={placeholder}
-    />
+    />{rightSection}</>
   ),
 }));
 
@@ -223,6 +226,17 @@ describe('PluginBrowsePage', () => {
     vi.mocked(reloadPlugins).mockResolvedValue(undefined);
     setupStore();
     localStorage.clear();
+  });
+
+  it('searches by author when a card author is clicked', () => {
+    setupStore({ availablePlugins: [makePlugin(), makePlugin({ slug: 'other', name: 'Other', author: 'Someone else' })] });
+    render(<PluginBrowsePage />);
+    fireEvent.click(screen.getByText('Author: Test Author'));
+    expect(screen.getByTestId('search-input')).toHaveValue('Test Author');
+    expect(screen.getAllByTestId('plugin-card')).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText('Clear search'));
+    expect(screen.getByTestId('search-input')).toHaveValue('');
+    expect(screen.getAllByTestId('plugin-card')).toHaveLength(2);
   });
 
   // ── Initialization ─────────────────────────────────────────────────────────

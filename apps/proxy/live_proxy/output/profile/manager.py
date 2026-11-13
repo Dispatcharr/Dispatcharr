@@ -19,8 +19,8 @@ already holds; the replacement then starts on the new data and emits a fresh
 PAT/PMT.
 """
 
-import enum
 import logging
+import os
 import select
 import threading
 import time
@@ -29,6 +29,13 @@ from ...input.buffer import StreamBuffer
 from ...redis_keys import RedisKeys
 from ...config_helper import ConfigHelper
 from ...utils import get_logger
+from ..pipe_restart import (
+    ProcessSlot,
+    RestartOutcome,
+    replace_piped_process,
+    write_all,
+)
+from ..ts_feed import feed_chunk_with_layout_watch, run_ts_buffer_writer
 from ..ts_pmt import PmtLayoutWatcher
 
 logger = get_logger()
@@ -39,48 +46,6 @@ PROFILE_STATE_STOPPED = "stopped"
 # Orphan backstop TTL; refreshed while the transcode is alive, deleted on stop.
 PROFILE_KEY_TTL = 3600
 PROFILE_TTL_REFRESH_INTERVAL = 60
-
-# Total time the old process gets on a restart to take the input written up to
-# the boundary and flush its remaining output before it is killed. Measured
-# drain time after stdin close with the seeded profile shapes: ~2 ms (stream
-# copy), ~90 ms (AAC encode), ~110-130 ms (x264 veryfast). The cap leaves
-# headroom over that while keeping a wedged encoder from stalling failover.
-_DRAIN_TIMEOUT_SECONDS = 0.25
-
-# After the old process is killed its pipes hit EOF immediately, so its reader
-# threads exit almost at once; this only bounds a reader stuck in a slow write.
-_RETIRE_JOIN_SECONDS = 1.0
-
-class _Restart(enum.Enum):
-    """Outcome of ``_restart_transcode``.
-
-    STOP:     the writer must end (manager stopping, or the process had died).
-    REPLACED: a new process now owns stdin.
-    KEPT:     the spawn failed and the current process continues; the layout
-              change should be retried when the next PMT arrives.
-    """
-
-    STOP = enum.auto()
-    REPLACED = enum.auto()
-    KEPT = enum.auto()
-
-
-class _ProcessSlot:
-    """A spawned transcode process plus the flags its reader threads obey.
-
-    closing:   stdin was closed on purpose; EOF on stdout is expected and must
-               not stop the shared output buffer.
-    abandoned: the process was retired; stop forwarding its output.
-    """
-
-    __slots__ = ("process", "closing", "abandoned", "reader", "stderr")
-
-    def __init__(self, process):
-        self.process = process
-        self.closing = threading.Event()
-        self.abandoned = threading.Event()
-        self.reader = None
-        self.stderr = None
 
 
 class OutputProfileManager:
@@ -149,7 +114,7 @@ class OutputProfileManager:
             self._release_owner_lock()
             return False
 
-        self._slot = _ProcessSlot(self._process)
+        self._slot = ProcessSlot(self._process)
         self.running = True
         self._set_state(PROFILE_STATE_ACTIVE)
 
@@ -221,38 +186,10 @@ class OutputProfileManager:
         slot.reader.start()
         slot.stderr.start()
 
-    def _write_all(self, data: bytes, deadline=None, process=None):
-        """Write all bytes to process stdin, looping on partial writes.
-
-        With a monotonic ``deadline`` the write gives up when it passes and
-        returns False; otherwise it blocks until the pipe takes everything.
-        """
-        process = process or self._process
-        view = memoryview(data)
-        offset = 0
-        total = len(view)
-        while offset < total:
-            if not self.running:
-                return False
-            if deadline is not None and time.monotonic() >= deadline:
-                return False
-            n = process.stdin.write(view[offset:])
-            if n is None:
-                # Pipe full (EAGAIN on non-blocking FD); yield cooperatively
-                wait = 1.0
-                if deadline is not None:
-                    wait = max(0.0, min(wait, deadline - time.monotonic()))
-                select.select([], [process.stdin], [], wait)
-            elif n <= 0:
-                raise OSError("stdin write returned no bytes")
-            else:
-                offset += n
-        return True
-
     def _write_stdin(self, data: bytes) -> bool:
         """Write to the current process. Returns False when the writer must stop."""
         try:
-            self._write_all(data)
+            write_all(self._process, data, is_running=lambda: self.running)
             self._process.stdin.flush()
         except (BrokenPipeError, OSError) as e:
             logger.warning(
@@ -263,226 +200,85 @@ class OutputProfileManager:
             return False
         return True
 
-    def _feed(self, data: bytes, watcher: PmtLayoutWatcher) -> bool:
-        """Write one input chunk, replacing the process at each PMT layout change.
-
-        The bytes before the changed PMT belong to the old layout and go to the
-        old process; the new process starts with the PAT then the changed PMT.
-        Returns False when the writer loop must stop.
-        """
-        while data:
-            change_at = watcher.find_layout_change(data)
-            if change_at is None:
-                return self._write_stdin(data)
-            head, data = data[:change_at], data[change_at:]
-            outcome = self._restart_transcode(
-                reason="PMT/ES layout change", flush=head
-            )
-            if outcome == _Restart.STOP:
-                return False
-            if outcome == _Restart.KEPT:
-                # Spawn failed: head was written to the process we kept.
-                # Revert the fingerprint so a later copy of this PMT retries
-                # the replacement, and send the remainder as ordinary input.
-                watcher.revert_layout_change()
-                return self._write_stdin(data)
-            watcher.accept_layout_change()
-            # The new process must see the PAT, then the whole PMT section
-            # (which may have started in an earlier chunk), before the media.
-            data = watcher.pat_packet + watcher.leading_section + data
-        return True
-
     def _writer_loop(self):
         """Read TS chunks from Redis and write to the transcode process stdin."""
         behind_seconds = ConfigHelper.new_client_behind_seconds()
-        start_index = self.ts_buffer.find_chunk_index_by_time(behind_seconds) if behind_seconds > 0 else None
-        if start_index is None:
-            start_index = self.ts_buffer.index
-        local_index = start_index
-        watcher = PmtLayoutWatcher()
-        logger.debug(
-            f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
-            f"Writer started at index {local_index}"
+        watcher = PmtLayoutWatcher(
+            scan_cache=getattr(self.ts_buffer, "psi_scan_cache", None)
         )
+        label = f"[Profile:{self.profile_id}:{self.channel_id[:8]}]"
 
         try:
-            while self.running:
-                indexed, new_index = self.ts_buffer.get_optimized_client_data_indexed(
-                    local_index
-                )
-
-                if indexed:
-                    # Use each chunk's real Redis index. A hole in the middle
-                    # must not slide the following chunks onto the wrong
-                    # discontinuity mark.
-                    disc_at = set(
-                        self.ts_buffer.discontinuities_in_range(local_index, new_index)
+            run_ts_buffer_writer(
+                is_running=lambda: self.running,
+                ts_buffer=self.ts_buffer,
+                behind_seconds=behind_seconds,
+                watcher=watcher,
+                feed_chunk=lambda data, watcher, chunk_index=None: (
+                    feed_chunk_with_layout_watch(
+                        data, watcher, self._write_stdin,
+                        self._restart_transcode, chunk_index,
                     )
-                    prev_index = local_index
-                    for chunk_index, chunk in indexed:
-                        if not self.running:
-                            break
-                        if any(prev_index < disc <= chunk_index for disc in disc_at):
-                            outcome = self._restart_transcode(
-                                reason=f"input discontinuity at index {chunk_index}"
-                            )
-                            if outcome == _Restart.STOP:
-                                return
-                            if outcome == _Restart.REPLACED:
-                                watcher.reset()
-                        if not self._feed(chunk, watcher):
-                            return
-                        prev_index = chunk_index
-                    local_index = new_index
-                else:
-                    if self.ts_buffer.index > local_index + 20:
-                        skip_to = self.ts_buffer.index - 5
-                        # Source switches inside the skipped range never reach
-                        # the loop above, so restart for them here.
-                        if self.ts_buffer.discontinuities_in_range(local_index, skip_to):
-                            outcome = self._restart_transcode(
-                                reason="input discontinuity in skipped range"
-                            )
-                            if outcome == _Restart.STOP:
-                                return
-                            if outcome == _Restart.REPLACED:
-                                watcher.reset()
-                        local_index = skip_to
-                    time.sleep(0.05)
-
-        except Exception as e:
-            logger.error(
-                f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
-                f"Writer loop error: {e}", exc_info=True
+                ),
+                on_discontinuity=lambda reason: self._restart_transcode(reason=reason),
+                log_debug=lambda msg: logger.debug(f"{label} {msg}"),
             )
+        except Exception as e:
+            logger.error(f"{label} Writer loop error: {e}", exc_info=True)
         finally:
             try:
                 if self._process and self._process.stdin:
                     self._process.stdin.close()
             except Exception:
                 pass
-            logger.debug(
-                f"[Profile:{self.profile_id}:{self.channel_id[:8]}] Writer loop exited"
-            )
+            logger.debug(f"{label} Writer loop exited")
 
-    def _restart_transcode(self, reason: str, flush: bytes = b"") -> _Restart:
+    def _restart_transcode(self, reason: str, flush: bytes = b"") -> RestartOutcome:
         """Replace the transcode process at a stream boundary.
 
-        Runs on the writer thread, the only thread that writes stdin.
-
-        The replacement is spawned first and swapped in before the old process
-        is touched, so ``self._process`` is never a dead process (the server
-        treats that as a crashed profile and tears the whole profile down).
-
-        The old process then gets until ``_DRAIN_TIMEOUT_SECONDS`` to take
-        ``flush`` (the input up to the boundary), see EOF and emit what it still
-        holds; its output is forwarded to the shared buffer. Whatever is still
-        running after that is killed so a wedged encoder cannot stall failover.
-        The output buffer is marked discontinuous only once the old reader has
-        stopped, so no old-era bytes land after the marker.
-
-        Returns ``_Restart.STOP`` when the writer must stop: the manager is
-        stopping, or the current process had already died. A dead process means
-        its reader already stopped the shared output buffer (which then refuses
-        writes), so replacing it would silently discard all later output; leave
-        that to the server's dead-process recycling instead.
-
-        Returns ``_Restart.KEPT`` when the replacement cannot be spawned: the
-        current process is kept and ``flush`` is written to it. The caller
-        should revert any layout-change fingerprint so a later PMT can retry.
-
-        Returns ``_Restart.REPLACED`` when the new process is running.
+        Runs on the writer thread, the only thread that writes stdin. See
+        ``replace_piped_process`` for the spawn/drain/retire contract.
         """
-        if not self.running:
-            return _Restart.STOP
+        if not self.running or self._slot is None:
+            return RestartOutcome.STOP
 
         short = f"{self.channel_id[:8]}"
-        if self._slot.process.poll() is not None:
-            logger.warning(
-                f"[Profile:{self.profile_id}:{short}] "
-                f"Transcode already exited ({reason}); leaving restart to the server"
-            )
-            self.running = False
-            return _Restart.STOP
+        label = f"[Profile:{self.profile_id}:{short}]"
 
-        try:
+        def spawn():
             from ...utils import posix_spawn_proc
-            new_process = posix_spawn_proc(self.command)
-        except (FileNotFoundError, OSError) as e:
-            logger.error(
-                f"[Profile:{self.profile_id}:{short}] "
-                f"Failed to restart transcode ({reason}), keeping current process: {e}"
-            )
-            # The caller has already split off `flush` (input before the
-            # boundary). Nothing else will write it, so it has to go to the
-            # process we are keeping.
-            if flush and not self._write_stdin(flush):
-                return _Restart.STOP
-            return _Restart.KEPT
+            return posix_spawn_proc(self.command)
 
-        logger.info(
-            f"[Profile:{self.profile_id}:{short}] Restarting transcode ({reason})"
-        )
-        started = time.monotonic()
-        deadline = started + _DRAIN_TIMEOUT_SECONDS
-        old = self._slot
-        new = _ProcessSlot(new_process)
-        self._process = new_process
-        self._slot = new
+        def set_current(process, slot):
+            self._process = process
+            self._slot = slot
 
-        old.closing.set()
-        if flush:
-            try:
-                self._write_all(flush, deadline=deadline, process=old.process)
-            except (BrokenPipeError, OSError):
-                pass  # the old process is already gone
-        try:
-            old.process.stdin.close()
-        except Exception:
-            pass
-        if old.reader and old.reader.is_alive():
-            old.reader.join(timeout=max(0.0, deadline - time.monotonic()))
-        drained = not (old.reader and old.reader.is_alive())
-
-        old.abandoned.set()
-        try:
-            if old.process.poll() is None:
-                old.process.kill()
-                old.process.wait(timeout=1)
-        except Exception:
-            pass
-        for t in (old.reader, old.stderr):
-            if t and t.is_alive():
+        def after_old_retired():
+            if self.output_buffer:
                 try:
-                    t.join(timeout=_RETIRE_JOIN_SECONDS)
-                except Exception:
-                    pass
+                    self.output_buffer.mark_discontinuity()
+                except Exception as e:
+                    logger.warning(f"{label} Failed to mark output discontinuity: {e}")
 
-        if not self.running:
-            # stop() ran while we were swapping; it only knows the new process.
-            try:
-                new_process.kill()
-            except Exception:
-                pass
-            return _Restart.STOP
-
-        if self.output_buffer:
-            try:
-                self.output_buffer.mark_discontinuity()
-            except Exception as e:
-                logger.warning(
-                    f"[Profile:{self.profile_id}:{short}] "
-                    f"Failed to mark output discontinuity: {e}"
-                )
-
-        self._start_slot_threads(new)
-        logger.info(
-            f"[Profile:{self.profile_id}:{short}] "
-            f"Transcode restarted (pid={new_process.pid}, {reason}, "
-            f"old process {'drained' if drained else 'killed'} in "
-            f"{(time.monotonic() - started) * 1000:.0f} ms)"
+        outcome = replace_piped_process(
+            is_running=lambda: self.running,
+            current_slot=self._slot,
+            spawn=spawn,
+            set_current=set_current,
+            start_slot_threads=self._start_slot_threads,
+            after_old_retired=after_old_retired,
+            flush=flush,
+            log_warning=lambda msg: logger.warning(f"{label} {msg}"),
+            log_error=lambda msg: logger.error(f"{label} {msg}"),
+            log_info=lambda msg: logger.info(f"{label} {msg}"),
+            reason=reason,
+            noun="transcode",
         )
-        return _Restart.REPLACED
+        if outcome == RestartOutcome.STOP and self.running:
+            # Dead process, or the pre-boundary flush could not be written.
+            # stop() during the swap has already cleared running.
+            self.running = False
+        return outcome
 
     def _reader_loop(self, slot):
         """Read chunks from process stdout and write to the output StreamBuffer."""
@@ -505,7 +301,11 @@ class OutputProfileManager:
                         break
                     continue
 
+                # FileIO.read returns None on EAGAIN. It does not raise. b"" is EOF.
+                # Treating None as EOF would drop the output on a stale select.
                 data = process.stdout.read(read_size)
+                if data is None:
+                    continue
                 if not data:
                     logger.log(
                         logging.DEBUG if slot.closing.is_set() else logging.INFO,
@@ -514,7 +314,7 @@ class OutputProfileManager:
                     break
 
                 if slot.abandoned.is_set():
-                    break  # retired while blocked in the read
+                    break  # retired between select and this check
                 self.output_buffer.add_chunk(data)
 
         except Exception as e:
@@ -533,19 +333,20 @@ class OutputProfileManager:
 
     def _stderr_loop(self, slot):
         """Log process stderr at WARNING level."""
-        import os as _os
-        import select as _select
         process = slot.process
         try:
             stderr_fd = process.stderr.fileno()
             buf = b""
             while self.running and not slot.abandoned.is_set():
-                ready, _, _ = _select.select([stderr_fd], [], [], 1.0)
+                ready, _, _ = select.select([stderr_fd], [], [], 1.0)
                 if not ready:
                     if process.poll() is not None:
                         break
                     continue
-                chunk = _os.read(stderr_fd, 4096)
+                try:
+                    chunk = os.read(stderr_fd, 4096)
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     break
                 buf += chunk

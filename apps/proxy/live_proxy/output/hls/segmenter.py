@@ -35,9 +35,9 @@ Segmentation rules:
   parameter sets in-band to be independently decodable.
 """
 
-from ...constants import TS_PACKET_SIZE
-from ...ts_psi import (
+from apps.proxy.ts_psi import (
     AUDIO_STREAM_TYPES,
+    TS_PACKET_SIZE,
     VIDEO_STREAM_TYPES,
     PsiSectionAssembler,
     packet_payload_offset,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -15,7 +15,6 @@ import {
 import {
   AlertTriangle,
   Ban,
-  CalendarClock,
   Check,
   Download,
   FlaskConical,
@@ -111,6 +110,7 @@ const InstallStatusIndicator = ({
 
 const AvailablePluginCardHeader = ({
   plugin,
+  onAuthorClick,
   signatureVerified = plugin.signature_verified,
 }) => (
   <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
@@ -144,6 +144,7 @@ const AvailablePluginCardHeader = ({
         <Group gap={6} align="center" wrap="nowrap">
           <PluginMetadata
             plugin={plugin}
+            onAuthorClick={onAuthorClick}
             license={plugin.license}
             sourceRepoName={plugin.repo_name}
             trailing={
@@ -166,6 +167,7 @@ const AvailablePluginCardHeader = ({
 
 const AvailablePluginCard = ({
   plugin,
+  onAuthorClick,
   appVersion,
   appVersionTimestamp,
   autoOpenDetail = false,
@@ -200,8 +202,11 @@ const AvailablePluginCard = ({
   const [installedPlugin, setInstalledPlugin] = useState(null);
   const [enableNow, setEnableNow] = useState(false);
   const [enabling, setEnabling] = useState(false);
+  const [enableError, setEnableError] = useState(false);
+  const dismissInProgress = useRef(false);
   const [pluginIsDisabled, setPluginIsDisabled] = useState(false);
   const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
+  const [dataConfirmOpen, setDataConfirmOpen] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [deprecationWarnOpen, setDeprecationWarnOpen] = useState(false);
   const [pendingDeprecatedInstall, setPendingDeprecatedInstall] =
@@ -277,6 +282,7 @@ const AvailablePluginCard = ({
         setInstalledPlugin(result.plugin || null);
         setPluginIsDisabled(result.plugin?.enabled === false);
         setEnableNow(false);
+        setEnableError(false);
         setRestartPromptOpen(true);
         onInstalled?.(plugin.slug);
       }
@@ -289,35 +295,55 @@ const AvailablePluginCard = ({
   const [uninstallDoneOpen, setUninstallDoneOpen] = useState(false);
 
   const handleDismissRestart = async (andNavigate = false) => {
-    if (enableNow && installedKey) {
-      const proceed =
-        !needsCapabilityAck(installedPlugin) ||
-        (await usePluginStore
-          .getState()
-          .requestEnableConfirmation(installedPlugin || { key: installedKey }));
-      if (proceed) {
-        setEnabling(true);
-        try {
-          await setPluginEnabled(
-            installedKey,
-            true,
-            (installedPlugin?.capabilities || []).map((capability) => capability.id)
-          );
-        } finally {
-          setEnabling(false);
+    if (dismissInProgress.current) return;
+    dismissInProgress.current = true;
+    setEnabling(true);
+    setEnableError(false);
+    try {
+      if (enableNow && installedKey) {
+        if (needsCapabilityAck(installedPlugin)) {
+          setRestartPromptOpen(false);
+          const proceed = await usePluginStore
+            .getState()
+            .requestEnableConfirmation(installedPlugin || { key: installedKey });
+          if (!proceed) {
+            setRestartPromptOpen(true);
+            return;
+          }
+        }
+        const result = await setPluginEnabled(
+          installedKey,
+          true,
+          (installedPlugin?.capabilities || []).map((capability) => capability.id)
+        );
+        if (!result?.success) {
+          setEnableError(true);
+          setRestartPromptOpen(true);
+          return;
         }
       }
+      setRestartPromptOpen(false);
+      if (andNavigate) navigate('/plugins');
+    } catch {
+      setEnableError(true);
+      setRestartPromptOpen(true);
+    } finally {
+      dismissInProgress.current = false;
+      setEnabling(false);
     }
-    setRestartPromptOpen(false);
-    if (andNavigate) navigate('/plugins');
   };
 
-  const handleUninstall = async () => {
+  const handleUninstall = async (dataAction) => {
     const key = plugin.key || installedKey;
     if (!key) return;
     setUninstalling(true);
     try {
-      const resp = await deletePluginByKey(key);
+      const resp = dataAction ? await deletePluginByKey(key, dataAction) : await deletePluginByKey(key);
+      if (resp?.data_confirmation_required) {
+        setUninstallConfirmOpen(false);
+        setDataConfirmOpen(true);
+        return;
+      }
       if (resp?.success) {
         onUninstalled?.(plugin.slug);
         usePluginStore.getState().invalidatePlugins();
@@ -409,7 +435,7 @@ const AvailablePluginCard = ({
         backgroundColor: '#27272A',
       }}
     >
-      <AvailablePluginCardHeader plugin={plugin} />
+      <AvailablePluginCardHeader plugin={plugin} onAuthorClick={onAuthorClick} />
 
       <Box
         style={{
@@ -454,53 +480,41 @@ const AvailablePluginCard = ({
               </Tooltip>
             );
           })()}
-        {meetsVersion && (plugin.last_updated || hasDownloadCount) && (
-          <Group
-            gap={4}
-            align="center"
-            wrap="nowrap"
-          >
+        {meetsVersion && hasDownloadCount && (
+          <Group className="available-plugin-card__activity" gap={4} align="center" wrap="nowrap">
+            {/* Keep the update date available for a future card layout.
             {plugin.last_updated && (
+              <CollapsedTooltip label={`Updated: ${new Date(plugin.last_updated).toLocaleDateString()}`} textSelector=".available-plugin-card__updated-text">
               <Group
                 className="available-plugin-card__updated"
                 gap={4}
                 align="center"
                 wrap="nowrap"
+                tabIndex={0}
+                aria-label={`Updated: ${new Date(plugin.last_updated).toLocaleDateString()}`}
               >
                 <CalendarClock
                   size={12}
                   color="var(--mantine-color-dimmed)"
                 />
-                <Text size="xs" c="dimmed">
+                <Text className="available-plugin-card__updated-text" size="xs" c="dimmed">
                   {new Date(plugin.last_updated).toLocaleDateString()}
                 </Text>
               </Group>
+              </CollapsedTooltip>
             )}
             {hasDownloadCount && plugin.last_updated && (
-              <Text
-                className="available-plugin-card__action-separator"
-                size="xs"
-                c="dimmed"
-              >
-                •
-              </Text>
-            )}
+              <Text className="available-plugin-card__action-separator" size="xs" c="dimmed">•</Text>
+            )} */}
             {hasDownloadCount && (
-              <Group
-                className="available-plugin-card__downloads"
-                gap={3}
-                align="center"
-                wrap="nowrap"
-              >
+              <Group className="available-plugin-card__downloads" gap={3} align="center" wrap="nowrap">
                 <Download size={12} color="var(--mantine-color-dimmed)" />
-                <Text size="xs" c="dimmed">
-                  {plugin.download_count.toLocaleString()}
-                </Text>
+                <Text size="xs" c="dimmed">{plugin.download_count.toLocaleString()}</Text>
               </Group>
             )}
           </Group>
         )}
-        {meetsVersion && !plugin.last_updated && !hasDownloadCount && <span />}
+        {meetsVersion && !hasDownloadCount && <span />}
         <Group gap="xs" wrap="nowrap">
           <Button
             size="xs"
@@ -640,7 +654,7 @@ const AvailablePluginCard = ({
                 />
               </Group>
               <PluginMetadata
-                plugin={{ author: detail?.manifest?.author ?? plugin.author }}
+                plugin={{ ...plugin, author: detail?.manifest?.author ?? plugin.author }}
                 license={detail?.manifest?.license ?? plugin.license}
                 sourceRepoName={plugin.repo_name}
                 trailing={<PluginLinks helpUrl={detail?.manifest?.help_url} compact />}
@@ -855,6 +869,18 @@ const AvailablePluginCard = ({
           </Text>
         }
       />
+      {dataConfirmOpen && <ConfirmationDialog
+        opened={dataConfirmOpen}
+        onClose={() => setDataConfirmOpen(false)}
+        onConfirm={(removeData) => { setDataConfirmOpen(false); handleUninstall(removeData ? 'delete' : 'keep'); }}
+        title="Plugin data found"
+        message="This plugin has saved data. Keep it for a future reinstall, or select the option below to permanently delete it."
+        confirmLabel="Uninstall"
+        showDeleteFileOption
+        deleteFileLabel="Also permanently delete saved plugin data"
+        loading={uninstalling}
+        zIndex={300}
+      />}
 
       {/* Post-uninstall notice */}
       <Modal
@@ -932,6 +958,9 @@ const AvailablePluginCard = ({
                 />
               </Group>
             </>
+          )}
+          {enableError && (
+            <Text size="sm" c="red">Could not enable the plugin. Please try again.</Text>
           )}
           <Group justify="flex-end" gap="xs">
             <Button

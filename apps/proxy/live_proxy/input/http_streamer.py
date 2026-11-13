@@ -30,13 +30,15 @@ class HTTPStreamReader:
         """Start the HTTP stream reader thread"""
         self.pipe_read, self.pipe_write = os.pipe()
 
-        # Make the write end non-blocking so that os.write() raises BlockingIOError
-        # instead of stalling the OS thread when the pipe buffer is full. Without
-        # this, a full pipe blocks the entire gevent worker (all greenlets freeze)
-        # because gevent does not patch os.write() on pipes.
-        import fcntl
-        flags = fcntl.fcntl(self.pipe_write, fcntl.F_GETFL)
-        fcntl.fcntl(self.pipe_write, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        # Both ends must be nonblocking under gevent. os.read/os.write are not
+        # monkey-patched: a blocking call freezes the whole worker. Write-end
+        # backpressure is handled with select in _read_stream. The read end is
+        # consumed by StreamManager.fetch_chunk via select then os.read; without
+        # O_NONBLOCK, a concurrent stop that closes this fd while another channel
+        # reuses the number can make that os.read block forever on an empty pipe
+        # whose writer greenlet can never run.
+        os.set_blocking(self.pipe_write, False)
+        os.set_blocking(self.pipe_read, False)
 
         self.running = True
         self.thread = threading.Thread(target=self._read_stream, daemon=True)

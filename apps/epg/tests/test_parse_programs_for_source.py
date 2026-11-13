@@ -81,6 +81,55 @@ class ParseProgramsForSourceTests(TestCase):
 
     @patch('apps.epg.tasks.log_system_event')
     @patch('apps.epg.tasks.send_epg_update')
+    def test_inserts_programs_for_every_mapped_channel(self, _send_update, _log_event):
+        """Bulk parse keeps programmes for every mapped tvg_id, not only one."""
+        mapped = [self.mapped_epg]
+        programmes = _programme_xml('mapped.channel', 'Show 0', self.start, self.stop)
+        for idx in range(1, 6):
+            epg = EPGData.objects.create(
+                epg_source=self.source,
+                tvg_id=f'mapped.channel.{idx}',
+                name=f'Mapped Channel {idx}',
+            )
+            Channel.objects.create(
+                channel_number=idx + 1,
+                name=f'Mapped Channel {idx}',
+                epg_data=epg,
+            )
+            mapped.append(epg)
+            programmes += _programme_xml(
+                epg.tvg_id, f'Show {idx}', self.start, self.stop
+            )
+        programmes += _programme_xml('unmapped.channel', 'Skipped', self.start, self.stop)
+        self._configure_source_file(programmes)
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        for epg in mapped:
+            self.assertEqual(
+                ProgramData.objects.filter(epg=epg).count(),
+                1,
+                msg=f'expected programmes for {epg.tvg_id}',
+            )
+        self.assertFalse(ProgramData.objects.filter(epg=self.unmapped_epg).exists())
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_strips_programme_channel_attribute_whitespace(self, _send_update, _log_event):
+        """Programme @channel is stripped like channel @id, so padded ids still match."""
+        self._configure_source_file(
+            _programme_xml('  mapped.channel  ', 'Padded Id', self.start, self.stop)
+        )
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        self.assertEqual(ProgramData.objects.filter(epg=self.mapped_epg).count(), 1)
+        self.assertEqual(ProgramData.objects.get(epg=self.mapped_epg).title, 'Padded Id')
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
     def test_replaces_programs_for_mapped_channels(self, _send_update, _log_event):
         """A stale row inside the freshly-parsed window is replaced, not kept alongside it."""
         ProgramData.objects.create(

@@ -15,7 +15,14 @@ from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
 from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from apps.m3u.models import M3UAccountProfile
-from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
+from apps.proxy.vod_proxy.multi_worker_connection_manager import (
+    MultiWorkerVODConnectionManager,
+    RedisBackedVODConnection,
+    SESSION_SETTLE_SECONDS,
+    get_vod_client_stop_key,
+    infer_content_type_from_url,
+    session_user_id,
+)
 from .utils import get_client_info
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
@@ -24,7 +31,7 @@ from apps.accounts.permissions import IsAdmin
 from apps.accounts.xc_auth import authorize_xc_client
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
-from apps.proxy.utils import check_user_stream_limits
+from apps.proxy.utils import check_user_stream_limits, user_limit_evicts_oldest_stream
 from dispatcharr.utils import network_access_allowed
 from core.utils import dispatcharr_user_agent, RedisClient
 
@@ -54,6 +61,26 @@ def _parse_preferred_vod_params(request):
     return preferred_m3u_account_id, preferred_stream_id
 
 
+def _parse_timeshift_params(request):
+    """Return ``(utc_start, utc_end, offset)`` from the query string.
+
+    Several client spellings are accepted for each. All three are empty for an
+    ordinary movie or episode request.
+    """
+    utc_start = request.GET.get('utc_start') or request.GET.get('start') or request.GET.get('playliststart')
+    utc_end = request.GET.get('utc_end') or request.GET.get('end') or request.GET.get('playlistend')
+    offset = request.GET.get('offset') or request.GET.get('seek') or request.GET.get('t')
+
+    # VLC specific timeshift parameters
+    if not utc_start and not offset:
+        if 'timestamp' in request.GET:
+            offset = request.GET.get('timestamp')
+        elif 'time' in request.GET:
+            offset = request.GET.get('time')
+
+    return utc_start, utc_end, offset
+
+
 def _content_type_for_obj(content_obj):
     """Map a resolved content object to the Redis connection content_type string."""
     if isinstance(content_obj, Movie):
@@ -61,23 +88,43 @@ def _content_type_for_obj(content_obj):
     return "episode"
 
 
-def _find_idle_vod_session(
+def _find_resumable_vod_session(
     content_type,
     content_id,
     preferred_m3u_account_id,
     preferred_stream_id,
     client_ip,
     client_user_agent,
+    user,
     utc_start=None,
     utc_end=None,
     offset=None,
+    wait_for_active=False,
 ):
     """
-    Return an idle Redis session_id matching this viewer/content, or None.
+    Return the session_id a request without one should resume, or None.
 
     Used before minting a new session or Redirecting, so a reconnect that
-    omitted session_id can resume an existing proxy pool instead of starting
-    a new provider hop.
+    omitted session_id resumes the viewer's existing proxy session instead of
+    starting a new provider hop. The viewer is matched on content, user, client
+    address, and user agent.
+
+    An idle session is resumed as is, with no wait: it holds no provider slot
+    and no client, so taking it disturbs nobody. When several are idle the most
+    recently active one is taken.
+
+    Only when no idle session matches does ``wait_for_active`` matter. Sessions
+    of the same viewer that still have a stream running then get a moment to
+    close, and the first one that does is resumed. That is what a client that
+    seeks by starting a new connection from the original URL needs. Which
+    running session is the previous connection cannot be known, so all of them
+    are watched. A running session is never joined.
+
+    When the user's limits make a new stream end their oldest one, a lone
+    running session is also told to stop so the wait does not depend on the
+    client. With several running sessions none is told to stop, since one of
+    them may belong to another device and the limits end the oldest stream
+    when the new session starts.
     """
     content_obj, _relation, _candidates = _get_content_and_relation(
         content_type, content_id, preferred_m3u_account_id, preferred_stream_id
@@ -87,17 +134,55 @@ def _find_idle_vod_session(
 
     try:
         manager = MultiWorkerVODConnectionManager.get_instance()
-        return manager.find_matching_idle_session(
+        matches = manager.find_matching_sessions(
             content_type=_content_type_for_obj(content_obj),
             content_uuid=str(content_obj.uuid),
             client_ip=client_ip,
             client_user_agent=client_user_agent,
+            user_id=session_user_id(user),
             utc_start=utc_start,
             utc_end=utc_end,
             offset=offset,
+            include_active=wait_for_active,
         )
+        if not matches:
+            return None
+
+        # Idle first from the scan. Re-check Redis before taking one: another
+        # request may have started a stream on it since the scan.
+        idle = [match.session_id for match in matches if not match.active]
+        running = [match.session_id for match in matches if match.active]
+        still_idle = []
+        for session_id in idle:
+            if RedisBackedVODConnection(
+                session_id, manager.redis_client
+            ).has_active_streams():
+                running.append(session_id)
+            else:
+                still_idle.append(session_id)
+        if still_idle:
+            return still_idle[0]
+
+        # HEAD never waits on a stream that is still running.
+        if not running or not wait_for_active:
+            return None
+
+        logger.info(
+            "[VOD-SESSION] Waiting up to %ss for one of %s to close before resuming it",
+            SESSION_SETTLE_SECONDS,
+            running,
+        )
+        resumed = manager.wait_for_any_session_idle(
+            running,
+            signal_stop=len(running) == 1 and user_limit_evicts_oldest_stream(user),
+        )
+        if resumed is None:
+            logger.info(
+                "[VOD-SESSION] %s still active, not resuming any of them", running
+            )
+        return resumed
     except Exception as e:
-        logger.warning("[VOD-SESSION] Idle session match failed: %s", e)
+        logger.warning("[VOD-SESSION] Session resume failed: %s", e)
         return None
 
 
@@ -155,8 +240,6 @@ def _vod_session_path_redirect(request, session_id, profile_id=None, user=None):
 
     if user:
         try:
-            from core.utils import RedisClient
-
             _r = RedisClient.get_client()
             if _r:
                 _r.set(f"vod_session_user:{session_id}", user.id, ex=300)
@@ -272,11 +355,11 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             if content_obj is None and preferred_stream_id:
                 # UUIDs are regenerated when process_movie_batch
                 # (apps/vod/tasks.py) creates duplicate vod_movie records
-                # during refresh — see #961 / #973. stream_id is stable
-                # (unique per (m3u_account, stream_id)) so it's a safe
-                # fallback for previously-cached external player URLs.
-                # Strictest-match first: prefer the requested account, then
-                # any active account by priority (matches the existing
+                # during refresh. stream_id is stable (unique per
+                # (m3u_account, stream_id)) so it's a safe fallback for
+                # previously-cached external player URLs. Strictest-match
+                # first: prefer the requested account, then any active
+                # account by priority (matches the existing
                 # relation-selection ordering below).
                 rel = None
                 if preferred_m3u_account_id:
@@ -350,7 +433,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
         elif content_type == 'episode':
             content_obj = Episode.objects.filter(uuid=content_id).first()
             if content_obj is None and preferred_stream_id:
-                # Same rationale as the movie branch above — episode UUIDs
+                # Same rationale as the movie branch above: episode UUIDs
                 # are regenerated when process_series_batch creates
                 # duplicate vod_episode records during refresh.
                 rel = None
@@ -526,7 +609,6 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profi
         tuple: (M3UAccountProfile, current_connections) or None if no profile found
     """
     try:
-        from core.utils import RedisClient
         from apps.m3u.connection_pool import (
             get_profile_connection_count,
             pool_has_capacity_for_profile,
@@ -713,19 +795,7 @@ def stream_vod(
     try:
         client_ip, client_user_agent = get_client_info(request)
 
-        # Extract timeshift parameters from query string
-        # Support multiple timeshift parameter formats
-        utc_start = request.GET.get('utc_start') or request.GET.get('start') or request.GET.get('playliststart')
-        utc_end = request.GET.get('utc_end') or request.GET.get('end') or request.GET.get('playlistend')
-        offset = request.GET.get('offset') or request.GET.get('seek') or request.GET.get('t')
-
-        # VLC specific timeshift parameters
-        if not utc_start and not offset:
-            # Check for VLC-style timestamp parameters
-            if 'timestamp' in request.GET:
-                offset = request.GET.get('timestamp')
-            elif 'time' in request.GET:
-                offset = request.GET.get('time')
+        utc_start, utc_end, offset = _parse_timeshift_params(request)
 
         # Session ID now comes from URL path parameter
         # Remove legacy query parameter extraction since we're using path-based routing
@@ -755,7 +825,7 @@ def stream_vod(
                             if int(start_byte) > 0:
                                 logger.info(f"[VOD-SEEK] *** ACTUAL SEEK DETECTED *** Position: {start_pos_mb:.1f} MB")
                         else:
-                            logger.info(f"[VOD-SEEK] Open-en`ded range request (from start)")
+                            logger.info("[VOD-SEEK] Open-ended range request (from start)")
                         if end_byte:
                             end_pos_mb = int(end_byte) / (1024 * 1024)
                             logger.info(f"[VOD-SEEK] End position: {end_byte} bytes (~{end_pos_mb:.1f} MB)")
@@ -783,38 +853,37 @@ def stream_vod(
             request
         )
 
-        # First request (no session_id): decide Redirect vs mint. The idle
-        # fingerprint match (ip/user-agent/content, same as the connection
-        # manager already uses for reconnects) only needs checking when
-        # Redirect is the active default; proxy-mode installs mint exactly
-        # as before, with no extra Redis lookup on this path.
+        # First request (no session_id): resume the viewer's own session when
+        # there is one, otherwise decide Redirect vs mint. A reconnect, or a
+        # seek made by starting a new connection from the original URL, should
+        # keep using the session it belongs to rather than hopping to the
+        # provider or minting a second session that would need a second
+        # provider slot. Resuming redirects the client to that session's own
+        # URL, so later Range/seek requests keep targeting the right session.
         if not session_id:
-            if CoreSettings.is_default_stream_profile_redirect():
-                # A reconnect/retry for content we're already proxying should
-                # keep using that session rather than hopping to the provider,
-                # so an idle match wins over Redirect and adopts that session
-                # directly (redirecting the client to its own URL, so later
-                # Range/seek requests keep targeting the right session).
-                matched_session_id = _find_idle_vod_session(
-                    content_type,
-                    content_id,
-                    preferred_m3u_account_id,
-                    preferred_stream_id,
-                    client_ip,
-                    client_user_agent,
-                    utc_start=utc_start,
-                    utc_end=utc_end,
-                    offset=offset,
+            resumed_session_id = _find_resumable_vod_session(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                client_ip,
+                client_user_agent,
+                user,
+                utc_start=utc_start,
+                utc_end=utc_end,
+                offset=offset,
+                wait_for_active=True,
+            )
+            if resumed_session_id:
+                logger.info(
+                    "[VOD-SESSION] Resuming session %s (skip Redirect/mint)",
+                    resumed_session_id,
                 )
-                if matched_session_id:
-                    logger.info(
-                        "[VOD-SESSION] Adopting idle session %s (skip Redirect/mint)",
-                        matched_session_id,
-                    )
-                    return _vod_session_path_redirect(
-                        request, matched_session_id, profile_id=profile_id, user=user
-                    )
+                return _vod_session_path_redirect(
+                    request, resumed_session_id, profile_id=profile_id, user=user
+                )
 
+            if CoreSettings.is_default_stream_profile_redirect():
                 # 301 to provider (no session mint, no slot hold, no probe).
                 # Capacity still gates provider selection.
                 from apps.m3u.utils import get_allowed_m3u_profiles
@@ -852,7 +921,6 @@ def stream_vod(
         # Only needed on the first streaming request - skip if connection already exists.
         if user is None:
             try:
-                from core.utils import RedisClient
                 _r = RedisClient.get_client()
                 if _r and not _r.exists(f"vod_persistent_connection:{session_id}"):
                     stored_uid = _r.get(f"vod_session_user:{session_id}")
@@ -956,44 +1024,51 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             request
         )
 
-        # Same as GET: only check for a resumable idle session when Redirect
-        # is actually in play. A match adopts that session directly (no
-        # provider hop, no new session minted); no match falls through to
-        # the Redirect-to-provider path.
+        utc_start, utc_end, offset = _parse_timeshift_params(request)
+
+        # Like GET, a bare URL looks for the viewer's own idle session first so
+        # FUSE's HEAD then GET stay on the same id. A HEAD holds no stream, so
+        # it never waits on a running one. With Redirect and no match, hop to
+        # the provider; otherwise mint a session for the metadata response.
         if not session_id:
-            matched_session_id = None
-            if CoreSettings.is_default_stream_profile_redirect():
-                matched_session_id = _find_idle_vod_session(
+            matched_session_id = _find_resumable_vod_session(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                client_ip,
+                client_user_agent,
+                user,
+                utc_start=utc_start,
+                utc_end=utc_end,
+                offset=offset,
+            )
+            if (
+                not matched_session_id
+                and CoreSettings.is_default_stream_profile_redirect()
+            ):
+                from apps.m3u.utils import get_allowed_m3u_profiles
+
+                selected = _select_vod_stream(
                     content_type,
                     content_id,
                     preferred_m3u_account_id,
                     preferred_stream_id,
-                    client_ip,
-                    client_user_agent,
+                    profile_id,
+                    allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                 )
-                if not matched_session_id:
-                    from apps.m3u.utils import get_allowed_m3u_profiles
-
-                    selected = _select_vod_stream(
+                if not selected:
+                    logger.error(
+                        "[VOD-HEAD] No provider URL for redirect %s %s",
                         content_type,
                         content_id,
-                        preferred_m3u_account_id,
-                        preferred_stream_id,
-                        profile_id,
-                        allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                     )
-                    if not selected:
-                        logger.error(
-                            "[VOD-HEAD] No provider URL for redirect %s %s",
-                            content_type,
-                            content_id,
-                        )
-                        return HttpResponse("No available stream", status=503)
-                    logger.info(
-                        "[VOD-HEAD] Redirecting to provider URL: %s",
-                        selected["final_stream_url"],
-                    )
-                    return HttpResponseRedirect(selected["final_stream_url"])
+                    return HttpResponse("No available stream", status=503)
+                logger.info(
+                    "[VOD-HEAD] Redirecting to provider URL: %s",
+                    selected["final_stream_url"],
+                )
+                return HttpResponseRedirect(selected["final_stream_url"])
 
             path_parts = request.path.rstrip('/').split('/')
             if matched_session_id:
@@ -1075,24 +1150,15 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
 
         # Store the total content length in Redis for the persistent connection to use
         try:
-            r = RedisClient().get_client()
+            r = RedisClient.get_client()
             content_length_key = f"vod_content_length:{session_id}"
             r.set(content_length_key, total_size, ex=1800)  # Store for 30 minutes
             logger.info(f"[VOD-HEAD] Stored total content length {total_size} for session {session_id}")
         except Exception as e:
             logger.error(f"[VOD-HEAD] Failed to store content length in Redis: {e}")
 
-        # Now create a persistent connection for the session (if one doesn't exist)
-        # This ensures the FUSE GET requests will reuse the same connection
-
-        connection_manager = MultiWorkerVODConnectionManager.get_instance()
-
-        logger.info(f"[VOD-HEAD] Pre-creating persistent connection for session: {session_id}")
-
-        # We don't actually stream content here, just ensure connection is ready
-        # The actual GET requests from FUSE will use the persistent connection
-
-        # Use the total_size we extracted from the range response
+        # HEAD only reports length and the session URL. The first GET creates
+        # the persistent connection.
         provider_content_type = response.headers.get('Content-Type')
 
         if provider_content_type:

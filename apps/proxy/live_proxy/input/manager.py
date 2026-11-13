@@ -32,6 +32,9 @@ class StreamManager:
 
     # Distinct from a missing stream id (None), which can still time out once.
     _NO_BUFFERING_TIMEOUT_ERROR = object()
+    # VLC has no end-of-probe marker. Buffer its stream info and write the DB
+    # once stderr has been quiet this long, and again when the reader exits.
+    _VLC_DB_FLUSH_DELAY = 1.5
 
     def __init__(
         self,
@@ -161,6 +164,15 @@ class StreamManager:
         # Add stderr reader thread property
         self.stderr_reader_thread = None
         self.ffmpeg_input_phase = True  # Track if we're still reading input info
+        # Fields parsed during the current FFmpeg input probe, written to the DB
+        # once. Reset for every new process by _begin_probe().
+        self._probe_db_stats = {}
+        self._probe_stats_flushed = False
+        self._probe_stream_id = None
+        # True only between a VLC audio ES pid line and its language line.
+        self._vlc_audio_lang_pending = False
+        self._probe_generation = 0
+        self._vlc_db_flush_timer = None
 
         # Add HTTP reader thread property
         self.http_reader = None
@@ -865,8 +877,12 @@ class StreamManager:
             import time as _time
 
             relay_read, relay_write = _os.pipe()
-            self.socket = _os.fdopen(relay_read, 'rb', buffering=0)
             stderr_read, stderr_write = _os.pipe()
+            # Parent read ends are nonblocking so fetch_chunk / stderr select+read
+            # cannot freeze the gevent hub if an fd is closed and reused mid-wait.
+            _os.set_blocking(relay_read, False)
+            _os.set_blocking(stderr_read, False)
+            self.socket = _os.fdopen(relay_read, 'rb', buffering=0)
             _stderr_read_transferred = False
             try:
                 _t0 = _time.monotonic()
@@ -964,7 +980,8 @@ class StreamManager:
                 _os.close(relay_write)
                 _os.close(stderr_write)
 
-            # Start a thread to read stderr
+            # Reset probe state for this process, then start the stderr reader
+            self._begin_probe()
             self._start_stderr_reader()
 
             # Set flag that transcoding process is active
@@ -1017,7 +1034,16 @@ class StreamManager:
                             break
                         continue
 
-                    chunk = _os.read(stderr_fd, 4096)
+                    # _close_socket closes this file object while we wait. The
+                    # cached fd number may already belong to another channel's
+                    # pipe, and reading it would take that channel's bytes.
+                    if stderr.closed:
+                        break
+
+                    try:
+                        chunk = _os.read(stderr_fd, 4096)
+                    except BlockingIOError:
+                        continue
                     if not chunk:
                         break
 
@@ -1070,7 +1096,127 @@ class StreamManager:
             except:
                 pass
         finally:
+            try:
+                # Skip if a newer reader owns the probe state (the old thread
+                # outlived the join timeout), or it would flush the new probe.
+                if threading.current_thread() is self.stderr_reader_thread:
+                    self._cancel_vlc_db_flush()
+                    if self.parser_type == "vlc":
+                        # VLC never prints Output #, so the reader exit is the
+                        # last chance to persist what the idle timer has not.
+                        self._write_probe_stats()
+                    elif self.ffmpeg_input_phase:
+                        # FFmpeg probe ended before Output #.
+                        self._flush_probe_stats()
+            except Exception:
+                logger.debug(
+                    f"Error flushing probe stats for channel {self.channel_id}",
+                    exc_info=True,
+                )
             close_old_connections()
+
+    def _begin_probe(self):
+        """Reset per-process probe state. Call once for every new process.
+
+        A stream switch or reconnect reuses this manager, so probe state must
+        not carry over: a stale flushed flag would skip the next flush, and
+        stale fields or Redis audio would be attributed to the new stream.
+        """
+        from ..services.channel_service import ChannelService
+
+        self._cancel_vlc_db_flush()
+        self._probe_generation += 1
+        self._probe_db_stats = {}
+        self._probe_stats_flushed = False
+        # Bind the probe to the stream it started on; current_stream_id may
+        # already point at a different stream when a late flush runs.
+        self._probe_stream_id = self.current_stream_id
+        self._vlc_audio_lang_pending = False
+        ChannelService.reset_audio_streams(self.channel_id)
+
+    def _remember_probe_fields(self, parsed_fields):
+        """Fold one parsed line into the stats waiting for a DB flush."""
+        if not parsed_fields:
+            return
+        from ..services.channel_service import ChannelService
+
+        if "audio_streams" in parsed_fields:
+            # Each audio line rewrites the summary from the current best
+            # track. Drop what an earlier line left so a field the new best
+            # track lacks (a language, say) does not outlive its track.
+            for key in ChannelService.AUDIO_SUMMARY_FIELDS:
+                self._probe_db_stats.pop(key, None)
+        self._probe_db_stats.update(parsed_fields)
+
+    def _write_probe_stats(self):
+        """Write the buffered probe fields. Safe to call more than once."""
+        stats = dict(self._probe_db_stats)
+        stream_id = self._probe_stream_id
+        if not stats or not stream_id:
+            return
+        from ..services.channel_service import ChannelService
+        ChannelService.flush_probe_stats(stream_id, stats)
+
+    def _flush_probe_stats(self):
+        """Write this FFmpeg probe's fields to the DB at most once."""
+        if self._probe_stats_flushed:
+            return
+        self._probe_stats_flushed = True
+        self._write_probe_stats()
+
+    def _cancel_vlc_db_flush(self):
+        timer = self._vlc_db_flush_timer
+        if timer is not None:
+            timer.cancel()
+            self._vlc_db_flush_timer = None
+
+    def _schedule_vlc_db_flush(self):
+        """Write VLC probe stats once stderr goes quiet.
+
+        VLC has no end-of-probe marker and logs the video size only after the
+        first decoded frame, which can be seconds after the PMT lines. So the
+        write is repeatable: a late line schedules another one.
+        """
+        self._cancel_vlc_db_flush()
+        generation = self._probe_generation
+        timer = threading.Timer(
+            self._VLC_DB_FLUSH_DELAY,
+            self._flush_vlc_probe_stats,
+            args=(generation,),
+        )
+        timer.daemon = True
+        self._vlc_db_flush_timer = timer
+        timer.start()
+
+    def _flush_vlc_probe_stats(self, generation):
+        """Idle-timer callback. A newer probe owns the buffer, so skip it."""
+        if generation != self._probe_generation:
+            return
+        try:
+            self._write_probe_stats()
+        except Exception:
+            logger.debug(
+                f"Error flushing VLC probe stats for channel {self.channel_id}",
+                exc_info=True,
+            )
+        finally:
+            close_old_connections()
+
+    def _vlc_language_accepted(self, content_lower, stream_type):
+        """True when this line is the `found language` of an audio ES.
+
+        VLC's TS demux logs an ISO-639 language for every elementary stream
+        (audio, subtitle, video) on the line after that ES's PMT line
+        (`* pid=N type=0x..`). Only the language that follows an audio ES
+        belongs to an audio track, so each PMT line opens or closes the window.
+        """
+        if "found language:" in content_lower:
+            accepted = self._vlc_audio_lang_pending
+            self._vlc_audio_lang_pending = False
+            return accepted
+        if "ts demux" in content_lower and "type=" in content_lower and "pid=" in content_lower:
+            self._vlc_audio_lang_pending = stream_type == "vlc_audio"
+        return False
 
     def _log_stderr_content(self, content):
         """Log stderr content from FFmpeg with appropriate log levels"""
@@ -1081,18 +1227,32 @@ class StreamManager:
 
             # Convert to lowercase for easier matching
             content_lower = content.lower()
-            # Check if we are still in the input phase
-            if content_lower.startswith('input #') or 'decoder' in content_lower:
+            # A new Input # starts (or restarts) the probe. Do not reopen it
+            # just because a later line mentions "decoder": that word shows up
+            # in output-side errors and would let output Audio lines overwrite
+            # the probed codec (for example ac3 -> pcm_s16le).
+            if content_lower.startswith('input #'):
                 self.ffmpeg_input_phase = True
-            # Track FFmpeg phases - once we see output info, we're past input phase
+            # Track FFmpeg phases - once we see output info, we're past input phase.
+            # Flush probed codec stats to DB once here instead of on every line.
+            leaving_input_phase = False
             if content_lower.startswith('output #') or 'encoder' in content_lower:
+                # Only Output # means the input probe is complete. Other
+                # "encoder" lines just stop us from parsing output streams.
+                leaving_input_phase = (
+                    self.ffmpeg_input_phase and content_lower.startswith('output #')
+                )
                 self.ffmpeg_input_phase = False
 
             # Route to appropriate parser based on known command type
             from ..services.log_parsers import LogParserFactory
             from ..services.channel_service import ChannelService
 
+            if leaving_input_phase:
+                self._flush_probe_stats()
+
             parse_result = None
+            stream_type = None
 
             # If we know the parser type, use direct routing for efficiency
             if self.parser_type:
@@ -1114,16 +1274,57 @@ class StreamManager:
             else:
                 # Unknown command type - use auto-detection as fallback
                 parse_result = LogParserFactory.auto_parse(content)
+                if parse_result:
+                    stream_type = parse_result[0]
+
+            accept_language = self._vlc_language_accepted(content_lower, stream_type)
+            if parse_result and "found language:" in content_lower and not accept_language:
+                # A subtitle or video language. Nothing to store, and skipping
+                # it avoids a pointless Redis and DB write.
+                parse_result = None
 
             if parse_result:
                 stream_type, parsed_data = parse_result
-                # For FFmpeg, only parse during input phase
-                if stream_type in ['video', 'audio', 'input']:
+                # For FFmpeg, only parse during input phase. Probe lines update
+                # Redis immediately; DB is flushed when input phase ends above.
+                if stream_type in ('video', 'audio', 'input'):
+                    # FFmpeg: Redis now, one DB write when the input probe
+                    # ends. Lines after that are output-side and ignored.
                     if self.ffmpeg_input_phase:
-                        ChannelService.parse_and_store_stream_info(self.channel_id, content, stream_type, self.current_stream_id)
+                        parsed_fields = ChannelService.parse_and_store_stream_info(
+                            self.channel_id,
+                            content,
+                            stream_type,
+                            self.current_stream_id,
+                            parsed_data=parsed_data,
+                            persist_db=False,
+                            accept_language=accept_language,
+                        )
+                        self._remember_probe_fields(parsed_fields)
+                elif self.parser_type == 'vlc' and stream_type in ('vlc_audio', 'vlc_video'):
+                    # Buffer probe lines and write once the log goes quiet.
+                    parsed_fields = ChannelService.parse_and_store_stream_info(
+                        self.channel_id,
+                        content,
+                        stream_type,
+                        self.current_stream_id,
+                        parsed_data=parsed_data,
+                        persist_db=False,
+                        accept_language=accept_language,
+                    )
+                    self._remember_probe_fields(parsed_fields)
+                    self._schedule_vlc_db_flush()
                 else:
-                    # VLC and Streamlink can be parsed anytime
-                    ChannelService.parse_and_store_stream_info(self.channel_id, content, stream_type, self.current_stream_id)
+                    # Streamlink reports a stream once, so write it now.
+                    ChannelService.parse_and_store_stream_info(
+                        self.channel_id,
+                        content,
+                        stream_type,
+                        self.current_stream_id,
+                        parsed_data=parsed_data,
+                        persist_db=True,
+                        accept_language=accept_language,
+                    )
 
             # Determine log level based on content
             if any(keyword in content_lower for keyword in ['error', 'failed', 'cannot', 'invalid', 'corrupt']):
@@ -2049,11 +2250,18 @@ class StreamManager:
                 else:
                     # Non-socket file object (io.FileIO from os.fdopen) - use raw
                     # fd + os.read to stay cooperative under gevent.
+                    #
+                    # Critical: capture the FileIO identity before select yields.
+                    # A concurrent stop can close this fd while another channel in
+                    # the same worker gets the same number from os.pipe(). Reading
+                    # without re-checking would either steal that channel's bytes
+                    # or (on a blocking fd) hang the whole worker forever.
                     import select as _select
                     import os as _os
 
+                    sock = self.socket
                     try:
-                        fd = self.socket.fileno()
+                        fd = sock.fileno()
                     except (ValueError, OSError):
                         self.connected = False
                         return False
@@ -2064,17 +2272,21 @@ class StreamManager:
                         self.connected = False
                         return False
 
+                    # Stop closed or replaced the FileIO while we waited. The
+                    # fd number may already belong to another channel's pipe.
+                    if self.socket is not sock or sock.closed:
+                        return False
+
                     if not ready:
                         logger.debug(f"Chunk read timeout ({chunk_timeout}s) for channel {self.channel_id}")
                         return False
 
                     try:
                         chunk = _os.read(fd, Config.CHUNK_SIZE)
+                    except BlockingIOError:
+                        # Nonblocking pipe, select was stale or raced with a drain.
+                        return False
                     except OSError as e:
-                        import errno as _errno
-                        if e.errno == _errno.EAGAIN and (self.stop_requested or not self.running):
-                            self.connected = False
-                            return False
                         logger.warning(f"Read error for channel {self.channel_id}: {e}")
                         self.connected = False
                         return False
