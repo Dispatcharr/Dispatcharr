@@ -164,6 +164,7 @@ describe('SettingsUtils', () => {
       expect(result.max_system_events).toBe(200);
       expect(result.preferred_region).toBe('US');
       expect(result.log_persist).toBe(true);
+      expect(result.log_redact).toBe(true);
       expect(result.catchup_enabled).toBe(true);
     });
 

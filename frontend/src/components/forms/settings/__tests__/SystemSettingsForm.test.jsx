@@ -124,6 +124,7 @@ const setupMocks = ({
     log_max_mb: 5,
     log_keep: 5,
     log_persist: true,
+    log_redact: true,
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -250,6 +251,12 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
+    it('renders the Redact Credentials in Logs switch', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByTestId('log_redact')).toBeInTheDocument();
+    });
+
 
 
 
@@ -334,6 +341,7 @@ describe('SystemSettingsForm', () => {
         log_max_mb: 5,
         log_keep: 5,
         log_persist: true,
+        log_redact: true,
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
