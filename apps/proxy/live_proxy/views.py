@@ -461,7 +461,7 @@ def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_pr
             logger.warning(f"[{client_id}] Failed to release stream before redirect")
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def stream_ts(
     request, channel_id, user=None, force_output_format=None, *, check_network=True
@@ -492,6 +492,22 @@ def stream_ts(
 
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
+
+        # Media servers (e.g. Jellyfin's M3U tuner) probe extensionless URLs with
+        # HEAD to learn the container. Answer without starting a stream.
+        if request.method == "HEAD":
+            content_type = "application/octet-stream"
+            if not channel.get_stream_profile().is_redirect():
+                content_type = {
+                    "mpegts": "video/mp2t",
+                    "fmp4": "video/mp4",
+                }.get(
+                    _resolve_output_format(user, force_output_format, request),
+                    content_type,
+                )
+            response = HttpResponse(content_type=content_type)
+            response["Cache-Control"] = "no-cache"
+            return response
 
         # Generate a unique client ID
         client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
