@@ -16,6 +16,7 @@ from django.http import StreamingHttpResponse, HttpResponse
 from core.utils import RedisClient
 from apps.vod.models import Movie, Episode
 from apps.m3u.models import M3UAccountProfile
+from apps.m3u.utils import build_requests_proxies, get_account_effective_proxy
 from apps.proxy.vod_proxy.utils import UNKNOWN_CLIENT
 
 logger = logging.getLogger("vod_proxy")
@@ -268,7 +269,8 @@ class SerializableConnectionState:
                  content_name: str = None, client_ip: str = None,
                  client_user_agent: str = None, utc_start: str = None,
                  utc_end: str = None, offset: str = None,
-                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = ANONYMOUS_USER_ID):
+                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = ANONYMOUS_USER_ID,
+                 proxy: str = None):
         self.session_id = session_id
         self.stream_url = stream_url
         self.headers = headers
@@ -276,6 +278,7 @@ class SerializableConnectionState:
         self.content_type = content_type
         self.final_url = final_url
         self.m3u_profile_id = m3u_profile_id  # Store M3U profile ID for connection counting
+        self.proxy = proxy or None
         self.last_activity = time.time()
         self.request_count = 0
         self.active_streams = 0
@@ -314,6 +317,7 @@ class SerializableConnectionState:
             'content_type': self.content_type or '',
             'final_url': self.final_url or '',
             'm3u_profile_id': str(self.m3u_profile_id) if self.m3u_profile_id is not None else '',
+            'proxy': self.proxy or '',
             'last_activity': str(self.last_activity),
             'request_count': str(self.request_count),
             'active_streams': str(self.active_streams),
@@ -351,6 +355,7 @@ class SerializableConnectionState:
             content_type=data.get('content_type') or None,
             final_url=data.get('final_url') if data.get('final_url') else None,
             m3u_profile_id=int(data.get('m3u_profile_id')) if data.get('m3u_profile_id') else None,
+            proxy=data.get('proxy') if data.get('proxy') else None,
             # Session metadata
             content_obj_type=data.get('content_obj_type') or None,
             content_uuid=data.get('content_uuid') or None,
@@ -532,7 +537,7 @@ class RedisBackedVODConnection:
                          content_name: str = None, client_ip: str = None,
                          client_user_agent: str = None, utc_start: str = None,
                          utc_end: str = None, offset: str = None,
-                         worker_id: str = None, user=None):
+                         worker_id: str = None, user=None, proxy: str = None):
         """Create Redis connection state.
 
         Returns ``"created"`` (hash written with active_streams=1),
@@ -562,6 +567,7 @@ class RedisBackedVODConnection:
                 stream_url=stream_url,
                 headers=headers,
                 m3u_profile_id=m3u_profile_id,
+                proxy=proxy,
                 # Session metadata
                 content_obj_type=content_obj_type,
                 content_uuid=content_uuid,
@@ -606,6 +612,21 @@ class RedisBackedVODConnection:
             # Create local session if needed
             if not self.local_session:
                 self.local_session = requests.Session()
+            proxy = getattr(state, "proxy", None)
+            if not proxy and state.m3u_profile_id:
+                try:
+                    profile = (
+                        M3UAccountProfile.objects.select_related("m3u_account")
+                        .filter(id=state.m3u_profile_id)
+                        .first()
+                    )
+                    if profile and profile.m3u_account:
+                        proxy = get_account_effective_proxy(profile.m3u_account)
+                except Exception:
+                    proxy = None
+            proxies = build_requests_proxies(proxy)
+            if proxies:
+                self.local_session.proxies.update(proxies)
 
             # Prepare headers
             headers = state.headers.copy()
@@ -1379,6 +1400,9 @@ class MultiWorkerVODConnectionManager:
                         headers[header_name] = request.META[django_header]
 
                 # Create connection state in Redis with consolidated session metadata.
+                account_proxy = get_account_effective_proxy(
+                    getattr(m3u_profile, "m3u_account", None)
+                )
                 create_result = redis_connection.create_connection(
                     stream_url=modified_stream_url,
                     headers=headers,
@@ -1393,7 +1417,8 @@ class MultiWorkerVODConnectionManager:
                     utc_end=utc_end,
                     offset=str(offset) if offset else None,
                     worker_id=self.worker_id,
-                    user=user
+                    user=user,
+                    **({"proxy": account_proxy} if account_proxy else {}),
                 )
                 if create_result is False:
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection")

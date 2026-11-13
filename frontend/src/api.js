@@ -43,14 +43,14 @@ const hasChannelGroupChange = (update) =>
     'channel_group_id'
   );
 
-// FormData cannot encode null. Empty string clears hash_key so the account
-// inherits the global M3U Hash Key (same as JSON body sending null).
+// FormData cannot encode null. Empty string clears hash_key / proxy so the account
+// inherits the global default (same as JSON body sending null).
 const appendPlaylistFormData = (body, values) => {
   for (const prop in values) {
     const value = values[prop];
     if (value === undefined) continue;
     if (value === null) {
-      if (prop === 'hash_key') {
+      if (prop === 'hash_key' || prop === 'proxy') {
         body.append(prop, '');
       }
       continue;

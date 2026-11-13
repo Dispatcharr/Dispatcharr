@@ -11,7 +11,14 @@ import {
   saveGroupSettings,
 } from '../../../utils/pages/SettingsUtils.js';
 import useSettingsSaveGuard from '../../../hooks/useSettingsSaveGuard.jsx';
-import { Alert, Button, Flex, MultiSelect, Select } from '@mantine/core';
+import {
+  Alert,
+  Button,
+  Flex,
+  MultiSelect,
+  Select,
+  TextInput,
+} from '@mantine/core';
 import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import { useForm } from '@mantine/form';
 import {
@@ -232,6 +239,15 @@ const StreamSettingsForm = React.memo(({ active }) => {
           description="Fields used to generate a stable identifier for each stream. Changing this requires rehashing all streams."
           data={M3U_HASH_KEY_OPTIONS}
           {...form.getInputProps('m3u_hash_key')}
+        />
+
+        <TextInput
+          id="default_proxy"
+          name="default_proxy"
+          label="Default Proxy"
+          placeholder="e.g. http://user:pass@proxy.example.com:8080 or socks5h://127.0.0.1:1080"
+          description="Global proxy URL used by default for M3U accounts (leave empty for direct connection). Individual M3U accounts can override this."
+          {...form.getInputProps('default_proxy')}
         />
 
         {rehashSuccess && (

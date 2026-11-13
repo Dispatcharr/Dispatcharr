@@ -348,6 +348,13 @@ describe('EPG', () => {
       expect(screen.getByTestId('number-priority')).toBeInTheDocument();
     });
 
+    it('renders the Proxy Override input', () => {
+      render(<EPG {...defaultProps()} />);
+      const proxyInput = screen.getByTestId('input-proxy-override');
+      expect(proxyInput).toBeInTheDocument();
+      expect(proxyInput).toHaveAttribute('placeholder', 'Use global default');
+    });
+
     it('renders the ScheduleInput component', () => {
       render(<EPG {...defaultProps()} />);
       expect(screen.getByTestId('schedule-input')).toBeInTheDocument();

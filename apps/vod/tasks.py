@@ -5,7 +5,7 @@ from django.db.models import F, OuterRef, Q, Subquery, TextField, Value
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Coalesce, Lower
 from apps.m3u.models import M3UAccount
-from apps.m3u.utils import parse_is_adult
+from apps.m3u.utils import get_account_effective_proxy, parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
 from core.utils import truncate_with_warning
 from .models import (
@@ -113,11 +113,13 @@ def refresh_vod_content(account_id):
         # Send start notification
         send_m3u_update(account_id, "vod_refresh", 0, status="processing")
 
+        proxy = get_account_effective_proxy(account)
         with XtreamCodesClient(
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent_string()
+            account.get_user_agent_string(),
+            **({"proxy": proxy} if proxy else {}),
         ) as client:
 
             category_maps = refresh_categories(account.id, client)
@@ -186,11 +188,13 @@ def refresh_categories(account_id, client=None):
     account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
 
     if not client:
+        proxy = get_account_effective_proxy(account)
         client = XtreamCodesClient(
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent_string()
+            account.get_user_agent_string(),
+            **({"proxy": proxy} if proxy else {}),
         )
     logger.info(f"Refreshing movie categories for account {account.name}")
 
@@ -1442,11 +1446,13 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
         if not episodes_data:
             has_details = False
             # Fetch detailed series info including episodes
+            proxy = get_account_effective_proxy(account)
             with XtreamCodesClient(
                 account.server_url,
                 account.username,
                 account.password,
-                account.get_user_agent_string()
+                account.get_user_agent_string(),
+                **({"proxy": proxy} if proxy else {}),
             ) as client:
                 series_info = client.get_series_info(external_series_id)
                 if isinstance(series_info, dict):
@@ -3359,11 +3365,13 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
 
         from core.xtream_codes import Client as XtreamCodesClient
 
+        proxy = get_account_effective_proxy(account)
         with XtreamCodesClient(
             server_url=account.server_url,
             username=account.username,
             password=account.password,
-            user_agent=account.get_user_agent_string()
+            user_agent=account.get_user_agent_string(),
+            **({"proxy": proxy} if proxy else {}),
         ) as client:
             vod_info = client.get_vod_info(relation.stream_id)
             if vod_info and 'info' in vod_info:

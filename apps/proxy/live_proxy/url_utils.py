@@ -9,6 +9,7 @@ from django.db import close_old_connections
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
+from apps.m3u.utils import build_requests_proxies, get_account_effective_proxy
 from apps.m3u.connection_pool import (
     get_profile_connection_count,
     pool_has_capacity_for_profile,
@@ -498,6 +499,7 @@ def get_stream_info_for_switch(
 
         m3u_account = m3u_profile.m3u_account
         user_agent = m3u_account.get_user_agent_string()
+        proxy = get_account_effective_proxy(m3u_account)
 
         stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
         if not stream_url:
@@ -517,6 +519,7 @@ def get_stream_info_for_switch(
         return {
             'url': stream_url,
             'user_agent': user_agent,
+            'proxy': proxy,
             'transcode': transcode,
             'stream_profile': profile_value,
             'stream_id': stream_id,
@@ -698,7 +701,34 @@ def get_alternate_streams(
     finally:
         close_old_connections()
 
-def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
+def get_proxy_for_stream(
+    stream_id: Optional[int] = None,
+    m3u_profile_id: Optional[int] = None,
+) -> Optional[str]:
+    """Resolve the effective proxy URL string for a stream or M3U profile, or None."""
+    try:
+        if m3u_profile_id:
+            profile = (
+                M3UAccountProfile.objects.select_related("m3u_account")
+                .filter(id=m3u_profile_id)
+                .first()
+            )
+            if profile and profile.m3u_account:
+                return get_account_effective_proxy(profile.m3u_account)
+        if stream_id:
+            stream = (
+                Stream.objects.select_related("m3u_account")
+                .filter(id=stream_id)
+                .first()
+            )
+            if stream and stream.m3u_account:
+                return get_account_effective_proxy(stream.m3u_account)
+    except Exception:
+        return None
+    return None
+
+
+def validate_stream_url(url, user_agent=None, timeout=(5, 5), proxy=None):
     """
     Validate if a stream URL is accessible without downloading the full content.
 
@@ -709,6 +739,7 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         url (str): The URL to validate
         user_agent (str): User agent to use for the request
         timeout (tuple): Connection and read timeout in seconds
+        proxy (str, optional): Proxy URL to route the validation request through
 
     Returns:
         tuple: (is_valid, url, status_code, message). ``url`` is the
@@ -729,6 +760,9 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
             'Connection': 'close'  # Don't keep connection alive
         }
         session.headers.update(headers)
+        proxies = build_requests_proxies(proxy)
+        if proxies:
+            session.proxies.update(proxies)
 
         # Make HEAD request first as it's faster and doesn't download content
         head_request_success = True
