@@ -48,6 +48,8 @@ const STATUS_OPTIONS = [
   { value: 'interrupted', label: 'Interrupted' },
 ];
 
+const RECORDING_GRID_COLS = { base: 1, '36rem': 2, '62rem': 3 };
+
 const RecordingList = ({
   list,
   onOpenDetails,
@@ -325,7 +327,7 @@ const DVRPage = () => {
           </Group>
           <SimpleGrid
             type="container"
-            cols={{ base: 1, '36rem': 2, '62rem': 3, '88rem': 4, '112rem': 5 }}
+            cols={RECORDING_GRID_COLS}
             spacing="md"
           >
             {
@@ -358,7 +360,7 @@ const DVRPage = () => {
           </Group>
           <SimpleGrid
             type="container"
-            cols={{ base: 1, '36rem': 2, '62rem': 3, '88rem': 4, '112rem': 5 }}
+            cols={RECORDING_GRID_COLS}
             spacing="md"
           >
             {
@@ -391,7 +393,7 @@ const DVRPage = () => {
           </Group>
           <SimpleGrid
             type="container"
-            cols={{ base: 1, '36rem': 2, '62rem': 3, '88rem': 4, '112rem': 5 }}
+            cols={RECORDING_GRID_COLS}
             spacing="md"
           >
             {
