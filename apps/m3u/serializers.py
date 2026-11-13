@@ -155,6 +155,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         required=False, allow_null=True, allow_blank=True, write_only=True
     )
     cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
+    vod_cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate_hash_key(self, value):
         """Normalize and reject unknown hash key fields.
@@ -195,6 +196,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "channel_groups",
             "refresh_interval",
             "cron_expression",
+            "vod_refresh_interval",
+            "vod_cron_expression",
+            "vod_refresh_after_live",
             "custom_properties",
             "account_type",
             "username",
@@ -268,6 +272,21 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
         data["cron_expression"] = cron_expr
 
+        vod_cron_expr = ""
+        if hasattr(instance, "_vod_cron_expression"):
+            vod_cron_expr = instance._vod_cron_expression
+        elif (
+            instance.vod_refresh_task_id
+            and instance.vod_refresh_task
+            and instance.vod_refresh_task.crontab
+        ):
+            ct = instance.vod_refresh_task.crontab
+            vod_cron_expr = (
+                f"{ct.minute} {ct.hour} {ct.day_of_month} "
+                f"{ct.month_of_year} {ct.day_of_week}"
+            )
+        data["vod_cron_expression"] = vod_cron_expr
+
         # Surface default profile's exp_date for the form.
         # Use prefetch cache (obj.profiles.all()) to avoid an extra query per account.
         # Always emit a Z-suffix UTC string so JS new Date() never misinterprets it as local.
@@ -295,6 +314,22 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 ct = instance.refresh_task.crontab
                 cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
         instance._cron_expression = cron_expr
+
+        if "vod_cron_expression" in validated_data:
+            vod_cron_expr = validated_data.pop("vod_cron_expression")
+        else:
+            vod_cron_expr = ""
+            if (
+                instance.vod_refresh_task_id
+                and instance.vod_refresh_task
+                and instance.vod_refresh_task.crontab
+            ):
+                ct = instance.vod_refresh_task.crontab
+                vod_cron_expr = (
+                    f"{ct.minute} {ct.hour} {ct.day_of_month} "
+                    f"{ct.month_of_year} {ct.day_of_week}"
+                )
+        instance._vod_cron_expression = vod_cron_expr
 
         # Handle enable_vod preference and auto_enable_new_groups settings
         enable_vod = validated_data.pop("enable_vod", None)
@@ -395,6 +430,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
 
         # Pop cron_expression — it's not a model field
         cron_expr = validated_data.pop("cron_expression", "")
+        vod_cron_expr = validated_data.pop("vod_cron_expression", "")
 
         # Handle enable_vod preference and auto_enable_new_groups settings during creation
         enable_vod = validated_data.pop("enable_vod", False)
@@ -425,6 +461,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         # Build instance manually so we can attach transient attr before save triggers signal
         instance = M3UAccount(**validated_data)
         instance._cron_expression = cron_expr
+        instance._vod_cron_expression = vod_cron_expr
         instance.save()
 
         # Write exp_date through to the default profile created by post_save signal

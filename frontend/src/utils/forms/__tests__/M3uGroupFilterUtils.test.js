@@ -237,6 +237,53 @@ describe('M3uGroupFilterUtils', () => {
       expect(refreshPlaylist).toHaveBeenCalledWith(playlist);
     });
 
+    it('includes VOD on the first save and refresh for an active XC account', async () => {
+      const playlist = makePlaylist({
+        account_type: 'XC',
+        enable_vod: true,
+        is_active: true,
+        vod_refresh_after_live: false,
+      });
+
+      await saveAndRefreshPlaylist(
+        playlist,
+        [],
+        [],
+        [],
+        makeAutoEnableSettings(),
+        true
+      );
+
+      expect(refreshPlaylist).toHaveBeenCalledWith(playlist, true);
+    });
+
+    it.each([
+      ['later saves', { account_type: 'XC', enable_vod: true }, false],
+      ['VOD disabled', { account_type: 'XC', enable_vod: false }, true],
+      [
+        'inactive account',
+        { account_type: 'XC', enable_vod: true, is_active: false },
+        true,
+      ],
+      ['standard M3U', { account_type: 'STD', enable_vod: true }, true],
+    ])(
+      'does not override the VOD schedule for %s',
+      async (_case, values, initial) => {
+        const playlist = makePlaylist(values);
+
+        await saveAndRefreshPlaylist(
+          playlist,
+          [],
+          [],
+          [],
+          makeAutoEnableSettings(),
+          initial
+        );
+
+        expect(refreshPlaylist).toHaveBeenCalledWith(playlist);
+      }
+    );
+
     it('calls updatePlaylist, updateM3UGroupSettings, and refreshPlaylist exactly once each', async () => {
       await saveAndRefreshPlaylist(
         makePlaylist(),

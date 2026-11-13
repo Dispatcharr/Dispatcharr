@@ -1092,6 +1092,14 @@ describe('User', () => {
     });
   });
 
+  it('does not expose client-triggered refresh controls to admins', () => {
+    setupMocks({ authUser: makeAdminUser() });
+    render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+    expect(
+      screen.queryByText('Allow XC client to trigger Live TV refresh')
+    ).not.toBeInTheDocument();
+  });
+
   // ── XC password generation ───────────────────────────────────────────────────
 
   describe('XC password generation', () => {
