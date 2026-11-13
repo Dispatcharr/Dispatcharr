@@ -84,8 +84,27 @@ describe('useChannelsStore', () => {
   describe('fetchChannelGroups', () => {
     it('should fetch and process channel groups', async () => {
       const mockGroups = [
-        { id: 1, name: 'Group 1', channel_count: 5, m3u_account_count: 0 },
-        { id: 2, name: 'Group 2', channel_count: 0, m3u_account_count: 2 },
+        {
+          id: 1,
+          name: 'Group 1',
+          channel_count: 5,
+          is_custom: true,
+          m3u_account_count: 0,
+        },
+        {
+          id: 2,
+          name: 'Group 2',
+          channel_count: 0,
+          is_custom: false,
+          m3u_account_count: 2,
+        },
+        {
+          id: 3,
+          name: 'Claimed Provider Group',
+          channel_count: 0,
+          is_custom: true,
+          m3u_account_count: 1,
+        },
       ];
       api.getChannelGroups.mockResolvedValue(mockGroups);
 
@@ -106,6 +125,12 @@ describe('useChannelsStore', () => {
         hasChannels: false,
         hasM3UAccounts: true,
         canEdit: false,
+        canDelete: false,
+      });
+      expect(result.current.channelGroups[3]).toMatchObject({
+        hasChannels: false,
+        hasM3UAccounts: true,
+        canEdit: true,
         canDelete: false,
       });
     });

@@ -53,7 +53,7 @@ jobs:
       sync_python_deps: ${{ steps.base_image.outputs.sync_python_deps }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -153,7 +153,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run tests in base image
         env:

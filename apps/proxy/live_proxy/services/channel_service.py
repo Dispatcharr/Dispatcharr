@@ -15,7 +15,12 @@ from ..constants import EventType, ChannelState, ChannelMetadataField, REDIS_TTL
 from ..config_helper import ConfigHelper
 from ..url_utils import get_stream_info_for_switch
 from core.utils import log_system_event
-from .log_parsers import LogParserFactory
+from .log_parsers import (
+    LogParserFactory,
+    decode_audio_streams,
+    merge_audio_track,
+    select_best_audio_track,
+)
 
 logger = logging.getLogger("live_proxy")
 
@@ -749,20 +754,59 @@ class ChannelService:
             logger.error(f"Error validating channel state: {e}", exc_info=True)
             return False, None, None, {"error": f"Exception: {str(e)}"}
 
+    # Audio fields taken from the best track. Every audio line rewrites them
+    # as a set, so a field the best track lacks must be cleared, not kept. The
+    # Redis field names equal the keys used in Stream.stream_stats.
+    AUDIO_SUMMARY_FIELDS = (
+        ChannelMetadataField.AUDIO_CODEC,
+        ChannelMetadataField.SAMPLE_RATE,
+        ChannelMetadataField.AUDIO_CHANNELS,
+        ChannelMetadataField.AUDIO_BITRATE,
+        ChannelMetadataField.AUDIO_LANGUAGE,
+    )
+
+    # Audio fields dropped from the channel's Redis metadata when a new probe
+    # begins, so the previous stream's audio is never shown for the next one.
+    _PROBE_AUDIO_REDIS_FIELDS = AUDIO_SUMMARY_FIELDS + (
+        ChannelMetadataField.AUDIO_STREAMS,
+    )
+
     @staticmethod
-    def parse_and_store_stream_info(channel_id, stream_info_line, stream_type="video", stream_id=None):
+    def parse_and_store_stream_info(
+        channel_id,
+        stream_info_line,
+        stream_type="video",
+        stream_id=None,
+        parsed_data=None,
+        persist_db=True,
+        accept_language=False,
+    ):
         """
         Parse stream info from FFmpeg/VLC/Streamlink logs and store in Redis/DB.
-        Uses specialized parsers for each streaming tool.
+
+        ``parsed_data`` may be supplied by the caller to avoid parsing twice.
+        When ``persist_db`` is False (FFmpeg input-phase probe lines), only Redis
+        is updated. The returned dict is what the caller should flush to the DB
+        once, and it contains only fields parsed on this line.
+
+        ``accept_language`` lets a VLC ``found language`` line attach to the
+        audio track just announced. See ``merge_audio_track``.
         """
         try:
-            # Use factory to parse the line based on stream type
-            parsed_data = LogParserFactory.parse(stream_type, stream_info_line)
+            if parsed_data is None:
+                parsed_data = LogParserFactory.parse(stream_type, stream_info_line)
 
             if not parsed_data:
-                return
+                return None
 
-            # Update Redis and database with parsed data
+            audio_fields = {}
+            audio_track = parsed_data.get("audio_track")
+            if stream_type in ("audio", "vlc_audio") and audio_track:
+                audio_fields = ChannelService._merge_and_select_audio(
+                    channel_id, audio_track, accept_language=accept_language
+                )
+
+            # Update Redis (live cards) with parsed data
             ChannelService._update_stream_info_in_redis(
                 channel_id,
                 parsed_data.get('video_codec'),
@@ -772,33 +816,122 @@ class ChannelService:
                 parsed_data.get('source_fps'),
                 parsed_data.get('pixel_format'),
                 parsed_data.get('video_bitrate'),
-                parsed_data.get('audio_codec'),
-                parsed_data.get('sample_rate'),
-                parsed_data.get('audio_channels'),
-                parsed_data.get('audio_bitrate'),
-                parsed_data.get('stream_type')
+                audio_fields.get('audio_codec'),
+                audio_fields.get('sample_rate'),
+                audio_fields.get('audio_channels'),
+                audio_fields.get('audio_bitrate'),
+                parsed_data.get('stream_type'),
+                audio_language=audio_fields.get('audio_language'),
+                audio_streams=audio_fields.get('audio_streams'),
             )
 
-            if stream_id:
-                ChannelService._update_stream_stats_in_db(
-                    stream_id,
-                    video_codec=parsed_data.get('video_codec'),
-                    resolution=parsed_data.get('resolution'),
-                    source_fps=parsed_data.get('source_fps'),
-                    pixel_format=parsed_data.get('pixel_format'),
-                    video_bitrate=parsed_data.get('video_bitrate'),
-                    audio_codec=parsed_data.get('audio_codec'),
-                    sample_rate=parsed_data.get('sample_rate'),
-                    audio_channels=parsed_data.get('audio_channels'),
-                    audio_bitrate=parsed_data.get('audio_bitrate'),
-                    stream_type=parsed_data.get('stream_type')
-                )
+            db_stats = {
+                "video_codec": parsed_data.get('video_codec'),
+                "resolution": parsed_data.get('resolution'),
+                "source_fps": parsed_data.get('source_fps'),
+                "pixel_format": parsed_data.get('pixel_format'),
+                "video_bitrate": parsed_data.get('video_bitrate'),
+                "stream_type": parsed_data.get('stream_type'),
+            }
+            db_stats.update(audio_fields)
+            db_stats = {
+                key: value for key, value in db_stats.items() if value is not None
+            }
+
+            if persist_db and stream_id and db_stats:
+                ChannelService._update_stream_stats_in_db(stream_id, **db_stats)
+
+            return db_stats
 
         except Exception as e:
             logger.debug(f"Error parsing {stream_type} stream info: {e}")
+            return None
 
     @staticmethod
-    def _update_stream_info_in_redis(channel_id, codec, resolution, width, height, fps, pixel_format, video_bitrate, audio_codec=None, sample_rate=None, channels=None, audio_bitrate=None, input_format=None):
+    def flush_probe_stats(stream_id, stats):
+        """Write the fields gathered during one input probe (FFmpeg or VLC)."""
+        if not stream_id or not stats:
+            return False
+        return ChannelService._update_stream_stats_in_db(stream_id, **stats)
+
+    @staticmethod
+    def _load_audio_streams(channel_id):
+        """Load the in-progress audio track list from Redis."""
+        try:
+            proxy_server = ProxyServer.get_instance()
+            if proxy_server.redis_client:
+                raw = proxy_server.redis_client.hget(
+                    RedisKeys.channel_metadata(channel_id),
+                    ChannelMetadataField.AUDIO_STREAMS,
+                )
+                return decode_audio_streams(raw) or []
+        except Exception as e:
+            logger.debug(f"Error loading audio streams from Redis: {e}")
+
+        return []
+
+    @staticmethod
+    def reset_audio_streams(channel_id):
+        """Drop Redis audio fields when a new stream probe begins.
+
+        Redis metadata is per channel, so without this a stream switch would
+        merge the new stream's tracks into the previous stream's list.
+        """
+        try:
+            proxy_server = ProxyServer.get_instance()
+            if proxy_server.redis_client and channel_id:
+                proxy_server.redis_client.hdel(
+                    RedisKeys.channel_metadata(channel_id),
+                    *ChannelService._PROBE_AUDIO_REDIS_FIELDS,
+                )
+        except Exception as e:
+            logger.debug(f"Error resetting Redis audio streams: {e}")
+
+    @staticmethod
+    def _merge_and_select_audio(channel_id, audio_track, accept_language=False):
+        """
+        Merge one audio PID into the session list and return summary fields
+        taken from the best track (richest layout, then bitrate).
+
+        Returns an empty dict when the line produced no track (for example a
+        language line with no audio track to attach it to), so nothing is
+        stored for it.
+        """
+        tracks = merge_audio_track(
+            ChannelService._load_audio_streams(channel_id),
+            audio_track,
+            accept_language=accept_language,
+        )
+        if not tracks:
+            return {}
+        best = select_best_audio_track(tracks)
+        return {
+            "audio_streams": tracks,
+            "audio_codec": best.get("audio_codec"),
+            "audio_channels": best.get("audio_channels"),
+            "audio_bitrate": best.get("audio_bitrate"),
+            "sample_rate": best.get("sample_rate"),
+            "audio_language": best.get("audio_language"),
+        }
+
+    @staticmethod
+    def _update_stream_info_in_redis(
+        channel_id,
+        codec,
+        resolution,
+        width,
+        height,
+        fps,
+        pixel_format,
+        video_bitrate,
+        audio_codec=None,
+        sample_rate=None,
+        channels=None,
+        audio_bitrate=None,
+        input_format=None,
+        audio_language=None,
+        audio_streams=None,
+    ):
         """Update stream info in Redis metadata"""
         try:
             proxy_server = ProxyServer.get_instance()
@@ -832,18 +965,31 @@ class ChannelService:
             if video_bitrate is not None:
                 update_data[ChannelMetadataField.VIDEO_BITRATE] = str(round(video_bitrate, 1))
 
-            # Audio info
-            if audio_codec is not None:
-                update_data[ChannelMetadataField.AUDIO_CODEC] = str(audio_codec)
+            # Audio info (summary = best track; audio_streams keeps every PID)
+            audio_summary = {
+                ChannelMetadataField.AUDIO_CODEC: audio_codec,
+                ChannelMetadataField.SAMPLE_RATE: sample_rate,
+                ChannelMetadataField.AUDIO_CHANNELS: channels,
+                ChannelMetadataField.AUDIO_BITRATE: (
+                    None if audio_bitrate is None else round(audio_bitrate, 1)
+                ),
+                ChannelMetadataField.AUDIO_LANGUAGE: audio_language,
+            }
+            for field, value in audio_summary.items():
+                if value is not None:
+                    update_data[field] = str(value)
 
-            if sample_rate is not None:
-                update_data[ChannelMetadataField.SAMPLE_RATE] = str(sample_rate)
+            if audio_streams is not None:
+                update_data[ChannelMetadataField.AUDIO_STREAMS] = json.dumps(audio_streams)
+                # The summary is rewritten as a set from the current best
+                # track. Clear what it lacks so a previous best track's
+                # language or codec cannot linger beside the new one.
+                stale_fields = [
+                    field for field, value in audio_summary.items() if value is None
+                ]
+                if stale_fields:
+                    proxy_server.redis_client.hdel(metadata_key, *stale_fields)
 
-            if channels is not None:
-                update_data[ChannelMetadataField.AUDIO_CHANNELS] = str(channels)
-
-            if audio_bitrate is not None:
-                update_data[ChannelMetadataField.AUDIO_BITRATE] = str(round(audio_bitrate, 1))
             if input_format is not None:
                 update_data[ChannelMetadataField.STREAM_TYPE] = str(input_format)
 
@@ -864,12 +1010,19 @@ class ChannelService:
             stream = Stream.objects.get(id=stream_id)
 
             # Get existing stats or create new dict
-            current_stats = stream.stream_stats or {}
+            current_stats = dict(stream.stream_stats or {})
 
             # Update with new stats
             for key, value in stats.items():
                 if value is not None:
                     current_stats[key] = value
+
+            # When a full audio_streams list is written, drop summary keys the
+            # best track did not provide so stale values cannot linger.
+            if "audio_streams" in stats:
+                for key in ChannelService.AUDIO_SUMMARY_FIELDS:
+                    if stats.get(key) is None:
+                        current_stats.pop(key, None)
 
             # Save updated stats and timestamp
             stream.stream_stats = current_stats

@@ -486,6 +486,15 @@ EOF
 server {
     listen ${NGINX_HTTP_PORT};
     client_max_body_size 0;
+    # Redirect stream profiles return the provider URL in a Location header.
+    # The response headers must fit in uwsgi_buffer_size or nginx answers 502
+    # (upstream sent too big header). The default is one memory page (4k on
+    # most hosts), too small for URLs near Stream.url's 8192-character max.
+    # 16k fits that Location plus the other headers. uwsgi_busy_buffers_size is
+    # set explicitly because its derived default (2 x buffer_size) fails nginx -t
+    # against the default body buffers on 4k-page hosts.
+    uwsgi_buffer_size 16k;
+    uwsgi_busy_buffers_size 16k;
 
     location / {
         include uwsgi_params;

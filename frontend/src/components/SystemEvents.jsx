@@ -32,7 +32,7 @@ import {
 import API from '../api';
 import { REFRESH_INTERVAL_OPTIONS } from '../constants';
 import useBrowserStorage from '../hooks/useBrowserStorage';
-import { format } from '../utils/dateTimeUtils.js';
+import { format, useDateTimeFormat } from '../utils/dateTimeUtils.js';
 
 const getEventIcon = (eventType) => {
   switch (eventType) {
@@ -132,8 +132,7 @@ const getSystemEvents = (eventsLimit, offset) => {
 };
 
 const Event = ({ event }) => {
-  const [dateFormatSetting] = useBrowserStorage('date-format', 'mdy');
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
+  const { shortDateFormat } = useDateTimeFormat();
 
   return (
     <Box
@@ -171,7 +170,7 @@ const Event = ({ event }) => {
           </Stack>
         </Group>
         <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
-          {format(event.timestamp, `${dateFormat} HH:mm:ss`)}
+          {format(event.timestamp, `${shortDateFormat} HH:mm:ss`)}
         </Text>
       </Group>
     </Box>

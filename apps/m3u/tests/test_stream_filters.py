@@ -79,10 +79,18 @@ class StreamPassesM3UFiltersTests(SimpleTestCase):
 
 
 class ProcessM3UBatchFilterTests(TestCase):
-    def _mock_stream_meta(self, mock_stream_cls, max_length=255):
-        mock_field = MagicMock()
-        mock_field.max_length = max_length
-        mock_stream_cls._meta.get_field.return_value = mock_field
+    def _mock_stream_meta(
+        self, mock_stream_cls, name_max_length=255, url_max_length=8192,
+    ):
+        def get_field(field_name):
+            mock_field = MagicMock()
+            if field_name == "url":
+                mock_field.max_length = url_max_length
+            else:
+                mock_field.max_length = name_max_length
+            return mock_field
+
+        mock_stream_cls._meta.get_field.side_effect = get_field
 
     @patch("apps.m3u.tasks._bulk_update_stream_refresh_batches")
     @patch("apps.m3u.tasks.Stream")
@@ -154,3 +162,72 @@ class ProcessM3UBatchFilterTests(TestCase):
 
         self.assertIn("1 created", result)
         mock_stream_cls.objects.bulk_create.assert_called_once()
+
+    @patch("apps.m3u.tasks._bulk_update_stream_refresh_batches")
+    @patch("apps.m3u.tasks.Stream")
+    @patch("apps.m3u.tasks.M3UAccount")
+    def test_imports_url_near_pluto_length(
+        self, mock_account_cls, mock_stream_cls, mock_bulk_update,
+    ):
+        """Pluto stitcher URLs are ~4194 chars and must import under the 8192 max."""
+        self._mock_stream_meta(mock_stream_cls)
+        mock_account = MagicMock()
+        mock_account.account_type = "STD"
+        mock_account_cls.objects.get.return_value = mock_account
+        mock_stream_cls.objects.filter.return_value.select_related.return_value.only.return_value = (
+            []
+        )
+        mock_stream_cls.generate_hash_key = MagicMock(return_value="hash-long")
+        mock_stream_cls.objects.bulk_create.return_value = []
+
+        long_url = "https://example.com/stitch?" + ("a" * 4100)
+        self.assertGreater(len(long_url), 4096)
+        self.assertLessEqual(len(long_url), 8192)
+
+        batch = [{
+            "name": "Pluto-ish",
+            "url": long_url,
+            "attributes": {"group-title": "News"},
+            "vlc_opts": {},
+        }]
+
+        with patch("django.db.connections"), patch(
+            "apps.m3u.tasks.transaction.atomic",
+        ):
+            result = process_m3u_batch_direct(
+                1, batch, {"News": 1}, ["name", "url"], compiled_filters=[],
+            )
+
+        self.assertIn("1 created", result)
+        mock_stream_cls.objects.bulk_create.assert_called_once()
+
+    @patch("apps.m3u.tasks._bulk_update_stream_refresh_batches")
+    @patch("apps.m3u.tasks.Stream")
+    @patch("apps.m3u.tasks.M3UAccount")
+    def test_skips_url_over_max_length(
+        self, mock_account_cls, mock_stream_cls, mock_bulk_update,
+    ):
+        self._mock_stream_meta(mock_stream_cls, url_max_length=8192)
+        mock_account = MagicMock()
+        mock_account.account_type = "STD"
+        mock_account_cls.objects.get.return_value = mock_account
+        mock_stream_cls.objects.filter.return_value.select_related.return_value.only.return_value = (
+            []
+        )
+        mock_stream_cls.generate_hash_key = MagicMock(return_value="hash-too-long")
+
+        batch = [{
+            "name": "Too Long",
+            "url": "https://example.com/" + ("x" * 8200),
+            "attributes": {"group-title": "News"},
+            "vlc_opts": {},
+        }]
+
+        with patch("django.db.connections"):
+            result = process_m3u_batch_direct(
+                1, batch, {"News": 1}, ["name", "url"], compiled_filters=[],
+            )
+
+        self.assertIn("0 created", result)
+        mock_stream_cls.objects.bulk_create.assert_not_called()
+        mock_bulk_update.assert_called_once_with([], [], batch_size=200)

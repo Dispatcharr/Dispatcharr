@@ -5,13 +5,22 @@ Reads from the shared TS Redis buffer, pipes data through a user-defined
 transcoding command (pipe:0 stdin → pipe:1 stdout), and writes the output
 chunks to a Redis-backed StreamBuffer under:
 
-    live:channel:{channel_id}:profile:{profile_id}:buffer:*
+    live:channel:{channel_id}:output:mpegts:p{profile_id}:buffer:*
 
 One transcode process runs per active (channel, profile) pair across the
 entire cluster. The TS-owning worker starts the process; non-owning workers
 create a read-only StreamBuffer pointing at the same Redis keys.
+
+A long-running FFmpeg does not rewrite its output PMT when the codecs of its
+input change mid-stream, so the process is replaced at the exact boundary where
+the input PMT/ES layout changes or the input buffer marks a source
+discontinuity. The old process gets a short, bounded window to finish what it
+already holds; the replacement then starts on the new data and emits a fresh
+PAT/PMT.
 """
 
+import logging
+import os
 import select
 import threading
 import time
@@ -20,6 +29,14 @@ from ...input.buffer import StreamBuffer
 from ...redis_keys import RedisKeys
 from ...config_helper import ConfigHelper
 from ...utils import get_logger
+from ..pipe_restart import (
+    ProcessSlot,
+    RestartOutcome,
+    replace_piped_process,
+    write_all,
+)
+from ..ts_feed import feed_chunk_with_layout_watch, run_ts_buffer_writer
+from ..ts_pmt import PmtLayoutWatcher
 
 logger = get_logger()
 
@@ -52,7 +69,10 @@ class OutputProfileManager:
         self.ts_buffer = ts_buffer
         self.worker_id = worker_id
         self.running = False
+        # Always the live process: the server treats a dead _process as a
+        # crashed profile, so restarts swap it only after the replacement spawns.
         self._process = None
+        self._slot = None
         self._writer_thread = None
         self._reader_thread = None
         self._stderr_thread = None
@@ -94,6 +114,7 @@ class OutputProfileManager:
             self._release_owner_lock()
             return False
 
+        self._slot = ProcessSlot(self._process)
         self.running = True
         self._set_state(PROFILE_STATE_ACTIVE)
 
@@ -102,17 +123,8 @@ class OutputProfileManager:
             target=self._writer_loop, daemon=True,
             name=f"profile-writer-{short}"
         )
-        self._reader_thread = threading.Thread(
-            target=self._reader_loop, daemon=True,
-            name=f"profile-reader-{short}"
-        )
-        self._stderr_thread = threading.Thread(
-            target=self._stderr_loop, daemon=True,
-            name=f"profile-stderr-{short}"
-        )
+        self._start_slot_threads(self._slot)
         self._writer_thread.start()
-        self._reader_thread.start()
-        self._stderr_thread.start()
 
         logger.info(
             f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
@@ -158,101 +170,151 @@ class OutputProfileManager:
     # Internal threads
     # ------------------------------------------------------------------
 
-    def _write_all(self, data: bytes):
-        """Write all bytes to process stdin, looping on partial writes."""
-        view = memoryview(data)
-        offset = 0
-        total = len(view)
-        while offset < total:
-            if not self.running:
-                return
-            n = self._process.stdin.write(view[offset:])
-            if n is None:
-                # Pipe full (EAGAIN on non-blocking FD); yield cooperatively
-                select.select([], [self._process.stdin], [], 1.0)
-            elif n <= 0:
-                raise OSError("stdin write returned no bytes")
-            else:
-                offset += n
+    def _start_slot_threads(self, slot):
+        """Start the stdout/stderr consumers bound to one process slot."""
+        short = f"{self.channel_id[:8]}:p{self.profile_id}"
+        slot.reader = threading.Thread(
+            target=self._reader_loop, args=(slot,), daemon=True,
+            name=f"profile-reader-{short}"
+        )
+        slot.stderr = threading.Thread(
+            target=self._stderr_loop, args=(slot,), daemon=True,
+            name=f"profile-stderr-{short}"
+        )
+        self._reader_thread = slot.reader
+        self._stderr_thread = slot.stderr
+        slot.reader.start()
+        slot.stderr.start()
+
+    def _write_stdin(self, data: bytes) -> bool:
+        """Write to the current process. Returns False when the writer must stop."""
+        try:
+            write_all(self._process, data, is_running=lambda: self.running)
+            self._process.stdin.flush()
+        except (BrokenPipeError, OSError) as e:
+            logger.warning(
+                f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
+                f"Stdin error: {e}"
+            )
+            self.running = False
+            return False
+        return True
 
     def _writer_loop(self):
         """Read TS chunks from Redis and write to the transcode process stdin."""
         behind_seconds = ConfigHelper.new_client_behind_seconds()
-        start_index = self.ts_buffer.find_chunk_index_by_time(behind_seconds) if behind_seconds > 0 else None
-        if start_index is None:
-            start_index = self.ts_buffer.index
-        local_index = start_index
-        logger.debug(
-            f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
-            f"Writer started at index {local_index}"
+        watcher = PmtLayoutWatcher(
+            scan_cache=getattr(self.ts_buffer, "psi_scan_cache", None)
         )
+        label = f"[Profile:{self.profile_id}:{self.channel_id[:8]}]"
 
         try:
-            while self.running:
-                chunks, new_index = self.ts_buffer.get_optimized_client_data(local_index)
-
-                if chunks:
-                    local_index = new_index
-                    for chunk in chunks:
-                        if not self.running:
-                            break
-                        try:
-                            self._write_all(chunk)
-                            self._process.stdin.flush()
-                        except (BrokenPipeError, OSError) as e:
-                            logger.warning(
-                                f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
-                                f"Stdin error: {e}"
-                            )
-                            self.running = False
-                            return
-                else:
-                    if self.ts_buffer.index > local_index + 20:
-                        local_index = self.ts_buffer.index - 5
-                    time.sleep(0.05)
-
-        except Exception as e:
-            logger.error(
-                f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
-                f"Writer loop error: {e}", exc_info=True
+            run_ts_buffer_writer(
+                is_running=lambda: self.running,
+                ts_buffer=self.ts_buffer,
+                behind_seconds=behind_seconds,
+                watcher=watcher,
+                feed_chunk=lambda data, watcher, chunk_index=None: (
+                    feed_chunk_with_layout_watch(
+                        data, watcher, self._write_stdin,
+                        self._restart_transcode, chunk_index,
+                    )
+                ),
+                on_discontinuity=lambda reason: self._restart_transcode(reason=reason),
+                log_debug=lambda msg: logger.debug(f"{label} {msg}"),
             )
+        except Exception as e:
+            logger.error(f"{label} Writer loop error: {e}", exc_info=True)
         finally:
             try:
                 if self._process and self._process.stdin:
                     self._process.stdin.close()
             except Exception:
                 pass
-            logger.debug(
-                f"[Profile:{self.profile_id}:{self.channel_id[:8]}] Writer loop exited"
-            )
+            logger.debug(f"{label} Writer loop exited")
 
-    def _reader_loop(self):
+    def _restart_transcode(self, reason: str, flush: bytes = b"") -> RestartOutcome:
+        """Replace the transcode process at a stream boundary.
+
+        Runs on the writer thread, the only thread that writes stdin. See
+        ``replace_piped_process`` for the spawn/drain/retire contract.
+        """
+        if not self.running or self._slot is None:
+            return RestartOutcome.STOP
+
+        short = f"{self.channel_id[:8]}"
+        label = f"[Profile:{self.profile_id}:{short}]"
+
+        def spawn():
+            from ...utils import posix_spawn_proc
+            return posix_spawn_proc(self.command)
+
+        def set_current(process, slot):
+            self._process = process
+            self._slot = slot
+
+        def after_old_retired():
+            if self.output_buffer:
+                try:
+                    self.output_buffer.mark_discontinuity()
+                except Exception as e:
+                    logger.warning(f"{label} Failed to mark output discontinuity: {e}")
+
+        outcome = replace_piped_process(
+            is_running=lambda: self.running,
+            current_slot=self._slot,
+            spawn=spawn,
+            set_current=set_current,
+            start_slot_threads=self._start_slot_threads,
+            after_old_retired=after_old_retired,
+            flush=flush,
+            log_warning=lambda msg: logger.warning(f"{label} {msg}"),
+            log_error=lambda msg: logger.error(f"{label} {msg}"),
+            log_info=lambda msg: logger.info(f"{label} {msg}"),
+            reason=reason,
+            noun="transcode",
+        )
+        if outcome == RestartOutcome.STOP and self.running:
+            # Dead process, or the pre-boundary flush could not be written.
+            # stop() during the swap has already cleared running.
+            self.running = False
+        return outcome
+
+    def _reader_loop(self, slot):
         """Read chunks from process stdout and write to the output StreamBuffer."""
         read_size = 65536
+        process = slot.process
         logger.debug(
             f"[Profile:{self.profile_id}:{self.channel_id[:8]}] Reader started"
         )
 
         try:
-            while self.running:
+            while self.running and not slot.abandoned.is_set():
                 self._refresh_redis_ttls()
-                ready, _, _ = select.select([self._process.stdout], [], [], 1.0)
+                ready, _, _ = select.select([process.stdout], [], [], 1.0)
                 if not ready:
-                    if self._process.poll() is not None:
+                    if process.poll() is not None:
                         logger.info(
                             f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
-                            f"Process exited (code={self._process.returncode})"
+                            f"Process exited (code={process.returncode})"
                         )
                         break
                     continue
 
-                data = self._process.stdout.read(read_size)
+                # FileIO.read returns None on EAGAIN. It does not raise. b"" is EOF.
+                # Treating None as EOF would drop the output on a stale select.
+                data = process.stdout.read(read_size)
+                if data is None:
+                    continue
                 if not data:
-                    logger.info(
+                    logger.log(
+                        logging.DEBUG if slot.closing.is_set() else logging.INFO,
                         f"[Profile:{self.profile_id}:{self.channel_id[:8]}] stdout EOF"
                     )
                     break
 
+                if slot.abandoned.is_set():
+                    break  # retired between select and this check
                 self.output_buffer.add_chunk(data)
 
         except Exception as e:
@@ -261,26 +323,30 @@ class OutputProfileManager:
                 f"Reader loop error: {e}", exc_info=True
             )
         finally:
-            if self.output_buffer:
+            # EOF after an intentional stdin close is a restart, not the end of
+            # the stream: the shared output ring lives on for the replacement.
+            if self.output_buffer and not slot.closing.is_set():
                 self.output_buffer.stop()
             logger.info(
                 f"[Profile:{self.profile_id}:{self.channel_id[:8]}] Reader loop exited"
             )
 
-    def _stderr_loop(self):
+    def _stderr_loop(self, slot):
         """Log process stderr at WARNING level."""
-        import os as _os
-        import select as _select
+        process = slot.process
         try:
-            stderr_fd = self._process.stderr.fileno()
+            stderr_fd = process.stderr.fileno()
             buf = b""
-            while self.running:
-                ready, _, _ = _select.select([stderr_fd], [], [], 1.0)
+            while self.running and not slot.abandoned.is_set():
+                ready, _, _ = select.select([stderr_fd], [], [], 1.0)
                 if not ready:
-                    if self._process.poll() is not None:
+                    if process.poll() is not None:
                         break
                     continue
-                chunk = _os.read(stderr_fd, 4096)
+                try:
+                    chunk = os.read(stderr_fd, 4096)
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     break
                 buf += chunk
@@ -298,21 +364,27 @@ class OutputProfileManager:
     # Redis helpers
     # ------------------------------------------------------------------
 
+    def _profile_fmt(self) -> str:
+        return f"mpegts:p{self.profile_id}"
+
     def _make_buffer(self) -> StreamBuffer:
         """Create a StreamBuffer wired to this profile's Redis key namespace."""
-        fmt = f"mpegts:p{self.profile_id}"
+        fmt = self._profile_fmt()
         return StreamBuffer(
             channel_id=self.channel_id,
             redis_client=RedisClient.get_buffer(),
             buffer_index_key=RedisKeys.output_buffer_index(self.channel_id, fmt),
             buffer_chunk_prefix=RedisKeys.output_buffer_chunk_prefix(self.channel_id, fmt),
             chunk_timestamps_key=RedisKeys.output_chunk_timestamps(self.channel_id, fmt),
+            discontinuities_key=RedisKeys.output_buffer_discontinuities(
+                self.channel_id, fmt
+            ),
         )
 
     def _acquire_owner_lock(self) -> bool:
         if not self._redis:
             return True
-        owner_key = RedisKeys.output_owner(self.channel_id, f"mpegts:p{self.profile_id}")
+        owner_key = RedisKeys.output_owner(self.channel_id, self._profile_fmt())
         acquired = self._redis.set(owner_key, self.worker_id, nx=True, ex=PROFILE_KEY_TTL)
         if acquired:
             return True
@@ -322,14 +394,14 @@ class OutputProfileManager:
     def _release_owner_lock(self):
         if self._redis:
             try:
-                self._redis.delete(RedisKeys.output_owner(self.channel_id, f"mpegts:p{self.profile_id}"))
+                self._redis.delete(RedisKeys.output_owner(self.channel_id, self._profile_fmt()))
             except Exception:
                 pass
 
     def _set_state(self, state: str):
         if self._redis:
             self._redis.setex(
-                RedisKeys.output_state(self.channel_id, f"mpegts:p{self.profile_id}"),
+                RedisKeys.output_state(self.channel_id, self._profile_fmt()),
                 PROFILE_KEY_TTL,
                 state,
             )
@@ -346,7 +418,7 @@ class OutputProfileManager:
         if not self._redis:
             return
         try:
-            fmt = f"mpegts:p{self.profile_id}"
+            fmt = self._profile_fmt()
             pipe = self._redis.pipeline()
             pipe.expire(RedisKeys.output_owner(self.channel_id, fmt), PROFILE_KEY_TTL)
             pipe.expire(RedisKeys.output_state(self.channel_id, fmt), PROFILE_KEY_TTL)
@@ -361,13 +433,14 @@ class OutputProfileManager:
         """Delete all output:mpegts:p{profile_id}:* Redis keys for this (channel, profile) pair."""
         if not self._redis:
             return
-        fmt = f"mpegts:p{self.profile_id}"
+        fmt = self._profile_fmt()
         try:
             keys = [
                 RedisKeys.output_state(self.channel_id, fmt),
                 RedisKeys.output_owner(self.channel_id, fmt),
                 RedisKeys.output_buffer_index(self.channel_id, fmt),
                 RedisKeys.output_chunk_timestamps(self.channel_id, fmt),
+                RedisKeys.output_buffer_discontinuities(self.channel_id, fmt),
             ]
             self._redis.delete(*keys)
 

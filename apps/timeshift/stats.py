@@ -1,5 +1,6 @@
 """Build catch-up (timeshift) connection stats for the admin UI."""
 
+import json
 import logging
 import re
 import time
@@ -11,6 +12,7 @@ from datetime import timezone as dt_timezone
 from apps.channels.models import Channel
 from apps.m3u.models import M3UAccountProfile
 from apps.proxy.live_proxy.constants import ChannelMetadataField
+from apps.proxy.live_proxy.services.log_parsers import decode_audio_streams
 from apps.timeshift.redis_keys import TimeshiftRedisKeys, parse_stats_channel_id
 from apps.timeshift.helpers import parse_catchup_timestamp
 from core.utils import RedisClient
@@ -30,6 +32,8 @@ _STREAM_STATS_TO_METADATA = {
     "sample_rate": ChannelMetadataField.SAMPLE_RATE,
     "audio_channels": ChannelMetadataField.AUDIO_CHANNELS,
     "audio_bitrate": ChannelMetadataField.AUDIO_BITRATE,
+    "audio_language": ChannelMetadataField.AUDIO_LANGUAGE,
+    "audio_streams": ChannelMetadataField.AUDIO_STREAMS,
     "stream_type": ChannelMetadataField.STREAM_TYPE,
 }
 
@@ -40,6 +44,8 @@ _METADATA_TO_DISPLAY = {
     ChannelMetadataField.VIDEO_CODEC: "video_codec",
     ChannelMetadataField.AUDIO_CODEC: "audio_codec",
     ChannelMetadataField.AUDIO_CHANNELS: "audio_channels",
+    ChannelMetadataField.AUDIO_LANGUAGE: "audio_language",
+    ChannelMetadataField.AUDIO_STREAMS: "audio_streams",
     ChannelMetadataField.STREAM_TYPE: "stream_type",
 }
 
@@ -51,8 +57,13 @@ def stream_stats_to_metadata_fields(stream_stats):
     out = {}
     for src_key, field_name in _STREAM_STATS_TO_METADATA.items():
         value = stream_stats.get(src_key)
-        if value is not None and value != "":
-            out[field_name] = str(value)
+        if value is None or value == "":
+            continue
+        if src_key == "audio_streams":
+            if isinstance(value, list) and value:
+                out[field_name] = json.dumps(value)
+            continue
+        out[field_name] = str(value)
     if out:
         out[ChannelMetadataField.STREAM_INFO_UPDATED] = str(time.time())
     return out
@@ -65,8 +76,14 @@ def stream_info_from_metadata(metadata):
     out = {}
     for field_name, display_key in _METADATA_TO_DISPLAY.items():
         value = metadata.get(field_name)
-        if value is not None and value != "":
-            out[display_key] = _decode_value(value)
+        if value is None or value == "":
+            continue
+        if display_key == "audio_streams":
+            tracks = decode_audio_streams(value)
+            if tracks:
+                out[display_key] = tracks
+            continue
+        out[display_key] = _decode_value(value)
     return out
 
 
@@ -551,6 +568,8 @@ def build_timeshift_stats_data(redis_client):
                     "video_codec": conn.get("video_codec"),
                     "audio_codec": conn.get("audio_codec"),
                     "audio_channels": conn.get("audio_channels"),
+                    "audio_language": conn.get("audio_language"),
+                    "audio_streams": conn.get("audio_streams"),
                     "stream_type": conn.get("stream_type"),
                     "connection_count": 0,
                     "connections": [],

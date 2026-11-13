@@ -31,6 +31,8 @@ const GROUP_CONFIG = {
       m3u_hash_key: { type: 'm3u_hash_key', default: [] },
       default_output_format: { type: 'string', default: 'mpegts' },
       hdhr_output_profile_id: { type: 'id' },
+      // mpegts/fmp4/hls pin a format; "system" inherits Default Output Format.
+      hdhr_output_format: { type: 'string', default: 'mpegts' },
     },
   },
   epg_settings: {
@@ -80,6 +82,7 @@ const GROUP_CONFIG = {
       log_max_mb: { type: 'int', default: 5 },
       log_keep: { type: 'int', default: 5 },
       log_persist: { type: 'bool', default: true },
+      log_redact: { type: 'bool', default: true },
       preferred_region: { type: 'nullable', default: null },
       auto_import_mapped_files: { type: 'bool', default: true },
       enable_ip_lookup: { type: 'bool', default: true },

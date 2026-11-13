@@ -72,6 +72,7 @@ vi.mock('@mantine/core', async () => {
 // Mock the dateTimeUtils
 vi.mock('../../utils/dateTimeUtils.js', () => ({
   format: vi.fn((timestamp, format) => '01/15 10:30:45'),
+  useDateTimeFormat: vi.fn(() => ({ shortDateFormat: 'MM/DD' })),
 }));
 
 const mockEventsResponse = {

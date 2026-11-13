@@ -67,7 +67,7 @@ if [ "$DISPATCHARR_ENV" = "dev" ] || [ "$DISPATCHARR_ENV" = "aio" ]; then
 
     # Start Celery
     echo "🚀 Starting Celery..."
-    celery -A dispatcharr worker -l info &
+    celery -A dispatcharr worker -Q celery,plugins -l info &
     celery_pid=$!
     echo "✅ Celery started with PID $celery_pid"
     pids+=("$celery_pid")

@@ -149,14 +149,19 @@ class LineupAPIView(APIView):
             .order_by("effective_channel_number")
         )
 
+        from core.models import CoreSettings
+
         resolved_output_profile_id = _resolve_hdhr_output_profile_id(output_profile_id)
 
         _stream_url_prefix = build_absolute_uri_with_port(request, "/proxy/ts/stream/")
-        _output_profile_qs = (
-            f"?output_profile={resolved_output_profile_id}"
-            if resolved_output_profile_id is not None
-            else ""
-        )
+        # Pin an explicit HDHR format when set; omit it to inherit Default Output Format.
+        _qs_parts = []
+        hdhr_output_format = CoreSettings.get_hdhr_output_format()
+        if hdhr_output_format is not None:
+            _qs_parts.append(f"output_format={hdhr_output_format}")
+        if resolved_output_profile_id is not None:
+            _qs_parts.append(f"output_profile={resolved_output_profile_id}")
+        _stream_qs = f"?{'&'.join(_qs_parts)}" if _qs_parts else ""
 
         lineup = []
         for ch in channels:
@@ -165,7 +170,7 @@ class LineupAPIView(APIView):
                 continue
             formatted_channel_number = str(formatted)
 
-            stream_url = f"{_stream_url_prefix}{ch.uuid}{_output_profile_qs}"
+            stream_url = f"{_stream_url_prefix}{ch.uuid}{_stream_qs}"
 
             lineup.append(
                 {

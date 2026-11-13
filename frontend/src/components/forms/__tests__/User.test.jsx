@@ -6,6 +6,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../constants', () => ({
   USER_LEVELS: { ADMIN: 1, STREAMER: 2, USER: 3 },
   USER_LEVEL_LABELS: { 1: 'Admin', 2: 'Streamer', 3: 'User' },
+  OUTPUT_FORMAT_OPTIONS: [
+    { value: 'mpegts', label: 'MPEG-TS' },
+    { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+    { value: 'hls', label: 'HLS' },
+  ],
 }));
 
 // ── Store mocks ────────────────────────────────────────────────────────────────

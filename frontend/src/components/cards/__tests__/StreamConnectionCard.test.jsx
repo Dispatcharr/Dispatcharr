@@ -434,14 +434,9 @@ describe('StreamConnectionCard', () => {
       expect(screen.getByText('H264')).toBeInTheDocument();
     });
 
-    it('renders audio codec badge in uppercase', () => {
+    it('renders combined audio badge with channels and codec', () => {
       render(<StreamConnectionCard {...defaultProps()} />);
-      expect(screen.getByText('AAC')).toBeInTheDocument();
-    });
-
-    it('renders audio channels badge', () => {
-      render(<StreamConnectionCard {...defaultProps()} />);
-      expect(screen.getByText('2.0')).toBeInTheDocument();
+      expect(screen.getByText('2.0 AAC')).toBeInTheDocument();
     });
 
     it('renders stream type badge in uppercase', () => {

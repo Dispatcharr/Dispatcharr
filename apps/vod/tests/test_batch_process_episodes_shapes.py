@@ -44,13 +44,14 @@ class BatchProcessEpisodesShapesTests(TestCase):
             '2': [_episode(201, 'S2E1', 1, season=2)],
         }
 
-        batch_process_episodes(
+        processed = batch_process_episodes(
             self.account,
             self.series,
             episodes_data,
             series_relation=self.series_relation,
         )
 
+        self.assertEqual(processed, 2)
         seasons = set(
             Episode.objects.filter(series=self.series).values_list(
                 'season_number', flat=True
@@ -67,13 +68,14 @@ class BatchProcessEpisodesShapesTests(TestCase):
             [_episode(21, 'S2E1', 1, season=2)],
         ]
 
-        batch_process_episodes(
+        processed = batch_process_episodes(
             self.account,
             self.series,
             episodes_data,
             series_relation=self.series_relation,
         )
 
+        self.assertEqual(processed, 3)
         by_season = {
             ep.season_number: ep.name
             for ep in Episode.objects.filter(series=self.series)
@@ -90,13 +92,14 @@ class BatchProcessEpisodesShapesTests(TestCase):
             [_episode(11, 'S1E1', 1, season=1)],
         ]
 
-        batch_process_episodes(
+        processed = batch_process_episodes(
             self.account,
             self.series,
             episodes_data,
             series_relation=self.series_relation,
         )
 
+        self.assertEqual(processed, 1)
         episodes = list(Episode.objects.filter(series=self.series))
         self.assertEqual(len(episodes), 1)
         self.assertEqual(episodes[0].season_number, 1)

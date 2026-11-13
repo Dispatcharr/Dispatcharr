@@ -29,9 +29,15 @@ class PluginRunActionDbCleanupTests(SimpleTestCase):
     @patch("apps.plugins.loader.close_old_connections")
     def test_run_action_closes_connections_on_success(self, mock_close):
         with self._manager_with_plugin(lambda *_a, **_k: {"status": "ok"}) as pm:
-            result = pm.run_action("test_plugin", "do_work")
+            with patch.object(pm, "discover_plugins") as mock_discover:
+                result = pm.run_action("test_plugin", "do_work")
 
         self.assertEqual(result, {"status": "ok"})
+        mock_discover.assert_called_once_with(
+            sync_db=False,
+            use_cache=True,
+            release_connections=False,
+        )
         mock_close.assert_called_once()
 
     @patch("apps.plugins.loader.close_old_connections")
@@ -40,8 +46,9 @@ class PluginRunActionDbCleanupTests(SimpleTestCase):
             raise RuntimeError("plugin failed")
 
         with self._manager_with_plugin(_boom) as pm:
-            with self.assertRaises(RuntimeError):
-                pm.run_action("test_plugin", "do_work")
+            with patch.object(pm, "discover_plugins"):
+                with self.assertRaises(RuntimeError):
+                    pm.run_action("test_plugin", "do_work")
 
         mock_close.assert_called_once()
 

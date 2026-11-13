@@ -309,14 +309,14 @@ class KeepaliveTimingTests(TestCase):
     """Verify that keepalive threshold gives sufficient margin before DVR timeout."""
 
     def test_keepalive_threshold_less_than_dvr_timeout(self):
-        """CONNECTION_TIMEOUT (keepalive trigger) must be < DVR read timeout (15s)."""
+        """Default connection_timeout (keepalive trigger) must be < DVR read timeout (15s)."""
         from apps.proxy.config import TSConfig as Config
-        connection_timeout = getattr(Config, "CONNECTION_TIMEOUT", 10)
-        dvr_read_timeout = 15  # hard-coded in run_recording: timeout=(10, 15)
+        connection_timeout = Config.get_connection_timeout()
+        dvr_read_timeout = 15  # historical DVR HTTP read idle ceiling
         self.assertLess(
             connection_timeout,
             dvr_read_timeout,
-            f"CONNECTION_TIMEOUT ({connection_timeout}s) must be < DVR timeout ({dvr_read_timeout}s) "
+            f"connection_timeout ({connection_timeout}s) must be < DVR timeout ({dvr_read_timeout}s) "
             f"so keepalives fire before DVR times out",
         )
 
@@ -324,7 +324,7 @@ class KeepaliveTimingTests(TestCase):
         """KEEPALIVE_INTERVAL must be short enough to send multiple keepalives in the gap."""
         from apps.proxy.config import TSConfig as Config
         interval = getattr(Config, "KEEPALIVE_INTERVAL", 0.5)
-        connection_timeout = getattr(Config, "CONNECTION_TIMEOUT", 10)
+        connection_timeout = Config.get_connection_timeout()
         remaining_window = 15 - connection_timeout
         self.assertGreater(
             remaining_window / interval,

@@ -137,5 +137,5 @@ fi
 
 # DVR worker: thread pool for the long-running, I/O-bound run_recording task.
 nice -n "$NICE_LEVEL" celery --quiet -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
-# Default prefork worker: every queue except `dvr`.
-nice -n "$NICE_LEVEL" celery --quiet -A dispatcharr worker -Q celery -n default@%h --autoscale="$CELERY_MAX_WORKERS,$CELERY_MIN_WORKERS" -l info
+# Default prefork worker: every queue except `dvr` (including `plugins`).
+nice -n "$NICE_LEVEL" celery --quiet -A dispatcharr worker -Q celery,plugins -n default@%h --autoscale="$CELERY_MAX_WORKERS,$CELERY_MIN_WORKERS" -l info

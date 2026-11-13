@@ -28,6 +28,8 @@ const isNumericField = (key) => {
     'channel_init_grace_period',
     'channel_client_wait_period',
     'new_client_behind_seconds',
+    'stream_startup_timeout',
+    'connection_timeout',
   ].includes(key);
 };
 
@@ -41,7 +43,15 @@ const getNumericFieldMax = (key) => {
   if (key === 'channel_shutdown_delay') return 300;
   if (key === 'channel_client_wait_period') return 300;
   if (key === 'new_client_behind_seconds') return 120;
+  if (key === 'stream_startup_timeout' || key === 'connection_timeout') return 120;
   return 300;
+};
+
+const getNumericFieldMin = (key) => {
+  if (key === 'stream_startup_timeout' || key === 'connection_timeout') {
+    return 1;
+  }
+  return 0;
 };
 
 const renderProxySettingField = (key, config, proxySettingsForm) => {
@@ -63,7 +73,7 @@ const renderProxySettingField = (key, config, proxySettingsForm) => {
         label={config.label}
         {...proxySettingsForm.getInputProps(key)}
         description={config.description || null}
-        min={0}
+        min={getNumericFieldMin(key)}
         max={getNumericFieldMax(key)}
       />
     );

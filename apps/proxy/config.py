@@ -10,7 +10,10 @@ class BaseConfig:
     RETRY_WINDOW_SECONDS = 1800  # Reset retry counter after this long without a failure
     STABLE_CONNECTION_THRESHOLD = 30  # Seconds of uptime before switch rotation state resets
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
-    CONNECTION_TIMEOUT = 10  # seconds to wait for initial connection
+    # Fallback when proxy_settings is unavailable. Prefer get_connection_timeout().
+    CONNECTION_TIMEOUT = 10
+    # Fallback when proxy_settings is unavailable. Prefer get_stream_startup_timeout().
+    STREAM_STARTUP_TIMEOUT = 8
     MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up
     FAILOVER_ROTATION_COOLDOWN = 60 # Wait this long after exhausting all streams before wrapping back to the top.
     BUFFER_CHUNK_SIZE = 188 * 1361  # ~256KB
@@ -56,6 +59,8 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "stream_startup_timeout": 8,
+                "connection_timeout": 10,
                 "validate_redirect_urls": True,
             }
 
@@ -171,6 +176,18 @@ class TSConfig(BaseConfig):
         """Whether Redirect mode probes the provider URL (HEAD/GET) before handing off."""
         settings = cls.get_proxy_settings()
         return bool(settings.get("validate_redirect_urls", True))
+
+    @classmethod
+    def get_stream_startup_timeout(cls):
+        """Seconds without data from a newly connected stream before failover."""
+        settings = cls.get_proxy_settings()
+        return settings.get("stream_startup_timeout", cls.STREAM_STARTUP_TIMEOUT)
+
+    @classmethod
+    def get_connection_timeout(cls):
+        """Seconds without data from an active stream before marking it unhealthy."""
+        settings = cls.get_proxy_settings()
+        return settings.get("connection_timeout", cls.CONNECTION_TIMEOUT)
 
     # Dynamic property access for these settings
     @property

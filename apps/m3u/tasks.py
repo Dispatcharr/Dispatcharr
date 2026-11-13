@@ -9,10 +9,16 @@ import gzip, zipfile
 import lzma
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
+from apps.plugins.internal_tasks import plugin_callable_task
 from django.conf import settings
 from django.db import models, transaction
-from .models import M3UAccount
-from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
+from .models import CUSTOM_M3U_ACCOUNT_NAME, M3UAccount
+from apps.channels.models import (
+    Stream,
+    ChannelGroup,
+    ChannelGroupM3UAccount,
+    ChannelStream,
+)
 from django.utils import timezone
 import time
 import json
@@ -776,11 +782,16 @@ def process_groups(account, groups, scan_start_time=None):
             groups_to_create.append(ChannelGroup(name=group_name))
 
     # Create new groups and fetch them back with IDs
-    newly_created_group_objs = []
     if groups_to_create:
         logger.info(f"Creating {len(groups_to_create)} new groups for account {account.id}")
-        newly_created_group_objs = list(ChannelGroup.bulk_create_and_fetch(groups_to_create))
+        newly_created_group_objs = list(
+            ChannelGroup.objects.bulk_create_provider_groups(
+                group.name for group in groups_to_create
+            )
+        )
         logger.debug(f"Successfully created {len(newly_created_group_objs)} new groups")
+    else:
+        newly_created_group_objs = []
 
     # Combine all groups
     all_group_objs = existing_group_objs + newly_created_group_objs
@@ -872,6 +883,9 @@ def cleanup_stale_group_relationships(account, scan_start_time):
     Remove group relationships that haven't been seen since the stale retention period.
     This follows the same logic as stream cleanup for consistency.
     """
+    if account.locked and account.name == CUSTOM_M3U_ACCOUNT_NAME:
+        return 0
+
     # Calculate cutoff date for stale group relationships
     stale_cutoff = scan_start_time - timezone.timedelta(days=account.stale_stream_days)
     logger.info(
@@ -909,16 +923,22 @@ def cleanup_stale_group_relationships(account, scan_start_time):
             # Check if this group has any direct channels (not through M3U accounts)
             has_direct_channels = group.related_channels().exists()
 
-            # If no relationships and no direct channels, it's safe to delete
             if not remaining_m3u_relationships and not has_direct_channels:
                 orphaned_group_ids.append(group.id)
                 logger.debug(f"Group '{group.name}' has no remaining associations and will be deleted")
 
         # Delete truly orphaned groups
         if orphaned_group_ids:
-            deleted_groups = list(ChannelGroup.objects.filter(id__in=orphaned_group_ids).values_list('name', flat=True))
-            ChannelGroup.objects.filter(id__in=orphaned_group_ids).delete()
-            logger.info(f"Deleted {len(orphaned_group_ids)} orphaned groups that had no remaining associations: {deleted_groups}")
+            orphaned_groups = ChannelGroup.objects.filter(
+                id__in=orphaned_group_ids,
+                m3u_accounts__isnull=True,
+                channels__isnull=True,
+            )
+            deleted_groups = list(orphaned_groups.values_list('name', flat=True))
+            orphaned_groups.delete()
+            logger.info(
+                f"Deleted {len(deleted_groups)} orphaned groups that had no remaining associations: {deleted_groups}"
+            )
     else:
         logger.debug(f"No stale group relationships found for account {account.id}")
 
@@ -1319,6 +1339,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     stream_hashes = {}
 
     name_max_length = Stream._meta.get_field('name').max_length
+    url_max_length = Stream._meta.get_field('url').max_length
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
     if compiled_filters:
@@ -1330,9 +1351,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
         try:
             name, url = stream_info["name"], stream_info["url"]
 
-            # Validate URL length - maximum of 4096 characters
-            if url and len(url) > 4096:
-                logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
+            if url and len(url) > url_max_length:
+                logger.warning(
+                    f"Skipping stream '{name}': URL too long "
+                    f"({len(url)} characters, max {url_max_length})"
+                )
                 continue
 
             name = truncate_with_warning(
@@ -1637,8 +1660,59 @@ def _process_stream_batches_with_retry(
     return streams_created, streams_updated, streams_unchanged, failed_batch_count
 
 
+def _delete_streams_by_ids(stream_ids):
+    """Delete streams and their channel links under row locks.
+
+    ``ChannelStream.stream`` FKs are DEFERRABLE INITIALLY DEFERRED. Django's
+    collector snapshots related links before deleting, so a concurrent
+    ``ChannelStream`` insert after collect and before commit fails the cleanup
+    COMMIT with ForeignKeyViolation. ``select_for_update`` on the stream rows
+    blocks those inserts (they need KEY SHARE on the stream) until we commit.
+
+    Links are removed with ``_raw_delete`` so cascaded per-row catch-up signals
+    do not hold the lock open. Catch-up is rolled up in the same transaction as
+    the deletes: a rollup failure rolls the batch back instead of leaving streams
+    gone with stale channel flags. Deadlock retry is unavailable inside that
+    atomic block; a deadlock fails the batch and the next refresh retries it.
+    """
+    from apps.channels.utils import rollup_catchup_for_channels
+
+    ids = list(stream_ids)
+    if not ids:
+        return 0
+
+    deleted = 0
+    using = Stream.objects.db
+
+    for offset in range(0, len(ids), BATCH_SIZE):
+        batch = ids[offset : offset + BATCH_SIZE]
+        with transaction.atomic():
+            locked_ids = list(
+                Stream.objects.select_for_update()
+                .filter(id__in=batch)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if not locked_ids:
+                continue
+            affected_channel_ids = list(
+                ChannelStream.objects.filter(stream_id__in=locked_ids)
+                .values_list("channel_id", flat=True)
+                .distinct()
+            )
+            ChannelStream.objects.filter(stream_id__in=locked_ids)._raw_delete(using)
+            Stream.objects.filter(id__in=locked_ids)._raw_delete(using)
+            if affected_channel_ids:
+                # Same transaction as the deletes. retry_on_deadlock cannot run
+                # here; a deadlock aborts the batch and leaves streams in place.
+                rollup_catchup_for_channels(affected_channel_ids)
+            deleted += len(locked_ids)
+
+    return deleted
+
+
 def cleanup_streams(account_id, scan_start_time=timezone.now):
-    account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
+    account = M3UAccount.objects.get(id=account_id, is_active=True)
     existing_groups = ChannelGroup.objects.filter(
         m3u_accounts__m3u_account=account,
         m3u_accounts__enabled=True,
@@ -1653,28 +1727,32 @@ def cleanup_streams(account_id, scan_start_time=timezone.now):
         f"Removing streams not seen since {stale_cutoff} for M3U account {account_id}"
     )
 
-    # Delete streams that are not in active groups
-    streams_to_delete = Stream.objects.filter(m3u_account=account).exclude(
-        channel_group__in=existing_groups
+    # Streams that are not in active groups
+    group_filtered_ids = list(
+        Stream.objects.filter(m3u_account=account)
+        .exclude(channel_group__in=existing_groups)
+        .values_list("id", flat=True)
     )
 
-    # Also delete streams that haven't been seen for longer than stale_stream_days
-    stale_streams = Stream.objects.filter(
-        m3u_account=account, last_seen__lt=stale_cutoff
+    # Streams that haven't been seen for longer than stale_stream_days
+    stale_ids = list(
+        Stream.objects.filter(
+            m3u_account=account, last_seen__lt=stale_cutoff
+        ).values_list("id", flat=True)
     )
 
-    deleted_count = streams_to_delete.count()
-    stale_count = stale_streams.count()
+    deleted_count = len(group_filtered_ids)
+    stale_count = len(stale_ids)
 
-    streams_to_delete.delete()
-    stale_streams.delete()
+    # A stream can match both filters; delete each id once.
+    stream_ids = list(dict.fromkeys(group_filtered_ids + stale_ids))
+    total_deleted = _delete_streams_by_ids(stream_ids)
 
-    total_deleted = deleted_count + stale_count
     logger.info(
-        f"Cleanup for M3U account {account_id} complete: {deleted_count} streams removed due to group filter, {stale_count} removed as stale"
+        f"Cleanup for M3U account {account_id} complete: {total_deleted} streams removed "
+        f"({deleted_count} matched the group filter, {stale_count} matched the stale cutoff)"
     )
 
-    # Return the total count of deleted streams
     return total_deleted
 
 
@@ -2113,57 +2191,10 @@ def _classify_sync_failure(exc):
 
 
 def rollup_channel_catchup_fields(account_id):
-    """Roll up catch-up flags from streams to channels (active accounts only).
+    """Compat wrapper around ``rollup_catchup_for_account`` for existing callers."""
+    from apps.channels.utils import rollup_catchup_for_account
 
-    Both the aggregate update and the self-heal pass are limited to channels
-    that still have at least one stream from *account_id*.
-    """
-    from django.db import connection
-
-    account_channels = """
-        SELECT DISTINCT cs.channel_id
-        FROM dispatcharr_channels_channelstream cs
-        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-        WHERE s.m3u_account_id = %s
-    """
-
-    with connection.cursor() as cur:
-        cur.execute(f"""
-            WITH agg AS (
-                SELECT
-                    cs.channel_id,
-                    bool_or(s.is_catchup AND a.is_active)  AS any_catchup,
-                    MAX(s.catchup_days) FILTER (WHERE s.is_catchup AND a.is_active) AS max_days
-                FROM dispatcharr_channels_channelstream cs
-                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
-                WHERE cs.channel_id IN ({account_channels})
-                GROUP BY cs.channel_id
-            )
-            UPDATE dispatcharr_channels_channel c
-            SET
-                is_catchup   = COALESCE(agg.any_catchup, FALSE),
-                catchup_days = COALESCE(agg.max_days, 0)
-            FROM agg
-            WHERE c.id = agg.channel_id
-        """, [account_id])
-
-        # Self-heal stale is_catchup flags on account-linked channels only.
-        cur.execute(f"""
-            UPDATE dispatcharr_channels_channel c
-            SET is_catchup = FALSE, catchup_days = 0
-            WHERE c.is_catchup = TRUE
-              AND c.id IN ({account_channels})
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM dispatcharr_channels_channelstream cs
-                  JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                  JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
-                  WHERE cs.channel_id = c.id
-                    AND s.is_catchup = TRUE
-                    AND a.is_active = TRUE
-              )
-        """, [account_id])
+    rollup_catchup_for_account(account_id)
 
 
 @shared_task
@@ -3483,6 +3514,7 @@ def refresh_account_info(profile_id):
 
         release_task_lock("refresh_account_info", profile_id)
         return error_msg
+@plugin_callable_task
 @shared_task(time_limit=3600, soft_time_limit=3500)
 def refresh_single_m3u_account(account_id):
     """Splits M3U processing into chunks and dispatches them as parallel tasks."""

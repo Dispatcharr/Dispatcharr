@@ -1,0 +1,41 @@
+title: "[Proposal] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to propose the implementation of a large feature or major refactor.
+
+        The linked feature request explains the user problem and desired outcome. This proposal should explain how you intend to implement it, its impact on the rest of Dispatcharr, and how you will prevent regressions.
+
+        **Wait for maintainer signoff before starting implementation. A pull request opened without approval may be closed without review.**
+  - type: input
+    id: feature-request
+    attributes:
+      label: Feature request
+      description: Link the feature request this proposal implements, or enter its issue number.
+      placeholder: "https://github.com/Dispatcharr/Dispatcharr/issues/123 or #123"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Summarize the implementation approach, affected components, key design decisions, intended work sequence, excluded work, and any decisions needing maintainer feedback.
+      placeholder: Describe the implementation plan. Do not repeat the feature request verbatim.
+    validations:
+      required: true
+  - type: textarea
+    id: impact-and-validation
+    attributes:
+      label: Impact and validation
+      description: Describe effects on relevant apps, UI, APIs, data, tasks, integrations, configuration, documentation, and deployment. Include compatibility concerns, regression risks, behavior that must remain unchanged, and your testing or validation plan. State what is not affected where applicable.
+      placeholder: Describe cross-cutting impact, risks, and how you will validate the change.
+    validations:
+      required: true
+  - type: checkboxes
+    id: approval
+    attributes:
+      label: Maintainer approval
+      options:
+        - label: I will wait for maintainer approval before starting implementation. I understand that a PR without this signoff may be closed without review.
+          required: true

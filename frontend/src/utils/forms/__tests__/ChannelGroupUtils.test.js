@@ -4,6 +4,7 @@ import {
   updateChannelGroup,
   addChannelGroup,
   deleteChannelGroup,
+  unclaimChannelGroup,
   cleanupUnusedChannelGroups,
 } from '../ChannelGroupUtils.js';
 
@@ -13,6 +14,7 @@ vi.mock('../../../api.js', () => ({
     updateChannelGroup: vi.fn(),
     addChannelGroup: vi.fn(),
     deleteChannelGroup: vi.fn(),
+    unclaimChannelGroup: vi.fn(),
     cleanupUnusedChannelGroups: vi.fn(),
   },
 }));
@@ -117,6 +119,16 @@ describe('ChannelGroupUtils', () => {
       const group = makeChannelGroup({ id: 'group-42', name: 'Movies' });
       deleteChannelGroup(group);
       expect(API.deleteChannelGroup).toHaveBeenCalledWith('group-42');
+    });
+  });
+
+  describe('unclaimChannelGroup', () => {
+    it('calls API.unclaimChannelGroup with the group id', () => {
+      const group = makeChannelGroup({ id: 'group-42' });
+
+      unclaimChannelGroup(group);
+
+      expect(API.unclaimChannelGroup).toHaveBeenCalledWith('group-42');
     });
   });
 

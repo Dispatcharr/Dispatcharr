@@ -22,7 +22,6 @@ import { getSystemSettingsFormInitialValues } from '../../../utils/forms/setting
 import { REGION_CHOICES } from '../../../constants.js';
 
 const SYSTEM_GROUP = 'system_settings';
-
 const SystemSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
   const isModular =
@@ -51,13 +50,11 @@ const SystemSettingsForm = React.memo(({ active }) => {
 
   const onSubmit = async () => {
     setSaved(false);
-
     const changedSettings = getChangedGroupSettings(
       form.getValues(),
       settings,
       SYSTEM_GROUP
     );
-
     try {
       await runSave(async () => {
         await saveGroupSettings(settings, SYSTEM_GROUP, changedSettings);
@@ -95,6 +92,12 @@ const SystemSettingsForm = React.memo(({ active }) => {
         description="Write logs to disk for the Logs page. Console output is unaffected."
         {...form.getInputProps('log_persist', { type: 'checkbox' })}
         id="log_persist"
+      />
+      <Switch
+        label="Redact Credentials in Logs"
+        description="Mask passwords, tokens, API keys and provider hosts in console output and log files."
+        {...form.getInputProps('log_redact', { type: 'checkbox' })}
+        id="log_redact"
       />
       <NumberInput
         label="Maximum Log File Size (MB)"

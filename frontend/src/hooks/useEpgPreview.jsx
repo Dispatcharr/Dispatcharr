@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react';
 import API from '../api';
+import { computeBackoffDelay } from '../utils/backoff';
 
 const getCurrentProgramForEpg = (epgId) => {
   return API.getCurrentProgramForEpg(epgId);
+};
+
+const EPG_PREVIEW_BACKOFF = {
+  initialMs: 3000,
+  maxMs: 15000,
+  factor: 1.5,
+  jitter: 0,
 };
 
 export const useEpgPreview = (epgDataId) => {
@@ -26,7 +34,6 @@ export const useEpgPreview = (epgDataId) => {
       const maxRetries = 20;
       const deadlineMs = 3 * 60 * 1000;
       const startTime = Date.now();
-      let delay = 3000;
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (cancelled || Date.now() - startTime > deadlineMs) break;
@@ -36,8 +43,8 @@ export const useEpgPreview = (epgDataId) => {
           if (cancelled) return;
 
           if (program && program.parsing && attempt < maxRetries) {
+            const delay = computeBackoffDelay(attempt, EPG_PREVIEW_BACKOFF);
             await new Promise((resolve) => setTimeout(resolve, delay));
-            delay = Math.min(delay * 1.5, 15000);
             continue;
           }
 
@@ -52,8 +59,8 @@ export const useEpgPreview = (epgDataId) => {
             console.error('Failed to fetch current program:', error);
           }
           if (attempt < maxRetries) {
+            const delay = computeBackoffDelay(attempt, EPG_PREVIEW_BACKOFF);
             await new Promise((resolve) => setTimeout(resolve, delay));
-            delay = Math.min(delay * 1.5, 15000);
           }
         }
       }

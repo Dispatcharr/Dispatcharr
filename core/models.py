@@ -536,6 +536,7 @@ class CoreSettings(models.Model):
             "m3u_hash_key": "",
             "default_output_format": "mpegts",
             "hdhr_output_profile_id": None,
+            "hdhr_output_format": "mpegts",
         })
 
     @classmethod
@@ -845,6 +846,8 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "stream_startup_timeout": 8,
+            "connection_timeout": 10,
             "validate_redirect_urls": True,
         })
 
@@ -876,6 +879,7 @@ class CoreSettings(models.Model):
             "log_max_mb": DEFAULT_LOG_MB,
             "log_keep": DEFAULT_LOG_KEEP,
             "log_persist": True,
+            "log_redact": True,
         })
 
     @classmethod
@@ -901,6 +905,20 @@ class CoreSettings(models.Model):
             return int(raw) if raw is not None else None
         except (ValueError, TypeError):
             return None
+
+    @classmethod
+    def get_hdhr_output_format(cls):
+        """HDHR output format, or None to inherit Default Output Format.
+
+        Missing, null, or invalid values default to mpegts. The explicit
+        sentinel ``system`` inherits the system Default Output Format.
+        """
+        raw = cls.get_stream_settings().get("hdhr_output_format")
+        if raw == "system":
+            return None
+        if raw in ("mpegts", "fmp4", "hls"):
+            return raw
+        return "mpegts"
 
     @classmethod
     def get_dvr_output_profile_id(cls):
@@ -981,6 +999,7 @@ class SystemNotification(models.Model):
         ANNOUNCEMENT = 'announcement', 'System Announcement'
         WARNING = 'warning', 'Warning'
         INFO = 'info', 'Information'
+        PLUGIN_UPDATE = 'plugin_update', 'Plugin Update Available'
 
     class Priority(models.TextChoices):
         LOW = 'low', 'Low'
@@ -991,6 +1010,7 @@ class SystemNotification(models.Model):
     class Source(models.TextChoices):
         SYSTEM = 'system', 'System Generated'
         DEVELOPER = 'developer', 'Developer Notification'
+        PLUGIN_MANIFEST = 'plugin_manifest', 'Plugin System Notification'
 
     # Unique identifier for the notification (e.g., 'version-0.19.0', 'setting-proxy-buffer')
     # This allows deduplication and targeted dismissals

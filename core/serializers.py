@@ -173,6 +173,8 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     )
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
+                if "log_redact" in value:
+                    value["log_redact"] = value["log_redact"] is not False
 
         if instance.key == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))
@@ -226,6 +228,8 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
+    stream_startup_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=8)
+    connection_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=10)
     validate_redirect_urls = serializers.BooleanField(required=False, default=True)
 
     def validate_buffering_timeout(self, value):
@@ -265,6 +269,20 @@ class ProxySettingsSerializer(serializers.Serializer):
     def validate_new_client_behind_seconds(self, value):
         if value < 0 or value > 120:
             raise serializers.ValidationError("New client buffer must be between 0 and 120 seconds")
+        return value
+
+    def validate_stream_startup_timeout(self, value):
+        if value < 1 or value > 120:
+            raise serializers.ValidationError(
+                "Stream startup timeout must be between 1 and 120 seconds"
+            )
+        return value
+
+    def validate_connection_timeout(self, value):
+        if value < 1 or value > 120:
+            raise serializers.ValidationError(
+                "Stream idle timeout must be between 1 and 120 seconds"
+            )
         return value
 
 

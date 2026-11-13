@@ -3,6 +3,9 @@ Constants used throughout the TS Proxy application.
 Centralizing constants makes it easier to maintain and modify them.
 """
 
+# Re-exported: live proxy modules import the packet size from here.
+from apps.proxy.ts_psi import TS_PACKET_SIZE  # noqa: F401
+
 # Redis related constants
 REDIS_KEY_PREFIX = "live"
 REDIS_TTL_DEFAULT = 3600  # 1 hour
@@ -23,6 +26,9 @@ class ChannelState:
     # States before a channel is fully active. Used by the stream manager
     # finally block to decide whether a failed stream can write ERROR.
     PRE_ACTIVE = frozenset([INITIALIZING, CONNECTING, BUFFERING, WAITING_FOR_CLIENTS])
+
+    # Startup / first-viewer wait. BUFFERING is mid-stream, so it is not here.
+    STARTUP = frozenset([INITIALIZING, CONNECTING, WAITING_FOR_CLIENTS])
 
 # Event types
 class EventType:
@@ -101,6 +107,8 @@ class ChannelMetadataField:
     SAMPLE_RATE = "sample_rate"
     AUDIO_CHANNELS = "audio_channels"
     AUDIO_BITRATE = "audio_bitrate"
+    AUDIO_LANGUAGE = "audio_language"
+    AUDIO_STREAMS = "audio_streams"
 
     # Stream format info
     STREAM_TYPE = "stream_type"
@@ -119,8 +127,6 @@ class ChannelMetadataField:
     CHUNKS_SENT = "chunks_sent"
     STATS_UPDATED_AT = "stats_updated_at"
 
-# TS packet constants
-TS_PACKET_SIZE = 188
 TS_SYNC_BYTE = 0x47
 NULL_PID_HIGH = 0x1F
 NULL_PID_LOW = 0xFF

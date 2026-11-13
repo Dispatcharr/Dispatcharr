@@ -175,18 +175,51 @@ export const RECURRING_DAY_OPTIONS = [
   { value: 5, label: 'Sat' },
 ];
 
+// Date format strings per Settings → UI → Date format preference.
+// - dateFormat: short prose date (guide day headers)
+// - dateYearFormat: prose date with year (DVR cards/modals, date pickers)
+// - fullDateFormat: numeric date (tables, logs)
+// - shortDateFormat: numeric date without year (system events)
+export const DATE_FORMAT_OPTIONS = [
+  { value: 'mdy', label: 'MM/DD/YYYY' },
+  { value: 'dmy', label: 'DD/MM/YYYY' },
+  { value: 'ymd', label: 'YYYY-MM-DD' },
+];
+
+const DATE_FORMATS = {
+  mdy: {
+    dateFormat: 'MMM D',
+    dateYearFormat: 'MMM D, YYYY',
+    fullDateFormat: 'MM/DD/YYYY',
+    shortDateFormat: 'MM/DD',
+  },
+  dmy: {
+    dateFormat: 'D MMM',
+    dateYearFormat: 'D MMM YYYY',
+    fullDateFormat: 'DD/MM/YYYY',
+    shortDateFormat: 'DD/MM',
+  },
+  // ISO 8601: the same unambiguous form everywhere, year included
+  ymd: {
+    dateFormat: 'YYYY-MM-DD',
+    dateYearFormat: 'YYYY-MM-DD',
+    fullDateFormat: 'YYYY-MM-DD',
+    shortDateFormat: 'YYYY-MM-DD',
+  },
+};
+
+export const getDateFormats = (dateFormatSetting) =>
+  DATE_FORMATS[dateFormatSetting] || DATE_FORMATS.mdy;
+
 export const useDateTimeFormat = () => {
   const [timeFormatSetting] = useBrowserStorage('time-format', '12h');
   const [dateFormatSetting] = useBrowserStorage('date-format', 'mdy');
   // Use user preference for time format
   const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
-  const dateYearFormat =
-    dateFormatSetting === 'mdy' ? 'MMM D, YYYY' : 'D MMM YYYY';
+  const { dateFormat, dateYearFormat, fullDateFormat, shortDateFormat } =
+    getDateFormats(dateFormatSetting);
 
   // Full format strings for detailed date-time displays
-  const fullDateFormat =
-    dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
   const fullTimeFormat = timeFormatSetting === '12h' ? 'h:mm:ss A' : 'HH:mm:ss';
   const fullDateTimeFormat = `${fullDateFormat}, ${fullTimeFormat}`;
 
@@ -195,6 +228,7 @@ export const useDateTimeFormat = () => {
     dateFormat,
     dateYearFormat,
     fullDateFormat,
+    shortDateFormat,
     fullTimeFormat,
     fullDateTimeFormat,
     // Also return raw settings for cases that need them
