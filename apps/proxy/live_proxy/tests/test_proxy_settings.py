@@ -36,6 +36,14 @@ class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
     def test_validate_redirect_urls_default(self, _mock_settings):
         self.assertTrue(TSConfig.get_validate_redirect_urls())
 
+    @patch.object(TSConfig, "get_proxy_settings", return_value={})
+    def test_max_retries_default(self, _mock_settings):
+        self.assertEqual(TSConfig.get_max_retries(), 3)
+
+    @patch.object(TSConfig, "get_proxy_settings", return_value={})
+    def test_stream_retry_timeout_default(self, _mock_settings):
+        self.assertEqual(TSConfig.get_stream_retry_timeout(), 3)
+
     @patch.object(
         TSConfig,
         "get_proxy_settings",
@@ -45,6 +53,8 @@ class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
             "stream_startup_timeout": 5,
             "connection_timeout": 12,
             "validate_redirect_urls": False,
+            "max_retries": 5,
+            "stream_retry_timeout": 10,
         },
     )
     def test_settings_override_db_values(self, _mock_settings):
@@ -53,6 +63,8 @@ class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
         self.assertEqual(TSConfig.get_stream_startup_timeout(), 5)
         self.assertEqual(TSConfig.get_connection_timeout(), 12)
         self.assertFalse(TSConfig.get_validate_redirect_urls())
+        self.assertEqual(TSConfig.get_max_retries(), 5)
+        self.assertEqual(TSConfig.get_stream_retry_timeout(), 10)
 
 
 class HealthInactivityThresholdTests(SimpleTestCase):
@@ -77,9 +89,7 @@ class HealthInactivityThresholdTests(SimpleTestCase):
     @patch.object(ConfigHelper, "channel_init_grace_period", return_value=60)
     @patch.object(ConfigHelper, "stream_startup_timeout", return_value=8)
     @patch.object(ConfigHelper, "connection_timeout", return_value=10)
-    def test_no_other_stream_and_empty_buffer_waits_the_init_grace(
-        self, _conn, _startup, _grace
-    ):
+    def test_no_other_stream_and_empty_buffer_waits_the_init_grace(self, _conn, _startup, _grace):
         sm = self._manager(True)
         sm._startup_failover_exhausted = True
         sm.buffer = MagicMock(index=0)
@@ -88,9 +98,7 @@ class HealthInactivityThresholdTests(SimpleTestCase):
     @patch.object(ConfigHelper, "channel_init_grace_period", return_value=60)
     @patch.object(ConfigHelper, "stream_startup_timeout", return_value=8)
     @patch.object(ConfigHelper, "connection_timeout", return_value=10)
-    def test_no_other_stream_but_buffer_has_data_uses_connection_timeout(
-        self, _conn, _startup, _grace
-    ):
+    def test_no_other_stream_but_buffer_has_data_uses_connection_timeout(self, _conn, _startup, _grace):
         sm = self._manager(True)
         sm._startup_failover_exhausted = True
         sm.buffer = MagicMock(index=4)
@@ -99,9 +107,7 @@ class HealthInactivityThresholdTests(SimpleTestCase):
     @patch.object(ConfigHelper, "channel_init_grace_period", return_value=60)
     @patch.object(ConfigHelper, "stream_startup_timeout", return_value=8)
     @patch.object(ConfigHelper, "connection_timeout", return_value=10)
-    def test_connection_that_sent_data_never_uses_the_init_grace(
-        self, _conn, _startup, _grace
-    ):
+    def test_connection_that_sent_data_never_uses_the_init_grace(self, _conn, _startup, _grace):
         sm = self._manager(False)
         sm._startup_failover_exhausted = True
         sm.buffer = MagicMock(index=0)
@@ -121,6 +127,8 @@ class ProxySettingsSerializerTests(SimpleTestCase):
             "stream_startup_timeout": 8,
             "connection_timeout": 10,
             "validate_redirect_urls": True,
+            "max_retries": 3,
+            "stream_retry_timeout": 3,
         }
         payload.update(overrides)
         return payload
@@ -131,9 +139,7 @@ class ProxySettingsSerializerTests(SimpleTestCase):
         self.assertEqual(serializer.validated_data["channel_client_wait_period"], 5)
 
     def test_accepts_validate_redirect_urls_false(self):
-        serializer = ProxySettingsSerializer(
-            data=self._valid_payload(validate_redirect_urls=False)
-        )
+        serializer = ProxySettingsSerializer(data=self._valid_payload(validate_redirect_urls=False))
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertFalse(serializer.validated_data["validate_redirect_urls"])
 
@@ -153,36 +159,60 @@ class ProxySettingsSerializerTests(SimpleTestCase):
         self.assertEqual(serializer.validated_data["stream_startup_timeout"], 8)
         self.assertEqual(serializer.validated_data["connection_timeout"], 10)
 
+    def test_accepts_max_retries(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(max_retries=5))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["max_retries"], 5)
+
+    def test_accepts_stream_retry_timeout(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(stream_retry_timeout=15))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["stream_retry_timeout"], 15)
+
+    def test_max_retries_defaults_to_3_when_omitted(self):
+        payload = self._valid_payload()
+        payload.pop("max_retries")
+        serializer = ProxySettingsSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["max_retries"], 3)
+
+    def test_stream_retry_timeout_defaults_to_3_when_omitted(self):
+        payload = self._valid_payload()
+        payload.pop("stream_retry_timeout")
+        serializer = ProxySettingsSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["stream_retry_timeout"], 3)
+
+    def test_max_retries_rejects_negative(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(max_retries=-1))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("max_retries", serializer.errors)
+
+    def test_stream_retry_timeout_rejects_negative(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(stream_retry_timeout=-1))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("stream_retry_timeout", serializer.errors)
+
     def test_init_grace_period_allows_up_to_300(self):
-        serializer = ProxySettingsSerializer(
-            data=self._valid_payload(channel_init_grace_period=300)
-        )
+        serializer = ProxySettingsSerializer(data=self._valid_payload(channel_init_grace_period=300))
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_init_grace_period_rejects_above_300(self):
-        serializer = ProxySettingsSerializer(
-            data=self._valid_payload(channel_init_grace_period=301)
-        )
+        serializer = ProxySettingsSerializer(data=self._valid_payload(channel_init_grace_period=301))
         self.assertFalse(serializer.is_valid())
         self.assertIn("channel_init_grace_period", serializer.errors)
 
     def test_connection_timeout_rejects_above_120(self):
-        serializer = ProxySettingsSerializer(
-            data=self._valid_payload(connection_timeout=121)
-        )
+        serializer = ProxySettingsSerializer(data=self._valid_payload(connection_timeout=121))
         self.assertFalse(serializer.is_valid())
         self.assertIn("connection_timeout", serializer.errors)
 
     def test_connection_timeout_allows_120(self):
-        serializer = ProxySettingsSerializer(
-            data=self._valid_payload(connection_timeout=120)
-        )
+        serializer = ProxySettingsSerializer(data=self._valid_payload(connection_timeout=120))
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_stream_startup_timeout_rejects_zero(self):
-        serializer = ProxySettingsSerializer(
-            data=self._valid_payload(stream_startup_timeout=0)
-        )
+        serializer = ProxySettingsSerializer(data=self._valid_payload(stream_startup_timeout=0))
         self.assertFalse(serializer.is_valid())
         self.assertIn("stream_startup_timeout", serializer.errors)
 
@@ -196,6 +226,8 @@ class CoreSettingsProxyDefaultsTests(TestCase):
         self.assertEqual(defaults["stream_startup_timeout"], 8)
         self.assertEqual(defaults["connection_timeout"], 10)
         self.assertTrue(defaults["validate_redirect_urls"])
+        self.assertEqual(defaults["max_retries"], 3)
+        self.assertEqual(defaults["stream_retry_timeout"], 3)
 
 
 class Migration0026ProxySettingsTests(TestCase):

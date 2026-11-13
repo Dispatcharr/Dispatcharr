@@ -1,25 +1,9 @@
 # core/serializers.py
-import json
 import ipaddress
+import json
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
-from dispatcharr.utils import validate_proxy_auth_header
-from .models import (
-    CoreSettings,
-    UserAgent,
-    StreamProfile,
-    OutputProfile,
-    DVR_SETTINGS_KEY,
-    EPG_DAYS_LIMIT,
-    EPG_HISTORY_MAX_DAYS_DEFAULT,
-    EPG_HISTORY_MIN_DAYS_DEFAULT,
-    EPG_SETTINGS_KEY,
-    NETWORK_ACCESS_KEY,
-    SYSTEM_SETTINGS_KEY,
-    REVERSE_PROXY_AUTH_KEY,
-)
-from .utils import clamp_int
 
 from dispatcharr.log_collector import (
     DEFAULT_LOG_KEEP,
@@ -27,6 +11,23 @@ from dispatcharr.log_collector import (
     MAX_LOG_KEEP,
     MAX_LOG_MB,
 )
+from dispatcharr.utils import validate_proxy_auth_header
+
+from .models import (
+    DVR_SETTINGS_KEY,
+    EPG_DAYS_LIMIT,
+    EPG_HISTORY_MAX_DAYS_DEFAULT,
+    EPG_HISTORY_MIN_DAYS_DEFAULT,
+    EPG_SETTINGS_KEY,
+    NETWORK_ACCESS_KEY,
+    REVERSE_PROXY_AUTH_KEY,
+    SYSTEM_SETTINGS_KEY,
+    CoreSettings,
+    OutputProfile,
+    StreamProfile,
+    UserAgent,
+)
+from .utils import clamp_int
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -115,13 +116,9 @@ def _clamp_epg_history_fields(value):
             0,
             EPG_DAYS_LIMIT,
         )
-        value["epg_default_prev_days"] = clamp_int(
-            value["epg_default_prev_days"], 0, 0, max_days
-        )
+        value["epg_default_prev_days"] = clamp_int(value["epg_default_prev_days"], 0, 0, max_days)
     if "epg_default_days" in value:
-        value["epg_default_days"] = clamp_int(
-            value["epg_default_days"], 0, 0, EPG_DAYS_LIMIT
-        )
+        value["epg_default_days"] = clamp_int(value["epg_default_days"], 0, 0, EPG_DAYS_LIMIT)
 
 
 class CoreSettingsSerializer(serializers.ModelSerializer):
@@ -164,13 +161,9 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
             value = validated_data.get("value")
             if isinstance(value, dict):
                 if "log_max_mb" in value:
-                    value["log_max_mb"] = clamp_int(
-                        value["log_max_mb"], DEFAULT_LOG_MB, 1, MAX_LOG_MB
-                    )
+                    value["log_max_mb"] = clamp_int(value["log_max_mb"], DEFAULT_LOG_MB, 1, MAX_LOG_MB)
                 if "log_keep" in value:
-                    value["log_keep"] = clamp_int(
-                        value["log_keep"], DEFAULT_LOG_KEEP, 2, MAX_LOG_KEEP
-                    )
+                    value["log_keep"] = clamp_int(value["log_keep"], DEFAULT_LOG_KEEP, 2, MAX_LOG_KEEP)
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
                 if "log_redact" in value:
@@ -190,8 +183,7 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {
                         "message": (
-                            "Invalid header name. Use letters, digits and dashes "
-                            "only (for example X-Forwarded-User)."
+                            "Invalid header name. Use letters, digits and dashes only (for example X-Forwarded-User)."
                         ),
                         "value": header,
                     }
@@ -206,11 +198,7 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
             value = validated_data.get("value")
             if isinstance(value, dict) and "series_rules" in value:
                 rules = value["series_rules"]
-                value["series_rules"] = (
-                    [r for r in rules if isinstance(r, dict)]
-                    if isinstance(rules, list)
-                    else []
-                )
+                value["series_rules"] = [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
 
         result = super().update(instance, validated_data)
 
@@ -219,8 +207,10 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
 
         return result
 
+
 class ProxySettingsSerializer(serializers.Serializer):
     """Serializer for proxy settings stored as JSON in CoreSettings"""
+
     buffering_timeout = serializers.IntegerField(min_value=0, max_value=300)
     buffering_speed = serializers.FloatField(min_value=0.1, max_value=10.0)
     redis_chunk_ttl = serializers.IntegerField(min_value=10, max_value=3600)
@@ -231,6 +221,8 @@ class ProxySettingsSerializer(serializers.Serializer):
     stream_startup_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=8)
     connection_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=10)
     validate_redirect_urls = serializers.BooleanField(required=False, default=True)
+    max_retries = serializers.IntegerField(min_value=0, max_value=100, required=False, default=3)
+    stream_retry_timeout = serializers.IntegerField(min_value=0, max_value=300, required=False, default=3)
 
     def validate_buffering_timeout(self, value):
         if value < 0 or value > 300:
@@ -254,16 +246,12 @@ class ProxySettingsSerializer(serializers.Serializer):
 
     def validate_channel_init_grace_period(self, value):
         if value < 0 or value > 300:
-            raise serializers.ValidationError(
-                "Channel initialization timeout must be between 0 and 300 seconds"
-            )
+            raise serializers.ValidationError("Channel initialization timeout must be between 0 and 300 seconds")
         return value
 
     def validate_channel_client_wait_period(self, value):
         if value < 0 or value > 300:
-            raise serializers.ValidationError(
-                "Client connect grace period must be between 0 and 300 seconds"
-            )
+            raise serializers.ValidationError("Client connect grace period must be between 0 and 300 seconds")
         return value
 
     def validate_new_client_behind_seconds(self, value):
@@ -273,46 +261,54 @@ class ProxySettingsSerializer(serializers.Serializer):
 
     def validate_stream_startup_timeout(self, value):
         if value < 1 or value > 120:
-            raise serializers.ValidationError(
-                "Stream startup timeout must be between 1 and 120 seconds"
-            )
+            raise serializers.ValidationError("Stream startup timeout must be between 1 and 120 seconds")
         return value
 
     def validate_connection_timeout(self, value):
         if value < 1 or value > 120:
-            raise serializers.ValidationError(
-                "Stream idle timeout must be between 1 and 120 seconds"
-            )
+            raise serializers.ValidationError("Stream idle timeout must be between 1 and 120 seconds")
+        return value
+
+    def validate_max_retries(self, value):
+        if value < 0 or value > 100:
+            raise serializers.ValidationError("Max retries must be between 0 and 100")
+        return value
+
+    def validate_stream_retry_timeout(self, value):
+        if value < 0 or value > 300:
+            raise serializers.ValidationError("Stream retry timeout must be between 0 and 300 seconds")
         return value
 
 
 class SystemNotificationSerializer(serializers.ModelSerializer):
     """Serializer for system notifications."""
+
     is_dismissed = serializers.SerializerMethodField()
 
     class Meta:
         from .models import SystemNotification
+
         model = SystemNotification
         fields = [
-            'id',
-            'notification_key',
-            'notification_type',
-            'priority',
-            'title',
-            'message',
-            'action_data',
-            'is_active',
-            'admin_only',
-            'expires_at',
-            'created_at',
-            'is_dismissed',
-            'source',
+            "id",
+            "notification_key",
+            "notification_type",
+            "priority",
+            "title",
+            "message",
+            "action_data",
+            "is_active",
+            "admin_only",
+            "expires_at",
+            "created_at",
+            "is_dismissed",
+            "source",
         ]
-        read_only_fields = ['created_at']
+        read_only_fields = ["created_at"]
 
     def get_is_dismissed(self, obj):
         """Check if the current user has dismissed this notification."""
-        request = self.context.get('request')
+        request = self.context.get("request")
         if request and request.user.is_authenticated:
             return obj.dismissals.filter(user=request.user).exists()
         return False
@@ -323,6 +319,7 @@ class NotificationDismissalSerializer(serializers.ModelSerializer):
 
     class Meta:
         from .models import NotificationDismissal
+
         model = NotificationDismissal
-        fields = ['id', 'notification', 'dismissed_at', 'action_taken']
-        read_only_fields = ['dismissed_at']
+        fields = ["id", "notification", "dismissed_at", "action_taken"]
+        read_only_fields = ["dismissed_at"]
