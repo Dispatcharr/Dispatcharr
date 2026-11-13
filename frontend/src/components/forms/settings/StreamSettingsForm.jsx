@@ -224,6 +224,19 @@ const StreamSettingsForm = React.memo(({ active }) => {
             .filter((p) => p.is_active)
             .map((p) => ({ value: `${p.id}`, label: p.name }))}
         />
+        <Select
+          {...form.getInputProps('hdhr_output_format')}
+          id="hdhr_output_format"
+          name="hdhr_output_format"
+          label="HDHR Default Output Format"
+          description="Override Default Output Format for HDHR stream URLs. Most HDHR clients expect MPEG-TS."
+          data={[
+            { value: 'system', label: 'System Default' },
+            { value: 'mpegts', label: 'MPEG-TS' },
+            { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+            { value: 'hls', label: 'HLS' },
+          ]}
+        />
 
         <MultiSelect
           id="m3u_hash_key"
