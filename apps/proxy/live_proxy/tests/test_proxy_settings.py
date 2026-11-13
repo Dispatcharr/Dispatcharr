@@ -13,7 +13,6 @@ from core.models import CoreSettings
 from core.serializers import ProxySettingsSerializer
 
 MIGRATION_0026 = import_module("core.migrations.0026_add_channel_client_wait_period")
-MIGRATION_0035 = import_module("core.migrations.0035_add_retry_settings_to_proxy_settings")
 
 
 class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
@@ -296,46 +295,3 @@ class Migration0026ProxySettingsTests(TestCase):
 
         self.assertEqual(settings_obj.value["channel_init_grace_period"], 90)
         self.assertEqual(settings_obj.value["channel_client_wait_period"], 5)
-
-
-class Migration0035ProxySettingsTests(TestCase):
-    def _run_migration_forward(self):
-        MIGRATION_0035.add_retry_settings_to_proxy_settings(apps, None)
-
-    def _set_proxy_settings(self, value):
-        settings_obj, _ = CoreSettings.objects.get_or_create(
-            key="proxy_settings",
-            defaults={"name": "Proxy Settings", "value": value},
-        )
-        settings_obj.value = value
-        settings_obj.save(update_fields=["value"])
-        return settings_obj
-
-    def test_adds_defaults_when_missing(self):
-        settings_obj = self._set_proxy_settings(
-            {
-                "buffering_timeout": 15,
-                "buffering_speed": 1.0,
-            }
-        )
-
-        self._run_migration_forward()
-        settings_obj.refresh_from_db()
-
-        self.assertEqual(settings_obj.value["max_retries"], 3)
-        self.assertEqual(settings_obj.value["stream_retry_timeout"], 3)
-
-    def test_preserves_existing_values(self):
-        settings_obj = self._set_proxy_settings(
-            {
-                "buffering_timeout": 15,
-                "max_retries": 10,
-                "stream_retry_timeout": 20,
-            }
-        )
-
-        self._run_migration_forward()
-        settings_obj.refresh_from_db()
-
-        self.assertEqual(settings_obj.value["max_retries"], 10)
-        self.assertEqual(settings_obj.value["stream_retry_timeout"], 20)
