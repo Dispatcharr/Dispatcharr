@@ -48,7 +48,13 @@ const STATUS_OPTIONS = [
   { value: 'interrupted', label: 'Interrupted' },
 ];
 
-const RECORDING_GRID_COLS = { base: 1, '36rem': 2, '62rem': 3 };
+const RECORDING_GRID_COLS = {
+  base: 1,
+  '36rem': 2,
+  '62rem': 3,
+  '96rem': 4,
+  '124rem': 5,
+};
 
 const RecordingList = ({
   list,
@@ -325,11 +331,7 @@ const DVRPage = () => {
                 : inProgress.length}
             </Badge>
           </Group>
-          <SimpleGrid
-            type="container"
-            cols={RECORDING_GRID_COLS}
-            spacing="md"
-          >
+          <SimpleGrid type="container" cols={RECORDING_GRID_COLS} spacing="md">
             {
               <RecordingList
                 list={filteredInProgress}
@@ -358,11 +360,7 @@ const DVRPage = () => {
                 : upcoming.length}
             </Badge>
           </Group>
-          <SimpleGrid
-            type="container"
-            cols={RECORDING_GRID_COLS}
-            spacing="md"
-          >
+          <SimpleGrid type="container" cols={RECORDING_GRID_COLS} spacing="md">
             {
               <RecordingList
                 list={filteredUpcoming}
@@ -391,11 +389,7 @@ const DVRPage = () => {
                 : completed.length}
             </Badge>
           </Group>
-          <SimpleGrid
-            type="container"
-            cols={RECORDING_GRID_COLS}
-            spacing="md"
-          >
+          <SimpleGrid type="container" cols={RECORDING_GRID_COLS} spacing="md">
             {
               <RecordingList
                 list={filteredCompleted}
