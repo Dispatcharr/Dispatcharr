@@ -55,9 +55,7 @@ class LiveStreamHeadProbeTests(SimpleTestCase):
         self._assert_no_stream_started(mock_proxy_cls)
 
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    def test_head_does_not_claim_container_for_hls(
-        self, mock_get_stream_object, mock_proxy_cls, *_
-    ):
+    def test_head_reports_hls(self, mock_get_stream_object, mock_proxy_cls, *_):
         mock_get_stream_object.return_value = self._channel()
 
         from apps.proxy.live_proxy.views import stream_ts
@@ -65,7 +63,7 @@ class LiveStreamHeadProbeTests(SimpleTestCase):
         response = stream_ts(self._request("?output_format=hls"), "channel-uuid")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/octet-stream")
+        self.assertEqual(response["Content-Type"], "application/vnd.apple.mpegurl")
         self._assert_no_stream_started(mock_proxy_cls)
 
     @patch("apps.proxy.live_proxy.views._resolve_output_format")

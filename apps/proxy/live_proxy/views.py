@@ -493,14 +493,17 @@ def stream_ts(
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
 
-        # Media servers (e.g. Jellyfin's M3U tuner) probe extensionless URLs with
-        # HEAD to learn the container. Answer without starting a stream.
+        # HEAD reports the resolved output container without registering a
+        # client or opening upstream. HLS GET still redirects to a session
+        # playlist; HEAD only advertises the type. Redirect profiles stay
+        # octet-stream because this URL does not know the upstream container.
         if request.method == "HEAD":
             content_type = "application/octet-stream"
             if not channel.get_stream_profile().is_redirect():
                 content_type = {
                     "mpegts": "video/mp2t",
                     "fmp4": "video/mp4",
+                    "hls": "application/vnd.apple.mpegurl",
                 }.get(
                     _resolve_output_format(user, force_output_format, request),
                     content_type,
