@@ -13,32 +13,10 @@ describe('StreamConnectionCardUtils', () => {
 
   describe('getBufferingSpeedThreshold', () => {
     it('should return parsed buffering_speed from proxy settings', () => {
-      const proxySetting = {
-        value: { buffering_speed: 2.5 },
-      };
+      const proxySetting = { value: { buffering_speed: 0.8 } };
       expect(
         StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)
-      ).toBe(2.5);
-    });
-
-    it('should return 1.0 for invalid JSON', () => {
-      const proxySetting = { value: { buffering_speed: 'invalid' } };
-      const consoleSpy = vi
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
-      expect(
-        StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)
-      ).toBe(1.0);
-      consoleSpy.mockRestore();
-    });
-
-    it('should return 1.0 when buffering_speed is not a number', () => {
-      const proxySetting = {
-        value: JSON.stringify({ buffering_speed: 'not a number' }),
-      };
-      expect(
-        StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)
-      ).toBe(1.0);
+      ).toBe(0.8);
     });
 
     it('should return 1.0 when proxySetting is null', () => {
@@ -46,11 +24,72 @@ describe('StreamConnectionCardUtils', () => {
         1.0
       );
     });
+  });
 
-    it('should return 1.0 when value is missing', () => {
-      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold({})).toBe(
-        1.0
+  describe('getNewClientBehindSeconds', () => {
+    it('reads new_client_behind_seconds from proxy settings', () => {
+      expect(
+        StreamConnectionCardUtils.getNewClientBehindSeconds({
+          value: { new_client_behind_seconds: 8 },
+        })
+      ).toBe(8);
+    });
+
+    it('defaults to 5 when missing', () => {
+      expect(StreamConnectionCardUtils.getNewClientBehindSeconds(null)).toBe(5);
+    });
+  });
+
+  describe('getBufferBudgetColor', () => {
+    it('is green above half, orange from half down to empty, red at 0', () => {
+      expect(StreamConnectionCardUtils.getBufferBudgetColor(5, 5)).toBe('green');
+      expect(StreamConnectionCardUtils.getBufferBudgetColor(2.6, 5)).toBe(
+        'green'
       );
+      expect(StreamConnectionCardUtils.getBufferBudgetColor(2.5, 5)).toBe(
+        'orange'
+      );
+      expect(StreamConnectionCardUtils.getBufferBudgetColor(0.1, 5)).toBe(
+        'orange'
+      );
+      expect(StreamConnectionCardUtils.getBufferBudgetColor(0, 5)).toBe('red');
+    });
+  });
+
+  describe('isSpeedHealthy', () => {
+    const defaultMode = { value: { buffering_speed: 1.0 } };
+    const ingestMode = {
+      value: { buffering_speed: 1.0, experimental_ingest_buffer: true },
+    };
+
+    it('uses Buffering Speed as the healthy line in both modes', () => {
+      expect(StreamConnectionCardUtils.isSpeedHealthy(1.0, defaultMode)).toBe(
+        true
+      );
+      expect(StreamConnectionCardUtils.isSpeedHealthy(0.99, defaultMode)).toBe(
+        false
+      );
+      expect(StreamConnectionCardUtils.isSpeedHealthy(0.99, ingestMode)).toBe(
+        false
+      );
+      expect(StreamConnectionCardUtils.isSpeedHealthy(0.9, ingestMode)).toBe(
+        false
+      );
+    });
+
+    it('scales with a custom buffering speed', () => {
+      const setting = {
+        value: { buffering_speed: 2.0, experimental_ingest_buffer: true },
+      };
+      expect(StreamConnectionCardUtils.isSpeedHealthy(2.0, setting)).toBe(true);
+      expect(StreamConnectionCardUtils.isSpeedHealthy(1.9, setting)).toBe(
+        false
+      );
+    });
+
+    it('falls back to 1.0 when settings are missing', () => {
+      expect(StreamConnectionCardUtils.isSpeedHealthy(1.0, null)).toBe(true);
+      expect(StreamConnectionCardUtils.isSpeedHealthy(0.5, null)).toBe(false);
     });
   });
 

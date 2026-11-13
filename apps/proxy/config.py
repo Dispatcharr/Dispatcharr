@@ -17,7 +17,7 @@ class BaseConfig:
     MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up
     FAILOVER_ROTATION_COOLDOWN = 60 # Wait this long after exhausting all streams before wrapping back to the top.
     BUFFER_CHUNK_SIZE = 188 * 1361  # ~256KB
-    BUFFERING_TIMEOUT = 15  # Seconds to wait for buffering before switching streams
+    BUFFERING_TIMEOUT = 15  # Seconds to wait in buffering before switching streams
     BUFFER_SPEED = 1 # What speed to condsider the stream buffering, 1x is normal speed, 2x is double speed, etc.
 
     # Cache for proxy settings (class-level, shared across all instances).
@@ -54,6 +54,7 @@ class BaseConfig:
             return {
                 "buffering_timeout": 15,
                 "buffering_speed": 1.0,
+                "experimental_ingest_buffer": False,
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 60,
@@ -158,6 +159,12 @@ class TSConfig(BaseConfig):
         """Get buffering speed threshold from database or default"""
         settings = cls.get_proxy_settings()
         return settings.get("buffering_speed", 1.0)
+
+    @classmethod
+    def get_experimental_ingest_buffer(cls):
+        """Use MPEG-TS ingest buffer detection instead of FFmpeg speed."""
+        settings = cls.get_proxy_settings()
+        return bool(settings.get("experimental_ingest_buffer", False))
 
     @classmethod
     def get_channel_init_grace_period(cls):

@@ -46,7 +46,9 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 vi.mock('../../../utils/cards/StreamConnectionCardUtils.js', () => ({
   connectedAccessor: vi.fn(() => () => '01/01/2024 10:00 AM'),
   durationAccessor: vi.fn(() => () => '5m 30s'),
-  getBufferingSpeedThreshold: vi.fn(() => 0.9),
+  isSpeedHealthy: vi.fn((speed) => speed >= 1),
+  getBufferBudgetColor: vi.fn(() => 'green'),
+  getNewClientBehindSeconds: vi.fn(() => 5),
   getChannelStreams: vi.fn(() => Promise.resolve([])),
   getLogoUrl: vi.fn(() => null),
   getM3uAccountsMap: vi.fn(() => ({})),
@@ -453,25 +455,33 @@ describe('StreamConnectionCard', () => {
       expect(screen.queryByText('1920x1080')).not.toBeInTheDocument();
     });
 
-    it('renders ffmpeg_speed badge with green color when above threshold', () => {
-      render(
-        <StreamConnectionCard
-          {...defaultProps({ channel: makeChannel({ ffmpeg_speed: '1.10' }) })}
-        />
-      );
+    it('colors the speed badge green at or above the buffering speed', () => {
+      render(<StreamConnectionCard {...defaultProps()} />);
       const badges = screen.getAllByTestId('badge');
-      const speedBadge = badges.find((b) => b.textContent === '1.10x');
+      const speedBadge = badges.find((b) => b.textContent === '1.05x');
       expect(speedBadge).toHaveAttribute('data-color', 'green');
     });
 
-    it('renders ffmpeg_speed badge with red color when below threshold', () => {
+    it('colors the speed badge red below the buffering speed', () => {
       render(
         <StreamConnectionCard
-          {...defaultProps({ channel: makeChannel({ ffmpeg_speed: '0.50' }) })}
+          {...defaultProps({ channel: makeChannel({ ffmpeg_speed: '0.40' }) })}
         />
       );
       const badges = screen.getAllByTestId('badge');
-      const speedBadge = badges.find((b) => b.textContent === '0.50x');
+      const speedBadge = badges.find((b) => b.textContent === '0.40x');
+      expect(speedBadge).toHaveAttribute('data-color', 'red');
+    });
+
+    it('shows the speed badge when numeric speed is zero', () => {
+      render(
+        <StreamConnectionCard
+          {...defaultProps({ channel: makeChannel({ ffmpeg_speed: 0 }) })}
+        />
+      );
+      const badges = screen.getAllByTestId('badge');
+      const speedBadge = badges.find((b) => b.textContent === '0.00x');
+      expect(speedBadge).toBeTruthy();
       expect(speedBadge).toHaveAttribute('data-color', 'red');
     });
   });

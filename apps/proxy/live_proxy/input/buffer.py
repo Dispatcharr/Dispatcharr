@@ -84,11 +84,22 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         self.stopping = False
         self.fill_timers = []
         self.chunk_available = gevent.event.Event()
+        # Optional callable(packet_bytes, wall=...) for ingest lag. Wall is
+        # stamped when this socket payload arrives; the bytes are the complete
+        # TS packets formed from that payload. Redis write is unrelated.
+        # Called outside self.lock.
+        self.on_packets_received = None
+        self._hook_failure_logged = False
 
     def add_chunk(self, chunk):
         """Add data with optimized Redis storage and TS packet alignment"""
         if not chunk or self.stopping:
             return False
+
+        # Stamp only when ingest detection is listening. The wall time has to
+        # be the socket arrival, before the Redis write below.
+        hook = self.on_packets_received
+        arrival_wall = time.time() if hook is not None else None
 
         try:
             # Accumulate partial packets between chunks
@@ -97,6 +108,7 @@ class StreamBuffer(DiscontinuitySidecarMixin):
 
             # Lock the full operation to prevent race with reset_buffer_position
             writes_done = 0
+            sample_packets = None
             with self.lock:
                 # Combine with any previous partial packet
                 combined_data = bytearray(self._partial_packet) + bytearray(chunk)
@@ -118,6 +130,11 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                         complete_packets, self._disc_stamped_pids
                     )
 
+                # Ingest sample uses only what this socket read completed, not
+                # the Redis-sized coalesce waiting in _write_buffer.
+                if hook is not None:
+                    sample_packets = complete_packets
+
                 # Add completed packets to write buffer
                 self._write_buffer.extend(complete_packets)
 
@@ -130,6 +147,25 @@ class StreamBuffer(DiscontinuitySidecarMixin):
 
             if writes_done > 0:
                 logger.debug(f"Added {writes_done} chunks ({self.target_chunk_size} bytes each) to Redis for channel {self.channel_id} at index {self.index}")
+
+            if sample_packets is not None and hook is not None:
+                try:
+                    hook(sample_packets, wall=arrival_wall)
+                except Exception as e:
+                    # A broken hook must never stall ingest. Say so once at
+                    # warning level (it silently disables detection), then
+                    # keep later repeats quiet.
+                    if not self._hook_failure_logged:
+                        self._hook_failure_logged = True
+                        logger.warning(
+                            f"Packet receive hook failed for channel {self.channel_id}: {e}",
+                            exc_info=True,
+                        )
+                        self.on_packets_received = None
+                    else:
+                        logger.debug(
+                            f"Packet receive hook failed for channel {self.channel_id}: {e}"
+                        )
 
             self.chunk_available.set()  # Signal that new data is available
             self.chunk_available.clear()  # Reset for next notification

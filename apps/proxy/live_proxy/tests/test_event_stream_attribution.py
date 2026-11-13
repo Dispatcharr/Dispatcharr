@@ -23,34 +23,76 @@ def _calls_for(mock_log, event_type):
     return [c for c in mock_log.call_args_list if c.args and c.args[0] == event_type]
 
 
-STALLED_LINE = (
-    "frame=100 fps=30 q=28.0 size=1024kB time=00:00:03.00 "
-    "bitrate=500.0kbits/s speed=0.5x"
-)
-HEALTHY_LINE = (
-    "frame=100 fps=30 q=28.0 size=1024kB time=00:00:03.00 "
-    "bitrate=500.0kbits/s speed=1.0x"
-)
-
-
 class BufferingEventAttributionTests(SimpleTestCase):
-    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
-    def test_buffering_start_names_current_stream(self, _update_stats):
+    def test_buffering_start_names_current_stream(self):
         sm = _make_stream_manager(_DictRedis())
         sm.buffering = False
         sm.buffering_start_time = None
         sm.current_stream_id = 100
 
         with patch("apps.proxy.live_proxy.input.manager.log_system_event") as mock_log:
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
 
         (call,) = _calls_for(mock_log, "channel_buffering")
         self.assertEqual(call.kwargs["channel_id"], CHANNEL_ID)
         self.assertEqual(call.kwargs["stream_id"], 100)
         self.assertEqual(call.kwargs["speed"], 0.5)
 
-    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
-    def test_buffering_timeout_failover_names_failed_and_new_stream(self, _update_stats):
+    def test_buffering_start_includes_empty_for_and_speed_context(self):
+        sm = _make_stream_manager(_DictRedis())
+        sm.buffering = False
+        sm.buffering_start_time = None
+        sm.current_stream_id = 100
+
+        with patch("apps.proxy.live_proxy.input.manager.log_system_event") as mock_log:
+            sm._update_buffering_state(True, speed=0.94, empty_for=1.18)
+
+        (call,) = _calls_for(mock_log, "channel_buffering")
+        self.assertEqual(call.kwargs["speed"], 0.94)
+        self.assertEqual(call.kwargs["empty_for"], 1.18)
+        self.assertNotIn("since_last_buffering", call.kwargs)
+
+    def test_since_last_buffering_is_set_on_a_second_trip_for_the_same_stream(self):
+        sm = _make_stream_manager(_DictRedis())
+        sm.buffering = False
+        sm.buffering_start_time = None
+        sm.current_stream_id = 100
+        clock = [1_000.0]
+
+        with patch("apps.proxy.live_proxy.input.manager.time") as mock_time, patch(
+            "apps.proxy.live_proxy.input.manager.log_system_event"
+        ) as mock_log:
+            mock_time.time.side_effect = lambda: clock[0]
+            sm._update_buffering_state(True, speed=0.8, empty_for=1.0)
+            sm.buffering = False
+            sm.buffering_start_time = None
+            clock[0] = 1_045.5
+            sm._update_buffering_state(True, speed=0.7, empty_for=1.25)
+
+        calls = _calls_for(mock_log, "channel_buffering")
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("since_last_buffering", calls[0].kwargs)
+        self.assertEqual(calls[1].kwargs["since_last_buffering"], 45.5)
+        self.assertEqual(calls[1].kwargs["empty_for"], 1.25)
+        self.assertEqual(calls[1].kwargs["speed"], 0.7)
+
+    def test_since_last_buffering_is_omitted_when_the_stream_changed(self):
+        sm = _make_stream_manager(_DictRedis())
+        sm.buffering = False
+        sm.buffering_start_time = None
+        sm.current_stream_id = 100
+
+        with patch("apps.proxy.live_proxy.input.manager.log_system_event") as mock_log:
+            sm._update_buffering_state(True, speed=0.8)
+            sm.buffering = False
+            sm.buffering_start_time = None
+            sm.current_stream_id = 200
+            sm._update_buffering_state(True, speed=0.9)
+
+        calls = _calls_for(mock_log, "channel_buffering")
+        self.assertNotIn("since_last_buffering", calls[1].kwargs)
+
+    def test_buffering_timeout_failover_names_failed_and_new_stream(self):
         sm = _make_stream_manager(_DictRedis())
         sm.current_stream_id = 100
 
@@ -67,7 +109,7 @@ class BufferingEventAttributionTests(SimpleTestCase):
             "apps.proxy.live_proxy.input.manager.log_system_event"
         ) as mock_log:
             mock_time.time.return_value = 10.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
 
         self.assertEqual(try_next.call_args.kwargs["reason"], "buffering_timeout")
         (call,) = _calls_for(mock_log, "channel_failover")
@@ -80,10 +122,7 @@ class BufferingEventAttributionTests(SimpleTestCase):
         self.assertEqual(call.kwargs["duration"], 10.0)
         self.assertEqual(_calls_for(mock_log, "channel_error"), [])
 
-    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
-    def test_failover_omits_previous_names_when_stalled_stream_not_captured(
-        self, _update_stats
-    ):
+    def test_failover_omits_previous_names_when_stalled_stream_not_captured(self):
         sm = _make_stream_manager(_DictRedis())
         sm.current_stream_id = 100
 
@@ -97,17 +136,16 @@ class BufferingEventAttributionTests(SimpleTestCase):
             "apps.proxy.live_proxy.input.manager.log_system_event"
         ) as mock_log:
             mock_time.time.return_value = 10.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
 
         (call,) = _calls_for(mock_log, "channel_failover")
         self.assertEqual(call.kwargs["previous_stream_id"], 100)
         self.assertNotIn("previous_stream_name", call.kwargs)
         self.assertNotIn("previous_provider_name", call.kwargs)
 
-    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
     @patch.object(StreamManager, "_try_next_stream", return_value=False)
     def test_buffering_timeout_without_switch_logs_error_against_stalled_stream(
-        self, _try_next, _update_stats
+        self, _try_next
     ):
         sm = _make_stream_manager(_DictRedis())
         sm.current_stream_id = 100
@@ -116,7 +154,7 @@ class BufferingEventAttributionTests(SimpleTestCase):
             "apps.proxy.live_proxy.input.manager.log_system_event"
         ) as mock_log:
             mock_time.time.return_value = 10.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
 
         (call,) = _calls_for(mock_log, "channel_error")
         self.assertEqual(call.kwargs["channel_id"], CHANNEL_ID)
@@ -126,9 +164,8 @@ class BufferingEventAttributionTests(SimpleTestCase):
         self.assertEqual(_calls_for(mock_log, "channel_failover"), [])
         self.assertTrue(sm.buffering)
 
-    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
     @patch.object(StreamManager, "_try_next_stream", return_value=False)
-    def test_buffering_timeout_error_is_logged_once_per_stall(self, try_next, _update_stats):
+    def test_buffering_timeout_error_is_logged_once_per_stall(self, try_next):
         sm = _make_stream_manager(_DictRedis())
         sm.current_stream_id = 100
         clock = [10.0]
@@ -138,23 +175,21 @@ class BufferingEventAttributionTests(SimpleTestCase):
         ) as mock_log:
             mock_time.time.side_effect = lambda: clock[0]
 
-            # Stall persists past the timeout across several stats lines.
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
             clock[0] = 11.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
             clock[0] = 11.5
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
             self.assertEqual(len(_calls_for(mock_log, "channel_error")), 1)
             self.assertEqual(try_next.call_count, 3)
 
-            # Speed recovers, then a new stall times out again.
             clock[0] = 12.0
-            sm._parse_ffmpeg_stats(HEALTHY_LINE)
+            sm._update_buffering_state(False, speed=1.0)
             self.assertFalse(sm.buffering)
             clock[0] = 13.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
             clock[0] = 15.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
 
         errors = _calls_for(mock_log, "channel_error")
         self.assertEqual(len(errors), 2)
@@ -162,11 +197,8 @@ class BufferingEventAttributionTests(SimpleTestCase):
             self.assertEqual(call.kwargs["stream_id"], 100)
             self.assertEqual(call.kwargs["error_type"], "buffering_timeout")
 
-    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
     @patch.object(StreamManager, "_try_next_stream", return_value=False)
-    def test_buffering_timeout_error_fires_again_for_new_stream(
-        self, _try_next, _update_stats
-    ):
+    def test_buffering_timeout_error_fires_again_for_new_stream(self, _try_next):
         sm = _make_stream_manager(_DictRedis())
         sm.current_stream_id = 100
         clock = [10.0]
@@ -176,26 +208,22 @@ class BufferingEventAttributionTests(SimpleTestCase):
         ) as mock_log:
             mock_time.time.side_effect = lambda: clock[0]
 
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
             self.assertEqual(len(_calls_for(mock_log, "channel_error")), 1)
             self.assertEqual(sm.buffering_timeout_error_stream_id, 100)
 
-            # Stream changed during the stall (for example via update_url). The
-            # guard is keyed by stream id, so the new stream still gets an error
-            # even if the flag was not cleared.
             sm.current_stream_id = 200
             sm.buffering_start_time = 0.0
             clock[0] = 11.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
 
         errors = _calls_for(mock_log, "channel_error")
         self.assertEqual([c.kwargs["stream_id"] for c in errors], [100, 200])
         self.assertEqual(sm.buffering_timeout_error_stream_id, 200)
 
-    @patch.object(StreamManager, "_update_ffmpeg_stats_in_redis")
     @patch.object(StreamManager, "_try_next_stream", return_value=False)
     def test_buffering_timeout_error_logs_once_when_stream_id_is_missing(
-        self, _try_next, _update_stats
+        self, _try_next
     ):
         sm = _make_stream_manager(_DictRedis())
         sm.current_stream_id = None
@@ -205,9 +233,9 @@ class BufferingEventAttributionTests(SimpleTestCase):
             "apps.proxy.live_proxy.input.manager.log_system_event"
         ) as mock_log:
             mock_time.time.side_effect = lambda: clock[0]
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
             clock[0] = 11.0
-            sm._parse_ffmpeg_stats(STALLED_LINE)
+            sm._update_buffering_state(True, speed=0.5)
 
         errors = _calls_for(mock_log, "channel_error")
         self.assertEqual(len(errors), 1)
@@ -224,19 +252,29 @@ def _make_switchable_manager(current_stream_id=100, url="http://current", redis_
     sm.transcode = False
     sm.socket = None
     sm.connected = True
+    sm.running = True
+    sm.stopping = False
     sm.current_stream_id = current_stream_id
     sm.tried_stream_ids = {current_stream_id} if current_stream_id else set()
     sm.url_switching = False
     sm.url_switch_start_time = None
+    sm.url_switch_timeout = 20
+    sm.buffering = False
+    sm.buffering_start_time = None
     sm._smoothed_output_bitrate = None
     sm._last_bitrate_db_save_time = 0
     sm._bitrate_warmup_samples = 10
     sm._had_successful_connection = True
     sm._failover_rotation_passes = 0
     sm._rotation_cooldown_until = None
+    sm._startup_failover_exhausted = False
+    sm._connection_awaiting_data = False
     sm.buffering_timeout_error_stream_id = StreamManager._NO_BUFFERING_TIMEOUT_ERROR
+    sm._init_ingest_lag_state()
     sm.buffer = MagicMock()
     sm.buffer.redis_client = redis_client if redis_client is not None else _DictRedis()
+    sm.buffer.channel_id = CHANNEL_ID
+    sm.buffer.mark_discontinuity = MagicMock()
     return sm
 
 

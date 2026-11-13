@@ -35,12 +35,18 @@ export const PROXY_SETTINGS_OPTIONS = {
   buffering_timeout: {
     label: 'Buffering Timeout',
     description:
-      'Maximum time (in seconds) to wait for buffering before switching streams',
+      'Maximum time (in seconds) to stay in buffering before switching streams.',
+  },
+  experimental_ingest_buffer: {
+    label: 'Experimental ingest buffer detection',
+    type: 'boolean',
+    description:
+      'Off by default. When on, hard buffering uses MPEG-TS cushion debt (empty New Client Buffer held for 1s) from socket-arrival PTS/PCR, not FFmpeg lifetime speed. Buffering Speed still colors the Current Speed badge. Applies the next time a channel starts.',
   },
   buffering_speed: {
     label: 'Buffering Speed',
     description:
-      'Speed threshold below which buffering is detected (1.0 = normal speed)',
+      'Speed threshold for the Current Speed badge and for FFmpeg-based buffering when experimental ingest detection is off (1.0 = normal speed). Not the experimental debt trip line.',
   },
   stream_startup_timeout: {
     label: 'Stream Startup Timeout',
@@ -80,7 +86,7 @@ export const PROXY_SETTINGS_OPTIONS = {
   new_client_behind_seconds: {
     label: 'New Client Buffer (seconds)',
     description:
-      'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
+      'Seconds of received buffer to start behind live when a new client connects (0 = start at live; chunk receive time, not video duration). When experimental ingest buffer detection is on, this is also the cushion runway measured from the live PTS before hard buffering can start.',
   },
   validate_redirect_urls: {
     label: 'Validate Redirect URLs',

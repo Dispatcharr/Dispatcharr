@@ -221,6 +221,7 @@ class ProxySettingsSerializer(serializers.Serializer):
     """Serializer for proxy settings stored as JSON in CoreSettings"""
     buffering_timeout = serializers.IntegerField(min_value=0, max_value=300)
     buffering_speed = serializers.FloatField(min_value=0.1, max_value=10.0)
+    experimental_ingest_buffer = serializers.BooleanField(required=False, default=False)
     redis_chunk_ttl = serializers.IntegerField(min_value=10, max_value=3600)
     channel_shutdown_delay = serializers.IntegerField(min_value=0, max_value=300)
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)

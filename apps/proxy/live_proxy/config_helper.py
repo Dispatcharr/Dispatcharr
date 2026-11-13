@@ -126,6 +126,11 @@ class ConfigHelper:
         return Config.get_buffering_speed()
 
     @staticmethod
+    def experimental_ingest_buffer():
+        """True when MPEG-TS ingest buffer detection is enabled."""
+        return Config.get_experimental_ingest_buffer()
+
+    @staticmethod
     def channel_init_grace_period():
         """Max seconds to wait for initial buffer fill during channel startup."""
         return Config.get_channel_init_grace_period()

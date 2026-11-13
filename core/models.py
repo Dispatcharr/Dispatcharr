@@ -840,6 +840,7 @@ class CoreSettings(models.Model):
         return cls._get_group(PROXY_SETTINGS_KEY, {
             "buffering_timeout": 15,
             "buffering_speed": 1.0,
+            "experimental_ingest_buffer": False,
             "redis_chunk_ttl": 60,
             "channel_shutdown_delay": 0,
             "channel_init_grace_period": 60,

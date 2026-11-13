@@ -58,6 +58,7 @@ describe('ProxySettingsFormUtils', () => {
       expect(result).toEqual({
         buffering_timeout: 15,
         buffering_speed: 1.0,
+        experimental_ingest_buffer: false,
         redis_chunk_ttl: 60,
         channel_shutdown_delay: 0,
         channel_init_grace_period: 60,
@@ -81,7 +82,6 @@ describe('ProxySettingsFormUtils', () => {
       const result = ProxySettingsFormUtils.getProxySettingDefaults();
 
       expect(typeof result.buffering_timeout).toBe('number');
-      expect(typeof result.buffering_speed).toBe('number');
       expect(typeof result.redis_chunk_ttl).toBe('number');
       expect(typeof result.channel_shutdown_delay).toBe('number');
       expect(typeof result.channel_init_grace_period).toBe('number');

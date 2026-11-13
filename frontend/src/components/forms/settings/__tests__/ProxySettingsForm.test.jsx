@@ -11,7 +11,12 @@ vi.mock('../../../../constants.js', () => ({
     },
     buffering_speed: {
       label: 'Buffering Speed',
-      description: 'Speed multiplier',
+      description: 'Speed threshold',
+    },
+    experimental_ingest_buffer: {
+      label: 'Experimental ingest buffer detection',
+      type: 'boolean',
+      description: 'Use MPEG-TS ingest timing',
     },
     redis_url: { label: 'Redis URL', description: 'Redis connection URL' },
     redis_chunk_ttl: {
@@ -131,17 +136,16 @@ import {
 // ──────────────────────────────────────────────────────────────────────────────
 const mockInitialValues = {
   buffering_timeout: 30,
-  buffering_speed: 1.0,
   redis_url: 'redis://localhost:6379',
 };
 
 const mockDefaults = {
   buffering_timeout: 30,
-  buffering_speed: 1.0,
   redis_url: '',
 };
 
 const makeFormMock = (overrides = {}) => ({
+  values: { experimental_ingest_buffer: false },
   getInputProps: vi.fn((field) => ({
     value: mockInitialValues[field] ?? '',
     onChange: vi.fn(),
@@ -204,11 +208,13 @@ describe('ProxySettingsForm', () => {
       ).toBeInTheDocument();
     });
 
-    it('renders NumberInput for buffering_speed', () => {
+    it('keeps buffering speed a 0.01-step decimal input capped at 10', () => {
+      // Backend accepts 0.1 to 10.0. The generic whole-number branch would give
+      // it step 1 and max 300.
       render(<ProxySettingsForm active={true} />);
-      expect(
-        screen.getByTestId('number-input-Buffering Speed')
-      ).toBeInTheDocument();
+      const input = screen.getByTestId('number-input-Buffering Speed');
+      expect(input).toHaveAttribute('step', '0.01');
+      expect(input).toHaveAttribute('max', '10');
     });
 
     it('renders TextInput for redis_url', () => {
@@ -387,6 +393,10 @@ describe('ProxySettingsForm', () => {
       render(<ProxySettingsForm active={true} />);
       expect(formMock.getInputProps).toHaveBeenCalledWith('buffering_timeout');
       expect(formMock.getInputProps).toHaveBeenCalledWith('buffering_speed');
+      expect(formMock.getInputProps).toHaveBeenCalledWith(
+        'experimental_ingest_buffer',
+        { type: 'checkbox' }
+      );
       expect(formMock.getInputProps).toHaveBeenCalledWith('redis_url');
     });
 

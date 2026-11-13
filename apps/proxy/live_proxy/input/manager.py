@@ -12,6 +12,17 @@ from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
 from .buffer import StreamBuffer
+from .ingest_lag import (
+    ADOPT_CUSHION_SECONDS,
+    CLUSTER_GAP_SECONDS,
+    JOIN_DENSE_SAMPLE_SECONDS,
+    IngestLagTracker,
+)
+from ..ts_clock import (
+    last_clock_on_pid,
+    sample_media_clock,
+    sample_media_clock_for_relock,
+)
 from ..utils import detect_stream_type, get_logger, signal_process_tree
 from ..redis_keys import RedisKeys
 from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
@@ -32,6 +43,9 @@ class StreamManager:
 
     # Distinct from a missing stream id (None), which can still time out once.
     _NO_BUFFERING_TIMEOUT_ERROR = object()
+    # Experimental ingest detection state. None means the feature is off, and
+    # __init__ replaces it only when the setting is on.
+    ingest_lag = None
     # VLC has no end-of-probe marker. Buffer its stream info and write the DB
     # once stderr has been quiet this long, and again when the reader exits.
     _VLC_DB_FLUSH_DELAY = 1.5
@@ -71,12 +85,26 @@ class StreamManager:
         self.buffering = False
         self.buffering_timeout = ConfigHelper.buffering_timeout()
         self.buffering_speed = ConfigHelper.buffering_speed()
+        self.experimental_ingest_buffer = ConfigHelper.experimental_ingest_buffer()
         self.buffering_start_time = None
+        self._buffering_state_written_at = 0.0
+        self._last_buffering_event_at = None
+        self._last_buffering_event_stream_id = None
         # Stream id for which a buffering_timeout channel_error was already logged.
         # Lets each stalled stream emit once without repeating on every stats line.
         self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
         # Store worker_id for ownership checks
         self.worker_id = worker_id
+        # Tracker, timers, and the socket hook only when experimental detection
+        # is on. The off path must not allocate or sample PTS.
+        if self.experimental_ingest_buffer:
+            self.new_client_behind_seconds = ConfigHelper.new_client_behind_seconds()
+            self.cushion_trip_seconds = IngestLagTracker.cushion_trip_seconds(
+                self.new_client_behind_seconds
+            )
+            self._init_ingest_lag_state()
+            if buffer is not None:
+                buffer.on_packets_received = self._on_packets_received
 
         # Sockets used for transcode jobs
         self.socket = None
@@ -1344,6 +1372,606 @@ class StreamManager:
         except Exception as e:
             logger.error(f"Error logging stderr content for channel {self.channel_id}: {e}")
 
+    # While armed, re-check recent delivery rate on this cadence. Under
+    # threshold (or already buffering) poll faster so confirm/recovery can
+    # clear a false slow latch before buffering_timeout.
+    _INGEST_GAP_POLL_SECONDS = 1.0
+    _INGEST_GAP_POLL_FAST_SECONDS = 0.25
+    # Adaptive PTS sample cadence: every packet for a short join open /
+    # after a gap, then ease toward the target. Unarmed catch-up uses a
+    # tighter target so a long dump is still visible without scanning every
+    # socket read on a continuous feed. Armed steady state is 100ms.
+    _INGEST_SAMPLE_TARGET = 0.10
+    _INGEST_JOIN_SAMPLE_TARGET = 0.05
+    _INGEST_SAMPLE_MAX = 0.25
+    _INGEST_SAMPLE_ADAPT = 0.2
+    # Sample-driven evaluation is capped here. The settle timer and the gap
+    # poll always evaluate, and a finished burst or timeline break forces one,
+    # so decisions (which hold for 1s or more) lose nothing.
+    _INGEST_EVAL_MIN_SECONDS = 0.25
+    # The Current Speed badge needs no more than one Redis write per second.
+    _INGEST_SPEED_PUBLISH_MIN_SECONDS = 1.0
+    # After the buffering timeout, retry failover at most this often. Each
+    # attempt reads the alternate streams from the database.
+    _BUFFERING_FAILOVER_RETRY_SECONDS = 1.0
+    # While latched, re-assert the BUFFERING label this often so another
+    # writer (for example a cancelled shutdown) cannot leave it stale.
+    _BUFFERING_STATE_REFRESH_SECONDS = 1.0
+    # Instance __init__ replaces these. Class defaults cover tests that build
+    # a manager with __new__ and call _update_buffering_state directly.
+    _buffering_state_written_at = 0.0
+    _last_buffering_event_at = None
+    _last_buffering_event_stream_id = None
+
+    def _init_ingest_lag_state(self):
+        """Create the MPEG-TS ingest lag tracker and timers."""
+        self.ingest_lag = IngestLagTracker(adopt_floor=ADOPT_CUSHION_SECONDS)
+        self._ingest_timer = None
+        self._ingest_gap_timer = None
+        self._ingest_last_sample_wall = None
+        self._ingest_last_eval_wall = None
+        # 0 = every packet; climbs toward _INGEST_SAMPLE_TARGET after arm.
+        self._ingest_sample_interval = 0.0
+        self._last_published_ingest_speed = None
+        self._last_ingest_speed_publish_wall = None
+        self._last_published_cushion_remaining = None
+        self._evaluating_ingest = False
+        self._buffering_failover_running = False
+        self._buffering_failover_last_attempt = 0.0
+
+    def _ingest_sample_target(self, tracker):
+        """Sample spacing once the dense join open is over."""
+        if tracker.is_armed:
+            return self._INGEST_SAMPLE_TARGET
+        return self._INGEST_JOIN_SAMPLE_TARGET
+
+    def _ingest_sample_due(self, tracker, wall):
+        """Adaptive gate: dense at join open / after gaps, then back off.
+
+        Successful samples ease the interval toward the join or steady-state
+        target. A cluster-sized quiet always forces a sample and resets the
+        interval so the next burst is fully visible again.
+        """
+        last = self._ingest_last_sample_wall
+        if last is None:
+            return True
+        gap = wall - last
+        if gap >= CLUSTER_GAP_SECONDS:
+            return True
+        if not tracker.is_armed:
+            # Dense only for the opening slice so a short dump is measured.
+            # Continuous catch-up then uses the join cadence, not every read.
+            elapsed = tracker.join_wall_elapsed(wall)
+            if elapsed is None or elapsed < JOIN_DENSE_SAMPLE_SECONDS:
+                return True
+        return gap >= self._ingest_sample_interval
+
+    def _adapt_ingest_sample_interval(self, tracker, *, after_gap=False):
+        """Move sample spacing toward the join or armed target, or reopen after a gap."""
+        if after_gap:
+            self._ingest_sample_interval = 0.0
+            return
+        if not tracker.is_armed:
+            elapsed = tracker.join_wall_elapsed(self._ingest_last_sample_wall)
+            if elapsed is None or elapsed < JOIN_DENSE_SAMPLE_SECONDS:
+                self._ingest_sample_interval = 0.0
+                return
+        cur = self._ingest_sample_interval
+        target = self._ingest_sample_target(tracker)
+        alpha = self._INGEST_SAMPLE_ADAPT
+        nxt = (1.0 - alpha) * cur + alpha * target
+        self._ingest_sample_interval = min(self._INGEST_SAMPLE_MAX, max(0.0, nxt))
+
+    def _on_packets_received(self, packet_data, wall=None):
+        """Follow the MPEG-TS media clock for packets just formed from the socket.
+
+        ``wall`` is stamped when that socket payload arrived, before Redis work.
+        Mid-burst samples only update the open cluster; cushion burn is decided
+        when a burst settles (and while idle after that). Runs on the reading
+        greenlet, outside the buffer lock.
+        """
+        tracker = self.ingest_lag
+        if tracker is None:
+            return
+        if wall is None:
+            wall = time.time()
+        if not self._ingest_sample_due(tracker, wall):
+            return
+        last = self._ingest_last_sample_wall
+        after_gap = last is not None and (wall - last) >= CLUSTER_GAP_SECONDS
+        armed_before = tracker.is_armed
+        released_clock = False
+        pid = tracker.locked_pid
+        if pid is None:
+            media, kind, pid = sample_media_clock(packet_data)
+        else:
+            kind = tracker.locked_kind
+            media = last_clock_on_pid(packet_data, pid, kind)
+            # After a PTS jump the old PID may be gone. Relock onto whatever
+            # clock this batch actually carries instead of sampling nothing
+            # until reconnect.
+            if media is None and tracker.clock_loose:
+                former = pid
+                alt_media, alt_kind, alt_pid = sample_media_clock_for_relock(
+                    packet_data, former_pid=former
+                )
+                if alt_media is not None:
+                    if alt_pid != former or alt_kind != kind:
+                        # A different clock PID starts a new timeline.
+                        tracker.reset()
+                        released_clock = True
+                    media, kind, pid = alt_media, alt_kind, alt_pid
+        if media is None:
+            # A clockless read must not consume the sample slot, or the next
+            # packet (the one that has the PTS) would be skipped.
+            return
+        self._ingest_last_sample_wall = wall
+        finished_cluster = tracker.observe(wall, media, kind, pid)
+        # Hard PTS discontinuity or PID relock after a jump disarms without
+        # _reset_ingest_lag. Clear the latch and stale cushion so a healthy new
+        # timeline is not stuck until buffering timeout.
+        timeline_break = released_clock or (
+            armed_before and not tracker.is_armed
+        )
+        if timeline_break:
+            if self.buffering:
+                self._update_buffering_state(False)
+            self._clear_published_ingest_stats()
+        self._adapt_ingest_sample_interval(tracker, after_gap=after_gap)
+        self._arm_ingest_quiet_timer()
+        # Publish speed as soon as we have intervals (including join catch-up),
+        # and keep the 1s poll for silence / refresh.
+        has_rate = tracker.has_rate
+        if has_rate or tracker.is_armed:
+            self._arm_ingest_gap_timer()
+        self._evaluate_after_sample(
+            tracker, wall, force=finished_cluster or timeline_break
+        )
+
+    def _evaluate_after_sample(self, tracker, wall, force=False):
+        """Run the decision after a sample, capped for continuous feeds.
+
+        A continuous feed samples about ten times a second, and the decision
+        holds for a second or more, so ``_INGEST_EVAL_MIN_SECONDS`` apart is
+        plenty. A finished burst or a timeline break (``force``) always runs.
+        """
+        if not force:
+            if not tracker.has_rate:
+                return
+            last = self._ingest_last_eval_wall
+            if last is not None and (wall - last) < self._INGEST_EVAL_MIN_SECONDS:
+                return
+        self._ingest_last_eval_wall = wall
+        self._evaluate_ingest_lag(now=wall)
+
+    def _arm_ingest_quiet_timer(self):
+        """Settle a burst when it goes quiet instead of when the next one arrives."""
+        if self._ingest_timer is not None or self.stopping:
+            return
+        self._ingest_timer = gevent.spawn_later(CLUSTER_GAP_SECONDS, self._on_ingest_quiet)
+
+    def _on_ingest_quiet(self):
+        self._ingest_timer = None
+        if self.stopping or not self.running:
+            return
+        tracker = self.ingest_lag
+        deadline = tracker.quiet_deadline
+        if deadline is None:
+            if tracker.is_armed:
+                self._arm_ingest_gap_timer()
+            return
+        now = time.time()
+        if now < deadline:
+            self._ingest_timer = gevent.spawn_later(deadline - now, self._on_ingest_quiet)
+            return
+        if tracker.settle(now):
+            self._evaluate_ingest_lag()
+        if tracker.is_armed:
+            self._arm_ingest_gap_timer()
+
+    def _ingest_gap_poll_delay(self, tracker, now=None):
+        """Faster polls while cushion debt is rising or already buffering."""
+        if self.buffering:
+            return self._INGEST_GAP_POLL_FAST_SECONDS
+        eval_now = time.time() if now is None else now
+        debt = tracker.cushion_debt(now=eval_now)
+        # Speed up once any real debt is on the board (quarter of the trip line).
+        if debt >= IngestLagTracker.cushion_clear_seconds(self.cushion_trip_seconds):
+            return self._INGEST_GAP_POLL_FAST_SECONDS
+        return self._INGEST_GAP_POLL_SECONDS
+
+    def _arm_ingest_gap_timer(self):
+        """Poll delivery rate; speed up while under threshold / buffering."""
+        if self.stopping or not self.running or self._ingest_gap_timer is not None:
+            return
+        tracker = self.ingest_lag
+        if not tracker.is_armed and not tracker.has_rate:
+            return
+        delay = self._ingest_gap_poll_delay(tracker)
+        self._ingest_gap_timer = gevent.spawn_later(delay, self._on_ingest_gap_poll)
+
+    def _cancel_ingest_gap_timer(self):
+        timer = self._ingest_gap_timer
+        if timer is None:
+            return
+        try:
+            timer.kill()
+        except Exception:
+            pass
+        self._ingest_gap_timer = None
+
+    def _on_ingest_gap_poll(self):
+        self._ingest_gap_timer = None
+        if self.stopping or not self.running:
+            return
+        tracker = self.ingest_lag
+        if not tracker.is_armed and not tracker.has_rate:
+            return
+        now = time.time()
+        tracker.project_silence(now)
+        self._evaluate_ingest_lag(now=now)
+        self._arm_ingest_gap_timer()
+
+    def _persist_join_prebuffer_if_pending(self, tracker):
+        """Save the join dump cushion on the stream when it is measured or adopted.
+
+        It is the record of how far behind live the provider starts us. The
+        write runs in its own greenlet so the read loop never waits on the
+        database, and it is attempted once per measurement.
+        """
+        if not tracker.join_prebuffer_pending or tracker.prebuffer is None:
+            return
+        stream_id = self.current_stream_id
+        if not stream_id:
+            return
+        seconds = round(float(tracker.prebuffer), 2)
+        tracker.mark_join_prebuffer_persisted()
+        gevent.spawn(self._write_join_prebuffer, stream_id, seconds)
+
+    def _write_join_prebuffer(self, stream_id, seconds):
+        try:
+            from ..services.channel_service import ChannelService
+
+            ChannelService._update_stream_stats_in_db(
+                stream_id, join_prebuffer_seconds=seconds
+            )
+        except Exception as e:
+            logger.debug(
+                f"Could not persist join prebuffer for channel {self.channel_id}: {e}"
+            )
+
+    def _evaluate_ingest_lag(self, now=None):
+        """Publish recent ingest speed and apply the buffering decision."""
+        if self.stopping or self._evaluating_ingest:
+            return
+        self._evaluating_ingest = True
+        try:
+            tracker = self.ingest_lag
+            eval_now = time.time() if now is None else now
+            self._persist_join_prebuffer_if_pending(tracker)
+            # Long-window delivery rate for the badge only. Trips use debt.
+            speed = tracker.recent_speed(now=eval_now)
+            trip = self.cushion_trip_seconds
+            if speed is not None:
+                # Badge reads this Redis field. Skip unchanged values, and write
+                # no more than once a second: a continuous feed lands about
+                # four evaluations a second and the long-window ratio drifts
+                # with every one.
+                rounded = round(float(speed), 3)
+                last_publish = self._last_ingest_speed_publish_wall
+                if rounded != self._last_published_ingest_speed and (
+                    last_publish is None
+                    or eval_now - last_publish >= self._INGEST_SPEED_PUBLISH_MIN_SECONDS
+                ):
+                    self._update_ffmpeg_stats_in_redis(speed, None, None, None)
+                    self._last_published_ingest_speed = rounded
+                    self._last_ingest_speed_publish_wall = eval_now
+
+            # Quiet settle / arm already seats debt. Ensure it before publish
+            # so the budget badge is not one tick late.
+            if tracker.rate_ready(now=eval_now):
+                tracker.ensure_debt_anchor()
+            # Redis writes yield. A PTS discontinuity on the reader greenlet can
+            # clear the latch and disarm during that yield, and a channel stop
+            # can begin, so the decision is made only after those publishes.
+            self._publish_cushion_remaining(tracker, now=eval_now)
+            if self.stopping:
+                return
+
+            empty_for = None
+            if self.buffering:
+                recovered = tracker.is_recovered(trip, now=eval_now)
+                # No debt anchor yet: cannot judge recovery, but stay latched so
+                # Buffering Timeout still runs in _update_buffering_state.
+                decision = True if recovered is None else not recovered
+            else:
+                # Unarmed after a discontinuity: do not open a new episode from
+                # a poll that started on the old timeline.
+                if not tracker.is_armed:
+                    return
+                slow = tracker.is_slow(trip, now=eval_now)
+                if slow is None:
+                    return
+                decision = slow
+                if decision:
+                    empty_for = tracker.empty_for_seconds(now=eval_now)
+            # Badge speed is context, not the trip cause. empty_for is how long
+            # the New Client Buffer stayed empty before this latch.
+            self._update_buffering_state(
+                decision,
+                speed=speed,
+                empty_for=empty_for,
+                failover_async=True,
+            )
+        finally:
+            self._evaluating_ingest = False
+
+    def _reset_ingest_lag(self, publish=True):
+        """Forget ingest history after a stream switch, reconnect, or stop.
+
+        ``publish=False`` is for stop: it only drops local state. Channel
+        teardown has already deleted the Redis metadata hash, so any write
+        here would recreate it as a stateless orphan.
+
+        A same-URL PTS discontinuity does not come through here. That path
+        disarms in the tracker and unlatches from ``_on_packets_received``.
+        """
+        tracker = self.ingest_lag
+        if tracker is None:
+            # Feature off: no tracker, timers, or published speed to clear.
+            return
+        timer = self._ingest_timer
+        if timer is not None:
+            try:
+                timer.kill()
+            except Exception:
+                pass
+            self._ingest_timer = None
+        self._cancel_ingest_gap_timer()
+        self._ingest_last_sample_wall = None
+        self._ingest_last_eval_wall = None
+        self._ingest_sample_interval = 0.0
+        tracker.reset()
+        if not publish:
+            self.buffering = False
+            self.buffering_start_time = None
+            return
+        if self.buffering:
+            self._update_buffering_state(False)
+        self._clear_published_ingest_stats()
+
+    def _clear_published_ingest_stats(self):
+        """Drop published ingest speed/budget so the card cannot show a prior timeline."""
+        self._last_published_ingest_speed = None
+        self._last_ingest_speed_publish_wall = None
+        self._last_published_cushion_remaining = None
+        try:
+            if hasattr(self.buffer, "redis_client") and self.buffer.redis_client:
+                metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                self.buffer.redis_client.hdel(
+                    metadata_key,
+                    ChannelMetadataField.FFMPEG_SPEED,
+                    ChannelMetadataField.CUSHION_REMAINING,
+                )
+        except Exception as e:
+            logger.debug(f"Could not clear ingest stats for channel {self.channel_id}: {e}")
+
+    def _update_buffering_state(
+        self,
+        is_buffering,
+        speed=None,
+        empty_for=None,
+        failover_async=False,
+    ):
+        """Enter, leave, or deepen buffering and optionally failover.
+
+        Shared by the FFmpeg stats path and MPEG-TS ingest detection.
+        ``failover_async`` spawns the next-stream attempt so the reader
+        greenlet is not blocked on URL switch work. ``empty_for`` is seconds
+        the New Client Buffer stayed empty before an experimental trip.
+        """
+        switched_after_buffering_timeout = False
+        was_buffering = self.buffering
+        if is_buffering:
+            if self.buffering:
+                now = time.time()
+                if self.buffering_start_time is None:
+                    self.buffering_start_time = now
+                else:
+                    buffering_duration = now - self.buffering_start_time
+                    if buffering_duration > self.buffering_timeout:
+                        logger.error(
+                            f"Buffering timeout reached for channel {self.channel_id} "
+                            f"after {buffering_duration:.1f} seconds"
+                        )
+                        failed_stream_id = self.current_stream_id
+                        previous_stream = {}
+                        if failover_async:
+                            # Ingest detection evaluates several times a second.
+                            # Without a retry interval a channel with no
+                            # alternate stream would hit the database that often.
+                            if (
+                                not self._buffering_failover_running
+                                and now - self._buffering_failover_last_attempt
+                                >= self._BUFFERING_FAILOVER_RETRY_SECONDS
+                            ):
+                                self._buffering_failover_running = True
+                                self._buffering_failover_last_attempt = now
+                                gevent.spawn(
+                                    self._buffering_timeout_failover,
+                                    buffering_duration,
+                                    failed_stream_id,
+                                    previous_stream,
+                                )
+                            switched_after_buffering_timeout = True
+                        elif self._try_next_stream(
+                            reason="buffering_timeout",
+                            previous_stream_info=previous_stream,
+                        ):
+                            self._after_buffering_failover(
+                                buffering_duration,
+                                failed_stream_id,
+                                previous_stream,
+                            )
+                            switched_after_buffering_timeout = True
+                        else:
+                            self._buffering_timeout_no_stream(failed_stream_id)
+            else:
+                self.buffering = True
+                now = time.time()
+                self.buffering_start_time = now
+                since_last = None
+                if (
+                    self._last_buffering_event_at is not None
+                    and self._last_buffering_event_stream_id
+                    == self.current_stream_id
+                ):
+                    since_last = round(now - self._last_buffering_event_at, 1)
+                empty_for_rounded = (
+                    None if empty_for is None else round(float(empty_for), 2)
+                )
+                speed_rounded = None if speed is None else round(float(speed), 3)
+                logger.warning(
+                    f"Buffering started for channel {self.channel_id}"
+                    + (f" - speed: {speed_rounded:.3f}x" if speed_rounded is not None else "")
+                    + (
+                        f" - empty for {empty_for_rounded:.2f}s"
+                        if empty_for_rounded is not None
+                        else ""
+                    )
+                )
+                try:
+                    log_system_event(
+                        "channel_buffering",
+                        channel_id=self.channel_id,
+                        channel_name=self.channel_name,
+                        **_present(
+                            stream_id=self.current_stream_id,
+                            speed=speed_rounded,
+                            empty_for=empty_for_rounded,
+                            since_last_buffering=since_last,
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(f"Could not log buffering event: {e}")
+                self._last_buffering_event_at = now
+                self._last_buffering_event_stream_id = self.current_stream_id
+
+            # Re-check the latch: logging the event can yield, and a
+            # discontinuity may have cleared it before this write.
+            if not switched_after_buffering_timeout and self.buffering:
+                if not was_buffering:
+                    if self.experimental_ingest_buffer:
+                        logger.debug(
+                            f"Ingest cushion empty on channel {self.channel_id}"
+                            " - buffering detected"
+                        )
+                    else:
+                        logger.debug(
+                            f"FFmpeg speed on channel {self.channel_id} is below "
+                            f"{self.buffering_speed}"
+                            + (f" ({speed:.2f}x)" if speed is not None else "")
+                            + " - buffering detected"
+                        )
+                # Written on the first trip and then refreshed about once a
+                # second, not on every call (ingest evaluates several times a
+                # second).
+                now = time.time()
+                if (
+                    not was_buffering
+                    or now - self._buffering_state_written_at
+                    >= self._BUFFERING_STATE_REFRESH_SECONDS
+                ):
+                    self._write_channel_state(ChannelState.BUFFERING)
+                    self._buffering_state_written_at = now
+        else:
+            if self.buffering:
+                logger.info(
+                    f"Buffering ended for channel {self.channel_id}"
+                    + (f" - speed: {speed:.2f}x" if speed is not None else "")
+                )
+                self.buffering = False
+                self.buffering_start_time = None
+                self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
+                self._write_channel_state(ChannelState.ACTIVE)
+
+    def _write_channel_state(self, state):
+        """Write the channel state to Redis unless the channel is being stopped.
+
+        ``stop_channel`` deletes the metadata hash before it stops this
+        manager. A late write would recreate the hash as a stateless orphan
+        that still reads as a running channel, or overwrite STOPPING.
+        """
+        if self.stopping:
+            return
+        redis_client = getattr(self.buffer, "redis_client", None)
+        if not redis_client:
+            return
+        redis_client.hset(
+            RedisKeys.channel_metadata(self.channel_id),
+            ChannelMetadataField.STATE,
+            state,
+        )
+
+    def _after_buffering_failover(self, buffering_duration, failed_stream_id, previous_stream):
+        logger.info(
+            f"Switched to next stream for channel {self.channel_id} after buffering timeout"
+        )
+        self.buffering = False
+        self.buffering_start_time = None
+        self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
+        # update_url (inside _try_next_stream) already reset the ingest tracker
+        # for the new stream. A second reset here could wipe a join measurement
+        # the new connection has already started.
+        self._write_channel_state(ChannelState.ACTIVE)
+        try:
+            log_system_event(
+                "channel_failover",
+                channel_id=self.channel_id,
+                channel_name=self.channel_name,
+                reason="buffering_timeout",
+                duration=buffering_duration,
+                **_present(
+                    previous_stream_id=failed_stream_id,
+                    previous_stream_name=previous_stream.get("stream_name"),
+                    previous_provider_name=previous_stream.get("provider_name"),
+                    stream_id=self.current_stream_id,
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Could not log failover event: {e}")
+
+    def _buffering_timeout_no_stream(self, failed_stream_id):
+        logger.error(
+            f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout"
+        )
+        if self.buffering_timeout_error_stream_id != failed_stream_id:
+            try:
+                log_system_event(
+                    "channel_error",
+                    channel_id=self.channel_id,
+                    channel_name=self.channel_name,
+                    error_type="buffering_timeout",
+                    **_present(stream_id=failed_stream_id),
+                )
+            except Exception as e:
+                logger.error(f"Could not log buffering timeout error event: {e}")
+            self.buffering_timeout_error_stream_id = failed_stream_id
+
+    def _buffering_timeout_failover(self, buffering_duration, failed_stream_id, previous_stream):
+        try:
+            if self._try_next_stream(
+                reason="buffering_timeout",
+                previous_stream_info=previous_stream,
+            ):
+                self._after_buffering_failover(
+                    buffering_duration, failed_stream_id, previous_stream
+                )
+            else:
+                self._buffering_timeout_no_stream(failed_stream_id)
+        finally:
+            self._buffering_failover_running = False
+
     def _parse_ffmpeg_stats(self, stats_line):
         """Parse FFmpeg stats line and extract speed, fps, and bitrate"""
         try:
@@ -1376,9 +2004,13 @@ class StreamManager:
             actual_fps = None
             if ffmpeg_fps is not None and ffmpeg_speed is not None and ffmpeg_speed > 0:
                 actual_fps = ffmpeg_fps / ffmpeg_speed
-            # Store in Redis if we have valid data
-            if any(x is not None for x in [ffmpeg_speed, ffmpeg_fps, actual_fps, ffmpeg_output_bitrate]):
-                self._update_ffmpeg_stats_in_redis(ffmpeg_speed, ffmpeg_fps, actual_fps, ffmpeg_output_bitrate)
+            # Experimental ingest detection owns buffering. Otherwise FFmpeg
+            # speed= is still the signal, and its value is published.
+            publish_speed = None if self.experimental_ingest_buffer else ffmpeg_speed
+            if any(x is not None for x in [publish_speed, ffmpeg_fps, actual_fps, ffmpeg_output_bitrate]):
+                self._update_ffmpeg_stats_in_redis(
+                    publish_speed, ffmpeg_fps, actual_fps, ffmpeg_output_bitrate
+                )
 
                 # Update local EMA and periodically flush to database
                 if ffmpeg_output_bitrate is not None and self.current_stream_id:
@@ -1403,125 +2035,54 @@ class StreamManager:
             # Fix the f-string formatting
             actual_fps_str = f"{actual_fps:.1f}" if actual_fps is not None else "N/A"
             ffmpeg_output_bitrate_str = f"{ffmpeg_output_bitrate:.1f}" if ffmpeg_output_bitrate is not None else "N/A"
-            # Log the stats
             logger.debug(f"FFmpeg stats for channel {self.channel_id}: - Speed: {ffmpeg_speed}x, FFmpeg FPS: {ffmpeg_fps}, "
                         f"Actual FPS: {actual_fps_str}, "
                         f"Output Bitrate: {ffmpeg_output_bitrate_str} kbps")
-            # If we have a valid speed, check for buffering
-            if ffmpeg_speed is not None and ffmpeg_speed < self.buffering_speed:
-                # When a buffering-timeout failover clears the in-memory flag, also
-                # clear Redis and skip the BUFFERING write below. Otherwise the same
-                # stats sample re-writes buffering after self.buffering is False, and
-                # the speed-good recovery path can never clear the Redis label again.
-                switched_after_buffering_timeout = False
-                if self.buffering:
-                    # Buffering is still ongoing, check for how long
-                    if self.buffering_start_time is None:
-                        self.buffering_start_time = time.time()
-                    else:
-                        buffering_duration = time.time() - self.buffering_start_time
-                        if buffering_duration > self.buffering_timeout:
-                            # Buffering timeout reached, log error and try next stream
-                            logger.error(f"Buffering timeout reached for channel {self.channel_id} after {buffering_duration:.1f} seconds")
-                            # Remember which stream stalled before switching away from it
-                            failed_stream_id = self.current_stream_id
-                            previous_stream = {}
-                            # Send next stream request
-                            if self._try_next_stream(reason='buffering_timeout', previous_stream_info=previous_stream):
-                                logger.info(f"Switched to next stream for channel {self.channel_id} after buffering timeout")
-                                # Reset buffering state
-                                self.buffering = False
-                                self.buffering_start_time = None
-                                self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
-                                switched_after_buffering_timeout = True
-
-                                # Clear the Redis buffering label.
-                                if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                                    metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                                    self.buffer.redis_client.hset(
-                                        metadata_key,
-                                        ChannelMetadataField.STATE,
-                                        ChannelState.ACTIVE,
-                                    )
-
-                                # Log failover event
-                                try:
-                                    log_system_event(
-                                        'channel_failover',
-                                        channel_id=self.channel_id,
-                                        channel_name=self.channel_name,
-                                        reason='buffering_timeout',
-                                        duration=buffering_duration,
-                                        **_present(
-                                            previous_stream_id=failed_stream_id,
-                                            previous_stream_name=previous_stream.get('stream_name'),
-                                            previous_provider_name=previous_stream.get('provider_name'),
-                                            stream_id=self.current_stream_id,
-                                        ),
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Could not log failover event: {e}")
-                            else:
-                                logger.error(f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout")
-
-                                # No stream_switch/channel_failover will follow; record the stall against
-                                # its stream once, not on every stats line while the speed stays low.
-                                # Key by stream id so a later stream that also stalls still gets an event.
-                                if self.buffering_timeout_error_stream_id != failed_stream_id:
-                                    try:
-                                        log_system_event(
-                                            'channel_error',
-                                            channel_id=self.channel_id,
-                                            channel_name=self.channel_name,
-                                            error_type='buffering_timeout',
-                                            **_present(stream_id=failed_stream_id),
-                                        )
-                                    except Exception as e:
-                                        logger.error(f"Could not log buffering timeout error event: {e}")
-                                    self.buffering_timeout_error_stream_id = failed_stream_id
-                else:
-                    # Buffering just started, set the flag and start timer
-                    self.buffering = True
-                    self.buffering_start_time = time.time()
-                    logger.warning(f"Buffering started for channel {self.channel_id} - speed: {ffmpeg_speed}x")
-
-                    # Log system event for buffering
-                    try:
-                        log_system_event(
-                            'channel_buffering',
-                            channel_id=self.channel_id,
-                            channel_name=self.channel_name,
-                            speed=ffmpeg_speed,
-                            **_present(stream_id=self.current_stream_id),
-                        )
-                    except Exception as e:
-                        logger.error(f"Could not log buffering event: {e}")
-
-                if not switched_after_buffering_timeout:
-                    # Log buffering warning
-                    logger.debug(f"FFmpeg speed on channel {self.channel_id} is below {self.buffering_speed} ({ffmpeg_speed}x) - buffering detected")
-                    # Set channel state to buffering
-                    if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                        metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                        self.buffer.redis_client.hset(metadata_key, ChannelMetadataField.STATE, ChannelState.BUFFERING)
-            elif ffmpeg_speed is not None and ffmpeg_speed >= self.buffering_speed:
-                # Speed is good, check if we were buffering
-                if self.buffering:
-                    # Reset buffering state
-                    logger.info(f"Buffering ended for channel {self.channel_id} - speed: {ffmpeg_speed}x")
-                    self.buffering = False
-                    self.buffering_start_time = None
-                    self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
-                    # Set channel state to active if speed is good
-                    if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                        metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                        self.buffer.redis_client.hset(metadata_key, ChannelMetadataField.STATE, ChannelState.ACTIVE)
+            if not self.experimental_ingest_buffer:
+                if ffmpeg_speed is not None and ffmpeg_speed < self.buffering_speed:
+                    self._update_buffering_state(
+                        True, speed=ffmpeg_speed, failover_async=False
+                    )
+                elif ffmpeg_speed is not None and ffmpeg_speed >= self.buffering_speed:
+                    self._update_buffering_state(
+                        False, speed=ffmpeg_speed, failover_async=False
+                    )
 
         except Exception as e:
             logger.debug(f"Error parsing FFmpeg stats: {e}")
 
+    def _publish_cushion_remaining(self, tracker, now=None):
+        """Publish New Client Buffer runway left for the live card budget badge."""
+        if self.stopping or not tracker.has_debt_anchor:
+            return
+        behind = float(self.new_client_behind_seconds or 0)
+        if behind <= 0:
+            # behind=0 starts at live; show a 1s synthetic budget around the floor trip.
+            behind = IngestLagTracker.cushion_trip_seconds(0) * 2
+        debt = float(tracker.cushion_debt(now=now))
+        remaining = max(0.0, behind - debt)
+        rounded = round(remaining, 1)
+        if rounded == self._last_published_cushion_remaining:
+            return
+        redis_client = getattr(self.buffer, "redis_client", None)
+        if not redis_client:
+            self._last_published_cushion_remaining = rounded
+            return
+        try:
+            metadata_key = RedisKeys.channel_metadata(self.channel_id)
+            redis_client.hset(
+                metadata_key,
+                ChannelMetadataField.CUSHION_REMAINING,
+                str(rounded),
+            )
+            self._last_published_cushion_remaining = rounded
+        except Exception as e:
+            logger.debug(
+                f"Could not publish cushion remaining for channel {self.channel_id}: {e}"
+            )
+
     def _update_ffmpeg_stats_in_redis(self, speed, fps, actual_fps, output_bitrate):
-        """Update FFmpeg performance stats in Redis metadata"""
+        """Update FFmpeg / ingest performance stats in Redis metadata."""
         try:
             if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 metadata_key = RedisKeys.channel_metadata(self.channel_id)
@@ -1688,6 +2249,8 @@ class StreamManager:
         self._invalidate_ownership_cache()
         if self.buffer is not None:
             self.buffer.stopping = True
+        # Local state only: stop_channel has already deleted the Redis metadata.
+        self._reset_ingest_lag(publish=False)
 
         # Cancel all buffer check timers
         for timer in list(self._buffer_check_timers):
@@ -1850,6 +2413,7 @@ class StreamManager:
                     self.buffer.reset_buffer_position()
                 except Exception as e2:
                     logger.warning(f"Failed to reset buffer position: {e2}")
+            self._reset_ingest_lag()
 
             # Log stream switch event
             try:
@@ -2062,6 +2626,9 @@ class StreamManager:
                     logger.warning(f"Some processes may still be running during reconnect for channel {self.channel_id}")
 
                 self.connected = False
+                # Same-URL reconnect is a new bitstream arrival. Drop the old
+                # PID lock and cushion so the next burst is measured cleanly.
+                self._reset_ingest_lag()
 
                 # Attempt to establish a new connection using the same URL
                 connection_result = False
