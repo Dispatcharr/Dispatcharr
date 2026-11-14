@@ -461,7 +461,7 @@ def _handle_redirect_stream(channel, channel_id, client_id, user, allowed_m3u_pr
             logger.warning(f"[{client_id}] Failed to release stream before redirect")
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def stream_ts(
     request, channel_id, user=None, force_output_format=None, *, check_network=True
@@ -476,7 +476,6 @@ def stream_ts(
         user = request.user
 
     client_user_agent = None
-    proxy_server = ProxyServer.get_instance()
     connection_allocated = False  # Track if connection slot was allocated via get_stream()
     # Initialized before the try so the exception handler can always safely
     # check/clean it up, regardless of where in the setup a failure occurs.
@@ -492,6 +491,33 @@ def stream_ts(
 
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
+
+        # Report the output container without registering a client or opening
+        # upstream. Redirect stays octet-stream unless skip_redirect previews
+        # the proxied type. HLS still only advertises type here; GET redirects
+        # to a session playlist.
+        if request.method == "HEAD":
+            stream_profile = channel.get_stream_profile()
+            skip_redirect = _is_skip_redirect_requested(
+                request, user, "head-probe"
+            )
+            if stream_profile.is_redirect() and not skip_redirect:
+                content_type = "application/octet-stream"
+            else:
+                # Match GET: unknown values are treated as mpegts.
+                content_type = {
+                    "mpegts": "video/mp2t",
+                    "fmp4": "video/mp4",
+                    "hls": "application/vnd.apple.mpegurl",
+                }.get(
+                    _resolve_output_format(user, force_output_format, request),
+                    "video/mp2t",
+                )
+            response = HttpResponse(content_type=content_type)
+            response["Cache-Control"] = "no-cache"
+            return response
+
+        proxy_server = ProxyServer.get_instance()
 
         # Generate a unique client ID
         client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
@@ -1106,7 +1132,7 @@ def _xc_live_channel_or_error(request, username, password, channel_id):
     return user, channel, None
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def stream_xc(request, username, password, channel_id):
     try:
