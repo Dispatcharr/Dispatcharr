@@ -107,6 +107,9 @@ def _obtain_stream_with_retries(
 ):
     """Call generate_stream_url, retrying when the failure is connection limits.
 
+    Always tries at least once. stream_retry_timeout is the wall-clock budget for
+    additional waits/retries after that first try (0 = try once, do not wait).
+
     Returns:
         (stream_url, stream_user_agent, transcode, profile_value, slot_reserved,
          error_reason, resolved_stream_id, attempt, wait_start_time)
@@ -125,7 +128,7 @@ def _obtain_stream_with_retries(
     attempt = 0
     should_retry = True
 
-    while should_retry and time.time() - wait_start_time < retry_timeout:
+    while True:
         attempt += 1
         (
             stream_url,
@@ -161,10 +164,13 @@ def _obtain_stream_with_retries(
         elapsed_time = time.time() - wait_start_time
         remaining_time = retry_timeout - elapsed_time
         if remaining_time <= retry_interval:
-            logger.info(
-                f"[{client_id}] Insufficient time ({remaining_time:.1f}s) for "
-                f"another sleep cycle, will make one final attempt"
-            )
+            # Budget exhausted for another sleep cycle. A final attempt may
+            # still run below when any time remains on the clock.
+            if remaining_time > 0:
+                logger.info(
+                    f"[{client_id}] Insufficient time ({remaining_time:.1f}s) for "
+                    f"another sleep cycle, will make one final attempt"
+                )
             break
 
         logger.info(

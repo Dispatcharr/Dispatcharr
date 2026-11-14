@@ -5,12 +5,13 @@ from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 from django.test import SimpleTestCase, TestCase
+from rest_framework.exceptions import ValidationError
 
 from apps.proxy.config import TSConfig
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.input.manager import StreamManager
 from core.models import CoreSettings
-from core.serializers import ProxySettingsSerializer
+from core.serializers import CoreSettingsSerializer, ProxySettingsSerializer
 
 MIGRATION_0026 = import_module("core.migrations.0026_add_channel_client_wait_period")
 
@@ -165,9 +166,9 @@ class ProxySettingsSerializerTests(SimpleTestCase):
         self.assertEqual(serializer.validated_data["max_retries"], 5)
 
     def test_accepts_stream_retry_timeout(self):
-        serializer = ProxySettingsSerializer(data=self._valid_payload(stream_retry_timeout=15))
+        serializer = ProxySettingsSerializer(data=self._valid_payload(stream_retry_timeout=30))
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        self.assertEqual(serializer.validated_data["stream_retry_timeout"], 15)
+        self.assertEqual(serializer.validated_data["stream_retry_timeout"], 30)
 
     def test_max_retries_defaults_to_3_when_omitted(self):
         payload = self._valid_payload()
@@ -188,8 +189,23 @@ class ProxySettingsSerializerTests(SimpleTestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("max_retries", serializer.errors)
 
+    def test_max_retries_rejects_zero(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(max_retries=0))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("max_retries", serializer.errors)
+
     def test_stream_retry_timeout_rejects_negative(self):
         serializer = ProxySettingsSerializer(data=self._valid_payload(stream_retry_timeout=-1))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("stream_retry_timeout", serializer.errors)
+
+    def test_max_retries_rejects_above_10(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(max_retries=11))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("max_retries", serializer.errors)
+
+    def test_stream_retry_timeout_rejects_above_30(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(stream_retry_timeout=31))
         self.assertFalse(serializer.is_valid())
         self.assertIn("stream_retry_timeout", serializer.errors)
 
@@ -228,6 +244,20 @@ class CoreSettingsProxyDefaultsTests(TestCase):
         self.assertTrue(defaults["validate_redirect_urls"])
         self.assertEqual(defaults["max_retries"], 3)
         self.assertEqual(defaults["stream_retry_timeout"], 3)
+
+    def test_settings_update_rejects_max_retries_outside_range(self):
+        settings_obj, _ = CoreSettings.objects.get_or_create(
+            key="proxy_settings",
+            defaults={"name": "Proxy Settings", "value": {"buffering_timeout": 15}},
+        )
+        payload = ProxySettingsSerializerTests()._valid_payload(max_retries=0)
+        serializer = CoreSettingsSerializer(
+            settings_obj,
+            data={"key": "proxy_settings", "name": "Proxy Settings", "value": payload},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        with self.assertRaises(ValidationError):
+            serializer.save()
 
 
 class Migration0026ProxySettingsTests(TestCase):

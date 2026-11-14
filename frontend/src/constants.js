@@ -83,16 +83,16 @@ export const PROXY_SETTINGS_OPTIONS = {
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
   max_retries: {
-    label: 'Max Retries',
+    label: 'Max Connection Attempts',
     advanced: true,
     description:
-      'Maximum reconnection attempts for a stream before failing over to the next stream',
+      'Maximum connection attempts for a stream before failing over to the next stream',
   },
   stream_retry_timeout: {
     label: 'Stream Retry Timeout',
     advanced: true,
     description:
-      'Maximum time (in seconds) to wait for an available stream slot when provider connection limits are reached (e.g. during rapid channel switching)',
+      'Maximum time (in seconds) to wait for an available stream slot when provider connection limits are reached (e.g. during rapid channel switching). 0 = try once with no wait.',
   },
   validate_redirect_urls: {
     label: 'Validate Redirect URLs',
