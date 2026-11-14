@@ -495,18 +495,25 @@ def stream_ts(
 
         # HEAD reports the resolved output container without registering a
         # client or opening upstream. HLS GET still redirects to a session
-        # playlist; HEAD only advertises the type. Redirect profiles stay
-        # octet-stream because this URL does not know the upstream container.
+        # playlist; HEAD only advertises the type. Plain redirect profiles
+        # stay octet-stream (upstream type is unknown here). skip_redirect
+        # previews use the proxied output type, same as GET.
         if request.method == "HEAD":
-            content_type = "application/octet-stream"
-            if not channel.get_stream_profile().is_redirect():
+            stream_profile = channel.get_stream_profile()
+            skip_redirect = _is_skip_redirect_requested(
+                request, user, "head-probe"
+            )
+            if stream_profile.is_redirect() and not skip_redirect:
+                content_type = "application/octet-stream"
+            else:
+                # Unknown values fall through to mpegts, matching GET.
                 content_type = {
                     "mpegts": "video/mp2t",
                     "fmp4": "video/mp4",
                     "hls": "application/vnd.apple.mpegurl",
                 }.get(
                     _resolve_output_format(user, force_output_format, request),
-                    content_type,
+                    "video/mp2t",
                 )
             response = HttpResponse(content_type=content_type)
             response["Cache-Control"] = "no-cache"

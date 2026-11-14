@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 from django.http import Http404, JsonResponse
 from django.test import RequestFactory, SimpleTestCase
 
+from apps.accounts.models import User
+
 
 @patch("apps.proxy.live_proxy.views.close_old_connections")
 @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
@@ -13,9 +15,12 @@ class LiveStreamHeadProbeTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    def _request(self, query=""):
+    def _request(self, query="", *, user=None):
         request = self.factory.head(f"/proxy/ts/stream/channel-uuid{query}")
-        request.user = MagicMock(is_authenticated=False)
+        if user is None:
+            request.user = MagicMock(is_authenticated=False)
+        else:
+            request.user = user
         return request
 
     def _channel(self, *, redirect=False):
@@ -68,6 +73,22 @@ class LiveStreamHeadProbeTests(SimpleTestCase):
 
     @patch("apps.proxy.live_proxy.views._resolve_output_format")
     @patch("apps.proxy.live_proxy.views.get_stream_object")
+    def test_head_unknown_format_falls_back_to_mpegts(
+        self, mock_get_stream_object, mock_resolve_output_format, mock_proxy_cls, *_
+    ):
+        mock_get_stream_object.return_value = self._channel()
+        mock_resolve_output_format.return_value = "not-a-real-format"
+
+        from apps.proxy.live_proxy.views import stream_ts
+
+        response = stream_ts(self._request(), "channel-uuid")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp2t")
+        self._assert_no_stream_started(mock_proxy_cls)
+
+    @patch("apps.proxy.live_proxy.views._resolve_output_format")
+    @patch("apps.proxy.live_proxy.views.get_stream_object")
     def test_head_does_not_claim_container_for_redirect(
         self, mock_get_stream_object, mock_resolve_output_format, mock_proxy_cls, *_
     ):
@@ -80,6 +101,27 @@ class LiveStreamHeadProbeTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/octet-stream")
         mock_resolve_output_format.assert_not_called()
+        self._assert_no_stream_started(mock_proxy_cls)
+
+    @patch("apps.proxy.live_proxy.views.get_stream_object")
+    def test_head_skip_redirect_reports_proxied_format(
+        self, mock_get_stream_object, mock_proxy_cls, *_
+    ):
+        mock_get_stream_object.return_value = self._channel(redirect=True)
+        user = MagicMock()
+        user.is_authenticated = True
+        user.user_level = User.UserLevel.STANDARD
+
+        from apps.proxy.live_proxy.views import stream_ts
+
+        response = stream_ts(
+            self._request("?skip_redirect=true&output_format=fmp4", user=user),
+            "channel-uuid",
+            user=user,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp4")
         self._assert_no_stream_started(mock_proxy_cls)
 
     @patch(
