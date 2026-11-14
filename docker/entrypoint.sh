@@ -232,13 +232,15 @@ setup_pg_ssl_env() {
 
 # READ-ONLY - don't let users change these
 export POSTGRES_DIR=/data/db
+export LANG="${LANG:-C.UTF-8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 # Global variables, stored so other users inherit them.
 # Rewritten every startup so that container restarts with changed env vars
 # pick up the new values (not stale ones from a previous run).
 # Define all variables to process
 variables=(
-    PATH VIRTUAL_ENV
+    PATH VIRTUAL_ENV LANG LC_ALL
     POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
     DISPATCHARR_ENV DISPATCHARR_LOG_LEVEL
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
