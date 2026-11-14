@@ -280,6 +280,8 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "stream_startup_timeout": 8,
                 "connection_timeout": 10,
                 "validate_redirect_urls": True,
+                "max_retries": 3,
+                "stream_retry_timeout": 3,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,
