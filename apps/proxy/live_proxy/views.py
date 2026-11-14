@@ -476,7 +476,6 @@ def stream_ts(
         user = request.user
 
     client_user_agent = None
-    proxy_server = ProxyServer.get_instance()
     connection_allocated = False  # Track if connection slot was allocated via get_stream()
     # Initialized before the try so the exception handler can always safely
     # check/clean it up, regardless of where in the setup a failure occurs.
@@ -493,11 +492,10 @@ def stream_ts(
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
 
-        # HEAD reports the resolved output container without registering a
-        # client or opening upstream. HLS GET still redirects to a session
-        # playlist; HEAD only advertises the type. Plain redirect profiles
-        # stay octet-stream (upstream type is unknown here). skip_redirect
-        # previews use the proxied output type, same as GET.
+        # Report the output container without registering a client or opening
+        # upstream. Redirect stays octet-stream unless skip_redirect previews
+        # the proxied type. HLS still only advertises type here; GET redirects
+        # to a session playlist.
         if request.method == "HEAD":
             stream_profile = channel.get_stream_profile()
             skip_redirect = _is_skip_redirect_requested(
@@ -506,7 +504,7 @@ def stream_ts(
             if stream_profile.is_redirect() and not skip_redirect:
                 content_type = "application/octet-stream"
             else:
-                # Unknown values fall through to mpegts, matching GET.
+                # Match GET: unknown values are treated as mpegts.
                 content_type = {
                     "mpegts": "video/mp2t",
                     "fmp4": "video/mp4",
@@ -518,6 +516,8 @@ def stream_ts(
             response = HttpResponse(content_type=content_type)
             response["Cache-Control"] = "no-cache"
             return response
+
+        proxy_server = ProxyServer.get_instance()
 
         # Generate a unique client ID
         client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"

@@ -29,7 +29,7 @@ class LiveStreamHeadProbeTests(SimpleTestCase):
         return channel
 
     def _assert_no_stream_started(self, mock_proxy_cls):
-        self.assertEqual(mock_proxy_cls.get_instance.return_value.method_calls, [])
+        mock_proxy_cls.get_instance.assert_not_called()
 
     @patch("apps.proxy.live_proxy.views.get_stream_object")
     def test_head_reports_mpegts(self, mock_get_stream_object, mock_proxy_cls, *_):
@@ -165,7 +165,7 @@ class XcLiveHeadProbeTests(SimpleTestCase):
         return user
 
     def _assert_no_stream_started(self, mock_proxy_cls):
-        self.assertEqual(mock_proxy_cls.get_instance.return_value.method_calls, [])
+        mock_proxy_cls.get_instance.assert_not_called()
 
     def _head(self, channel_id, *, redirect=False, auth_error=None):
         from apps.proxy.live_proxy.views import stream_xc
