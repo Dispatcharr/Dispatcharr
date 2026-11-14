@@ -130,16 +130,20 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
         model = CoreSettings
         fields = "__all__"
 
+    def validate(self, attrs):
+        key = attrs.get("key")
+        if key is None and self.instance is not None:
+            key = self.instance.key
+        if key == PROXY_SETTINGS_KEY and isinstance(attrs.get("value"), dict):
+            proxy_serializer = ProxySettingsSerializer(data=attrs["value"])
+            if not proxy_serializer.is_valid():
+                raise serializers.ValidationError({"value": proxy_serializer.errors})
+            attrs["value"] = proxy_serializer.validated_data
+        return attrs
+
     def create(self, validated_data):
         if validated_data.get("key") == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))
-        if validated_data.get("key") == PROXY_SETTINGS_KEY:
-            value = validated_data.get("value")
-            if isinstance(value, dict):
-                proxy_serializer = ProxySettingsSerializer(data=value)
-                if not proxy_serializer.is_valid():
-                    raise serializers.ValidationError({"value": proxy_serializer.errors})
-                validated_data["value"] = proxy_serializer.validated_data
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
@@ -186,14 +190,6 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
 
         if instance.key == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))
-
-        if instance.key == PROXY_SETTINGS_KEY:
-            value = validated_data.get("value")
-            if isinstance(value, dict):
-                proxy_serializer = ProxySettingsSerializer(data=value)
-                if not proxy_serializer.is_valid():
-                    raise serializers.ValidationError({"value": proxy_serializer.errors})
-                validated_data["value"] = proxy_serializer.validated_data
 
         if instance.key == REVERSE_PROXY_AUTH_KEY:
             value = validated_data.get("value") or {}

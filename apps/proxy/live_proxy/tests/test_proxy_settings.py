@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 from django.test import SimpleTestCase, TestCase
-from rest_framework.exceptions import ValidationError
 
 from apps.proxy.config import TSConfig
 from apps.proxy.live_proxy.config_helper import ConfigHelper
@@ -255,9 +254,8 @@ class CoreSettingsProxyDefaultsTests(TestCase):
             settings_obj,
             data={"key": "proxy_settings", "name": "Proxy Settings", "value": payload},
         )
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-        with self.assertRaises(ValidationError):
-            serializer.save()
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("max_retries", serializer.errors["value"])
 
 
 class Migration0026ProxySettingsTests(TestCase):
