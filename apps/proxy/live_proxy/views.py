@@ -1125,7 +1125,7 @@ def _xc_live_channel_or_error(request, username, password, channel_id):
     return user, channel, None
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def stream_xc(request, username, password, channel_id):
     try:

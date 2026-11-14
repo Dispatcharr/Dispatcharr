@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from django.http import Http404
+from django.http import Http404, JsonResponse
 from django.test import RequestFactory, SimpleTestCase
 
 
@@ -102,3 +102,93 @@ class LiveStreamHeadProbeTests(SimpleTestCase):
         response = stream_ts(self._request(), "channel-uuid")
 
         self.assertEqual(response.status_code, 403)
+
+
+@patch("apps.proxy.live_proxy.views.close_old_connections")
+@patch("apps.proxy.live_proxy.views.ProxyServer")
+class XcLiveHeadProbeTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _channel(self, *, redirect=False):
+        channel = MagicMock()
+        channel.uuid = "channel-uuid"
+        channel.get_stream_profile.return_value.is_redirect.return_value = redirect
+        return channel
+
+    def _user(self):
+        user = MagicMock()
+        user.is_authenticated = True
+        user.custom_properties = {}
+        return user
+
+    def _assert_no_stream_started(self, mock_proxy_cls):
+        self.assertEqual(mock_proxy_cls.get_instance.return_value.method_calls, [])
+
+    def _head(self, channel_id, *, redirect=False, auth_error=None):
+        from apps.proxy.live_proxy.views import stream_xc
+
+        channel = self._channel(redirect=redirect)
+        if auth_error is not None:
+            auth_result = (None, None, auth_error)
+        else:
+            auth_result = (self._user(), channel, None)
+        request = self.factory.head(f"/live/alice/secret/{channel_id}")
+        with patch(
+            "apps.proxy.live_proxy.views._xc_live_channel_or_error",
+            return_value=auth_result,
+        ), patch(
+            "apps.proxy.live_proxy.views.get_stream_object",
+            return_value=channel,
+        ) as mock_get_stream_object:
+            response = stream_xc(request, "alice", "secret", channel_id)
+        return response, mock_get_stream_object
+
+    def test_head_ts_reports_mpegts(self, mock_proxy_cls, *_):
+        response, _get_stream = self._head("5.ts")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp2t")
+        self._assert_no_stream_started(mock_proxy_cls)
+
+    def test_head_mp4_reports_fmp4(self, mock_proxy_cls, *_):
+        response, _get_stream = self._head("5.mp4")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp4")
+        self._assert_no_stream_started(mock_proxy_cls)
+
+    def test_head_m3u8_reports_hls(self, mock_proxy_cls, *_):
+        response, _get_stream = self._head("5.m3u8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/vnd.apple.mpegurl")
+        self._assert_no_stream_started(mock_proxy_cls)
+
+    @patch(
+        "apps.proxy.live_proxy.views.CoreSettings.get_default_output_format",
+        return_value="mpegts",
+    )
+    def test_head_without_extension_uses_default_format(self, _default, mock_proxy_cls, *_):
+        response, _get_stream = self._head("5")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "video/mp2t")
+        self._assert_no_stream_started(mock_proxy_cls)
+
+    def test_head_redirect_profile_stays_octet_stream(self, mock_proxy_cls, *_):
+        response, _get_stream = self._head("5.ts", redirect=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/octet-stream")
+        self._assert_no_stream_started(mock_proxy_cls)
+
+    def test_head_auth_failure_does_not_open_stream(self, mock_proxy_cls, *_):
+        response, get_stream = self._head(
+            "5.ts",
+            auth_error=JsonResponse({"error": "Unauthorized"}, status=401),
+        )
+
+        self.assertEqual(response.status_code, 401)
+        get_stream.assert_not_called()
+        mock_proxy_cls.get_instance.assert_not_called()
