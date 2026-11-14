@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { refreshAfterPluginAction } from '../store/plugins.jsx';
 
 const { authState, setAuth, authListeners } = vi.hoisted(() => {
   const authState = {
@@ -65,6 +66,7 @@ vi.mock('../store/users', () => ({
 }));
 
 vi.mock('../store/plugins.jsx', () => ({
+  refreshAfterPluginAction: vi.fn(),
   usePluginStore: Object.assign((selector) => selector(pluginState), {
     getState: () => pluginState,
   }),
@@ -181,6 +183,7 @@ describe('WebsocketProvider reconnect backoff', () => {
   let WebsocketProvider;
 
   beforeEach(async () => {
+    refreshAfterPluginAction.mockClear();
     vi.useFakeTimers();
     MockWebSocket.instances = [];
     authState.accessToken = 'token-1';
@@ -276,6 +279,22 @@ describe('WebsocketProvider reconnect backoff', () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it('refreshes after successful task completion, even for unknown tasks', async () => {
+    render(<WebsocketProvider><div>child</div></WebsocketProvider>);
+    const socket = MockWebSocket.instances[0];
+    const result = { _dispatcharr: { refresh: 'plugin' } };
+    await act(async () => {
+      await socket.onmessage({ data: JSON.stringify({ data: {
+        type: 'plugin_task_complete', task_id: 'unknown', plugin: 'example', status: 'partial', result,
+      } }) });
+      await socket.onmessage({ data: JSON.stringify({ data: {
+        type: 'plugin_task_complete', task_id: 'failed', plugin: 'example', status: 'error', result,
+      } }) });
+    });
+    expect(refreshAfterPluginAction).toHaveBeenCalledTimes(1);
+    expect(refreshAfterPluginAction).toHaveBeenCalledWith(result);
   });
 
   it('does not stack a second retry when close fires twice', async () => {

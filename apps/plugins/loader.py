@@ -1,5 +1,7 @@
 import contextlib
 import copy
+import fcntl
+import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -38,6 +40,28 @@ from .version_utils import get_plugin_status
 from version import __timestamp__, __version__
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _plugin_reload_lock(plugins_dir: str, key: str, *, shared: bool = False):
+    """Coordinate actions and explicit reloads of one plugin across workers."""
+    os.makedirs(plugins_dir, exist_ok=True)
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    lock_path = os.path.join(plugins_dir, f".plugin-reload-{digest}.lock")
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        while True:
+            try:
+                mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                fcntl.flock(lock_file.fileno(), mode | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                from gevent import sleep
+
+                sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 _plugin_module_contexts: Dict[str, Tuple[str, str, str, Sequence[str], int]] = {}
@@ -1153,6 +1177,16 @@ class PluginManager:
         params: Optional[Dict[str, Any]] = None,
         task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        with _plugin_reload_lock(self.plugins_dir, key, shared=True):
+            return self._run_action(key, action_id, params, task_id)
+
+    def _run_action(
+        self,
+        key: str,
+        action_id: str,
+        params: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         try:
             # Check the shared token before resolving the instance so prefork
             # children cannot keep serving an old module after a reload.
@@ -1621,16 +1655,12 @@ class PluginManager:
         re-import any other plugin locally. A successful reload broadcasts
         through the shared token so other worker processes converge on their
         next cached discovery.
-        Concurrent reloads of the same key are rejected (returns False)
-        rather than racing with an in-progress unload/re-import.
+        Explicit reloads wait for active actions and other explicit reloads.
         """
-        with self._lock:
-            if not hasattr(self, "_reloading_keys"):
-                self._reloading_keys = set()
-            if key in self._reloading_keys:
-                return False
-            self._reloading_keys.add(key)
+        with _plugin_reload_lock(self.plugins_dir, key):
+            return self._reload_plugin(key)
 
+    def _reload_plugin(self, key: str) -> bool:
         try:
             self.stop_plugin(key, reason="reload")
 
@@ -1699,8 +1729,6 @@ class PluginManager:
             return True
         finally:
             close_old_connections()
-            with self._lock:
-                self._reloading_keys.discard(key)
 
     def _resolve_package_name(self, key: str) -> str:
         safe_key = self._safe_module_name(key)

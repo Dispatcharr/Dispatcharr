@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import API from '../api';
 
+export function refreshAfterPluginAction(result) {
+  if (!['ui', 'plugin'].includes(result?._dispatcharr?.refresh)) return;
+  return usePluginStore.getState().fetchPlugins();
+}
+
 // True if the plugin declares a capability the user hasn't acknowledged yet
 // (via the enable confirmation dialog), covering both a brand-new plugin and
 // an already-enabled one that added a capability in an update. Unknown

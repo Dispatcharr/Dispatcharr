@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import PluginDetail from '../PluginDetail';
-import { usePluginStore } from '../../store/plugins';
+import { refreshAfterPluginAction, usePluginStore } from '../../store/plugins';
 import useSettingsStore from '../../store/settings';
 import useAuthStore from '../../store/auth';
-import { reloadPlugin } from '../../utils/pages/PluginsUtils';
+import { reloadPlugin, runPluginAction } from '../../utils/pages/PluginsUtils';
 import { useMediaQuery } from '@mantine/hooks';
 
 vi.mock('@mantine/hooks', async (importOriginal) => {
@@ -38,6 +38,7 @@ const enableConfirmDefaults = {
 
 vi.mock('../../store/plugins', () => ({
   usePluginStore: Object.assign(vi.fn(), { getState: vi.fn() }),
+  refreshAfterPluginAction: vi.fn(),
   needsCapabilityAck: (plugin) => {
     if (!plugin) return true;
     const acked = new Set(plugin.acknowledged_capabilities || []);
@@ -72,8 +73,10 @@ vi.mock('../../components/EvenlyWrappedPills.jsx', () => ({
 }));
 
 vi.mock('../../components/PluginFieldList.jsx', () => ({
-  default: ({ updateField }) => (
+  default: ({ updateField, settings }) => (
     <div data-testid="plugin-field-list">
+      <span data-testid="greeting-value">{settings?.greeting}</span>
+      <span data-testid="other-value">{settings?.other}</span>
       <button onClick={() => updateField('greeting', 'changed')}>change-field</button>
       <button onClick={() => updateField('greeting', 'hello')}>revert-field</button>
     </div>
@@ -81,7 +84,11 @@ vi.mock('../../components/PluginFieldList.jsx', () => ({
 }));
 
 vi.mock('../../components/PluginActionList.jsx', () => ({
-  PluginActionList: () => <div data-testid="plugin-action-list" />,
+  PluginActionList: ({ plugin, handlePluginRun }) => (
+    <div data-testid="plugin-action-list">
+      <button onClick={() => handlePluginRun(plugin.actions[0])}>run-action</button>
+    </div>
+  ),
   PluginActionStatus: () => null,
   PluginTaskList: () => <div data-testid="plugin-task-list" />,
 }));
@@ -342,6 +349,36 @@ describe('PluginDetail', () => {
       expect(screen.getByText('Unsaved settings changes')).toBeInTheDocument();
     });
 
+    it('preserves dirty edits when refreshed settings arrive', () => {
+      const { rerender } = render(<PluginDetail />);
+      fireEvent.click(screen.getByText('change-field'));
+      usePluginStore.mockImplementation((selector) => selector({
+        plugins: [{ ...pluginWithFields, settings: { greeting: 'server' } }],
+        loading: false,
+        ...enableConfirmDefaults,
+      }));
+      rerender(<PluginDetail />);
+      expect(screen.getByTestId('greeting-value')).toHaveTextContent('changed');
+      expect(screen.getByText('Unsaved settings changes')).toBeInTheDocument();
+    });
+
+    it('merges refreshed settings with locally edited fields', () => {
+      const initial = { ...pluginWithFields, settings: { greeting: 'hello', other: 'old' } };
+      usePluginStore.mockImplementation((selector) => selector({
+        plugins: [initial], loading: false, ...enableConfirmDefaults,
+      }));
+      const { rerender } = render(<PluginDetail />);
+      fireEvent.click(screen.getByText('change-field'));
+      usePluginStore.mockImplementation((selector) => selector({
+        plugins: [{ ...initial, settings: { greeting: 'server', other: 'new' } }],
+        loading: false, ...enableConfirmDefaults,
+      }));
+      rerender(<PluginDetail />);
+      expect(screen.getByTestId('greeting-value')).toHaveTextContent('changed');
+      expect(screen.getByTestId('other-value')).toHaveTextContent('new');
+      expect(screen.getByText('Unsaved settings changes')).toBeInTheDocument();
+    });
+
     it('disappears again when the field is manually reverted to its saved value', () => {
       render(<PluginDetail />);
       fireEvent.click(screen.getByText('change-field'));
@@ -366,6 +403,17 @@ describe('PluginDetail', () => {
       ...mockPlugin,
       actions: [{ id: 'a1', label: 'Do Thing' }],
     };
+
+    it('refreshes after a synchronous action result', async () => {
+      const result = { _dispatcharr: { refresh: 'ui' } };
+      runPluginAction.mockResolvedValue({ success: true, result });
+      usePluginStore.mockImplementation((selector) =>
+        selector({ plugins: [pluginWithActions], loading: false, ...enableConfirmDefaults })
+      );
+      render(<PluginDetail />);
+      fireEvent.click(screen.getByText('run-action'));
+      await waitFor(() => expect(refreshAfterPluginAction).toHaveBeenCalledWith(result));
+    });
 
     it('always shows actions expanded in wide (multi-column) mode', () => {
       vi.mocked(useMediaQuery).mockReturnValue(false);

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useDisclosure, useElementSize, useMediaQuery } from '@mantine/hooks';
 import {
@@ -20,7 +20,7 @@ import {
 } from '@mantine/core';
 import { ArrowLeft, ChevronDown, Pin, PinOff, RefreshCw, RotateCw, Trash2 } from 'lucide-react';
 import { showNotification } from '../utils/notificationUtils.js';
-import { usePluginStore, needsCapabilityAck } from '../store/plugins.jsx';
+import { usePluginStore, needsCapabilityAck, refreshAfterPluginAction } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import useAuthStore from '../store/auth.jsx';
 import {
@@ -44,6 +44,17 @@ import './plugin-detail.css';
 
 // Stable fallback reference, see PluginCard.jsx.
 const EMPTY_PINNED_PLUGINS = [];
+
+function mergeUnsavedSettings(previous, current, next) {
+  const merged = { ...next };
+  for (const key of new Set([...Object.keys(previous), ...Object.keys(current)])) {
+    if (Object.hasOwn(previous, key) === Object.hasOwn(current, key) &&
+        JSON.stringify(previous[key]) === JSON.stringify(current[key])) continue;
+    if (Object.hasOwn(current, key)) merged[key] = current[key];
+    else delete merged[key];
+  }
+  return JSON.stringify(merged) === JSON.stringify(current) ? current : merged;
+}
 
 /** Section heading with a collapse chevron, only interactive/collapsible
     in single-column mode, where a long section pushes everything below it
@@ -108,6 +119,7 @@ function PluginDetailForKey({ routeKey: key }) {
   }, [key]);
 
   const [settings, setSettings] = useState(plugin?.settings || {});
+  const settingsBaseline = useRef(plugin?.settings || {});
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(!!plugin?.enabled);
   const [runningActionId, setRunningActionId] = useState(null);
@@ -144,7 +156,10 @@ function PluginDetailForKey({ routeKey: key }) {
   const hasPluginTasks = Object.keys(pluginTasks).length > 0;
 
   useEffect(() => {
-    setSettings(plugin?.settings || {});
+    const previous = settingsBaseline.current;
+    const next = plugin?.settings || {};
+    settingsBaseline.current = next;
+    setSettings((current) => mergeUnsavedSettings(previous, current, next));
     setEnabled(!!plugin?.enabled);
   }, [plugin?.key, plugin?.settings, plugin?.enabled]);
 
@@ -351,7 +366,8 @@ function PluginDetailForKey({ routeKey: key }) {
       setLastResult(null);
       if (isSettingsDirty) {
         try {
-          await updatePluginSettings(plugin.key, settings);
+          const saved = await updatePluginSettings(plugin.key, settings);
+          if (saved) usePluginStore.getState().updatePlugin(plugin.key, { settings });
         } catch {
           /* ignore, run anyway */
         }
@@ -374,6 +390,7 @@ function PluginDetailForKey({ routeKey: key }) {
         });
       } else if (resp?.success) {
         setLastResult(resp.result || {});
+        refreshAfterPluginAction(resp.result);
         showNotification({ title: plugin.name, message: resp.result?.message || 'Plugin action completed', color: 'green' });
       } else {
         const err = resp?.error || 'Unknown error';

@@ -1,6 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { usePluginStore } from '../plugins';
+import { refreshAfterPluginAction, usePluginStore } from '../plugins';
 import API from '../../api';
 
 vi.mock('../../api');
@@ -22,6 +22,15 @@ describe('usePluginStore', () => {
     expect(result.current.plugins).toEqual([]);
     expect(result.current.loading).toBe(false);
     expect(result.current.error).toBe(null);
+  });
+
+  it('refreshes only for recognized action directives', async () => {
+    API.getPlugins.mockResolvedValue([]);
+    await refreshAfterPluginAction({ _dispatcharr: { refresh: 'ui' } });
+    await refreshAfterPluginAction({ _dispatcharr: { refresh: 'plugin' } });
+    await refreshAfterPluginAction({ _dispatcharr: { refresh: 'unknown' } });
+    await refreshAfterPluginAction({});
+    expect(API.getPlugins).toHaveBeenCalledTimes(2);
   });
 
   it('should fetch plugins successfully', async () => {

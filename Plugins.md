@@ -434,6 +434,15 @@ For queued actions, a returned dictionary can report its outcome with `status`:
 
 These outcomes apply to both awaited manual actions and background plugin actions. Returned results are available to awaited actions and retained in background task history for all outcomes, including plugin-returned errors. JSON-serializable results can be downloaded from run history as JSON, subject to the retention limits below. An exception without a returned result does not produce a result file.
 
+An action can request a refresh in its returned dictionary:
+
+```python
+return {"status": "ok", "message": "Updated", "_dispatcharr": {"refresh": "ui"}}
+# Or use "plugin" instead of "ui" to reload the plugin as well.
+```
+
+`ui` fetches current plugin metadata and settings; it does not rebuild discovery-time `get_fields` values. Unsaved edits to individual settings remain staged over the refreshed values. If both the user and server changed the same setting, the unsaved edit wins until saved or discarded. `plugin` reloads the plugin on the worker after the action returns, then refreshes the UI. Other workers pick up the reload on their next discovery. Reload runs stop hooks and affects persistent services, just like a manual reload. Explicit single-plugin reloads wait for active actions and other explicit reloads across workers sharing the plugin directory. Queued actions do not count as active. These directives apply to successful and partial results, including background actions, but not errors. If the requested reload fails, the task reports an error even though the action has already run.
+
 Background history records the trigger as `manual`, `action`, `schedule`, or `event`; older records can be `unknown`. Set `PLUGIN_TASK_HISTORY_MAX_ENTRIES` to adjust retention per plugin (default 50, maximum 5000) and `PLUGIN_TASK_HISTORY_TTL_SECONDS` to adjust expiry (default seven days, maximum 90 days). Values are clamped to at least 1. The task history endpoint accepts an optional `trigger` query parameter with one of these values.
 
 ### Long-Running Actions (Async Dispatch)

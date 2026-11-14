@@ -31,9 +31,14 @@ def run_plugin_action_task(self, key, action_id, params=None):
     task_id = self.request.id
     result = None
     try:
-        result = PluginManager.get().run_action(key, action_id, params or {}, task_id=task_id)
+        manager = PluginManager.get()
+        result = manager.run_action(key, action_id, params or {}, task_id=task_id)
         if isinstance(result, dict) and result.get("status") == "error":
             raise RuntimeError(str(result.get("error") or result.get("message") or "Plugin action failed"))
+        directive = result.get("_dispatcharr") if isinstance(result, dict) else None
+        if isinstance(directive, dict) and directive.get("refresh") == "plugin":
+            if not manager.reload_plugin(key):
+                raise RuntimeError(f"Plugin '{key}' could not be reloaded")
     except Exception as e:
         send_websocket_update("updates", "update", {
             "type": "plugin_task_complete",
