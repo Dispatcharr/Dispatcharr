@@ -963,3 +963,26 @@ class GetHostAndPortTrustedProxyTests(SimpleTestCase):
             self.assertEqual(port, "8443")
             uri = build_absolute_uri_with_port(request, "/output/m3u")
             self.assertEqual(uri, "https://tv.example.com:8443/output/m3u")
+
+
+class UwsgiLocaleConfigTests(SimpleTestCase):
+    """uWSGI and entrypoint configs must preserve C.UTF-8 across su - so filesystem encoding is UTF-8."""
+
+    def _repo_root(self):
+        from pathlib import Path
+
+        return Path(__file__).resolve().parents[2]
+
+    def test_uwsgi_configs_set_utf8_locale_env(self):
+        docker_dir = self._repo_root() / "docker"
+        for name in ("uwsgi.ini", "uwsgi.modular.ini", "uwsgi.dev.ini", "uwsgi.debug.ini"):
+            content = (docker_dir / name).read_text(encoding="utf-8")
+            self.assertIn("env = LANG=C.UTF-8", content, f"{name} missing LANG=C.UTF-8")
+            self.assertIn("env = LC_ALL=C.UTF-8", content, f"{name} missing LC_ALL=C.UTF-8")
+
+    def test_entrypoint_propagates_lang_and_lc_all_to_login_shells(self):
+        entrypoint = (self._repo_root() / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn('export LANG="${LANG:-C.UTF-8}"', entrypoint)
+        self.assertIn('export LC_ALL="${LC_ALL:-C.UTF-8}"', entrypoint)
+        self.assertRegex(entrypoint, r"variables=\(\s*PATH VIRTUAL_ENV LANG LC_ALL\b")
+
