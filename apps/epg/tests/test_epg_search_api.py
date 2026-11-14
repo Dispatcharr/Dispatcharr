@@ -44,10 +44,10 @@ class ProgramSearchAPIViewTests(TestCase):
             end_time=now + timedelta(hours=2),
         )
 
-        # BBC News — starts in 3 hours
+        # Evening news: starts in 3 hours
         cls.prog_news = ProgramData.objects.create(
             epg=cls.epg,
-            title="BBC News at Ten",
+            title="Evening News at Ten",
             description="The latest news from around the world.",
             start_time=now + timedelta(hours=3),
             end_time=now + timedelta(hours=4),
@@ -200,7 +200,7 @@ class ProgramSearchAPIViewTests(TestCase):
 
     def test_title_whole_word_matching(self):
         """title_whole_words=true matches complete words but not partial words."""
-        # 'new' as substring matches 'Newcastle vs Villa' and 'BBC News at Ten'
+        # 'new' as substring matches 'Newcastle vs Villa' and 'Evening News at Ten'
         partial = self.client.get(SEARCH_URL, {"title": "new"}).json()
         # Whole-word \bnew\b matches neither 'Newcastle' nor 'News' (partial matches)
         whole_no_match = self.client.get(SEARCH_URL, {"title": "new", "title_whole_words": "true"}).json()
@@ -252,7 +252,7 @@ class ProgramSearchAPIViewTests(TestCase):
         titles = {r["title"] for r in response.json()["results"]}
         self.assertIn("Premier League Football", titles)
         self.assertIn("Newcastle vs Villa", titles)
-        self.assertNotIn("BBC News at Ten", titles)
+        self.assertNotIn("Evening News at Ten", titles)
 
     def test_title_parenthetical_grouping(self):
         """Parenthetical groups with AND/OR are evaluated correctly."""
@@ -266,7 +266,7 @@ class ProgramSearchAPIViewTests(TestCase):
         titles = {r["title"] for r in response.json()["results"]}
         self.assertIn("Premier League Football", titles)
         self.assertIn("Newcastle vs Villa", titles)
-        self.assertNotIn("BBC News at Ten", titles)
+        self.assertNotIn("Evening News at Ten", titles)
         self.assertNotIn("Nature Documentary", titles)
 
     def test_title_invalid_regex_returns_400(self):
@@ -307,7 +307,7 @@ class ProgramSearchAPIViewTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
         self.assertEqual(data["count"], 1)
-        self.assertEqual(data["results"][0]["title"], "BBC News at Ten")
+        self.assertEqual(data["results"][0]["title"], "Evening News at Ten")
 
     # ------------------------------------------------------------------
     # Time filters
@@ -321,7 +321,7 @@ class ProgramSearchAPIViewTests(TestCase):
         titles = [r["title"] for r in response.json()["results"]]
         self.assertIn("Premier League Football", titles)
         self.assertIn("Newcastle vs Villa", titles)
-        self.assertNotIn("BBC News at Ten", titles)
+        self.assertNotIn("Evening News at Ten", titles)
 
     def test_start_after_filter(self):
         """start_after excludes programs that start before the given time."""
@@ -331,7 +331,7 @@ class ProgramSearchAPIViewTests(TestCase):
         titles = [r["title"] for r in response.json()["results"]]
         self.assertIn("Nature Documentary", titles)
         self.assertNotIn("Premier League Football", titles)
-        self.assertNotIn("BBC News at Ten", titles)
+        self.assertNotIn("Evening News at Ten", titles)
 
     def test_start_before_filter(self):
         """start_before excludes programs that start after the given time."""

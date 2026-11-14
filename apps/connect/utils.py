@@ -139,7 +139,7 @@ def trigger_event(event_name, payload):
                 {},
             )
             dispatch_plugin_action_task(
-                key, action_id, params, action.get("label", action_id)
+                key, action_id, params, action.get("label", action_id), trigger="event"
             )
         except Exception:
             logger.exception(

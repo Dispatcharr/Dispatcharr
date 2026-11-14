@@ -13,6 +13,7 @@ from apps.channels.models import Channel
 from apps.epg.models import EPGSource, EPGData, ProgramData
 from apps.epg.tasks import (
     _xmltv_file_is_complete,
+    _XMLTV_COMPLETENESS_TAIL_BYTES,
     fetch_xmltv,
     parse_programs_for_source,
     parse_programs_for_tvg_id,
@@ -30,6 +31,51 @@ TRUNCATED_XML = (
 
 
 class XmltvFileIsCompleteTests(TestCase):
+    def test_trailers(self):
+        cases = [
+            (b'<!-- generated -->', True),
+            (b'<!-- first -->\n<?generated today?> <!-- second -->', True),
+            (b'<script data-cfasync="false" src="/cdn-cgi/script.js"></script>', True),
+            (b'<!-- </tv> --><?info </tv>?><script>if (a < b) x="</tv>";</script>', True),
+            (b'<!-- unfinished', False),
+            (b'<?unfinished', False),
+            (b'<script>unfinished', False),
+            (b'<!-- invalid -- comment -->', False),
+            (b'<!-- a --><programme/><!-- b -->', False),
+            (b'<programme/>', False),
+            (b'rubbish', False),
+        ]
+        with tempfile.NamedTemporaryFile(suffix='.xml') as handle:
+            for trailer, expected in cases:
+                with self.subTest(trailer=trailer):
+                    handle.seek(0)
+                    handle.truncate()
+                    handle.write(b'<tv></tv>' + trailer)
+                    handle.flush()
+                    self.assertEqual(_xmltv_file_is_complete(handle.name), expected)
+
+    def test_truncated_cdata_with_closing_tag_is_rejected(self):
+        with tempfile.NamedTemporaryFile(suffix='.xml') as handle:
+            handle.write(b'<tv><![CDATA[unfinished </tv>')
+            handle.flush()
+            self.assertFalse(_xmltv_file_is_complete(handle.name))
+
+    def test_tail_window_boundary(self):
+        with tempfile.NamedTemporaryFile(suffix='.xml') as handle:
+            for extra, expected in [(0, True), (1, False)]:
+                with self.subTest(extra=extra):
+                    handle.seek(0)
+                    handle.truncate()
+                    handle.write(b'<tv></tv>' + b' ' * (_XMLTV_COMPLETENESS_TAIL_BYTES - 5 + extra))
+                    handle.flush()
+                    self.assertEqual(_xmltv_file_is_complete(handle.name), expected)
+
+    def test_many_candidate_tags_do_not_accept_invalid_trailer(self):
+        with tempfile.NamedTemporaryFile(suffix='.xml') as handle:
+            handle.write(b'<tv>' + b'</tv>' * 1200 + b'bad')
+            handle.flush()
+            self.assertFalse(_xmltv_file_is_complete(handle.name))
+
     def test_complete_file_passes(self):
         with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as handle:
             handle.write(b'<?xml version="1.0"?><tv><channel id="a"/></tv>\n')
@@ -178,6 +224,25 @@ class FetchXmltvCompletenessTests(TestCase):
 
     @patch('apps.epg.tasks.send_epg_update')
     @patch('apps.epg.tasks.requests.get')
+    def test_trailing_content_downloads_replace_cache(self, mock_get, _send):
+        for trailer in (b'<!-- generated -->', b'<script src="/cdn-cgi/script.js"></script>'):
+            with self.subTest(trailer=trailer):
+                body = b'<tv><channel id="new"/></tv>' + trailer
+                mock_get.return_value = self._mock_response(body)
+                self.assertTrue(fetch_xmltv(self.source))
+                with open(self.good_xml, 'rb') as handle:
+                    self.assertEqual(handle.read(), body)
+
+    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.tasks.requests.get')
+    def test_invalid_trailer_keeps_previous_cache(self, mock_get, _send):
+        mock_get.return_value = self._mock_response(b'<tv></tv><!-- cut off')
+        self.assertFalse(fetch_xmltv(self.source))
+        with open(self.good_xml, 'rb') as handle:
+            self.assertIn(b'<channel id="keep"/>', handle.read())
+
+    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.tasks.requests.get')
     def test_truncated_gzip_keeps_previous_cache(self, mock_get, _send):
         # Valid gzip header/body that decompresses to truncated XML.
         truncated = b'<?xml version="1.0"?><tv><programme channel="a"><title>X'
@@ -222,6 +287,42 @@ class ParseProgramsRejectsIncompleteXmlTests(TestCase):
     def tearDown(self):
         if self.xml_path and os.path.exists(self.xml_path):
             os.unlink(self.xml_path)
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_programmes_import_with_trailers(self, _send, _log):
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as handle:
+            self.xml_path = handle.name
+        self.source.file_path = self.xml_path
+        self.source.save(update_fields=['file_path'])
+        for trailer in ('<!-- generated -->', '<script src="/cdn-cgi/script.js"></script>'):
+            with self.subTest(trailer=trailer):
+                body = (f'<tv><programme start="{self.start}" stop="{self.stop}" '
+                        f'channel="mapped.channel"><title>Imported</title></programme></tv>{trailer}')
+                with open(self.xml_path, 'w', encoding='utf-8') as handle:
+                    handle.write(body)
+                self.assertTrue(parse_programs_for_source(self.source))
+                self.assertEqual(ProgramData.objects.get(epg=self.mapped_epg).title, 'Imported')
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_per_channel_import_and_reject_trailers(self, _send, _log):
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as handle:
+            self.xml_path = handle.name
+        self.source.file_path = self.xml_path
+        self.source.save(update_fields=['file_path'])
+        body = (f'<tv><programme start="{self.start}" stop="{self.stop}" '
+                f'channel="mapped.channel"><title>Imported</title></programme></tv>')
+        with patch('apps.epg.tasks.is_task_lock_held', return_value=False), \
+                patch('apps.epg.tasks.acquire_task_lock', return_value=True), \
+                patch('apps.epg.tasks.release_task_lock'):
+            for trailer, title in [('<!-- generated -->', 'Imported'),
+                                   ('<script>unfinished', 'Imported')]:
+                with self.subTest(trailer=trailer):
+                    with open(self.xml_path, 'w', encoding='utf-8') as handle:
+                        handle.write(body + trailer)
+                    parse_programs_for_tvg_id(self.mapped_epg.id)
+                    self.assertEqual(ProgramData.objects.get(epg=self.mapped_epg).title, title)
 
     @patch('apps.epg.tasks.log_system_event')
     @patch('apps.epg.tasks.send_epg_update')

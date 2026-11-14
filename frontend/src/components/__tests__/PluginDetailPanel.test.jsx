@@ -235,6 +235,30 @@ describe('PluginDetailPanel', () => {
     ]);
   });
 
+  it.each([
+    [false, true],
+    [true, false],
+  ])('updates when prerelease state changes from %s to %s', (installedPrerelease, selectedPrerelease) => {
+    const props = defaultProps({
+      installedVersion: '2.0.0',
+      installedVersionIsPrerelease: installedPrerelease,
+      installStatus: 'installed',
+      detail: makeDetail({ versions: [makeVersion('2.0.0', { prerelease: selectedPrerelease })] }),
+    });
+    render(<PluginDetailPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    expect(props.onInstall).toHaveBeenCalled();
+    expect(props.onUninstall).not.toHaveBeenCalled();
+  });
+
+  it('overwrites rather than uninstalls an unmanaged matching version', () => {
+    const props = defaultProps({ installedVersion: '2.0.0', installStatus: 'unmanaged' });
+    render(<PluginDetailPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: /overwrite/i }));
+    expect(props.onInstall).toHaveBeenCalled();
+    expect(props.onUninstall).not.toHaveBeenCalled();
+  });
+
   // ── Loading & error states ─────────────────────────────────────────────────
 
   describe('loading and error states', () => {
@@ -312,7 +336,7 @@ describe('PluginDetailPanel', () => {
 
     it('renders license metadata as a link to spdx.org', () => {
       render(<PluginDetailPanel {...defaultProps()} />);
-      const link = screen.getByRole('link', { name: 'MIT' });
+      const link = screen.getByRole('link', { name: 'License: MIT' });
       expect(link.href).toContain('spdx.org');
       expect(link.href).toContain('MIT');
     });

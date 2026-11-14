@@ -66,3 +66,22 @@ class PluginServiceRunnerTests(SimpleTestCase):
             service = self.runner.start("example", target)
             service.thread.join(1)
         self.assertFalse(service.thread.is_alive())
+        self.assertEqual(self.runner.state("example"), "failed")
+
+    def test_timed_out_service_blocks_replacement_until_thread_exits(self):
+        started = threading.Event()
+        finish = threading.Event()
+
+        def target(_stop_event):
+            started.set()
+            finish.wait(2)
+
+        service = self.runner.start("example", target)
+        self.assertTrue(started.wait(1))
+        self.runner.stop("example")
+        self.assertEqual(self.runner.state("example"), "stopping")
+        with self.assertRaises(RuntimeError):
+            self.runner.start("example", target)
+        finish.set()
+        service.thread.join(1)
+        self.assertEqual(self.runner.state("example"), "stopped")

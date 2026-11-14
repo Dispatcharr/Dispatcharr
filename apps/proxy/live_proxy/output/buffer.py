@@ -5,6 +5,10 @@ Mirrors the input StreamBuffer's chunk/index/timestamp model, but stores
 opaque byte blobs (no 188-byte TS alignment). Used by fMP4 (one fragment
 per chunk) and HLS (one media segment per chunk) via the shared
 output:{fmt}:buffer:* keyspace.
+
+When a remux/transcode process is replaced mid-session, ``mark_discontinuity``
+records the next chunk index so clients can cut before reading the new era.
+An open fMP4 response is given the new init there and stays connected.
 """
 
 import threading
@@ -12,6 +16,7 @@ import time
 
 import gevent.event
 
+from ..discontinuity_sidecar import DiscontinuitySidecarMixin
 from ..redis_keys import RedisKeys
 from ..config_helper import ConfigHelper
 from ..utils import get_logger
@@ -19,7 +24,7 @@ from ..utils import get_logger
 logger = get_logger()
 
 
-class OutputStreamBuffer:
+class OutputStreamBuffer(DiscontinuitySidecarMixin):
     """Format-parameterized Redis chunk store for a channel's output."""
 
     def __init__(self, channel_id, redis_client=None, fmt='fmp4'):
@@ -32,6 +37,9 @@ class OutputStreamBuffer:
         self.buffer_index_key = RedisKeys.output_buffer_index(channel_id, fmt)
         self.buffer_prefix = RedisKeys.output_buffer_chunk_prefix(channel_id, fmt)
         self.chunk_timestamps_key = RedisKeys.output_chunk_timestamps(channel_id, fmt)
+        self.discontinuities_key = RedisKeys.output_buffer_discontinuities(
+            channel_id, fmt
+        )
         self.chunk_ttl = ConfigHelper.redis_chunk_ttl()
         self.stopping = False
 
@@ -97,8 +105,35 @@ class OutputStreamBuffer:
             logger.error(f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error putting chunk: {e}")
             return False
 
-    def get_chunks(self, start_index=None):
-        """Retrieve chunks from start_index up to current head. Returns (chunks, new_index)."""
+    def _discontinuity_label(self) -> str:
+        return f"channel {self.channel_id} ({self.fmt} output)"
+
+    def mark_discontinuity(self):
+        """Record that the next chunk starts a new output era.
+
+        Must be called after the old process has stopped writing and before the
+        replacement writes its first chunk. Returns the discontinuity chunk
+        index, or None on failure.
+        """
+        try:
+            with self.lock:
+                next_index = self.index + 1
+                self._record_discontinuity_unlocked(next_index)
+            logger.debug(
+                f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                f"Marked discontinuity at index {next_index}"
+            )
+            return next_index
+        except Exception as e:
+            logger.error(
+                f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
+                f"Error marking discontinuity: {e}",
+                exc_info=True,
+            )
+            return None
+
+    def get_chunks_indexed(self, start_index=None):
+        """Retrieve ``(chunk_index, data)`` pairs from start_index to head."""
         try:
             if not self.redis_client:
                 return [], self.index
@@ -115,18 +150,18 @@ class OutputStreamBuffer:
             if start_index >= current_index:
                 return [], current_index
 
-            chunks = []
+            indices = list(range(start_index + 1, current_index + 1))
             pipe = self.redis_client.pipeline(transaction=False)
-            indices = range(start_index + 1, current_index + 1)
             for i in indices:
                 pipe.get(RedisKeys.output_buffer_chunk(self.channel_id, self.fmt, i))
             results = pipe.execute()
 
-            for data in results:
+            indexed = []
+            for i, data in zip(indices, results):
                 if data:
-                    chunks.append(data)
+                    indexed.append((i, data))
 
-            return chunks, current_index
+            return indexed, current_index
 
         except Exception as e:
             logger.error(f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error getting chunks: {e}")
@@ -205,6 +240,10 @@ class OutputStreamBuffer:
             self.redis_client.delete(self.buffer_index_key)
             try:
                 self.redis_client.delete(self.chunk_timestamps_key)
+            except Exception:
+                pass
+            try:
+                self.redis_client.delete(self.discontinuities_key)
             except Exception:
                 pass
         except Exception as e:

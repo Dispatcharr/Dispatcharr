@@ -1,6 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { usePluginStore } from '../plugins';
+import { refreshAfterPluginAction, usePluginStore } from '../plugins';
 import API from '../../api';
 
 vi.mock('../../api');
@@ -22,6 +22,15 @@ describe('usePluginStore', () => {
     expect(result.current.plugins).toEqual([]);
     expect(result.current.loading).toBe(false);
     expect(result.current.error).toBe(null);
+  });
+
+  it('refreshes only for recognized action directives', async () => {
+    API.getPlugins.mockResolvedValue([]);
+    await refreshAfterPluginAction({ _dispatcharr: { refresh: 'ui' } });
+    await refreshAfterPluginAction({ _dispatcharr: { refresh: 'plugin' } });
+    await refreshAfterPluginAction({ _dispatcharr: { refresh: 'unknown' } });
+    await refreshAfterPluginAction({});
+    expect(API.getPlugins).toHaveBeenCalledTimes(2);
   });
 
   it('should fetch plugins successfully', async () => {
@@ -349,6 +358,17 @@ describe('usePluginStore', () => {
         actionLabel: 'Do Other',
         status: 'ok',
       });
+    });
+
+    it('ignores malformed history while preserving an action id as a fallback label', () => {
+      act(() => {
+        usePluginStore.getState().hydratePluginTasks('my-plugin', 'My Plugin', [
+          null, {}, { task_id: 'missing-action' },
+          { task_id: 'valid', action_id: 'sync', status: 'partial' },
+        ]);
+      });
+      expect(Object.keys(usePluginStore.getState().pluginTasks)).toEqual(['valid']);
+      expect(usePluginStore.getState().pluginTasks.valid.actionLabel).toBe('sync');
     });
   });
 });

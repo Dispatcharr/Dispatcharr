@@ -19,6 +19,7 @@ import {
   getStreamSettingsFormValidation,
 } from '../../../utils/forms/settings/StreamSettingsFormUtils.js';
 import { M3U_HASH_KEY_OPTIONS } from '../../../utils/m3uHashKey.js';
+import { OUTPUT_FORMAT_OPTIONS } from '../../../constants.js';
 
 const STREAM_GROUP = 'stream_settings';
 
@@ -197,11 +198,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
           name="default_output_format"
           label="Default Output Format"
           description="Container format used when proxying streams. MPEG-TS is broadly compatible with media players and devices; fMP4 has better support for modern codecs like AV1 and is preferred by some newer clients; HLS serves a segmented playlist for native Apple players and web playback."
-          data={[
-            { value: 'mpegts', label: 'MPEG-TS' },
-            { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
-            { value: 'hls', label: 'HLS' },
-          ]}
+          data={OUTPUT_FORMAT_OPTIONS}
         />
         <Select
           label="HDHR Default Output Profile"
@@ -223,6 +220,17 @@ const StreamSettingsForm = React.memo(({ active }) => {
           data={outputProfiles
             .filter((p) => p.is_active)
             .map((p) => ({ value: `${p.id}`, label: p.name }))}
+        />
+        <Select
+          {...form.getInputProps('hdhr_output_format')}
+          id="hdhr_output_format"
+          name="hdhr_output_format"
+          label="HDHR Default Output Format"
+          description="Override Default Output Format for HDHR stream URLs. Most HDHR clients expect MPEG-TS."
+          data={[
+            { value: 'system', label: 'System Default' },
+            ...OUTPUT_FORMAT_OPTIONS,
+          ]}
         />
 
         <MultiSelect

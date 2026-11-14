@@ -139,10 +139,14 @@ const PluginDetailPanel = ({
   const registryUrl = isSafeHttpUrl(manifest.registry_url) ? manifest.registry_url : null;
   const downloadUrl = isSafeHttpUrl(selectedVersionData?.url) ? selectedVersionData.url : null;
 
+  const isOverwrite =
+    installStatus === 'unmanaged' || installStatus === 'different_repo';
   const isSelSame =
     installedVersion &&
     selectedVersion &&
-    compareVersions(selectedVersion, installedVersion) === 0;
+    compareVersions(selectedVersion, installedVersion) === 0 &&
+    !!selectedVersionData?.prerelease === installedVersionIsPrerelease &&
+    !isOverwrite;
   const isSelDowngrade =
     installedVersion &&
     selectedVersion &&
@@ -161,9 +165,6 @@ const PluginDetailPanel = ({
     selectedVersionData?.min_dispatcharr_version
   );
   const selCompatible = selMeetsMin && selMeetsMax;
-
-  const isOverwrite =
-    installStatus === 'unmanaged' || installStatus === 'different_repo';
 
   const handleInstallClick = () => {
     if (isSelSame && onUninstall) {
@@ -221,7 +222,7 @@ const PluginDetailPanel = ({
         variant: 'filled',
       };
     }
-    if (isInstalled && !installedVersionIsPrerelease) {
+    if (isInstalled) {
       return {
         label: installing ? 'Updating…' : 'Update',
         color: 'yellow',

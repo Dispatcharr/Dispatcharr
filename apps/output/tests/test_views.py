@@ -378,7 +378,7 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
         epg_data = EPGData.objects.create(name="Station", epg_source=epg_source, tvg_id="station1")
         self._add_channel(
             channel_number=149.0,
-            name="Food Network",
+            name="Test Network",
             tvg_id="station1",
             epg_data=epg_data,
         )

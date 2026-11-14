@@ -173,6 +173,8 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     )
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
+                if "log_redact" in value:
+                    value["log_redact"] = value["log_redact"] is not False
 
         if instance.key == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))

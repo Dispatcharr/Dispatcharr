@@ -5,11 +5,11 @@ import {
   Button,
   Card,
   Group,
-  Switch,
+  Menu,
   Text,
   Tooltip,
 } from '@mantine/core';
-import { Ban, Check, ExternalLink, FlaskConical, Pin, PinOff, RefreshCw, Trash2 } from 'lucide-react';
+import { Ban, Check, ExternalLink, FlaskConical, MoreHorizontal, Pin, PinOff, Power, RefreshCw, Trash2 } from 'lucide-react';
 import PluginHeader from '../PluginHeader.jsx';
 import useAuthStore from '../../store/auth.jsx';
 import { needsCapabilityAck } from '../../store/plugins.jsx';
@@ -55,6 +55,7 @@ const PluginCard = ({
   onToggleEnabled,
   onRequireTrust,
   onRequestDelete,
+  onAuthorClick,
 }) => {
   const navigate = useNavigate();
   const [enabled, setEnabled] = useState(!!plugin.enabled);
@@ -73,30 +74,27 @@ const PluginCard = ({
 
   const openDetail = () => navigate(`/plugins/${plugin.key}`);
 
-  const handleEnableChange = () => {
-    return async (e) => {
-      const next = e.currentTarget.checked;
-      let acknowledgeCapabilities = [];
-      if (next && needsCapabilityAck(plugin) && onRequireTrust) {
-        const ok = await onRequireTrust(plugin);
-        if (!ok) {
-          setEnabled(false);
-          return;
-        }
-        acknowledgeCapabilities = (plugin.capabilities || []).map((capability) => capability.id);
+  const handleEnableChange = async () => {
+    const next = !enabled;
+    let acknowledgeCapabilities = [];
+    if (next && needsCapabilityAck(plugin) && onRequireTrust) {
+      const ok = await onRequireTrust(plugin);
+      if (!ok) {
+        setEnabled(false);
+        return;
       }
-      const previous = enabled;
-      setEnabled(next);
-      try {
-        const resp = await onToggleEnabled(plugin.key, next, acknowledgeCapabilities);
-        if (!resp?.success) {
-          setEnabled(previous);
-          return;
-        }
-      } catch {
+      acknowledgeCapabilities = (plugin.capabilities || []).map((capability) => capability.id);
+    }
+    const previous = enabled;
+    setEnabled(next);
+    try {
+      const resp = await onToggleEnabled(plugin.key, next, acknowledgeCapabilities);
+      if (!resp?.success) {
         setEnabled(previous);
       }
-    };
+    } catch {
+      setEnabled(previous);
+    }
   };
 
   return (
@@ -113,37 +111,35 @@ const PluginCard = ({
         opacity: !missing && enabled ? 1 : 0.6,
       }}
     >
-      {/* Header: avatar, name/author, badges, toggle */}
-      <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
+      {/* Header: avatar, name/author, badges, actions */}
+      <div style={{ position: 'relative', marginBottom: 'var(--mantine-spacing-xs)' }}>
         <PluginHeader
           plugin={plugin}
           onClick={openDetail}
+          onAuthorClick={onAuthorClick}
           hideLinks
+          titleRightPadding={24}
           sourceRepoName={plugin.is_managed ? plugin.source_repo_name : undefined}
           metadataTrailing={<InstallStatusIndicator plugin={plugin} />}
         />
-        <Group gap={6} wrap="nowrap" align="center" style={{ flexShrink: 0 }}>
-          <Tooltip label={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}>
-            <ActionIcon
-              variant="subtle"
-              color="gray"
-              size="sm"
-              onClick={() => togglePinnedPlugin(plugin.key)}
-              aria-label={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
-            >
-              {pinned ? <PinOff size={14} /> : <Pin size={14} />}
-            </ActionIcon>
-          </Tooltip>
-          <Switch
-            checked={!missing && enabled}
-            onChange={handleEnableChange()}
-            size="xs"
-            onLabel="On"
-            offLabel="Off"
-            disabled={missing}
-          />
+        <Group gap={4} wrap="nowrap" align="center" style={{ position: 'absolute', top: 0, right: 0, height: 20 }}>
+          <Menu position="bottom-end" withinPortal>
+            <Menu.Target>
+              <ActionIcon variant="subtle" color="gray" size="sm" aria-label={`${plugin.name} actions`}>
+                <MoreHorizontal size={16} />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item leftSection={<Power size={14} />} disabled={missing} onClick={handleEnableChange}>
+                {enabled && !missing ? 'Disable plugin' : 'Enable plugin'}
+              </Menu.Item>
+              <Menu.Item leftSection={pinned ? <PinOff size={14} /> : <Pin size={14} />} onClick={() => togglePinnedPlugin(plugin.key)}>
+                {pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         </Group>
-      </Group>
+      </div>
 
       {/* Description */}
       <div style={{ overflow: 'hidden' }}>
@@ -162,7 +158,9 @@ const PluginCard = ({
       )}
 
       {/* Bottom button row */}
-      <Group justify="flex-end" mt="auto" pt="sm" gap="xs">
+      <Group justify="space-between" mt="auto" pt="sm" gap="xs">
+        {(!enabled || missing) && <Text size="xs" c="dimmed">Disabled</Text>}
+        <Group gap="xs" justify="flex-end" style={{ marginLeft: 'auto' }}>
         <Button
           size="xs"
           variant="default"
@@ -194,6 +192,7 @@ const PluginCard = ({
         >
           Uninstall
         </Button>
+        </Group>
       </Group>
     </Card>
   );

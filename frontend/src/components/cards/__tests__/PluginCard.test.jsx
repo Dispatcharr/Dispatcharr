@@ -28,9 +28,11 @@ vi.mock('@mantine/core', async () => {
     Card: ({ children, ...props }) => <div {...props}>{children}</div>,
     Group: ({ children, ...props }) => <div {...props}>{children}</div>,
     Stack: ({ children, ...props }) => <div {...props}>{children}</div>,
-    Switch: ({ checked, onChange, disabled }) => (
-      <input type="checkbox" checked={checked} onChange={onChange} disabled={disabled} />
-    ),
+    Menu: Object.assign(({ children }) => <div>{children}</div>, {
+      Target: ({ children }) => children,
+      Dropdown: ({ children }) => <div>{children}</div>,
+      Item: ({ children, leftSection, ...props }) => <button {...props}>{leftSection}{children}</button>,
+    }),
     Text: ({ children, ...props }) => <span {...props}>{children}</span>,
     Badge: ({ children, ...props }) => <span {...props}>{children}</span>,
     Tooltip: ({ children, label }) => <div title={label}>{children}</div>,
@@ -90,6 +92,39 @@ describe('PluginCard', () => {
     expect(screen.getByText('Test Author')).toBeInTheDocument();
   });
 
+  it('keeps the byline beside the logo without reserving switch space', () => {
+    renderCard({ plugin: { ...mockPlugin, is_managed: true, source_repo_name: 'Example repository' } });
+    const title = screen.getByText('Test Plugin');
+    const author = screen.getByText('Test Author');
+    const titleRow = title.parentElement.parentElement;
+    expect(titleRow).toHaveStyle({ paddingRight: '24px' });
+    expect(titleRow.parentElement).toContainElement(author);
+    expect(author.closest('[style*="padding-right"]')).toBeNull();
+    expect(screen.getByText('Example repository')).toBeInTheDocument();
+  });
+
+  it('links the repository to its registry URL in a new tab', () => {
+    renderCard({ plugin: { ...mockPlugin, is_managed: true, is_official_repo: true, source_repo_name: 'Example repository', source_repo_url: 'https://example.com/repo' } });
+    const link = screen.getByRole('link', { name: 'Repository: Example repository' });
+    expect(link).toHaveAttribute('href', 'https://example.com/repo');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByTestId('official-repository-icon')).toBeInTheDocument();
+  });
+
+  it('does not link an unsafe repository URL', () => {
+    renderCard({ plugin: { ...mockPlugin, is_managed: true, source_repo_name: 'Example repository', source_repo_url: 'javascript:alert(1)' } });
+    expect(screen.queryByRole('link', { name: 'Repository: Example repository' })).not.toBeInTheDocument();
+  });
+
+  it('passes the author to the author search handler', () => {
+    const onAuthorClick = vi.fn();
+    renderCard({ onAuthorClick });
+    fireEvent.click(screen.getByText('Test Author'));
+    expect(onAuthorClick).toHaveBeenCalledWith('Test Author');
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
   it('renders plugin logo when logo_url is provided', () => {
     renderCard();
 
@@ -104,14 +139,16 @@ describe('PluginCard', () => {
     expect(screen.queryByRole('link', { name: 'Documentation' })).not.toBeInTheDocument();
   });
 
-  it('renders switch as checked when plugin is enabled', () => {
+  it('shows the disable action for an enabled plugin', () => {
     renderCard();
-    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Disable plugin' })).toBeInTheDocument();
+    expect(screen.queryByText('Disabled')).not.toBeInTheDocument();
   });
 
-  it('renders switch as unchecked when plugin is disabled', () => {
+  it('shows a plain status and enable action for a disabled plugin', () => {
     renderCard({ plugin: { ...mockPlugin, enabled: false } });
-    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByText('Disabled').tagName).toBe('SPAN');
+    expect(screen.getByRole('button', { name: 'Enable plugin' })).toBeInTheDocument();
   });
 
   it('shows missing plugin warning when plugin is missing', () => {
@@ -144,7 +181,7 @@ describe('PluginCard', () => {
     defaultProps.onToggleEnabled.mockResolvedValue({ success: true });
     renderCard();
 
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: mockPlugin.enabled ? 'Disable plugin' : 'Enable plugin' }));
 
     await waitFor(() => {
       expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', false, []);
@@ -162,7 +199,7 @@ describe('PluginCard', () => {
     defaultProps.onToggleEnabled.mockResolvedValue({ success: true });
 
     renderCard({ plugin: firstTimePlugin });
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Enable plugin' }));
 
     await waitFor(() => {
       expect(defaultProps.onRequireTrust).toHaveBeenCalledWith(firstTimePlugin);
@@ -184,7 +221,7 @@ describe('PluginCard', () => {
     defaultProps.onRequireTrust.mockResolvedValue(false);
 
     renderCard({ plugin: firstTimePlugin });
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Enable plugin' }));
 
     await waitFor(() => {
       expect(defaultProps.onRequireTrust).toHaveBeenCalled();
@@ -207,7 +244,7 @@ describe('PluginCard', () => {
     defaultProps.onToggleEnabled.mockResolvedValue({ success: true });
 
     renderCard({ plugin: updatedPlugin });
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Enable plugin' }));
 
     await waitFor(() => {
       expect(defaultProps.onRequireTrust).toHaveBeenCalledWith(updatedPlugin);
@@ -223,18 +260,16 @@ describe('PluginCard', () => {
     defaultProps.onToggleEnabled.mockResolvedValue({ success: false });
     renderCard();
 
-    const switchElement = screen.getByRole('checkbox');
-    const initialState = switchElement.checked;
-    fireEvent.click(switchElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Disable plugin' }));
 
     await waitFor(() => {
-      expect(switchElement.checked).toBe(initialState);
+      expect(screen.getByRole('button', { name: 'Disable plugin' })).toBeInTheDocument();
     });
   });
 
   it('is disabled when plugin is missing', () => {
     renderCard({ plugin: { ...mockPlugin, missing: true } });
-    expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Enable plugin' })).toBeDisabled();
   });
 
   it('calls onRequestDelete when Uninstall is clicked', () => {
@@ -245,18 +280,18 @@ describe('PluginCard', () => {
 
   it('shows the pin toggle as "Pin to sidebar" when not pinned', () => {
     renderCard();
-    expect(screen.getByLabelText('Pin to sidebar')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pin to sidebar' })).toBeInTheDocument();
   });
 
   it('shows the pin toggle as "Unpin from sidebar" when already pinned', () => {
     pinnedKeys = ['test-plugin'];
     renderCard();
-    expect(screen.getByLabelText('Unpin from sidebar')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unpin from sidebar' })).toBeInTheDocument();
   });
 
   it('toggles pinning when the pin button is clicked', () => {
     renderCard();
-    fireEvent.click(screen.getByLabelText('Pin to sidebar'));
+    fireEvent.click(screen.getByRole('button', { name: 'Pin to sidebar' }));
     expect(mockTogglePinnedPlugin).toHaveBeenCalledWith('test-plugin');
   });
 
@@ -266,13 +301,13 @@ describe('PluginCard', () => {
         <PluginCard {...defaultProps} />
       </MemoryRouter>
     );
-    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Disable plugin' })).toBeInTheDocument();
 
     rerender(
       <MemoryRouter>
         <PluginCard {...defaultProps} plugin={{ ...mockPlugin, enabled: false }} />
       </MemoryRouter>
     );
-    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Enable plugin' })).toBeInTheDocument();
   });
 });

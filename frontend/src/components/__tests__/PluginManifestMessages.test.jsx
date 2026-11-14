@@ -36,6 +36,7 @@ describe('PluginManifestMessages', () => {
     render(<PluginManifestMessages />);
 
     expect(await screen.findByText('Maintenance')).toBeInTheDocument();
+    expect(screen.getByTestId('official-repository-icon')).toBeInTheDocument();
     const link = screen.getByText('Open status.example.test');
     expect(link).toHaveAttribute('href', 'https://status.example.test/');
     expect(link).toHaveAttribute('target', '_blank');

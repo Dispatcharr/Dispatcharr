@@ -33,6 +33,7 @@ class PluginService:
     name: str
     stop_event: object
     thread: object
+    state: str = "starting"
 
 
 class PluginServiceRunner:
@@ -60,20 +61,33 @@ class PluginServiceRunner:
             service_name = name or plugin_key
 
             def run():
+                with self._lock:
+                    if stop_event.is_set():
+                        service.state = "stopped"
+                        return
+                    service.state = "running"
                 try:
                     context.run(target, stop_event)
                     if not stop_event.is_set():
+                        with self._lock:
+                            service.state = "exited"
                         self._logger.warning(
                             "Plugin '%s' persistent service '%s' exited unexpectedly",
                             plugin_key,
                             service_name,
                         )
                 except Exception:
+                    with self._lock:
+                        service.state = "failed" if not stop_event.is_set() else "stopped"
                     self._logger.exception(
                         "Plugin '%s' persistent service '%s' failed",
                         plugin_key,
                         service_name,
                     )
+                finally:
+                    if stop_event.is_set():
+                        with self._lock:
+                            service.state = "stopped"
 
             thread = thread_cls(target=run, daemon=True)
             thread.name = f"plugin-service:{plugin_key}:{service_name}"
@@ -84,7 +98,9 @@ class PluginServiceRunner:
 
     def stop(self, plugin_key: str) -> None:
         with self._lock:
-            service = self._services.pop(plugin_key, None)
+            service = self._services.get(plugin_key)
+            if service and service.thread.is_alive():
+                service.state = "stopping"
         if service is None:
             return
         service.stop_event.set()
@@ -96,6 +112,11 @@ class PluginServiceRunner:
                 service.name,
                 self._stop_timeout,
             )
+
+    def state(self, plugin_key: str) -> Optional[str]:
+        with self._lock:
+            service = self._services.get(plugin_key)
+            return service.state if service else None
 
     def stop_all(self) -> None:
         with self._lock:

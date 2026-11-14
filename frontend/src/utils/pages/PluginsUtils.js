@@ -39,8 +39,8 @@ export const reloadPlugins = async () => {
 export const reloadPlugin = async (key) => {
   return await API.reloadPlugin(key);
 };
-export const deletePluginByKey = (key) => {
-  return API.deletePlugin(key);
+export const deletePluginByKey = (key, dataAction) => {
+  return dataAction ? API.deletePlugin(key, dataAction) : API.deletePlugin(key);
 };
 export const getPluginDetailManifest = (repoId, manifestUrl) => {
   return API.getPluginDetailManifest(repoId, manifestUrl);

@@ -174,10 +174,10 @@ class FindCurrentProgramTests(TestCase):
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             "<tv>\n"
-            '  <channel id="A&amp;E.us"/>\n'
+            '  <channel id="Test&amp;Co.us"/>\n'
             '  <programme start="20000101000000 +0000" '
-            'stop="20991231235959 +0000" channel=" A&amp;E.us ">\n'
-            "    <title>A and E Now</title>\n"
+            'stop="20991231235959 +0000" channel=" Test&amp;Co.us ">\n'
+            "    <title>Test and Co Now</title>\n"
             "  </programme>\n"
             "</tv>\n"
         )
@@ -193,14 +193,14 @@ class FindCurrentProgramTests(TestCase):
             )
             build_programme_index(src.id)
             src.refresh_from_db()
-            self.assertIn("A&E.us", src.programme_index["channels"])
+            self.assertIn("Test&Co.us", src.programme_index["channels"])
 
             epg = EPGData.objects.create(
-                tvg_id="A&E.us", name="A&E", epg_source=src
+                tvg_id="Test&Co.us", name="Test&Co", epg_source=src
             )
             result = find_current_program_for_tvg_id(epg)
             self.assertIsNotNone(result)
-            self.assertEqual(result["title"], "A and E Now")
+            self.assertEqual(result["title"], "Test and Co Now")
         finally:
             os.unlink(tmp_path)
 

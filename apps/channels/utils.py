@@ -1,11 +1,41 @@
 import logging
 import threading
+import time
 from collections import namedtuple
+
+from django.db import connection
+from django.db.utils import OperationalError
 
 from core.models import EPG_DAYS_LIMIT, CoreSettings
 from core.utils import ensure_custom_properties_dict
 
 logger = logging.getLogger(__name__)
+
+# SQLSTATE of a deadlock victim. Matching the code instead of the message keeps
+# this working when the server runs with a non-English lc_messages.
+_DEADLOCK_SQLSTATE = "40P01"
+
+
+def _is_deadlock_error(exc):
+    return getattr(exc.__cause__, "sqlstate", None) == _DEADLOCK_SQLSTATE
+
+
+def retry_on_deadlock(fn, *, attempts=3, base_delay=0.02):
+    """Retry ``fn`` when PostgreSQL reports a deadlock (SQLSTATE 40P01).
+
+    Only safe in autocommit: a deadlock aborts any open transaction, so an
+    outer ``atomic`` block cannot recover by calling ``fn`` again.
+    """
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except OperationalError as exc:
+            if not _is_deadlock_error(exc) or attempt + 1 >= attempts:
+                raise
+            logger.warning(
+                "Deadlock detected, retrying (%s/%s)", attempt + 1, attempts
+            )
+            time.sleep(base_delay * (2**attempt))
 
 # Bound memory/DB work per chunk for large libraries (20k+ channels).
 EPG_LOGO_APPLY_BATCH_SIZE = 500
@@ -134,54 +164,83 @@ def get_channel_catchup_streams(channel):
     )
 
 
+# Shared by the id-list and account entry points. Writes only rows whose flags
+# changed, locking them in id order. FOR NO KEY UPDATE serializes those writes
+# without blocking ChannelStream foreign-key inserts on the same channel.
+_CATCHUP_ROLLUP_SQL = """
+    WITH scope AS (
+        {scope}
+    ),
+    active AS (
+        SELECT cs.channel_id, MAX(s.catchup_days) AS max_days
+        FROM dispatcharr_channels_channelstream cs
+        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+        JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
+        WHERE s.is_catchup
+          AND a.is_active
+          AND cs.channel_id IN (SELECT id FROM scope)
+        GROUP BY cs.channel_id
+    ),
+    changed AS (
+        SELECT c.id,
+               (active.channel_id IS NOT NULL) AS is_catchup,
+               COALESCE(active.max_days, 0) AS catchup_days
+        FROM dispatcharr_channels_channel c
+        LEFT JOIN active ON active.channel_id = c.id
+        WHERE c.id IN (SELECT id FROM scope)
+          AND (c.is_catchup IS DISTINCT FROM (active.channel_id IS NOT NULL)
+               OR c.catchup_days IS DISTINCT FROM COALESCE(active.max_days, 0))
+        ORDER BY c.id
+        FOR NO KEY UPDATE OF c
+    )
+    UPDATE dispatcharr_channels_channel c
+    SET is_catchup = changed.is_catchup,
+        catchup_days = changed.catchup_days
+    FROM changed
+    WHERE c.id = changed.id
+"""
+
+_CATCHUP_SCOPE_CHANNEL_IDS = "SELECT unnest(%s::bigint[]) AS id"
+_CATCHUP_SCOPE_ACCOUNT = """
+        SELECT DISTINCT cs.channel_id AS id
+        FROM dispatcharr_channels_channelstream cs
+        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+        WHERE s.m3u_account_id = %s
+"""
+
+
+def _run_catchup_rollup(scope_sql, params):
+    sql = _CATCHUP_ROLLUP_SQL.format(scope=scope_sql)
+
+    def _execute():
+        with connection.cursor() as cur:
+            cur.execute(sql, params)
+
+    if connection.in_atomic_block:
+        # Caller's transaction is already aborted on deadlock; cannot retry here.
+        _execute()
+    else:
+        retry_on_deadlock(_execute)
+
+
 def rollup_catchup_for_channels(channel_ids):
     """Set ``is_catchup`` / ``catchup_days`` from active catch-up streams.
 
-    One UPDATE for the whole id list (Exists + Max subqueries). Used by the
+    Channels with no active catch-up stream are reset. Used by the
     ChannelStream signal and by bulk paths that skip ``post_save``.
-    Account-scoped import refresh uses ``rollup_channel_catchup_fields`` instead.
     """
-    from django.db.models import (
-        BooleanField,
-        Case,
-        Exists,
-        IntegerField,
-        Max,
-        OuterRef,
-        Subquery,
-        Value,
-        When,
-    )
-    from django.db.models.functions import Coalesce
-
-    from apps.channels.models import Channel, ChannelStream
-
     ids = list({cid for cid in channel_ids if cid is not None})
-    if not ids:
-        return
+    if ids:
+        _run_catchup_rollup(_CATCHUP_SCOPE_CHANNEL_IDS, [ids])
 
-    active_catchup = ChannelStream.objects.filter(
-        channel_id=OuterRef("pk"),
-        stream__is_catchup=True,
-        stream__m3u_account__is_active=True,
-    )
-    max_days = (
-        active_catchup.values("channel_id")
-        .annotate(m=Max("stream__catchup_days"))
-        .values("m")[:1]
-    )
 
-    Channel.objects.filter(pk__in=ids).update(
-        is_catchup=Case(
-            When(Exists(active_catchup), then=Value(True)),
-            default=Value(False),
-            output_field=BooleanField(),
-        ),
-        catchup_days=Coalesce(
-            Subquery(max_days, output_field=IntegerField()),
-            Value(0),
-        ),
-    )
+def rollup_catchup_for_account(account_id):
+    """Roll up catch-up flags for every channel linked to an M3U account.
+
+    Also corrects stale flags after catch-up streams are removed or the account
+    is deactivated. Channels with no stream from *account_id* are not touched.
+    """
+    _run_catchup_rollup(_CATCHUP_SCOPE_ACCOUNT, [account_id])
 
 
 def increment_stream_count(account):

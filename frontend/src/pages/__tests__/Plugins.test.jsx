@@ -98,12 +98,13 @@ vi.mock('@mantine/core', async () => {
       </label>
     ),
     Divider: ({ my }) => <hr data-my={my} />,
-    ActionIcon: ({ children, onClick, color, variant, title }) => (
+    ActionIcon: ({ children, onClick, color, variant, title, 'aria-label': ariaLabel }) => (
       <button
         onClick={onClick}
         data-color={color}
         data-variant={variant}
         title={title}
+        aria-label={ariaLabel}
       >
         {children}
       </button>
@@ -130,7 +131,7 @@ vi.mock('@mantine/core', async () => {
         </select>
       </div>
     ),
-    TextInput: ({ value, onChange, label, placeholder, disabled }) => (
+    TextInput: ({ value, onChange, label, placeholder, disabled, rightSection }) => (
       <div>
         {label && <label>{label}</label>}
         <input
@@ -141,6 +142,7 @@ vi.mock('@mantine/core', async () => {
           disabled={disabled}
           aria-label={label}
         />
+        {rightSection}
       </div>
     ),
     SimpleGrid: ({ children, cols }) => <div data-cols={cols}>{children}</div>,
@@ -237,6 +239,15 @@ describe('PluginsPage', () => {
   });
 
   describe('Rendering', () => {
+    it('clears the plugin search', () => {
+      render(<PluginsPage />);
+      const search = screen.getByPlaceholderText('Search plugins…');
+      fireEvent.change(search, { target: { value: 'Plugin 1' } });
+      fireEvent.click(screen.getByLabelText('Clear search'));
+      expect(search).toHaveValue('');
+      expect(screen.queryByLabelText('Clear search')).not.toBeInTheDocument();
+    });
+
     it('renders the page with plugins list', async () => {
       render(<PluginsPage />);
 

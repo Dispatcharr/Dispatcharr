@@ -133,6 +133,14 @@ export const M3U_FILTER_TYPES = [
   },
 ];
 
+// Shared by Default Output Format, HDHR Default Output Format, user override,
+// and M3U URL builder selects. Keep in sync with proxy format aliases.
+export const OUTPUT_FORMAT_OPTIONS = [
+  { value: 'mpegts', label: 'MPEG-TS' },
+  { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+  { value: 'hls', label: 'HLS' },
+];
+
 export const REGION_CHOICES = [
   { value: 'ad', label: 'AD' },
   { value: 'ae', label: 'AE' },

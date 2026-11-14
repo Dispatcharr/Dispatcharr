@@ -34,7 +34,7 @@ class _DictRedis:
 def _make_stream_manager(redis_client, buffering_timeout=1.0, buffering_speed=1.0):
     sm = StreamManager.__new__(StreamManager)
     sm.channel_id = CHANNEL_ID
-    sm.channel_name = "BBC News"
+    sm.channel_name = "Test Channel"
     sm.buffering = True
     sm.buffering_timeout = buffering_timeout
     sm.buffering_speed = buffering_speed

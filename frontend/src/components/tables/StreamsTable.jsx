@@ -68,6 +68,7 @@ import CreateChannelModal from '../modals/CreateChannelModal';
 import useStreamsTableStore from '../../store/streamsTable';
 import { showNotification } from '../../utils/notificationUtils.js';
 import { requeryChannels } from '../../utils/forms/ChannelUtils.js';
+import API from '../../api.js';
 import {
   addStreamsToChannel,
   appendFetchPageParams,
@@ -244,14 +245,15 @@ const StreamsTable = ({ onReady }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [groupOptions, setGroupOptions] = useState([]);
   const [m3uOptions, setM3uOptions] = useState([]);
-  const [initialDataCount, setInitialDataCount] = useState(null);
+  const [hasStreams, setHasStreams] = useState(null);
 
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
   const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
   const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
-  const initialDataCountRef = useRef(null); // First page count, kept in a ref so the page fetcher doesn't recreate when set
+  const streamsExistRef = useRef(false);
+  const existenceRequestRef = useRef(null);
   const lastIdsParamsRef = useRef(null); // De-dupe StrictMode double-fire of the IDs fetch
   const lastFilterOptionsParamsRef = useRef(null); // De-dupe StrictMode double-fire of the filter-options fetch
 
@@ -322,7 +324,7 @@ const StreamsTable = ({ onReady }) => {
     };
     // Re-bind when the scroll container mounts with table content. The observer
     // itself handles size changes during column resize.
-  }, [initialDataCount]);
+  }, [hasStreams]);
 
   // Column visibility - persisted to localStorage
   // Default visible: name, group, m3u
@@ -434,6 +436,7 @@ const StreamsTable = ({ onReady }) => {
   const data = useStreamsTableStore((s) => s.streams);
   const pageCount = useStreamsTableStore((s) => s.pageCount);
   const totalCount = useStreamsTableStore((s) => s.totalCount);
+  const previousTotalCount = useRef(totalCount);
   const allRowIds = useStreamsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useStreamsTableStore((s) => s.setAllQueryIds);
   const pagination = useStreamsTableStore((s) => s.pagination);
@@ -727,9 +730,9 @@ const StreamsTable = ({ onReady }) => {
           return;
         }
 
-        if (initialDataCountRef.current === null) {
-          initialDataCountRef.current = result.count;
-          setInitialDataCount(result.count);
+        if (result?.count > 0) {
+          streamsExistRef.current = true;
+          setHasStreams(true);
         }
 
         if (!hasSignaledReady.current && onReady) {
@@ -1335,6 +1338,36 @@ const StreamsTable = ({ onReady }) => {
    * useEffects
    */
   useEffect(() => {
+    let cancelled = false;
+    if (!existenceRequestRef.current) {
+      existenceRequestRef.current = API.queryStreams(
+        new URLSearchParams({ page: '1', page_size: '1' })
+      );
+    }
+    existenceRequestRef.current
+      .then((result) => {
+        if (!cancelled && typeof result?.count === 'number') {
+          setHasStreams(streamsExistRef.current || result.count > 0);
+        }
+      })
+      .catch((error) => {
+        console.error('Error checking for streams:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Mutation-triggered requeries update the table store directly.
+  useEffect(() => {
+    if (totalCount !== previousTotalCount.current && totalCount > 0) {
+      streamsExistRef.current = true;
+      setHasStreams(true);
+    }
+    previousTotalCount.current = totalCount;
+  }, [totalCount]);
+
+  useEffect(() => {
     // Load page rows independently, don't wait for logos or other data
     fetchPageData();
   }, [fetchPageData]);
@@ -1738,7 +1771,7 @@ const StreamsTable = ({ onReady }) => {
           </Flex>
         </Flex>
 
-        {initialDataCount === 0 && (
+        {hasStreams === false && (
           <Center style={{ paddingTop: 20 }}>
             <Card
               shadow="sm"
@@ -1760,6 +1793,14 @@ const StreamsTable = ({ onReady }) => {
                   In order to get started, add your M3U or start <br />
                   adding custom streams.
                 </Text>
+                {getFilterParams(filters).toString() && (
+                  <Button
+                    variant="default"
+                    onClick={() => setFilters(DEFAULT_STREAMS_FILTERS)}
+                  >
+                    Clear filters
+                  </Button>
+                )}
                 <Button
                   variant="default"
                   radius="md"
@@ -1791,7 +1832,7 @@ const StreamsTable = ({ onReady }) => {
             </Card>
           </Center>
         )}
-        {initialDataCount > 0 && (
+        {hasStreams !== false && (
           <Box
             style={{
               display: 'flex',

@@ -95,6 +95,16 @@ class ParseProgramsForTvgIdSwapTests(TestCase):
         self.assertEqual(programs.count(), 1)
         self.assertEqual(programs.get().title, 'New Show')
 
+    def test_matches_programme_channel_padded_with_whitespace(self):
+        """Programme @channel is stripped like channel @id, so padded ids still match."""
+        self._configure_source_file(
+            _programme_xml('  test.channel  ', 'Padded Id', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        self.assertEqual(self._titles(), {'Padded Id'})
+
     def test_replaces_a_stale_row_that_only_overlaps_the_feed_window(self):
         """A stale row need not be fully contained in the feed window to be superseded."""
         overlap_start = self.base_time - timedelta(minutes=30)

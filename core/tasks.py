@@ -18,14 +18,12 @@ from apps.epg.models import EPGSource
 from apps.m3u.tasks import refresh_single_m3u_account
 from apps.epg.tasks import refresh_epg_data
 from .models import CoreSettings
+from .watch_directories import EPG_WATCH_DIR, M3U_WATCH_DIR, LOGO_WATCH_DIR
 from apps.channels.models import ChannelStream
 from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
-EPG_WATCH_DIR = '/data/epgs'
-M3U_WATCH_DIR = '/data/m3us'
-LOGO_WATCH_DIR = '/data/logos'
 MIN_AGE_SECONDS = 6
 STARTUP_SKIP_AGE = 30
 REDIS_PREFIX = "processed_file:"

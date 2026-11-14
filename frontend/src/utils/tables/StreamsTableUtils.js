@@ -1,4 +1,5 @@
 import API from '../../api.js';
+import { formatAudioStreamsTooltip } from '../audioStreamUtils.js';
 
 export const addStreamsToChannel = (channelId, existingStreams, newStreams) => {
   return API.addStreamsToChannel(channelId, existingStreams, newStreams);
@@ -57,12 +58,27 @@ export const getStatsTooltip = (stats) => {
     tooltipLines.push(`Video Bitrate: ${stats.video_bitrate} kbps`);
   if (stats.source_fps)
     tooltipLines.push(`Frame Rate: ${stats.source_fps} FPS`);
-  if (stats.audio_codec)
-    tooltipLines.push(`Audio Codec: ${stats.audio_codec.toUpperCase()}`);
-  if (stats.audio_channels)
-    tooltipLines.push(`Audio Channels: ${stats.audio_channels}`);
-  if (stats.audio_bitrate)
-    tooltipLines.push(`Audio Bitrate: ${stats.audio_bitrate} kbps`);
+  if (Array.isArray(stats.audio_streams) && stats.audio_streams.length > 0) {
+    tooltipLines.push('Audio:');
+    tooltipLines.push(
+      ...formatAudioStreamsTooltip(stats.audio_streams).split('\n')
+    );
+  } else {
+    if (stats.audio_codec) {
+      tooltipLines.push(`Audio Codec: ${stats.audio_codec.toUpperCase()}`);
+    }
+    if (stats.audio_channels) {
+      tooltipLines.push(`Audio Channels: ${stats.audio_channels}`);
+    }
+    if (stats.audio_language) {
+      tooltipLines.push(
+        `Audio Language: ${String(stats.audio_language).toUpperCase()}`
+      );
+    }
+    if (stats.audio_bitrate) {
+      tooltipLines.push(`Audio Bitrate: ${stats.audio_bitrate} kbps`);
+    }
+  }
 
   const tooltipContent =
     tooltipLines.length > 0

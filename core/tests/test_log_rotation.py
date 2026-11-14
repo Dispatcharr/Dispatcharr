@@ -37,3 +37,12 @@ class SystemSettingsCoercionTests(TestCase):
         inst.refresh_from_db()
         self.assertEqual(inst.value["log_max_mb"], 5)  # garbage -> default
         self.assertEqual(inst.value["log_keep"], 50)  # above max -> clamped
+
+    def test_update_keeps_redaction_on_unless_explicitly_off(self):
+        inst, _ = CoreSettings.objects.get_or_create(
+            key=SYSTEM_SETTINGS_KEY, defaults={"value": {}}
+        )
+        for value, expected in ((None, True), ("false", True), (False, False)):
+            CoreSettingsSerializer().update(inst, {"value": {"log_redact": value}})
+            inst.refresh_from_db()
+            self.assertIs(inst.value["log_redact"], expected, value)

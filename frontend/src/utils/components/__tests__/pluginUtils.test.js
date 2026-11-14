@@ -445,6 +445,29 @@ describe('pluginUtils', () => {
 
     // ── edge cases ──────────────────────────────────────────────────────────────
     describe('edge cases', () => {
+      it('keeps the first entry when version strings are duplicated', () => {
+        const items = buildVersionSelectItems(
+          [
+            { version: '0.0.0-dev-04e987b5', prerelease: false },
+            { version: '0.0.0-dev-04e987b5', prerelease: true },
+          ],
+          null, null, true
+        );
+        expect(items).toHaveLength(1);
+        expect(items[0].value).toBe('0.0.0-dev-04e987b5');
+        expect(items[0].label).not.toContain('(prerelease)');
+      });
+
+      it('gives a colliding installed placeholder a distinct value', () => {
+        const items = buildVersionSelectItems(
+          [{ version: '1.0.0', prerelease: false }],
+          '1.0.0', '1.0.0', true
+        );
+        expect(new Set(items.map((item) => item.value)).size).toBe(2);
+        expect(items.find((item) => item.disabled).label).toBe('v1.0.0 (installed)');
+        expect(items.find((item) => !item.disabled).value).toBe('1.0.0');
+      });
+
       it('returns an empty array when versions is empty', () => {
         expect(buildVersionSelectItems([], null, null, false)).toEqual([]);
       });

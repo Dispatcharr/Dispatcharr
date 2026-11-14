@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActionIcon,
   AppShellMain,
   Badge,
   Box,
@@ -12,7 +13,7 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { Search } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
@@ -282,6 +283,7 @@ export default function PluginBrowsePage() {
               size="xs"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.currentTarget.value)}
+              rightSection={searchQuery ? <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Clear search" onClick={() => setSearchQuery('')}><X size={14} /></ActionIcon> : null}
               style={{ flex: 1, minWidth: 180, maxWidth: 300 }}
             />
             <Select
@@ -352,6 +354,7 @@ export default function PluginBrowsePage() {
               <AvailablePluginCard
                 key={`${p.repo_id}-${p.slug}`}
                 plugin={p}
+                onAuthorClick={setSearchQuery}
                 appVersion={appVersion}
                 appVersionTimestamp={appVersionTimestamp}
                 onBeforeInstall={(slug) => {

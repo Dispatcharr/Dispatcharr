@@ -27,7 +27,7 @@ class DispatchEventSystemAttributionTests(SimpleTestCase):
     def _dispatch(self, event_type, redis_stream_id=None, channel_missing=False, **details):
         channel = MagicMock()
         channel.id = 42
-        channel.name = "BBC News"
+        channel.name = "Test Channel"
 
         streams = {1234: _stream(1234, "Feed A"), 5678: _stream(5678, "Feed B")}
 
@@ -77,7 +77,7 @@ class DispatchEventSystemAttributionTests(SimpleTestCase):
         )
 
         self.assertEqual(payload["channel_id"], str(CHANNEL_UUID))
-        self.assertEqual(payload["channel_name"], "BBC News")
+        self.assertEqual(payload["channel_name"], "Test Channel")
         self.assertEqual(payload["previous_stream_id"], 1234)
         self.assertEqual(payload["stream_id"], 5678)
         self.assertEqual(payload["stream_name"], "Feed B")

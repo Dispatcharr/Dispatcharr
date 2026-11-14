@@ -31,6 +31,7 @@ const CellInput = ({ column, value, onChange }) => {
     case 'select':
       return (
         <Select
+          searchable={(column.options || []).length > 10}
           value={value != null ? value + '' : null}
           data={(column.options || []).map((o) => ({
             value: o.value + '',
