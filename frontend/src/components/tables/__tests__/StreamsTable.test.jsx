@@ -1,5 +1,11 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
@@ -10,6 +16,9 @@ vi.mock('../../../store/useVideoStore', () => ({ default: vi.fn() }));
 vi.mock('../../../store/channelsTable', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 vi.mock('../../../store/streamsTable', () => ({ default: vi.fn() }));
+vi.mock('../../../api.js', () => ({
+  default: { queryStreams: vi.fn() },
+}));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../hooks/useBrowserStorage', () => ({
@@ -41,30 +50,33 @@ vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
   requeryChannels: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../../utils/tables/StreamsTableUtils.js', () => ({
-  addStreamsToChannel: vi.fn().mockResolvedValue(undefined),
-  appendFetchPageParams: vi.fn(),
-  createChannelFromStream: vi.fn().mockResolvedValue(undefined),
-  createChannelsFromStreamsAsync: vi
-    .fn()
-    .mockResolvedValue({ task_id: 'task-1', stream_count: 1 }),
-  deleteStream: vi.fn().mockResolvedValue(undefined),
-  deleteStreams: vi.fn().mockResolvedValue(undefined),
-  getAllStreamIds: vi.fn().mockResolvedValue([]),
-  getChannelNumberValue: vi.fn((mode) => (mode === 'provider' ? null : 1)),
-  getChannelProfileIds: vi.fn((profileIds) => profileIds),
-  getFilterParams: vi.fn(() => new URLSearchParams()),
-  getStatsTooltip: vi.fn(() => ({
-    compactDisplay: '1080p',
-    tooltipContent: '1920x1080',
-  })),
-  getStreamFilterOptions: vi
-    .fn()
-    .mockResolvedValue({ groups: [], m3u_accounts: [] }),
-  getStreams: vi.fn().mockResolvedValue([]),
-  queryStreamsTable: vi.fn().mockResolvedValue({ count: 5, results: [] }),
-  requeryStreams: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock(
+  '../../../utils/tables/StreamsTableUtils.js',
+  async (importOriginal) => ({
+    addStreamsToChannel: vi.fn().mockResolvedValue(undefined),
+    appendFetchPageParams: vi.fn(),
+    createChannelFromStream: vi.fn().mockResolvedValue(undefined),
+    createChannelsFromStreamsAsync: vi
+      .fn()
+      .mockResolvedValue({ task_id: 'task-1', stream_count: 1 }),
+    deleteStream: vi.fn().mockResolvedValue(undefined),
+    deleteStreams: vi.fn().mockResolvedValue(undefined),
+    getAllStreamIds: vi.fn().mockResolvedValue([]),
+    getChannelNumberValue: vi.fn((mode) => (mode === 'provider' ? null : 1)),
+    getChannelProfileIds: vi.fn((profileIds) => profileIds),
+    getFilterParams: (await importOriginal()).getFilterParams,
+    getStatsTooltip: vi.fn(() => ({
+      compactDisplay: '1080p',
+      tooltipContent: '1920x1080',
+    })),
+    getStreamFilterOptions: vi
+      .fn()
+      .mockResolvedValue({ groups: [], m3u_accounts: [] }),
+    getStreams: vi.fn().mockResolvedValue([]),
+    queryStreamsTable: vi.fn().mockResolvedValue({ count: 5, results: [] }),
+    requeryStreams: vi.fn().mockResolvedValue(undefined),
+  })
+);
 
 // ── Child component mocks ──────────────────────────────────────────────────────
 vi.mock('../../forms/Stream', () => ({
@@ -121,7 +133,11 @@ vi.mock('../../modals/CreateChannelModal', () => ({
 }));
 
 vi.mock('../CustomTable', () => ({
-  CustomTable: () => <div data-testid="custom-table" />,
+  CustomTable: () => (
+    <div data-testid="custom-table">
+      {capturedTableOptions?.headerCellRenderFns?.name?.({ id: 'name' })}
+    </div>
+  ),
   useTable: vi.fn(),
 }));
 
@@ -233,12 +249,13 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
-  TextInput: ({ onChange, value, placeholder }) => (
+  TextInput: ({ onChange, value, placeholder, name }) => (
     <input
       data-testid="text-input"
       onChange={onChange}
       value={value ?? ''}
       placeholder={placeholder}
+      name={name}
     />
   ),
   Title: ({ children, style }) => <h3 style={style}>{children}</h3>,
@@ -290,6 +307,7 @@ import useChannelsTableStore from '../../../store/channelsTable';
 import useWarningsStore from '../../../store/warnings';
 import useStreamsTableStore from '../../../store/streamsTable';
 import useBrowserStorage from '../../../hooks/useBrowserStorage';
+import API from '../../../api.js';
 import { useNavigate } from 'react-router-dom';
 import { useTable } from '../CustomTable';
 import * as StreamsTableUtils from '../../../utils/tables/StreamsTableUtils.js';
@@ -347,7 +365,7 @@ const setupMocks = ({
       selectedStreamIds,
       setAllQueryIds: vi.fn(),
       setPagination: vi.fn(),
-       setSorting,
+      setSorting,
       setSelectedStreamIds: vi.fn(),
     })
   );
@@ -386,11 +404,13 @@ const setupMocks = ({
   );
 
   // useBrowserStorage: return defaults by key (filters, column-sizing, visibility)
+  const storedDefaults = {};
   vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
     if (key === 'streams-table-column-visibility') {
       return [tableSize, vi.fn()];
     }
-    return [defaultValue, vi.fn()];
+    storedDefaults[key] ??= defaultValue;
+    return [storedDefaults[key], vi.fn()];
   });
 
   vi.mocked(useTable).mockImplementation((opts) => {
@@ -412,6 +432,7 @@ describe('StreamsTable', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedTableOptions = null;
+    vi.mocked(API.queryStreams).mockResolvedValue({ count: 5, results: [] });
 
     vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
       count: 5,
@@ -433,6 +454,128 @@ describe('StreamsTable', () => {
   // ── Rendering ──────────────────────────────────────────────────────────────
 
   describe('rendering', () => {
+    it('keeps a restored nonmatching filter accessible when streams exist', async () => {
+      const { default: realStorage } = await vi.importActual(
+        '../../../hooks/useBrowserStorage'
+      );
+      sessionStorage.setItem(
+        'streams-table-filters',
+        JSON.stringify({ name: 'no match' })
+      );
+      setupMocks({ totalCount: 0, streams: [] });
+      vi.mocked(useBrowserStorage).mockImplementation(realStorage);
+      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
+        count: 0,
+        results: [],
+      });
+      render(<StreamsTable />);
+
+      await waitFor(() => expect(API.queryStreams).toHaveBeenCalledTimes(1));
+      expect(API.queryStreams.mock.calls[0][0].toString()).toBe(
+        'page=1&page_size=1'
+      );
+      expect(screen.queryByText('Getting started')).not.toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Name')).toHaveValue('no match');
+      expect(
+        StreamsTableUtils.queryStreamsTable.mock.calls[0][0].get('name')
+      ).toBe('no match');
+
+      fireEvent.change(screen.getByPlaceholderText('Name'), {
+        target: { name: 'name', value: '' },
+      });
+      await waitFor(() =>
+        expect(
+          JSON.parse(sessionStorage.getItem('streams-table-filters')).name
+        ).toBe('')
+      );
+      await waitFor(() =>
+        expect(
+          StreamsTableUtils.queryStreamsTable.mock.calls.at(-1)[0].has('name')
+        ).toBe(false)
+      );
+      sessionStorage.removeItem('streams-table-filters');
+    });
+
+    it('allows clearing saved filters on an empty installation', async () => {
+      const { default: realStorage } = await vi.importActual(
+        '../../../hooks/useBrowserStorage'
+      );
+      sessionStorage.setItem(
+        'streams-table-filters',
+        JSON.stringify({ name: 'missing' })
+      );
+      setupMocks({ totalCount: 0, streams: [] });
+      vi.mocked(useBrowserStorage).mockImplementation(realStorage);
+      vi.mocked(API.queryStreams).mockResolvedValue({ count: 0, results: [] });
+      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
+        count: 0,
+        results: [],
+      });
+      render(<StreamsTable />);
+
+      await screen.findByText('Getting started');
+      fireEvent.click(screen.getByText('Clear filters'));
+      await waitFor(() =>
+        expect(
+          JSON.parse(sessionStorage.getItem('streams-table-filters')).name
+        ).toBe('')
+      );
+      sessionStorage.removeItem('streams-table-filters');
+    });
+
+    it('keeps the table available if the existence check fails', async () => {
+      setupMocks({ totalCount: 0, streams: [] });
+      vi.mocked(API.queryStreams).mockResolvedValue(undefined);
+      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
+        count: 0,
+        results: [],
+      });
+      render(<StreamsTable />);
+      await waitFor(() => expect(API.queryStreams).toHaveBeenCalled());
+      expect(screen.getByTestId('custom-table')).toBeInTheDocument();
+      expect(screen.queryByText('Getting started')).not.toBeInTheDocument();
+    });
+
+    it('leaves onboarding when a mutation requery finds streams', async () => {
+      setupMocks({ totalCount: 0, streams: [] });
+      vi.mocked(API.queryStreams).mockResolvedValue({ count: 0, results: [] });
+      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
+        count: 0,
+        results: [],
+      });
+      const { rerender } = render(<StreamsTable />);
+      await screen.findByText('Getting started');
+
+      setupMocks({ totalCount: 1, streams: [makeStream()] });
+      rerender(<StreamsTable />);
+      await waitFor(() =>
+        expect(screen.getByTestId('custom-table')).toBeInTheDocument()
+      );
+      expect(screen.queryByText('Getting started')).not.toBeInTheDocument();
+    });
+
+    it('does not let a late empty probe override a positive page result', async () => {
+      let resolveProbe;
+      vi.mocked(API.queryStreams).mockReturnValue(
+        new Promise((resolve) => {
+          resolveProbe = resolve;
+        })
+      );
+      setupMocks({ totalCount: 0, streams: [] });
+      render(
+        <React.StrictMode>
+          <StreamsTable />
+        </React.StrictMode>
+      );
+      await waitFor(() =>
+        expect(StreamsTableUtils.queryStreamsTable).toHaveBeenCalled()
+      );
+      await act(async () => resolveProbe({ count: 0, results: [] }));
+      expect(API.queryStreams).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('custom-table')).toBeInTheDocument();
+      expect(screen.queryByText('Getting started')).not.toBeInTheDocument();
+    });
+
     it('renders the "Streams" heading', () => {
       setupMocks();
       render(<StreamsTable />);
@@ -444,9 +587,9 @@ describe('StreamsTable', () => {
       render(<StreamsTable />);
 
       expect(capturedTableOptions.tableId).toBe('streams-table');
-      expect(capturedTableOptions.pairedColumnSizing.map(({ id }) => id)).toEqual(
-        ['name', 'group', 'm3u']
-      );
+      expect(
+        capturedTableOptions.pairedColumnSizing.map(({ id }) => id)
+      ).toEqual(['name', 'group', 'm3u']);
       const nameColumn = capturedTableOptions.columns.find(
         (column) => column.accessorKey === 'name'
       );
@@ -474,9 +617,7 @@ describe('StreamsTable', () => {
       setupMocks({ setSorting });
       vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
         defaultValue,
-        key === 'streams-table-column-sizing'
-          ? setColumnSizing
-          : vi.fn(),
+        key === 'streams-table-column-sizing' ? setColumnSizing : vi.fn(),
       ]);
       render(<StreamsTable />);
 
@@ -538,6 +679,7 @@ describe('StreamsTable', () => {
     });
 
     it('shows getting-started card when totalCount is 0', async () => {
+      vi.mocked(API.queryStreams).mockResolvedValue({ count: 0, results: [] });
       vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
         count: 0,
         results: [],
@@ -664,7 +806,9 @@ describe('StreamsTable', () => {
       setupMocks({ expandedChannelId: 42 });
       render(
         <StreamRowActions
-          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          theme={{
+            tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } },
+          }}
           row={{ original: makeStream() }}
           editStream={vi.fn()}
           handleDeleteStream={vi.fn()}
@@ -681,7 +825,9 @@ describe('StreamsTable', () => {
       setupMocks();
       render(
         <StreamRowActions
-          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          theme={{
+            tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } },
+          }}
           row={{ original: makeStream() }}
           editStream={vi.fn()}
           handleDeleteStream={vi.fn()}
@@ -825,6 +971,7 @@ describe('StreamsTable', () => {
 
   describe('getting started card', () => {
     const renderEmpty = async () => {
+      vi.mocked(API.queryStreams).mockResolvedValue({ count: 0, results: [] });
       vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
         count: 0,
         results: [],
@@ -1046,7 +1193,9 @@ describe('StreamsTable', () => {
       // Open the lazily mounted overflow menu before selecting Preview Stream.
       const { container, getByText } = render(actionsCell({ cell, row }));
       fireEvent.click(
-        container.querySelector('[data-testid="icon-ellipsis"]').closest('button')
+        container
+          .querySelector('[data-testid="icon-ellipsis"]')
+          .closest('button')
       );
       fireEvent.click(getByText('Preview Stream'));
       expect(mockShowVideo).toHaveBeenCalled();
