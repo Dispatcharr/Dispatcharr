@@ -232,16 +232,15 @@ else:
     _redis_auth = ""
 
 _channels_redis_url = REDIS_URL if REDIS_URL else f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
-# channels_redis accepts either a URL string or a dict with "address" + kwargs.
-# When TLS is enabled, pass SSL params alongside the URL so the connection pool
-# uses the correct CA cert and verification settings.
+# Channels blocks in BZPOPMIN for five seconds. redis-py 8 defaults its socket
+# read timeout to the same value, which can abort a healthy idle receive. Keep
+# the read timeout disabled as it was in earlier redis-py versions. An explicit
+# socket_timeout in REDIS_URL still takes precedence in redis-py.
+_channels_host = {"address": _channels_redis_url, "socket_timeout": None}
 if REDIS_SSL and not REDIS_URL:
-    # Filter out "ssl" key — the rediss:// scheme already enables SSL.
+    # Filter out "ssl" key; the rediss:// scheme already enables SSL.
     # Passing ssl=True as a kwarg to aioredis from_url causes an error.
-    _channels_ssl = {k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"}
-    _channels_host = {"address": _channels_redis_url, **_channels_ssl}
-else:
-    _channels_host = _channels_redis_url
+    _channels_host.update({k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"})
 
 CHANNEL_LAYERS = {
     "default": {
