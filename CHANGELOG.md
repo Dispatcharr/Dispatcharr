@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **nginx accepts redirect responses that carry long provider URLs.** Redirect stream profiles (live, VOD, and catch-up) send the provider URL to the client in a `Location` header. nginx answers HTTP 502 (`upstream sent too big header`) when the response headers do not fit in `uwsgi_buffer_size`, which defaults to one memory page (4k on most hosts). That limit is reached at roughly 3,800 characters of URL, so it already affected long URLs under the old 4096 cap and would affect the new 8192 cap. The Docker and Debian nginx configs now set `uwsgi_buffer_size 16k`, plus `uwsgi_busy_buffers_size 16k`, which nginx requires alongside it on 4k-page hosts. Each in-flight upstream request holds 12k more header buffer; response body size is not limited by this buffer. Existing Debian installs pick this up when the installer is run again.
 - **Plugin execution context distinguishes code from persistent data.** Plugins now receive a replaceable `code_dir` and a version-stable `data_dir`, so update-safe storage has an explicit API. Plugins can build fields at discovery with saved settings and these paths, and use host-provided helpers to create watched directories or remove directory trees within permitted locations. Shared-directory writes require the `filesystem_write` capability for manifest version 2 plugins. Uninstalling a plugin with saved data now asks whether to keep it for a future reinstall or permanently delete it.
 - **Marketplace update state is shared across plugin surfaces.** Version comparison and update status now drive the marketplace, installed-plugin cards, notifications, and the plugin detail page consistently. Page-level and detail update checks refresh repository manifests through the same path. Stable and prerelease installs are distinguished, and selecting a managed release over an unmanaged install replaces it instead of offering to uninstall it.
+- Dependency updates:
+  - `Django` 6.0.9 → 6.0.10 (security patch; see Security section). Still not upgrading to 6.1.x: `django-celery-beat` 2.9.0 still requires `Django<6.1`.
+  - `celery` 5.6.3 → 5.7.0 (pulls `kombu` 5.7.0, which allows redis-py 8)
+  - `redis` 6.4.0 → 8.1.0
+  - `torch` 2.14.1+cpu → 2.15.0+cpu
+  - `sentence-transformers` 6.2.0 → 6.3.0
+  - Floating direct deps: `psycopg` 3.3.4 → 3.3.9, `streamlink` 8.6.2 → 8.6.3, `yt-dlp` 2026.8.19 → 2026.10.26, `daphne` 4.2.2 → 4.2.3, `django-filter` 25.2 → 26.2, `regex` / `tzlocal` / `pytz` to latest
 
 ### Fixed
 
@@ -79,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Provider credentials are masked in container logs.** The log collector redacts passwords, tokens, API keys, cookies, Authorization headers, Xtream path and query credentials, URL userinfo, and provider / EPG hosts on every line of merged stdout before it reaches `docker logs` or the on-disk log, covering Python logging, uWSGI request lines, Postgres, Redis, nginx error output, and the entrypoint. Replacements are bracketed tokens such as `[password]` and `[provider_host]` so diagnosis stays possible. Masking is on by default; Settings → System Settings → **Redact Credentials in Logs** turns it off when raw URLs are needed. Lines logged while it is off keep their secrets until the file rotates out. Known gaps: the supervisor's plain `cat` passthrough after repeated collector failures is unmasked until restart, and nginx's access log (when written to a file rather than stdout) never passes through the collector. (Closes #1435) - Thanks [@nagelm](https://github.com/nagelm)
+- Updated `Django` 6.0.9 → 6.0.10, resolving the following CVEs:
+  - **CVE-2026-108147**: Potential memory exhaustion in `MultiPartParser` via base64-encoded file upload (low).
+  - **CVE-2026-111211**: Potential log injection via unescaped geometry form values (low).
+  - **CVE-2026-111362**: Server-side request forgery via `crs` member of GeoJSON geometries (moderate).
+  - **CVE-2026-113593**: Potential exposure of private data via empty and missing `Vary` headers (low).
+  - **CVE-2026-113733**: Password hash disclosure to view-only admin users with custom user models (low).
+  - **CVE-2026-114582**: Server-side request forgery via `SpatialReference` string input (low).
 
 ## [0.33.0] - 2026-10-24
 
