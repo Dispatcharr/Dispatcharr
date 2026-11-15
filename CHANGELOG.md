@@ -77,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Self-service profile updates protect admin-managed access settings.** `PATCH /api/accounts/users/me/` now applies the same restrictions to DVR, XC credentials, network, M3U profile, VOD, and catch-up settings across JSON, form-encoded, and multipart requests. Other profile preferences can still be updated. Reported by [@orshih6](https://github.com/orshih6).
 - **Provider credentials are masked in container logs.** The log collector redacts passwords, tokens, API keys, cookies, Authorization headers, Xtream path and query credentials, URL userinfo, and provider / EPG hosts on every line of merged stdout before it reaches `docker logs` or the on-disk log, covering Python logging, uWSGI request lines, Postgres, Redis, nginx error output, and the entrypoint. Replacements are bracketed tokens such as `[password]` and `[provider_host]` so diagnosis stays possible. Masking is on by default; Settings → System Settings → **Redact Credentials in Logs** turns it off when raw URLs are needed. Lines logged while it is off keep their secrets until the file rotates out. Known gaps: the supervisor's plain `cat` passthrough after repeated collector failures is unmasked until restart, and nginx's access log (when written to a file rather than stdout) never passes through the collector. (Closes #1435) - Thanks [@nagelm](https://github.com/nagelm)
 
 ## [0.33.0] - 2026-10-24
