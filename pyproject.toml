@@ -7,9 +7,11 @@ requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
     # Stay on 6.0.x until django-celery-beat allows Django 6.1 (currently Django<6.1).
-    "Django==6.0.9",
+    "Django==6.0.10",
     "psycopg[binary]",
-    "celery[redis]==5.6.3",
+    "celery[redis]==5.7.0",
+    # celery/kombu 5.7 allows redis-py 8; pin the floor so installs do not stay on 6.4.0.
+    "redis>=8.0.0,<9",
     "djangorestframework==3.18.3",
     "requests==2.34.2",
     "psutil==7.2.2",
@@ -29,8 +31,8 @@ dependencies = [
     "regex",
     "tzlocal",
     "pytz",
-    "torch==2.14.1+cpu",
-    "sentence-transformers==6.2.0",
+    "torch==2.15.0+cpu",
+    "sentence-transformers==6.3.0",
     "channels",
     "channels-redis==4.3.0",
     "django-filter",
