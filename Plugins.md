@@ -116,9 +116,11 @@ The directory name (lowercased, spaces as `_`) is used as the registry key. Plug
 
 ## Discovery & Lifecycle
 
-- Discovery runs at server startup and on-demand when:
-  - Fetching the plugins list from the UI
-  - Hitting `POST /api/plugins/plugins/reload/`
+- Discovery runs at server startup. The plugins list uses cached discovery, so
+  after copying or removing a plugin folder, reload plugins in the UI or call
+  `POST /api/plugins/plugins/reload/` to rescan the directory.
+- A directory needs `plugin.py` or `__init__.py`; a manifest alone is not enough.
+  Database records whose plugin files are missing can still appear as missing.
 - The loader reads `plugin.json` for metadata without executing plugin code.
 - Plugin code is only imported and instantiated when the plugin is enabled.
 - Metadata (name, version, description) and a per-plugin settings JSON are stored in the DB.
@@ -433,6 +435,8 @@ For queued actions, a returned dictionary can report its outcome with `status`:
 - `{"status": "partial", "message": "Some items could not be scanned"}` records a distinct warning outcome without failing the Celery task. Include a message to explain what needs attention.
 
 These outcomes apply to both awaited manual actions and background plugin actions. Returned results are available to awaited actions and retained in background task history for all outcomes, including plugin-returned errors. JSON-serializable results can be downloaded from run history as JSON, subject to the retention limits below. An exception without a returned result does not produce a result file.
+
+Action results must be JSON serializable. An invalid result fails the task and is not retained. An awaited action returning `status: error` responds with HTTP 500 and includes its returned dictionary in the `result` field alongside `success: false` and `error`.
 
 An action can request a refresh in its returned dictionary:
 

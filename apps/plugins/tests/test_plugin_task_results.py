@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.plugins.tasks import run_plugin_action_task
+from apps.plugins.tasks import PluginActionResultError, run_plugin_action_task
 
 
 class PluginTaskResultTests(SimpleTestCase):
@@ -103,3 +103,28 @@ class PluginTaskResultTests(SimpleTestCase):
             run_plugin_action_task.run("example", "run")
         self.assertIsNone(send.call_args.args[2]["result"])
         self.assertIsNone(record.call_args.kwargs["result"])
+
+    @patch("apps.plugins.task_history.record_task_complete")
+    @patch("core.utils.send_websocket_update")
+    @patch("apps.plugins.loader.PluginManager.get")
+    def test_non_json_result_fails_with_safe_terminal_payload(self, get_manager, send, record):
+        for result in ({"items": {1, 2}}, {"status": "error", "items": {1}}):
+            with self.subTest(result=result):
+                get_manager.return_value.run_action.return_value = result
+                with self.assertRaisesRegex(TypeError, "not JSON serializable"):
+                    run_plugin_action_task.run("example", "run")
+                self.assertEqual(send.call_args.args[2]["status"], "error")
+                self.assertIsNone(send.call_args.args[2]["result"])
+                self.assertEqual(record.call_args.args[2], "error")
+                self.assertIsNone(record.call_args.kwargs["result"])
+
+    def test_returned_error_survives_celery_backend_encoding(self):
+        from celery import Celery
+
+        backend = Celery("test", backend="cache+memory://").backend
+        result = {"status": "error", "failed_items": ["one"]}
+        encoded = backend.encode(backend.prepare_exception(PluginActionResultError("failed", result)))
+        restored = backend.exception_to_python(backend.decode(encoded))
+        self.assertIsInstance(restored, PluginActionResultError)
+        self.assertEqual(str(restored), "failed")
+        self.assertEqual(restored.result, result)
