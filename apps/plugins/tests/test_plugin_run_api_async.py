@@ -98,6 +98,17 @@ class PluginRunAPIViewAsyncTests(TestCase):
         self.assertFalse(response.data["success"])
         self.assertEqual(response.data["task_id"], "task-789")
 
+    def test_non_async_returned_error_includes_result(self):
+        from apps.plugins.tasks import PluginActionResultError
+
+        result = {"status": "error", "message": "failed", "items": [1]}
+        async_result = MagicMock(id="task-456")
+        async_result.get.side_effect = PluginActionResultError("failed", result)
+        with patch("apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result):
+            response = self._post("quick")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.data, {"success": False, "error": "failed", "result": result})
+
     def test_started_result_is_normalized(self):
         """A plugin can call context['dispatch_task'] itself from a
         non-async-flagged action's run() and return {"status": "started",

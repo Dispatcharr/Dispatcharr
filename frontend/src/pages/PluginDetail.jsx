@@ -391,10 +391,10 @@ function PluginDetailForKey({ routeKey: key }) {
       } else if (resp?.success) {
         setLastResult(resp.result || {});
         refreshAfterPluginAction(resp.result);
-        showNotification({ title: plugin.name, message: resp.result?.message || 'Plugin action completed', color: 'green' });
+        showNotification({ title: plugin.name, message: resp.result?.message || 'Plugin action completed', color: resp.result?.status === 'partial' ? 'orange' : 'green' });
       } else {
         const err = resp?.error || 'Unknown error';
-        setLastResult({ error: err });
+        setLastResult(resp?.result || { error: err });
         showNotification({ title: `${plugin.name} error`, message: String(err), color: 'red' });
       }
     } finally {

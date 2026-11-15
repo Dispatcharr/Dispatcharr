@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import time
 import uuid
@@ -20,6 +21,17 @@ if PLUGIN_TASK_TIME_LIMIT:
     _task_kwargs["time_limit"] = int(PLUGIN_TASK_TIME_LIMIT)
 
 
+class PluginActionResultError(RuntimeError):
+    """A plugin failure whose JSON-safe result survives Celery serialization."""
+
+    def __init__(self, message, result):
+        super().__init__(message, result)
+        self.result = result
+
+    def __str__(self):
+        return str(self.args[0])
+
+
 @shared_task(**_task_kwargs)
 def run_plugin_action_task(self, key, action_id, params=None):
     """Runs a plugin action on the dedicated `plugins` queue and always sends
@@ -33,8 +45,13 @@ def run_plugin_action_task(self, key, action_id, params=None):
     try:
         manager = PluginManager.get()
         result = manager.run_action(key, action_id, params or {}, task_id=task_id)
+        try:
+            json.dumps(result, allow_nan=False)
+        except (TypeError, ValueError, OverflowError) as exc:
+            result = None
+            raise TypeError(f"Plugin action result is not JSON serializable: {exc}") from exc
         if isinstance(result, dict) and result.get("status") == "error":
-            raise RuntimeError(str(result.get("error") or result.get("message") or "Plugin action failed"))
+            raise PluginActionResultError(str(result.get("error") or result.get("message") or "Plugin action failed"), result)
         directive = result.get("_dispatcharr") if isinstance(result, dict) else None
         if isinstance(directive, dict) and directive.get("refresh") == "plugin":
             if not manager.reload_plugin(key):

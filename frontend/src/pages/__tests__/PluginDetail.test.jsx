@@ -6,6 +6,7 @@ import useSettingsStore from '../../store/settings';
 import useAuthStore from '../../store/auth';
 import { reloadPlugin, runPluginAction } from '../../utils/pages/PluginsUtils';
 import { useMediaQuery } from '@mantine/hooks';
+import { showNotification } from '../../utils/notificationUtils.js';
 
 vi.mock('@mantine/hooks', async (importOriginal) => {
   const actual = await importOriginal();
@@ -413,6 +414,27 @@ describe('PluginDetail', () => {
       render(<PluginDetail />);
       fireEvent.click(screen.getByText('run-action'));
       await waitFor(() => expect(refreshAfterPluginAction).toHaveBeenCalledWith(result));
+    });
+
+    it('reports an awaited error once', async () => {
+      runPluginAction.mockResolvedValue({ success: false, error: 'failed', result: { status: 'error', items: [1] } });
+      usePluginStore.mockImplementation((selector) =>
+        selector({ plugins: [pluginWithActions], loading: false, ...enableConfirmDefaults })
+      );
+      render(<PluginDetail />);
+      fireEvent.click(screen.getByText('run-action'));
+      await waitFor(() => expect(showNotification).toHaveBeenCalledWith(expect.objectContaining({ message: 'failed', color: 'red' })));
+      expect(showNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a partial result as a warning', async () => {
+      runPluginAction.mockResolvedValue({ success: true, result: { status: 'partial', message: 'Some failed' } });
+      usePluginStore.mockImplementation((selector) =>
+        selector({ plugins: [pluginWithActions], loading: false, ...enableConfirmDefaults })
+      );
+      render(<PluginDetail />);
+      fireEvent.click(screen.getByText('run-action'));
+      await waitFor(() => expect(showNotification).toHaveBeenCalledWith(expect.objectContaining({ message: 'Some failed', color: 'orange' })));
     });
 
     it('always shows actions expanded in wide (multi-column) mode', () => {
