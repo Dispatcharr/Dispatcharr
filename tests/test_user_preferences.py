@@ -197,6 +197,7 @@ class UserPreferencesAPITests(TestCase):
             "vod_series_enabled": False,
             "dvr_access": "none",
             "allowed_m3u_profile_ids": [1],
+            "hide_adult_content": True,
         }
         attempted = {
             "xc_password": "changed",
@@ -206,6 +207,7 @@ class UserPreferencesAPITests(TestCase):
             "vod_series_enabled": True,
             "dvr_access": "manage",
             "allowed_m3u_profile_ids": None,
+            "hide_adult_content": False,
             "theme": "light",
         }
         self.user.user_level = 1

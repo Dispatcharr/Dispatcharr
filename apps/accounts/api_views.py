@@ -445,8 +445,8 @@ class UserViewSet(viewsets.ModelViewSet):
             serializer.is_valid(raise_exception=True)
 
             # Strip admin-managed keys from custom_properties so users cannot
-            # set their own XC credentials, network rules, or catchup/VOD
-            # access via this endpoint.
+            # set their own XC credentials, network rules, catchup/VOD access,
+            # or turn off an admin Hide Mature Content filter via this endpoint.
             ADMIN_ONLY_PROPS = {
                 "xc_password",
                 "allowed_networks",
@@ -455,6 +455,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 "vod_series_enabled",
                 "dvr_access",
                 "allowed_m3u_profile_ids",
+                "hide_adult_content",
             }
             cp = serializer.validated_data.get("custom_properties")
             if isinstance(cp, dict):
