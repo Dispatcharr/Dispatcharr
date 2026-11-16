@@ -239,6 +239,18 @@ Dispatcharr records the Celery tasks your plugin registers in its own modules (`
 Deleting a plugin keeps shared interval and crontab definitions. These do not run without a `PeriodicTask` row.
 
 ### Settings Schema
+Settings features are versioned by `manifest_version`, including fields provided
+by `fields` or `get_fields`. Version 0 supports the legacy types `boolean`,
+`number`, `string`, `text`, `select`, and `info`. Version 1 or later is required
+for `multiselect`, `section`, `table`, and `file`, and for the `section`,
+`collapsed`, `columns`, `accept`, `max_size`, and `rows` field attributes.
+Unsupported types are ignored, while unsupported attributes are removed and the
+remaining field is retained. Dispatcharr logs a warning for each. Set
+`manifest_version` in `plugin.json` even when defining fields in Python. Version
+2 also enables the runtime guards described above. Discovery does not remove
+saved settings, but saving settings can drop values for fields omitted by the
+version policy. Set the correct manifest version before saving.
+
 Supported field `type`s:
 - `boolean`
 - `number`
@@ -279,6 +291,7 @@ Group related fields into collapsible sections by declaring a `section`-type mar
 
 ```json
 {
+  "manifest_version": 1,
   "fields": [
     { "id": "enabled", "label": "Enable plugin", "type": "boolean" },
 
