@@ -72,6 +72,9 @@ class StreamManager:
         self.buffering_timeout = ConfigHelper.buffering_timeout()
         self.buffering_speed = ConfigHelper.buffering_speed()
         self.buffering_start_time = None
+        # connection_start_time already judged stable, so a later buffering
+        # episode on the same connection does not wipe the rotation state again.
+        self._stable_noted_connection_start = None
         # Stream id for which a buffering_timeout channel_error was already logged.
         # Lets each stalled stream emit once without repeating on every stats line.
         self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
@@ -231,6 +234,35 @@ class StreamManager:
             self.tried_stream_ids.clear()
         self._failover_rotation_passes = 0
         self._rotation_cooldown_until = None
+
+    def _note_stable_before_buffering(self):
+        """Reset failover rotation if this connection was stable before buffering.
+
+        Same rule as the post-close path in the run loop, measured to
+        buffering onset. At most once per connection so later retries keep
+        their rotation throttle. Returns True if the rotation state was reset.
+        """
+        buffering_start = self.buffering_start_time
+        if buffering_start is None:
+            return False
+
+        connection_start = getattr(self, 'connection_start_time', 0)
+        if not connection_start:
+            return False
+        if getattr(self, '_stable_noted_connection_start', None) == connection_start:
+            return False
+
+        healthy_for = buffering_start - connection_start
+        if healthy_for < self._stable_connection_threshold:
+            return False
+
+        self._stable_noted_connection_start = connection_start
+        logger.info(
+            f"Stream was stable for {healthy_for:.1f} seconds before buffering, "
+            f"resetting switch rotation state for channel: {self.channel_id}"
+        )
+        self._note_stable_connection()
+        return True
 
     def _sleep_interruptible(self, seconds):
         """Sleep in short slices so stop/shutdown can abort a cooldown wait."""
@@ -1426,6 +1458,9 @@ class StreamManager:
                             # Remember which stream stalled before switching away from it
                             failed_stream_id = self.current_stream_id
                             previous_stream = {}
+                            # A connection that played well before buffering is a fresh
+                            # rotation, so earlier tried streams must not block failover.
+                            self._note_stable_before_buffering()
                             # Send next stream request
                             if self._try_next_stream(reason='buffering_timeout', previous_stream_info=previous_stream):
                                 logger.info(f"Switched to next stream for channel {self.channel_id} after buffering timeout")
