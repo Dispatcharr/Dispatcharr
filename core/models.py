@@ -17,6 +17,7 @@ from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from core.redacted_fields import RedactedJSONField
 from core.utils import clamp_int
 from dispatcharr.log_collector import DEFAULT_LOG_KEEP, DEFAULT_LOG_MB
 
@@ -977,7 +978,7 @@ class SystemEvent(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
     channel_id = models.UUIDField(null=True, blank=True, db_index=True)
     channel_name = models.CharField(max_length=255, null=True, blank=True)
-    details = models.JSONField(default=dict, blank=True)
+    details = RedactedJSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ['-timestamp']

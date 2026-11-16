@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
 from core.models import CoreSettings, UserAgent
+from core.redacted_fields import RedactedTextField
 import re
 from django.dispatch import receiver
 from apps.channels.models import StreamProfile
@@ -62,7 +63,7 @@ class M3UAccount(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.IDLE
     )
-    last_message = models.TextField(
+    last_message = RedactedTextField(
         null=True,
         blank=True,
         help_text="Last status message, including success results or error information",

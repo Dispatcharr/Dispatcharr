@@ -2,6 +2,7 @@ from django.db import models
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 from django.conf import settings
+from core.redacted_fields import RedactedTextField
 import os
 
 class EPGSource(models.Model):
@@ -57,7 +58,7 @@ class EPGSource(models.Model):
         choices=STATUS_CHOICES,
         default=STATUS_IDLE
     )
-    last_message = models.TextField(
+    last_message = RedactedTextField(
         null=True,
         blank=True,
         help_text="Last status message, including success results or error information"
