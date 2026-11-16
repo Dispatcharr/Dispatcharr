@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from .field_versions import FIELD_TYPE_VERSIONS
 from .models import PluginRepo
 
 
@@ -37,7 +38,7 @@ class PluginTableColumnSerializer(serializers.Serializer):
 class PluginFieldSerializer(serializers.Serializer):
     id = serializers.CharField()
     label = serializers.CharField(required=False, allow_blank=True)
-    type = serializers.ChoiceField(choices=["string", "number", "boolean", "select", "multiselect", "text", "info", "section", "table", "file"])
+    type = serializers.ChoiceField(choices=list(FIELD_TYPE_VERSIONS))
     default = serializers.JSONField(required=False)
     help_text = serializers.CharField(required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)

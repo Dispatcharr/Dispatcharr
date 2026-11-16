@@ -1767,7 +1767,9 @@ class PluginManager:
                 continue
             item = item.copy()
             for attribute, bounds in FIELD_ATTRIBUTE_VERSIONS.items():
-                if attribute in item and not feature_supported(bounds, manifest_version):
+                field_types = bounds["field_types"]
+                if (attribute in item and (field_types is None or (isinstance(field_type, str) and field_type in field_types))
+                        and not feature_supported(bounds, manifest_version)):
                     logger.warning("Plugin field %r attribute %r is unsupported by manifest version %s (bounds: %s); ignored",
                                    item.get("id"), attribute, manifest_version, bounds)
                     del item[attribute]

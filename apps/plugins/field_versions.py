@@ -1,17 +1,30 @@
 """Manifest-version bounds for plugin settings schema features.
 
-Unlisted types and attributes have no additional version restriction. The
-field serializer remains responsible for rejecting unknown types.
+The type registry is also the serializer's list of supported types. Unlisted
+attributes have no additional version restriction.
 """
 
 FIELD_TYPE_VERSIONS = {
-    name: {"min_manifest_version": 1, "max_manifest_version": None}
-    for name in ("multiselect", "section", "table", "file")
+    "string": {"min_manifest_version": 0, "max_manifest_version": None},
+    "number": {"min_manifest_version": 0, "max_manifest_version": None},
+    "boolean": {"min_manifest_version": 0, "max_manifest_version": None},
+    "select": {"min_manifest_version": 0, "max_manifest_version": None},
+    "text": {"min_manifest_version": 0, "max_manifest_version": None},
+    "info": {"min_manifest_version": 0, "max_manifest_version": None},
+    "multiselect": {"min_manifest_version": 1, "max_manifest_version": None},
+    "section": {"min_manifest_version": 1, "max_manifest_version": None},
+    "table": {"min_manifest_version": 1, "max_manifest_version": None},
+    "file": {"min_manifest_version": 1, "max_manifest_version": None},
 }
 
+# A None field_types value applies to every field type.
 FIELD_ATTRIBUTE_VERSIONS = {
-    name: {"min_manifest_version": 1, "max_manifest_version": None}
-    for name in ("section", "collapsed", "columns", "accept", "max_size", "rows")
+    "section": {"field_types": None, "min_manifest_version": 1, "max_manifest_version": None},
+    "collapsed": {"field_types": {"section"}, "min_manifest_version": 1, "max_manifest_version": None},
+    "columns": {"field_types": {"table"}, "min_manifest_version": 1, "max_manifest_version": None},
+    "accept": {"field_types": {"file"}, "min_manifest_version": 1, "max_manifest_version": None},
+    "max_size": {"field_types": {"file"}, "min_manifest_version": 1, "max_manifest_version": None},
+    "rows": {"field_types": {"text"}, "min_manifest_version": 1, "max_manifest_version": None},
 }
 
 
