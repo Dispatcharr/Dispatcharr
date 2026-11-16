@@ -320,9 +320,15 @@ class ChannelService:
 
             if not channel_name:
                 try:
-                    channel_name = Channel.objects.filter(uuid=channel_id).values_list(
-                        'name', flat=True
-                    ).first()
+                    # Same override-aware value the stream view passes when it
+                    # already has the channel loaded; one query with the join.
+                    channel = (
+                        Channel.objects.select_related("override")
+                        .filter(uuid=channel_id)
+                        .first()
+                    )
+                    if channel is not None:
+                        channel_name = channel.get_effective_name()
                 except Exception as e:
                     logger.warning(f"Failed to load channel name for {channel_id}: {e}")
             if not stream_name and stream_id:

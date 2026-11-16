@@ -876,8 +876,21 @@ class StreamManager:
                 else:
                     stream_profile = channel.get_stream_profile()
 
-                # Build and start transcode command
-                self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent, channel.id)
+                # Build and start transcode command. Channel rows use override-aware
+                # name/tvg_id; stream preview workers use the stream's own fields.
+                if isinstance(channel, Channel):
+                    profile_channel_name = channel.get_effective_name()
+                    profile_tvg_id = channel.get_effective_tvg_id()
+                else:
+                    profile_channel_name = channel.name
+                    profile_tvg_id = channel.tvg_id
+                self.transcode_cmd = stream_profile.build_command(
+                    self.url,
+                    self.user_agent,
+                    channel.id,
+                    channel_name=profile_channel_name,
+                    tvg_id=profile_tvg_id,
+                )
 
                 # Store stream command for efficient log parser routing
                 self.stream_command = stream_profile.command

@@ -67,7 +67,9 @@ def get_stream_object(id: str):
     if m3u_profile_id is None:
         try:
             logger.info(f"Fetching channel ID {id}")
-            return get_object_or_404(Channel, uuid=id)
+            return get_object_or_404(
+                Channel.objects.select_related("override"), uuid=id
+            )
         except Exception:
             pass
     logger.info(f"Fetching stream hash {stream_key}")
