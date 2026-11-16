@@ -32,6 +32,7 @@ from .capabilities import (
     manifest_version_supported,
 )
 from .context import running_as_plugin
+from .field_versions import FIELD_ATTRIBUTE_VERSIONS, FIELD_TYPE_VERSIONS, feature_supported
 from .keys import normalize_plugin_key
 from .sandbox import plugin_builtins, stable_plugin_data_path
 from .service_runner import PluginServiceRunner
@@ -706,10 +707,10 @@ class PluginManager:
             manifest_description = manifest.get("description") if isinstance(manifest.get("description"), str) else None
             manifest_author = manifest.get("author") if isinstance(manifest.get("author"), str) else None
             manifest_help_url = manifest.get("help_url") if isinstance(manifest.get("help_url"), str) else None
-            manifest_fields = self._normalize_fields(manifest.get("fields", []))
+            manifest_schema_version = parse_manifest_version(manifest)
+            manifest_fields = self._normalize_fields(manifest.get("fields", []), manifest_schema_version)
             manifest_actions = self._normalize_actions(manifest.get("actions", []))
             manifest_capabilities = compute_effective_capabilities(manifest)
-            manifest_schema_version = parse_manifest_version(manifest)
             if not manifest_version_supported(
                 manifest_schema_version,
                 __version__,
@@ -939,7 +940,7 @@ class PluginManager:
         else:
             fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
-        fields = self._normalize_fields(fields)
+        fields = self._normalize_fields(fields, manifest_schema_version)
         actions = self._normalize_actions(actions)
 
         lp = LoadedPlugin(
@@ -1750,18 +1751,33 @@ class PluginManager:
             safe = f"p_{safe}"
         return safe
 
-    def _normalize_fields(self, fields: Any) -> List[Dict[str, Any]]:
-        try:
-            from .serializers import PluginFieldSerializer
-        except Exception:
-            return fields if isinstance(fields, list) else []
+    def _normalize_fields(self, fields: Any, manifest_version: int = 0) -> List[Dict[str, Any]]:
         if not isinstance(fields, list):
             return []
-        serializer = PluginFieldSerializer(data=fields, many=True)
+        filtered = []
+        for item in fields:
+            if not isinstance(item, dict):
+                filtered.append(item)
+                continue
+            field_type = item.get("type")
+            bounds = FIELD_TYPE_VERSIONS.get(field_type) if isinstance(field_type, str) else None
+            if bounds and not feature_supported(bounds, manifest_version):
+                logger.warning("Plugin field %r type %r is unsupported by manifest version %s (bounds: %s); ignored",
+                               item.get("id"), field_type, manifest_version, bounds)
+                continue
+            item = item.copy()
+            for attribute, bounds in FIELD_ATTRIBUTE_VERSIONS.items():
+                if attribute in item and not feature_supported(bounds, manifest_version):
+                    logger.warning("Plugin field %r attribute %r is unsupported by manifest version %s (bounds: %s); ignored",
+                                   item.get("id"), attribute, manifest_version, bounds)
+                    del item[attribute]
+            filtered.append(item)
+        from .serializers import PluginFieldSerializer
+        serializer = PluginFieldSerializer(data=filtered, many=True)
         if serializer.is_valid():
             return serializer.validated_data
         normalized: List[Dict[str, Any]] = []
-        for item in fields:
+        for item in filtered:
             item_ser = PluginFieldSerializer(data=item)
             if item_ser.is_valid():
                 normalized.append(item_ser.validated_data)
