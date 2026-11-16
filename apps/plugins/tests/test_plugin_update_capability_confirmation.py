@@ -59,7 +59,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
 
     def test_enabled_update_with_new_capability_requires_confirmation(self):
         content = self._archive({"manifest_version": 2, "capabilities": ["persistent_service"]})
-        with patch("apps.plugins.api_views.http_requests.get", return_value=self._download(content)), patch(
+        with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)), patch(
             "apps.plugins.api_views._install_plugin_from_zip"
         ) as install:
             response = PluginInstallFromRepoAPIView.as_view()(self._request())
@@ -76,7 +76,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
         content = self._archive({"manifest_version": 2, "capabilities": ["persistent_service"]})
         pm = MagicMock()
         pm.list_plugins.return_value = []
-        with patch("apps.plugins.api_views.http_requests.get", return_value=self._download(content)), patch(
+        with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)), patch(
             "apps.plugins.api_views.PluginManager.get", return_value=pm
         ):
             response = PluginInstallFromRepoAPIView.as_view()(
@@ -94,7 +94,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
         content = self._archive({"manifest_version": 2, "capabilities": ["persistent_service"]})
         pm = MagicMock()
         pm.list_plugins.return_value = [{"key": "my_plugin", "enabled": True}]
-        with patch("apps.plugins.api_views.http_requests.get", return_value=self._download(content)), patch(
+        with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)), patch(
             "apps.plugins.api_views.PluginManager.get", return_value=pm
         ), patch(
             "apps.plugins.api_views._install_plugin_from_zip",
@@ -117,7 +117,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
         self.cfg.acknowledged_capabilities = []
         self.cfg.save(update_fields=["acknowledged_capabilities"])
         content = self._archive({"manifest_version": 2, "actions": [{"id": "sync", "async": True}]})
-        with patch("apps.plugins.api_views.http_requests.get", return_value=self._download(content)):
+        with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)):
             response = PluginInstallFromRepoAPIView.as_view()(self._request())
 
         self.assertEqual(response.status_code, 409)
@@ -127,7 +127,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
         content = self._archive({"manifest_version": 2, "capabilities": ["background_tasks"]})
         pm = MagicMock()
         pm.list_plugins.return_value = [{"key": "my_plugin", "enabled": True}]
-        with patch("apps.plugins.api_views.http_requests.get", return_value=self._download(content)), patch(
+        with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)), patch(
             "apps.plugins.api_views.PluginManager.get", return_value=pm
         ), patch(
             "apps.plugins.api_views._install_plugin_from_zip",

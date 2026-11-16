@@ -17,14 +17,13 @@ class VODLogoProxyTestCase(TestCase):
         db_logo = VODLogo.objects.get(id=self.http_logo.id)
         self.assertEqual(db_logo.url, "http://provider.example.com:8080//images//poster.jpg")
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_cache_sends_user_agent_header(self, _mock_ua, mock_get, _mock_validate):
-        """Verify that VODLogoViewSet.cache passes the User-Agent header to requests.get."""
+    def test_cache_sends_user_agent_header(self, _mock_ua, mock_get):
+        """Verify that VODLogoViewSet.cache passes the User-Agent header through the SSRF-safe fetch."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.iter_content.return_value = [PNG_BYTES]
@@ -42,13 +41,12 @@ class VODLogoProxyTestCase(TestCase):
             {"User-Agent": "Dispatcharr-Test/1.0"},
         )
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_cache_accepts_slash_less_url(self, _mock_ua, mock_get, _mock_validate):
+    def test_cache_accepts_slash_less_url(self, _mock_ua, mock_get):
         """Clients that strip trailing slashes still get the image, not a redirect."""
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -62,13 +60,12 @@ class VODLogoProxyTestCase(TestCase):
         self.assertEqual(response.content, PNG_BYTES)
         self.assertFalse(response.has_header("Location"))
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_cache_serves_image_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
+    def test_cache_serves_image_for_image_accept_header(self, _mock_ua, mock_get):
         """An Accept: image/* request must not 406 before the action runs."""
         mock_response = MagicMock()
         mock_response.status_code = 200

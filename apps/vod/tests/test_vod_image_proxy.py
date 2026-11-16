@@ -219,13 +219,12 @@ class VODImageProxyEndpointTestCase(TestCase):
             stream_id="e1",
         )
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_movie_backdrop_image_endpoint(self, _mock_ua, mock_get, _mock_validate):
+    def test_movie_backdrop_image_endpoint(self, _mock_ua, mock_get):
         body = b"\x89PNG\r\n\x1a\n" + b"backdrop-bytes"
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -247,13 +246,12 @@ class VODImageProxyEndpointTestCase(TestCase):
             {"User-Agent": "Dispatcharr-Test/1.0"},
         )
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_movie_image_accepts_slash_less_url(self, _mock_ua, mock_get, _mock_validate):
+    def test_movie_image_accepts_slash_less_url(self, _mock_ua, mock_get):
         body = b"\x89PNG\r\n\x1a\n" + b"backdrop-bytes"
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -269,13 +267,12 @@ class VODImageProxyEndpointTestCase(TestCase):
         self.assertEqual(response.content, body)
         self.assertFalse(response.has_header("Location"))
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_episode_movie_image_endpoint(self, _mock_ua, mock_get, _mock_validate):
+    def test_episode_movie_image_endpoint(self, _mock_ua, mock_get):
         body = b"\x89PNG\r\n\x1a\n" + b"still-bytes"
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -290,13 +287,12 @@ class VODImageProxyEndpointTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, body)
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_movie_image_serves_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
+    def test_movie_image_serves_for_image_accept_header(self, _mock_ua, mock_get):
         """Native image loaders send Accept: image/*; that must not 406."""
         body = b"\x89PNG\r\n\x1a\n" + b"backdrop-bytes"
         mock_response = MagicMock()
@@ -314,13 +310,12 @@ class VODImageProxyEndpointTestCase(TestCase):
         self.assertEqual(response.content, body)
         self.assertTrue(response.get("Content-Type", "").startswith("image/"))
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_series_image_serves_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
+    def test_series_image_serves_for_image_accept_header(self, _mock_ua, mock_get):
         body = b"\x89PNG\r\n\x1a\n" + b"series-bd"
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -337,13 +332,12 @@ class VODImageProxyEndpointTestCase(TestCase):
         self.assertEqual(response.content, body)
         self.assertTrue(response.get("Content-Type", "").startswith("image/"))
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_episode_image_serves_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
+    def test_episode_image_serves_for_image_accept_header(self, _mock_ua, mock_get):
         body = b"\x89PNG\r\n\x1a\n" + b"still-bytes"
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -372,13 +366,12 @@ class VODImageProxyEndpointTestCase(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_series_backdrop_image_endpoint(self, _mock_ua, mock_get, _mock_validate):
+    def test_series_backdrop_image_endpoint(self, _mock_ua, mock_get):
         body = b"\x89PNG\r\n\x1a\n" + b"series-bd"
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -392,13 +385,12 @@ class VODImageProxyEndpointTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, body)
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_resolve_prefers_higher_priority_relation_artwork(self, _mock_ua, mock_get, _mock_validate):
+    def test_resolve_prefers_higher_priority_relation_artwork(self, _mock_ua, mock_get):
         high = M3UAccount.objects.create(
             name="High Priority",
             server_url="http://high.example.com",
