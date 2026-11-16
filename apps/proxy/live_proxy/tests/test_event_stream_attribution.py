@@ -145,7 +145,8 @@ class BufferingEventAttributionTests(SimpleTestCase):
             clock[0] = 11.5
             sm._parse_ffmpeg_stats(STALLED_LINE)
             self.assertEqual(len(_calls_for(mock_log, "channel_error")), 1)
-            self.assertEqual(try_next.call_count, 3)
+            # The 11.5 line falls inside the retry window opened by the 11.0 attempt.
+            self.assertEqual(try_next.call_count, 2)
 
             # Speed recovers, then a new stall times out again.
             clock[0] = 12.0

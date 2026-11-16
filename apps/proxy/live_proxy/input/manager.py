@@ -72,8 +72,10 @@ class StreamManager:
         self.buffering_timeout = ConfigHelper.buffering_timeout()
         self.buffering_speed = ConfigHelper.buffering_speed()
         self.buffering_start_time = None
-        # connection_start_time already judged stable, so a later buffering
-        # episode on the same connection does not wipe the rotation state again.
+        # Next buffering-timeout failover attempt after a failed switch.
+        # Never cleared: a later episode only times out once this has passed.
+        self._buffering_failover_retry_at = 0
+        # connection_start_time already judged stable for this connection.
         self._stable_noted_connection_start = None
         # Stream id for which a buffering_timeout channel_error was already logged.
         # Lets each stalled stream emit once without repeating on every stats line.
@@ -238,9 +240,9 @@ class StreamManager:
     def _note_stable_before_buffering(self):
         """Reset failover rotation if this connection was stable before buffering.
 
-        Same rule as the post-close path in the run loop, measured to
-        buffering onset. At most once per connection so later retries keep
-        their rotation throttle. Returns True if the rotation state was reset.
+        Same rule as the run loop's post-close path, measured to buffering
+        onset. Once per connection so later retries keep their throttle.
+        Returns True if the rotation state was reset.
         """
         buffering_start = self.buffering_start_time
         if buffering_start is None:
@@ -1451,17 +1453,16 @@ class StreamManager:
                     if self.buffering_start_time is None:
                         self.buffering_start_time = time.time()
                     else:
-                        buffering_duration = time.time() - self.buffering_start_time
-                        if buffering_duration > self.buffering_timeout:
+                        now = time.time()
+                        buffering_duration = now - self.buffering_start_time
+                        if (buffering_duration > self.buffering_timeout
+                                and now >= getattr(self, '_buffering_failover_retry_at', 0)):
                             # Buffering timeout reached, log error and try next stream
                             logger.error(f"Buffering timeout reached for channel {self.channel_id} after {buffering_duration:.1f} seconds")
                             # Remember which stream stalled before switching away from it
                             failed_stream_id = self.current_stream_id
                             previous_stream = {}
-                            # A connection that played well before buffering is a fresh
-                            # rotation, so earlier tried streams must not block failover.
                             self._note_stable_before_buffering()
-                            # Send next stream request
                             if self._try_next_stream(reason='buffering_timeout', previous_stream_info=previous_stream):
                                 logger.info(f"Switched to next stream for channel {self.channel_id} after buffering timeout")
                                 # Reset buffering state
@@ -1498,6 +1499,11 @@ class StreamManager:
                                     logger.error(f"Could not log failover event: {e}")
                             else:
                                 logger.error(f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout")
+
+                                # Space the next attempt one buffering timeout away. Leave
+                                # buffering_start_time alone: it is the true onset used for
+                                # stall duration and the stability check.
+                                self._buffering_failover_retry_at = now + self.buffering_timeout
 
                                 # No stream_switch/channel_failover will follow; record the stall against
                                 # its stream once, not on every stats line while the speed stays low.
