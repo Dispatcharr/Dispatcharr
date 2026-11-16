@@ -112,10 +112,11 @@ _SD_POSTER_CACHE_BUST_LEN = 12
 
 def sd_poster_cache_bust(sd_icon_url):
     """
-    Short content hash of an SD poster URI for nginx cache busting.
+    Short content hash of an SD poster URI.
 
-    Same URI keeps the same ``v`` (long-lived nginx cache). A new artwork URI
-    after refresh gets a new ``v`` so clients do not keep stale bytes.
+    Same URI keeps the same ``v``. nginx uses ``v`` as the poster cache key,
+    so a new program id or another program with the same artwork reuses the
+    cached image. A new artwork URI gets a new ``v``.
     """
     if not sd_icon_url:
         return ''
@@ -126,8 +127,8 @@ def sd_poster_proxy_path(program_id, sd_icon_url):
     """
     Relative proxy path for a program poster.
 
-    Includes ``?v=`` when ``sd_icon_url`` is set so nginx cache keys change with
-    the upstream SD URI. The poster endpoint ignores ``v``; nginx keys on full URI.
+    Includes ``?v=`` when ``sd_icon_url`` is set. nginx caches on that hash, and
+    the poster view redirects here when a request carries a stale ``v``.
     """
     path = f'/api/epg/programs/{program_id}/poster/'
     bust = sd_poster_cache_bust(sd_icon_url)

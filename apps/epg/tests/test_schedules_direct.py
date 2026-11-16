@@ -16,11 +16,14 @@ Covers:
 
 import hashlib
 import json
+import re
 import time
+import unittest
 from datetime import date, datetime, timedelta, timezone as dt_timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from apps.channels.models import Channel
@@ -3024,6 +3027,75 @@ class SDPosterProxyErrorHandlingTests(TestCase):
 
     @patch('requests.get')
     @patch('requests.post')
+    def test_matching_v_serves_image(self, mock_post, mock_get):
+        from apps.epg.utils import sd_poster_cache_bust
+
+        mock_post.return_value = self._auth_ok()
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
+
+        v = sd_poster_cache_bust(self.program.custom_properties['sd_icon'])
+        resp = self.client.get(self.url, {'v': v})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b'\xff\xd8\xffjpeg-bytes')
+        mock_get.assert_called_once()
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_mismatched_v_redirects_and_does_not_fetch(self, mock_post, mock_get):
+        from apps.epg.utils import sd_poster_proxy_path
+
+        resp = self.client.get(self.url, {'v': 'not-the-artwork'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Cache-Control'], 'no-store')
+        self.assertEqual(
+            resp['Location'],
+            sd_poster_proxy_path(
+                self.program.id, self.program.custom_properties['sd_icon']
+            ),
+        )
+        mock_get.assert_not_called()
+        mock_post.assert_not_called()
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_stale_v_redirects_to_current_artwork(self, mock_post, mock_get):
+        """A stale v redirects to the current URL instead of fetching under it."""
+        from apps.epg.utils import sd_poster_cache_bust, sd_poster_proxy_path
+
+        old_v = sd_poster_cache_bust(self.program.custom_properties['sd_icon'])
+        new_icon = (
+            'https://json.schedulesdirect.org/20141201/image/assets/other.jpg'
+        )
+        self.program.custom_properties = {'sd_icon': new_icon}
+        self.program.save(update_fields=['custom_properties'])
+
+        resp = self.client.get(self.url, {'v': old_v})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            resp['Location'], sd_poster_proxy_path(self.program.id, new_icon)
+        )
+        mock_get.assert_not_called()
+        mock_post.assert_not_called()
+
+        mock_post.return_value = self._auth_ok()
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
+        followed = self.client.get(self.url, {'v': old_v}, follow=True)
+        self.assertEqual(followed.status_code, 200)
+        self.assertEqual(followed.content, b'\xff\xd8\xffjpeg-bytes')
+        mock_get.assert_called_once()
+
+    @patch('requests.get')
+    @patch('requests.post')
     def test_poster_serves_image_for_image_accept_header(self, mock_post, mock_get):
         """Native image loaders send Accept: image/*; that must not 406."""
         mock_post.return_value = self._auth_ok()
@@ -3105,4 +3177,56 @@ class SDPosterProxyErrorHandlingTests(TestCase):
         )
         from apps.epg.api_views import ProgramViewSet
         self.assertNotIn(self.source.id, ProgramViewSet._sd_poster_error_cache)
+
+
+_NGINX_CONF = Path(__file__).resolve().parents[3] / 'docker' / 'nginx.conf'
+
+
+@unittest.skipUnless(_NGINX_CONF.exists(), 'docker/nginx.conf not present')
+class SDPosterNginxKeyContractTests(SimpleTestCase):
+    """
+    nginx shares a poster cache key only for the exact query Django emits.
+    Other shapes (duplicate ``v``, ``V``) are parsed differently by nginx and
+    Django, so sharing a key for them would bypass the view's ``v`` check.
+    """
+
+    def _shared_key_regex(self):
+        match = re.search(
+            r'map \$args \$sd_poster_cache_key \{\s*"~(?P<rx>[^"]+)"',
+            _NGINX_CONF.read_text(),
+        )
+        self.assertIsNotNone(match, 'sd_poster_cache_key map not found')
+        # nginx (PCRE) writes named groups as (?<name>...); Python needs (?P<name>...).
+        return re.compile(match.group('rx').replace('(?<', '(?P<'))
+
+    def test_emitted_query_shares_key_by_hash(self):
+        from apps.epg.utils import sd_poster_cache_bust, sd_poster_proxy_path
+
+        rx = self._shared_key_regex()
+        for uri in (
+            'https://json.schedulesdirect.org/20141201/image/assets/a.jpg',
+            'https://json.schedulesdirect.org/20141201/image/assets/b.jpg',
+        ):
+            query = sd_poster_proxy_path(5, uri).split('?', 1)[1]
+            match = rx.fullmatch(query)
+            self.assertIsNotNone(match, query)
+            self.assertEqual(match.group(1), sd_poster_cache_bust(uri))
+
+    def test_other_query_shapes_do_not_share_a_key(self):
+        rx = self._shared_key_regex()
+        h = 'a' * 12
+        for query in (
+            '',
+            'v=',
+            f'v={h}&v={"b" * 12}',
+            f'V={h}',
+            f'v={h}&x=1',
+            f'x=1&v={h}',
+            f'v={h}&',
+            f'v={h.upper()}',
+            f'v={"a" * 11}',
+            f'v={"a" * 13}',
+            f'v=%61{"a" * 11}',
+        ):
+            self.assertIsNone(rx.fullmatch(query), query)
 
