@@ -497,7 +497,12 @@ def stream_ts(
             return JsonResponse({"error": "Not found"}, status=404)
 
         channel = get_stream_object(channel_id)
-        channel_display_name = getattr(channel, "name", None)
+        # Prefer the override-aware name when this is a Channel; streams have
+        # no override row, so their own name is the display name.
+        if isinstance(channel, Channel):
+            channel_display_name = channel.get_effective_name()
+        else:
+            channel_display_name = getattr(channel, "name", None)
 
         # Report the output container without registering a client or opening
         # upstream. Redirect stays octet-stream unless skip_redirect previews
@@ -814,7 +819,7 @@ def stream_ts(
                         profile_value,
                         stream_id,
                         m3u_profile_id,
-                        channel_name=channel.name,
+                        channel_name=channel_display_name,
                     )
 
                     if not success:

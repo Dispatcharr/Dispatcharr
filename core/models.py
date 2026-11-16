@@ -86,7 +86,10 @@ class StreamProfile(models.Model):
         blank=True,
     )
     parameters = models.TextField(
-        help_text="Command-line parameters. Use {userAgent}, {streamUrl}, and {channelId} as placeholders.",
+        help_text=(
+            "Command-line parameters. Use {userAgent}, {streamUrl}, "
+            "{channelId}, {channelName}, and {tvgId} as placeholders."
+        ),
         blank=True,
     )
     locked = models.BooleanField(
@@ -150,7 +153,14 @@ class StreamProfile(models.Model):
             return True
         return False
 
-    def build_command(self, stream_url, user_agent, channel_id=None):
+    def build_command(
+        self,
+        stream_url,
+        user_agent,
+        channel_id=None,
+        channel_name=None,
+        tvg_id=None,
+    ):
 
         if self.is_proxy():
             return []
@@ -159,6 +169,8 @@ class StreamProfile(models.Model):
             "{streamUrl}": stream_url,
             "{userAgent}": user_agent,
             "{channelId}": str(channel_id) if channel_id else "",
+            "{channelName}": channel_name if channel_name else "",
+            "{tvgId}": tvg_id if tvg_id else "",
         }
 
         # Split the command and iterate through each part to apply replacements

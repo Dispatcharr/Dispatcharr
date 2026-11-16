@@ -123,6 +123,17 @@ def get_client_ip(request):
     peers (LOCAL_NETWORK_CIDRS). Override with DISPATCHARR_TRUSTED_PROXIES.
     Public peers never get header trust unless explicitly listed.
     IPv4-mapped IPv6 addresses are returned in IPv4 form.
+
+    X-Forwarded-For is consulted before X-Real-IP. Proxies that set or append
+    to XFF (Tailscale Serve, Caddy, Traefik, cloudflared) put the real client
+    on that chain, and a client cannot overwrite the entry the proxy added.
+    X-Real-IP is a single value that a proxy which does not rewrite it passes
+    through untouched, so it must not override a client named by XFF.
+
+    X-Real-IP is used when XFF is absent or names no untrusted client (for
+    example a LAN client behind a LAN proxy that sets both headers, where XFF
+    holds only a private address). Direct clients with no proxy headers
+    resolve to REMOTE_ADDR.
     """
     peer_str = request.META.get("REMOTE_ADDR") or ""
     peer = _normalize_ip(peer_str)
@@ -131,10 +142,6 @@ def get_client_ip(request):
     if not request_from_trusted_proxy(request):
         return str(peer)
 
-    real_ip = _normalize_ip(request.META.get("HTTP_X_REAL_IP"))
-    if real_ip is not None:
-        return str(real_ip)
-
     xff = request.META.get("HTTP_X_FORWARDED_FOR") or ""
     for hop in reversed([h.strip() for h in xff.split(",") if h.strip()]):
         hop_ip = _normalize_ip(hop)
@@ -142,6 +149,10 @@ def get_client_ip(request):
             continue
         if not _ip_in_trusted(hop_ip):
             return str(hop_ip)
+
+    real_ip = _normalize_ip(request.META.get("HTTP_X_REAL_IP"))
+    if real_ip is not None:
+        return str(real_ip)
 
     return str(peer)
 

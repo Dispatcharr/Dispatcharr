@@ -848,6 +848,82 @@ class GetClientIpTests(SimpleTestCase):
             )
             self.assertEqual(get_client_ip(request), "203.0.113.50")
 
+    def test_xff_preferred_over_client_x_real_ip(self):
+        """Client X-Real-IP must not override a proxy-built XFF chain."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "127.0.0.1",
+                HTTP_X_FORWARDED_FOR="100.64.1.5",
+                HTTP_X_REAL_IP="127.0.0.1",
+            )
+            self.assertEqual(get_client_ip(request), "100.64.1.5")
+
+    def test_direct_lan_client_uses_remote_addr(self):
+        """LAN clients with no proxy headers keep resolving to REMOTE_ADDR."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request("192.168.1.50")
+            self.assertEqual(get_client_ip(request), "192.168.1.50")
+
+    def test_x_real_ip_used_when_xff_absent(self):
+        """LAN reverse proxies that set only X-Real-IP still work."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "172.18.0.1",
+                HTTP_X_REAL_IP="192.168.1.50",
+            )
+            self.assertEqual(get_client_ip(request), "192.168.1.50")
+
+    def test_lan_client_behind_proxy_sending_both_headers(self):
+        """A LAN client behind a LAN proxy that sets both headers keeps its IP.
+
+        XFF holds only a private address, so it names no untrusted client.
+        X-Real-IP must still be consulted, otherwise every LAN client behind
+        the proxy would collapse to the proxy's own address.
+        """
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "172.18.0.2",
+                HTTP_X_FORWARDED_FOR="192.168.1.50",
+                HTTP_X_REAL_IP="192.168.1.50",
+            )
+            self.assertEqual(get_client_ip(request), "192.168.1.50")
+
+    def test_xff_untrusted_hop_beats_x_real_ip_even_when_private(self):
+        """A proxy-reported public client is not replaced by a private X-Real-IP."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "127.0.0.1",
+                HTTP_X_FORWARDED_FOR="203.0.113.7, 10.0.0.3",
+                HTTP_X_REAL_IP="192.168.1.10",
+            )
+            self.assertEqual(get_client_ip(request), "203.0.113.7")
+
+    def test_invalid_x_real_ip_falls_back_to_peer(self):
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "172.18.0.2",
+                HTTP_X_REAL_IP="9.9.9.9, 127.0.0.1",
+            )
+            self.assertEqual(get_client_ip(request), "172.18.0.2")
+
     def test_missing_remote_addr_returns_empty(self):
         from dispatcharr.utils import get_client_ip
 
