@@ -1142,9 +1142,8 @@ class PluginManager:
         settings = settings or {}
         lp = self.get_plugin(key)
         fields = (lp.fields if lp else None) or []
-        # Drop (not reject) keys with no matching field. A plugin update can
-        # legitimately remove a settings field, leaving an orphaned key in an
-        # old saved settings blob, and rejecting would break that save.
+        # Ignore unknown submitted keys, but preserve existing plugin-managed
+        # settings that are not represented by the native settings form.
         known_ids = {f.get("id") for f in fields if f.get("id")}
         if known_ids:
             settings = {k: v for k, v in settings.items() if k in known_ids}
@@ -1154,10 +1153,15 @@ class PluginManager:
             elif field_def.get("type") == "multiselect" and field_def.get("id") in settings:
                 self._validate_multiselect_value(field_def, settings[field_def["id"]])
 
-        cfg = PluginConfig.objects.get(key=key)
-        cfg.settings = settings
-        cfg.save(update_fields=["settings", "updated_at"])
-        return cfg.settings
+        with transaction.atomic():
+            cfg = PluginConfig.objects.select_for_update().get(key=key)
+            if known_ids:
+                preserved = {k: v for k, v in (cfg.settings or {}).items() if k not in known_ids}
+                cfg.settings = {**preserved, **settings}
+            else:
+                cfg.settings = settings
+            cfg.save(update_fields=["settings", "updated_at"])
+            return cfg.settings
 
     def _validate_multiselect_value(self, field_def: Dict[str, Any], value: Any) -> None:
         """Validate a submitted 'multiselect' field value against declared options."""
