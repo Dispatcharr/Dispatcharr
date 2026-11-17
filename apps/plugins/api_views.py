@@ -38,6 +38,7 @@ from .loader import PluginManager
 from .keys import normalize_plugin_key
 from .models import PluginConfig, PluginRepo
 from .serializers import PluginRepoSerializer
+from .sandbox import stable_plugin_data_path
 from .version_utils import compare_versions, get_plugin_status
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,20 @@ def _sanitize_plugin_key(value: str) -> str:
     base = re.sub(r"[^a-z0-9_-]", "_", base)
     base = base.strip("._-")
     return base or "plugin"
+
+
+def _upload_directory(plugins_dir, key, storage_key, field_id):
+    data_dir = stable_plugin_data_path(key, os.path.join(plugins_dir, key), storage_key)
+    root = os.path.abspath(plugins_dir)
+    dest = os.path.join(data_dir, "_uploads", _sanitize_plugin_key(field_id))
+    current = root
+    for part in os.path.relpath(dest, root).split(os.sep):
+        if part in ("..", "."):
+            raise ValueError("Invalid upload directory")
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Symlinks are not allowed in upload directories")
+    return dest
 
 
 def _create_plugin_import_dir(plugins_dir):
@@ -620,7 +635,8 @@ def _unmanage_dropped_slugs(repo, new_manifest_data):
     current_slugs = set(plugin_entries.keys())
 
     dropped = PluginConfig.objects.filter(source_repo=repo).exclude(slug__in=current_slugs)
-    count = dropped.update(source_repo=None, slug="", deprecated=False)
+    # Keep the slug as the data directory identity after removing the repo.
+    count = dropped.update(source_repo=None, deprecated=False)
     if count:
         logger.info(
             "Unmanaged %d plugin(s) removed from repo '%s' manifest",
@@ -704,8 +720,7 @@ class PluginImportAPIView(PluginAuthMixin, APIView):
             if cfg and cfg.source_repo_id:
                 was_managed = True
                 cfg.source_repo = None
-                cfg.slug = ""
-                cfg.save(update_fields=["source_repo", "slug", "updated_at"])
+                cfg.save(update_fields=["source_repo", "updated_at"])
                 logger.info("Plugin '%s' manually replaced - cleared managed repo link", plugin_key)
         except Exception:
             cfg = None
@@ -759,7 +774,7 @@ class PluginSettingsAPIView(PluginAuthMixin, APIView):
 class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
     """Handles uploads for a plugin's 'file' settings field.
 
-    Writes only under <plugins_dir>/<key>/uploads/<field_id>/, never into the
+    Writes only under the plugin's data directory, never into the
     plugin's own root, so a request can never overwrite plugin.py/plugin.json/
     __init__.py. field_id must name a field the plugin itself declared with
     type "file"; an arbitrary/undeclared field_id is rejected before it is
@@ -822,12 +837,14 @@ class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        safe_field_id = _sanitize_plugin_key(field_id)
-        dest_dir = os.path.join(pm.plugins_dir, key, "uploads", safe_field_id)
         try:
+            cfg = PluginConfig.objects.filter(key=key).first()
+            dest_dir = _upload_directory(pm.plugins_dir, key, cfg.slug if cfg and cfg.slug else key, field_id)
             os.makedirs(dest_dir, exist_ok=True)
             for existing in os.listdir(dest_dir):
                 existing_path = os.path.join(dest_dir, existing)
+                if os.path.islink(existing_path):
+                    raise ValueError("Symlinks are not allowed in upload directories")
                 if os.path.isfile(existing_path):
                     os.remove(existing_path)
 
@@ -1083,7 +1100,6 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
             if not abs_target.startswith(abs_plugins):
                 return Response({"success": False, "error": "Invalid plugin path"}, status=status.HTTP_400_BAD_REQUEST)
 
-            from .sandbox import stable_plugin_data_path
             cfg = PluginConfig.objects.filter(key=key).first()
             data_dir = stable_plugin_data_path(key, target_dir, cfg.slug if cfg and cfg.slug else key)
             data_root = os.path.join(os.path.abspath(plugins_dir), "_data")
@@ -1654,7 +1670,11 @@ class AvailablePluginsAPIView(PluginAuthMixin, APIView):
                 managed = installed_by_slug.get(slug) or installed_by_slug.get(slug.replace("-", "_"))
                 sanitized_slug = _sanitize_plugin_key(slug)
                 key_match = sanitized_slug in installed_by_key or sanitized_slug in installed_by_key_norm
-                if managed:
+                if managed and not managed["source_repo_id"]:
+                    is_installed = True
+                    installed_version = managed["version"]
+                    install_status = "unmanaged"
+                elif managed:
                     is_installed = True
                     installed_version = managed["version"]
                     latest = plugin_data.get("latest_version")

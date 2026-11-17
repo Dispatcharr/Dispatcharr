@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **System Events formats experimental buffering context fields.** `channel_buffering` details show **Speed**, **Empty for**, and **Since last buffering** with units instead of raw keys.
 
+### Fixed
+
+- **Plugin file uploads survive updates.** New uploads are stored in the plugin's persistent data directory instead of its replaceable code directory. Existing uploads are not moved and may need to be uploaded again after an update. (Fixes #1988)
+- **Plugin data directories remain stable when managed plugins become unmanaged.** Dispatcharr retains the plugin's existing data directory when a repository removes it or a ZIP import replaces it.
+
 ## [0.34.0] - 2026-11-17
 
 ### Added

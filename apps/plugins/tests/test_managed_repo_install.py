@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connections
 from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient, APIRequestFactory
@@ -39,6 +40,35 @@ class ManagedPluginRepoInstallTests(TestCase):
         response = Mock()
         response.iter_content.return_value = [archive.getvalue()]
         return response
+
+    def test_manual_overwrite_retains_managed_storage_identity(self):
+        config = PluginConfig.objects.create(
+            key="local_plugin", name="Plugin", slug="registry-plugin", source_repo=self.repo,
+        )
+        with tempfile.TemporaryDirectory() as plugins_dir:
+            os.makedirs(os.path.join(plugins_dir, config.key))
+            with open(os.path.join(plugins_dir, config.key, "plugin.py"), "w") as f:
+                f.write("OLD = True\n")
+            data_dir = os.path.join(plugins_dir, "_data", config.slug)
+            os.makedirs(data_dir)
+            with open(os.path.join(data_dir, "state.txt"), "w") as f:
+                f.write("state")
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr(f"{config.key}/plugin.py", "NEW = True\n")
+            pm = Mock(plugins_dir=plugins_dir)
+            pm.list_plugins.return_value = []
+            with patch("apps.plugins.api_views.PluginManager.get", return_value=pm):
+                result = self.client.post("/api/plugins/plugins/import/", {
+                    "file": SimpleUploadedFile("plugin.zip", archive.getvalue()),
+                    "overwrite": "true",
+                })
+            self.assertEqual(result.status_code, 200)
+            config.refresh_from_db()
+            self.assertIsNone(config.source_repo)
+            self.assertEqual(config.slug, "registry-plugin")
+            with open(os.path.join(data_dir, "state.txt")) as f:
+                self.assertEqual(f.read(), "state")
 
     def test_update_uses_managed_install_key_when_zip_key_differs_from_slug(self):
         config = PluginConfig.objects.create(

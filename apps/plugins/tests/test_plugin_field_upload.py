@@ -1,13 +1,15 @@
 """PluginFieldUploadAPIView must never let an upload escape its per-field
 directory, exceed size/extension limits, or land against an undeclared field.
 
-Writes are scoped to <plugins_dir>/<key>/uploads/<field_id>/ specifically so a
+Writes are scoped to the plugin data directory specifically so a
 malicious or buggy request can never reach plugin.py/plugin.json/__init__.py.
 """
 
+import io
 import os
 import shutil
 import tempfile
+import zipfile
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -15,8 +17,9 @@ from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from apps.plugins.api_views import PluginFieldUploadAPIView
+from apps.plugins.api_views import PluginFieldUploadAPIView, _install_plugin_from_zip
 from apps.plugins.loader import LoadedPlugin, PluginManager
+from apps.plugins.models import PluginConfig
 
 
 class PluginFieldUploadAPIViewTests(TestCase):
@@ -59,7 +62,36 @@ class PluginFieldUploadAPIViewTests(TestCase):
         return PluginFieldUploadAPIView.as_view()(request, key=self.plugin.key, field_id=field_id)
 
     def _dest_dir(self, field_id):
-        return os.path.join(self._tmpdir, self.plugin.key, "uploads", field_id)
+        return os.path.join(self._tmpdir, "_data", self.plugin.key, "_uploads", field_id)
+
+    def test_managed_plugin_uses_canonical_slug(self):
+        PluginConfig.objects.create(key=self.plugin.key, name="My Plugin", slug="canonical-plugin")
+        response = self._post(self.admin, "logo", SimpleUploadedFile("logo.png", b"image"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["path"], os.path.join(
+            self._tmpdir, "_data", "canonical-plugin", "_uploads", "logo", "logo.png"
+        ))
+
+    def test_symlinked_upload_directory_is_rejected(self):
+        os.makedirs(os.path.join(self._tmpdir, "_data"))
+        os.symlink(self._tmpdir, os.path.join(self._tmpdir, "_data", self.plugin.key))
+        response = self._post(self.admin, "logo", SimpleUploadedFile("logo.png", b"image"))
+        self.assertEqual(response.status_code, 400)
+
+    def test_upload_survives_plugin_overwrite(self):
+        plugin_dir = os.path.join(self._tmpdir, self.plugin.key)
+        os.makedirs(plugin_dir)
+        with open(os.path.join(plugin_dir, "plugin.py"), "w") as f:
+            f.write("OLD = True\n")
+        response = self._post(self.admin, "logo", SimpleUploadedFile("logo.png", b"image"))
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr(f"{self.plugin.key}/plugin.py", "NEW = True\n")
+        archive.seek(0)
+        result = _install_plugin_from_zip(archive, self._tmpdir, allow_overwrite=True)
+        self.assertTrue(result["success"])
+        with open(response.data["path"], "rb") as f:
+            self.assertEqual(f.read(), b"image")
 
     def test_standard_user_forbidden(self):
         upload = SimpleUploadedFile("notes.txt", b"hello", content_type="text/plain")
