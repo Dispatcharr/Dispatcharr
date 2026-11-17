@@ -181,7 +181,8 @@ class BufferingEventAttributionTests(SimpleTestCase):
             clock[0] = 11.5
             sm._update_buffering_state(True, speed=0.5)
             self.assertEqual(len(_calls_for(mock_log, "channel_error")), 1)
-            self.assertEqual(try_next.call_count, 3)
+            # The 11.5 line falls inside the retry window opened by the 11.0 attempt.
+            self.assertEqual(try_next.call_count, 2)
 
             clock[0] = 12.0
             sm._update_buffering_state(False, speed=1.0)

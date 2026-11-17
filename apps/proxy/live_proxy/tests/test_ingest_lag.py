@@ -1808,10 +1808,17 @@ class IngestFailoverThrottleTests(SimpleTestCase):
         manager.buffering_timeout_error_stream_id = (
             StreamManager._NO_BUFFERING_TIMEOUT_ERROR
         )
+        manager._buffering_failover_retry_at = 0
+        manager._stable_noted_connection_start = None
+        manager._stable_connection_threshold = 30
+        manager.connection_start_time = 0
         for name in (
             "_update_buffering_state",
             "_buffering_timeout_failover",
             "_buffering_timeout_no_stream",
+            "_note_stable_before_buffering",
+            "_note_stable_connection",
+            "_write_channel_state",
         ):
             setattr(manager, name, getattr(StreamManager, name).__get__(manager))
         manager._try_next_stream = MagicMock(return_value=False)
@@ -1820,7 +1827,7 @@ class IngestFailoverThrottleTests(SimpleTestCase):
     def test_failover_retries_are_spaced_once_past_the_timeout(self):
         # A single-stream channel has no alternate. Evaluation runs several
         # times a second, and each attempt reads the alternates from the
-        # database, so attempts have to be spaced.
+        # database, so attempts are spaced one Buffering Timeout apart.
         manager = self._manager()
         clock = [2_000.0]
         inline_spawn = lambda fn, *a, **k: fn(*a, **k)  # noqa: E731
@@ -1834,10 +1841,20 @@ class IngestFailoverThrottleTests(SimpleTestCase):
             for _ in range(80):
                 manager._update_buffering_state(True, failover_async=True)
                 clock[0] += 0.125
-        # Ten seconds of evaluations, one attempt a second.
-        self.assertGreaterEqual(manager._try_next_stream.call_count, 9)
-        self.assertLessEqual(manager._try_next_stream.call_count, 11)
+        # Ten seconds of evaluations with a 15s retry gap: one attempt only.
+        self.assertEqual(manager._try_next_stream.call_count, 1)
         self.assertTrue(manager.buffering)
+        # After one Buffering Timeout, another attempt is allowed.
+        clock[0] = 2_000.0 + manager.buffering_timeout
+        with patch(
+            "apps.proxy.live_proxy.input.manager.time"
+        ) as mock_time, patch(
+            "apps.proxy.live_proxy.input.manager.gevent.spawn",
+            side_effect=inline_spawn,
+        ), patch("apps.proxy.live_proxy.input.manager.log_system_event"):
+            mock_time.time.side_effect = lambda: clock[0]
+            manager._update_buffering_state(True, failover_async=True)
+        self.assertEqual(manager._try_next_stream.call_count, 2)
 
     def test_a_pending_failover_blocks_another_spawn(self):
         manager = self._manager()

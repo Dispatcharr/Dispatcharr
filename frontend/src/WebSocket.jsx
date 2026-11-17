@@ -15,7 +15,7 @@ import API from './api';
 import useSettingsStore from './store/settings';
 import useAuthStore from './store/auth';
 import useUsersStore from './store/users';
-import { usePluginStore } from './store/plugins.jsx';
+import { refreshAfterPluginAction, usePluginStore } from './store/plugins.jsx';
 import { computeBackoffDelay } from './utils/backoff';
 import { WebsocketContext } from './WebSocketContext';
 
@@ -1041,6 +1041,7 @@ export const WebsocketProvider = ({ children }) => {
             case 'plugin_task_complete': {
               const { task_id, plugin, status: taskStatus, result, error, updatedAt } = parsedEvent.data;
               usePluginStore.getState().completePluginTask(task_id, { status: taskStatus, result, error, updatedAt });
+              if (taskStatus === 'ok' || taskStatus === 'partial') refreshAfterPluginAction(result);
               notifications.update({
                 id: `plugin-task-${task_id}`,
                 title: plugin,

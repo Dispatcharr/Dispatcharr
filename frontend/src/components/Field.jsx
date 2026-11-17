@@ -53,6 +53,7 @@ export const Field = ({ field, value, onChange, pluginKey }) => {
     case 'select':
       return (
         <Select
+          searchable={(field.options || []).length > 10}
           value={(value ?? field.default ?? '') + ''}
           data={(field.options || []).map((o) => ({
             value: o.value + '',
@@ -66,6 +67,7 @@ export const Field = ({ field, value, onChange, pluginKey }) => {
     case 'multiselect':
       return (
         <MultiSelect
+          searchable={(field.options || []).length > 10}
           value={(value ?? field.default ?? []).map((v) => v + '')}
           data={(field.options || []).map((o) => ({
             value: o.value + '',

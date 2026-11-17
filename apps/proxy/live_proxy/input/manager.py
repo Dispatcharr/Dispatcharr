@@ -90,6 +90,11 @@ class StreamManager:
         self._buffering_state_written_at = 0.0
         self._last_buffering_event_at = None
         self._last_buffering_event_stream_id = None
+        # Next buffering-timeout failover attempt after a failed switch.
+        # Never cleared: a later episode only times out once this has passed.
+        self._buffering_failover_retry_at = 0
+        # connection_start_time already judged stable for this connection.
+        self._stable_noted_connection_start = None
         # Stream id for which a buffering_timeout channel_error was already logged.
         # Lets each stalled stream emit once without repeating on every stats line.
         self.buffering_timeout_error_stream_id = self._NO_BUFFERING_TIMEOUT_ERROR
@@ -259,6 +264,35 @@ class StreamManager:
             self.tried_stream_ids.clear()
         self._failover_rotation_passes = 0
         self._rotation_cooldown_until = None
+
+    def _note_stable_before_buffering(self):
+        """Reset failover rotation if this connection was stable before buffering.
+
+        Same rule as the run loop's post-close path, measured to buffering
+        onset. Once per connection so later retries keep their throttle.
+        Returns True if the rotation state was reset.
+        """
+        buffering_start = self.buffering_start_time
+        if buffering_start is None:
+            return False
+
+        connection_start = getattr(self, 'connection_start_time', 0)
+        if not connection_start:
+            return False
+        if getattr(self, '_stable_noted_connection_start', None) == connection_start:
+            return False
+
+        healthy_for = buffering_start - connection_start
+        if healthy_for < self._stable_connection_threshold:
+            return False
+
+        self._stable_noted_connection_start = connection_start
+        logger.info(
+            f"Stream was stable for {healthy_for:.1f} seconds before buffering, "
+            f"resetting switch rotation state for channel: {self.channel_id}"
+        )
+        self._note_stable_connection()
+        return True
 
     def _sleep_interruptible(self, seconds):
         """Sleep in short slices so stop/shutdown can abort a cooldown wait."""
@@ -870,8 +904,21 @@ class StreamManager:
                 else:
                     stream_profile = channel.get_stream_profile()
 
-                # Build and start transcode command
-                self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent, channel.id)
+                # Build and start transcode command. Channel rows use override-aware
+                # name/tvg_id; stream preview workers use the stream's own fields.
+                if isinstance(channel, Channel):
+                    profile_channel_name = channel.get_effective_name()
+                    profile_tvg_id = channel.get_effective_tvg_id()
+                else:
+                    profile_channel_name = channel.name
+                    profile_tvg_id = channel.tvg_id
+                self.transcode_cmd = stream_profile.build_command(
+                    self.url,
+                    self.user_agent,
+                    channel.id,
+                    channel_name=profile_channel_name,
+                    tvg_id=profile_tvg_id,
+                )
 
                 # Store stream command for efficient log parser routing
                 self.stream_command = stream_profile.command
@@ -1391,9 +1438,6 @@ class StreamManager:
     _INGEST_EVAL_MIN_SECONDS = 0.25
     # The Current Speed badge needs no more than one Redis write per second.
     _INGEST_SPEED_PUBLISH_MIN_SECONDS = 1.0
-    # After the buffering timeout, retry failover at most this often. Each
-    # attempt reads the alternate streams from the database.
-    _BUFFERING_FAILOVER_RETRY_SECONDS = 1.0
     # While latched, re-assert the BUFFERING label this often so another
     # writer (for example a cancelled shutdown) cannot leave it stale.
     _BUFFERING_STATE_REFRESH_SECONDS = 1.0
@@ -1402,6 +1446,8 @@ class StreamManager:
     _buffering_state_written_at = 0.0
     _last_buffering_event_at = None
     _last_buffering_event_stream_id = None
+    _buffering_failover_retry_at = 0
+    _stable_noted_connection_start = None
 
     def _init_ingest_lag_state(self):
         """Create the MPEG-TS ingest lag tracker and timers."""
@@ -1417,7 +1463,6 @@ class StreamManager:
         self._last_published_cushion_remaining = None
         self._evaluating_ingest = False
         self._buffering_failover_running = False
-        self._buffering_failover_last_attempt = 0.0
 
     def _ingest_sample_target(self, tracker):
         """Sample spacing once the dense join open is over."""
@@ -1779,24 +1824,23 @@ class StreamManager:
                     self.buffering_start_time = now
                 else:
                     buffering_duration = now - self.buffering_start_time
-                    if buffering_duration > self.buffering_timeout:
+                    if (
+                        buffering_duration > self.buffering_timeout
+                        and now >= getattr(self, "_buffering_failover_retry_at", 0)
+                    ):
                         logger.error(
                             f"Buffering timeout reached for channel {self.channel_id} "
                             f"after {buffering_duration:.1f} seconds"
                         )
                         failed_stream_id = self.current_stream_id
                         previous_stream = {}
+                        self._note_stable_before_buffering()
                         if failover_async:
                             # Ingest detection evaluates several times a second.
-                            # Without a retry interval a channel with no
-                            # alternate stream would hit the database that often.
-                            if (
-                                not self._buffering_failover_running
-                                and now - self._buffering_failover_last_attempt
-                                >= self._BUFFERING_FAILOVER_RETRY_SECONDS
-                            ):
+                            # One in-flight spawn is enough; failed attempts are
+                            # spaced by Buffering Timeout below.
+                            if not self._buffering_failover_running:
                                 self._buffering_failover_running = True
-                                self._buffering_failover_last_attempt = now
                                 gevent.spawn(
                                     self._buffering_timeout_failover,
                                     buffering_duration,
@@ -1945,6 +1989,10 @@ class StreamManager:
         logger.error(
             f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout"
         )
+        # Space the next attempt one Buffering Timeout away. Leave
+        # buffering_start_time alone: it is the true onset used for stall
+        # duration and the stability check.
+        self._buffering_failover_retry_at = time.time() + self.buffering_timeout
         if self.buffering_timeout_error_stream_id != failed_stream_id:
             try:
                 log_system_event(
@@ -2038,6 +2086,9 @@ class StreamManager:
             logger.debug(f"FFmpeg stats for channel {self.channel_id}: - Speed: {ffmpeg_speed}x, FFmpeg FPS: {ffmpeg_fps}, "
                         f"Actual FPS: {actual_fps_str}, "
                         f"Output Bitrate: {ffmpeg_output_bitrate_str} kbps")
+            # Experimental ingest detection owns buffering. Otherwise FFmpeg
+            # speed= is still the signal (including buffering-timeout failover,
+            # stable-connection reset, and one-timeout retry spacing).
             if not self.experimental_ingest_buffer:
                 if ffmpeg_speed is not None and ffmpeg_speed < self.buffering_speed:
                     self._update_buffering_state(

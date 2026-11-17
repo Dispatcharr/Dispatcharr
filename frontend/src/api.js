@@ -2481,7 +2481,9 @@ export default class API {
       );
       return response;
     } catch (e) {
-      errorNotification('Failed to run plugin action', e);
+      return e?.body && typeof e.body === 'object'
+        ? e.body
+        : { success: false, error: e?.message || 'Failed to run plugin action' };
     }
   }
 

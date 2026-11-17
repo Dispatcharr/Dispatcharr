@@ -60,11 +60,12 @@ vi.mock('@mantine/core', async () => {
         {description && <div>{description}</div>}
       </div>
     ),
-    Select: ({ label, description, value, data, onChange, placeholder }) => (
+    Select: ({ label, description, value, data, onChange, placeholder, searchable }) => (
       <div>
         <label htmlFor="select-input">{label}</label>
         <select
           id="select-input"
+          data-searchable={String(searchable)}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
@@ -79,6 +80,9 @@ vi.mock('@mantine/core', async () => {
         {description && <div>{description}</div>}
       </div>
     ),
+    MultiSelect: ({ label, searchable }) => (
+      <div data-testid="multiselect" data-searchable={String(searchable)}>{label}</div>
+    ),
     Text: ({ children, fw, size, c }) => (
       <div data-fw={fw} data-size={size} data-color={c}>
         {children}
@@ -92,6 +96,18 @@ describe('Field', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each(['select', 'multiselect'])('%s searches only with more than 10 options', (type) => {
+    const options = Array.from({ length: 11 }, (_, i) => ({ value: String(i), label: `Option ${i}` }));
+    const field = { id: 'choice', type, label: 'Choice', options: options.slice(0, 10) };
+    const { rerender } = render(<Field field={field} onChange={mockOnChange} />);
+    const input = () => type === 'select' ? screen.getByLabelText('Choice') : screen.getByTestId('multiselect');
+    expect(input()).toHaveAttribute('data-searchable', 'false');
+    rerender(<Field field={{ ...field, options }} onChange={mockOnChange} />);
+    expect(input()).toHaveAttribute('data-searchable', 'true');
+    rerender(<Field field={{ ...field, options: undefined }} onChange={mockOnChange} />);
+    expect(input()).toHaveAttribute('data-searchable', 'false');
   });
 
   it.each([[undefined, 4], [8, 8]])('renders text fields with rows %s', (rows, expected) => {

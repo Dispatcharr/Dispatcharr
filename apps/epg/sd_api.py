@@ -11,7 +11,7 @@ import logging
 import time
 
 import requests as http_requests
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseRedirect
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
@@ -34,6 +34,7 @@ from apps.epg.sd_utils import (
     sd_parse_response_payload,
     sd_save_image_limit_lockout,
 )
+from apps.epg.utils import sd_poster_cache_bust, sd_poster_proxy_path
 from core.utils import dispatcharr_http_headers
 
 logger = logging.getLogger(__name__)
@@ -429,7 +430,12 @@ class SchedulesDirectPosterMixin:
 
     @action(detail=True, methods=['get'], url_path='poster', permission_classes=[AllowAny])
     def poster(self, request, pk=None):
-        """Proxy endpoint for SD program poster images. Nginx caches the response."""
+        """Proxy endpoint for SD program poster images.
+
+        nginx caches a successful response under ``?v=`` (hash of ``sd_icon``),
+        shared by every program with that artwork. A ``v`` that does not match
+        this program's current artwork is redirected to the current URL.
+        """
         program = self.get_object()
         cp = program.custom_properties or {}
         if cp.get('sd_icon_missing'):
@@ -441,6 +447,19 @@ class SchedulesDirectPosterMixin:
         source = program.epg.epg_source if program.epg else None
         if not source or source.source_type != 'schedules_direct':
             return Response(status=status.HTTP_404_NOT_FOUND)
+
+        # A stale v means this program's artwork changed. Serving the new image
+        # here would let nginx store it under the old hash (the shared cache
+        # key, see sd_poster_cache_key in docker/nginx.conf), so redirect to
+        # the current URL instead. nginx only stores 200s, so the 302 is not
+        # cached, and it needs no Schedules Direct call.
+        requested_v = request.query_params.get('v')
+        if requested_v and requested_v != sd_poster_cache_bust(poster_sd_url):
+            redirect = HttpResponseRedirect(
+                sd_poster_proxy_path(program.id, poster_sd_url)
+            )
+            redirect['Cache-Control'] = 'no-store'
+            return redirect
 
         # Persisted lockout (shared across workers) until next midnight UTC.
         limit_active, limit_reason = sd_image_limit_active(source)

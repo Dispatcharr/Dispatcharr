@@ -54,7 +54,7 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _write(plugin_key: str, task_id: str, patch: dict) -> None:
+def _write(plugin_key: str, task_id: str, patch: dict, *, create: bool = False) -> None:
     client = _client()
     if client is None:
         return
@@ -71,6 +71,8 @@ def _write(plugin_key: str, task_id: str, patch: dict) -> None:
                         record = {}
                     if not isinstance(record, dict):
                         record = {}
+                    if not create and not (record.get("action_id") or record.get("action_label")):
+                        return
                     if record.get("status") not in (None, "running") and patch.get("status") in (None, "running"):
                         return
                     record.update(patch)
@@ -115,7 +117,7 @@ def record_task_started(plugin_key: str, task_id: str, action_id: str, action_la
         "error": None,
         "startedAt": now,
         "updatedAt": now,
-    })
+    }, create=True)
 
 
 def record_task_progress(plugin_key: str, task_id: str, percent, message) -> None:

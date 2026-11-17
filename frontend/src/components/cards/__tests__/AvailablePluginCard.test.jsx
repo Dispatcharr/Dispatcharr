@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import AvailablePluginCard from '../AvailablePluginCard';
 
@@ -286,7 +286,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
   vi.mocked(PluginsUtils.deletePluginByKey).mockResolvedValue({
     success: true,
   });
-  vi.mocked(PluginsUtils.setPluginEnabled).mockResolvedValue(undefined);
+  vi.mocked(PluginsUtils.setPluginEnabled).mockResolvedValue({ success: true });
 
   return {
     mockNavigate,
@@ -1048,10 +1048,10 @@ describe('AvailablePluginCard', () => {
   // ── Enable now ─────────────────────────────────────────────────────────────
 
   describe('enable now (plugin installed as disabled)', () => {
-    const installDisabledPlugin = async (mockInstallPlugin) => {
+    const installDisabledPlugin = async (mockInstallPlugin, overrides = {}) => {
       mockInstallPlugin.mockResolvedValue({
         success: true,
-        plugin: { key: 'test-plugin', enabled: false },
+        plugin: { key: 'test-plugin', enabled: false, ...overrides },
       });
       render(
         <AvailablePluginCard plugin={makePlugin()} appVersion={APP_VERSION} />
@@ -1092,6 +1092,49 @@ describe('AvailablePluginCard', () => {
         expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
       });
       expect(PluginsUtils.setPluginEnabled).not.toHaveBeenCalled();
+    });
+
+    it('hides the install dialog during capability confirmation and navigates only after enabling', async () => {
+      const { mockInstallPlugin, mockRequestEnableConfirmation, mockNavigate } = setupMocks();
+      let confirm;
+      mockRequestEnableConfirmation.mockReturnValue(new Promise((resolve) => { confirm = resolve; }));
+      let enable;
+      vi.mocked(PluginsUtils.setPluginEnabled).mockReturnValue(new Promise((resolve) => { enable = resolve; }));
+      await installDisabledPlugin(mockInstallPlugin, { capabilities: [{ id: 'network' }] });
+      fireEvent.click(screen.getByTestId('enable-switch'));
+      fireEvent.click(screen.getByText('Go to My Plugins'));
+      expect(screen.queryByText('Plugin Installed')).not.toBeInTheDocument();
+      expect(mockRequestEnableConfirmation).toHaveBeenCalledOnce();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      await act(async () => confirm(true));
+      expect(PluginsUtils.setPluginEnabled).toHaveBeenCalledWith('test-plugin', true, ['network']);
+      expect(mockNavigate).not.toHaveBeenCalled();
+      await act(async () => enable({ success: true }));
+      expect(mockNavigate).toHaveBeenCalledWith('/plugins');
+    });
+
+    it('restores the install dialog after denial and allows retry', async () => {
+      const { mockInstallPlugin, mockRequestEnableConfirmation, mockNavigate } = setupMocks();
+      mockRequestEnableConfirmation.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      await installDisabledPlugin(mockInstallPlugin, { capabilities: [{ id: 'network' }] });
+      fireEvent.click(screen.getByTestId('enable-switch'));
+      fireEvent.click(screen.getByText('Go to My Plugins'));
+      await waitFor(() => expect(screen.getByText('Plugin Installed')).toBeInTheDocument());
+      expect(PluginsUtils.setPluginEnabled).not.toHaveBeenCalled();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByText('Done'));
+      await waitFor(() => expect(PluginsUtils.setPluginEnabled).toHaveBeenCalledOnce());
+      expect(mockRequestEnableConfirmation).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the dialog open and reports an enable failure', async () => {
+      const { mockInstallPlugin, mockNavigate } = setupMocks();
+      vi.mocked(PluginsUtils.setPluginEnabled).mockResolvedValue(undefined);
+      await installDisabledPlugin(mockInstallPlugin);
+      fireEvent.click(screen.getByTestId('enable-switch'));
+      fireEvent.click(screen.getByText('Go to My Plugins'));
+      await screen.findByText('Could not enable the plugin. Please try again.');
+      expect(mockNavigate).not.toHaveBeenCalled();
     });
   });
 

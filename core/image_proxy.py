@@ -6,14 +6,12 @@ import logging
 import mimetypes
 import os
 import time
-from urllib.parse import urljoin
-
 import requests
 from django.http import Http404, HttpResponse, StreamingHttpResponse
 from django.utils.http import http_date
 from rest_framework.negotiation import BaseContentNegotiation
 
-from core.http_security import validate_outbound_http_url
+from core.http_security import get_with_validated_redirects
 from core.models import CoreSettings
 from core.utils import resolve_safe_local_data_path
 
@@ -144,60 +142,47 @@ def _fetch_remote_image(
     user_agent: str,
 ) -> tuple[bytes, str, dict]:
     """Fetch *url* with SSRF checks on every hop. Returns body, type, upstream headers."""
-    current_url = url
     headers = {"User-Agent": user_agent}
 
-    for _ in range(IMAGE_FETCH_MAX_REDIRECTS + 1):
-        try:
-            validate_outbound_http_url(current_url, allow_private=True, allow_loopback=False)
-        except ValueError as exc:
-            _remember_fetch_failure(url, failure_cache, fail_ttl)
-            logger.warning("Blocked unsafe remote image URL %s: %s", current_url, exc)
-            raise Http404("Remote image not allowed") from exc
-
-        remote_response = requests.get(
-            current_url,
-            stream=True,
+    try:
+        remote_response = get_with_validated_redirects(
+            url,
             timeout=(3, 5),
-            allow_redirects=False,
+            max_redirects=IMAGE_FETCH_MAX_REDIRECTS,
+            allow_private=True,
+            allow_loopback=False,
+            stream=True,
             headers=headers,
         )
-        try:
-            status = remote_response.status_code
-            if status in (301, 302, 303, 307, 308):
-                location = remote_response.headers.get("Location")
-                if not location:
-                    _remember_fetch_failure(url, failure_cache, fail_ttl)
-                    raise Http404("Remote image not found")
-                current_url = urljoin(current_url, location)
-                continue
+    except ValueError as exc:
+        _remember_fetch_failure(url, failure_cache, fail_ttl)
+        logger.warning("Blocked unsafe remote image URL %s: %s", url, exc)
+        raise Http404("Remote image not allowed") from exc
 
-            if status != 200:
-                _remember_fetch_failure(url, failure_cache, fail_ttl)
-                raise Http404("Remote image not found")
-
-            body = _read_limited_body(
-                remote_response,
-                url=url,
-                failure_cache=failure_cache,
-                fail_ttl=fail_ttl,
-            )
-            upstream_headers = {
-                "Cache-Control": remote_response.headers.get("Cache-Control"),
-                "Last-Modified": remote_response.headers.get("Last-Modified"),
-            }
-        finally:
-            remote_response.close()
-
-        content_type = sniff_image_content_type(body)
-        if not content_type:
+    try:
+        if remote_response.status_code != 200:
             _remember_fetch_failure(url, failure_cache, fail_ttl)
-            raise Http404("Remote image type not allowed")
+            raise Http404("Remote image not found")
 
-        return body, content_type, upstream_headers
+        body = _read_limited_body(
+            remote_response,
+            url=url,
+            failure_cache=failure_cache,
+            fail_ttl=fail_ttl,
+        )
+        upstream_headers = {
+            "Cache-Control": remote_response.headers.get("Cache-Control"),
+            "Last-Modified": remote_response.headers.get("Last-Modified"),
+        }
+    finally:
+        remote_response.close()
 
-    _remember_fetch_failure(url, failure_cache, fail_ttl)
-    raise Http404("Remote image redirect limit exceeded")
+    content_type = sniff_image_content_type(body)
+    if not content_type:
+        _remember_fetch_failure(url, failure_cache, fail_ttl)
+        raise Http404("Remote image type not allowed")
+
+    return body, content_type, upstream_headers
 
 
 def serve_local_or_remote_image(
@@ -214,6 +199,7 @@ def serve_local_or_remote_image(
     negative-cached in ``failure_cache`` (defaults to the process-wide map).
 
     Remote fetches re-validate the target after DNS on every redirect hop,
+    dial a validated IP (so DNS cannot rebind between check and connect),
     allow private LAN addresses (for locally hosted artwork), and reject
     loopback/link-local/metadata targets. Response types are taken from
     magic bytes (JPEG/PNG/GIF/WebP/ICO/BMP/SVG), not upstream Content-Type.

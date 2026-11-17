@@ -116,9 +116,11 @@ The directory name (lowercased, spaces as `_`) is used as the registry key. Plug
 
 ## Discovery & Lifecycle
 
-- Discovery runs at server startup and on-demand when:
-  - Fetching the plugins list from the UI
-  - Hitting `POST /api/plugins/plugins/reload/`
+- Discovery runs at server startup. The plugins list uses cached discovery, so
+  after copying or removing a plugin folder, reload plugins in the UI or call
+  `POST /api/plugins/plugins/reload/` to rescan the directory.
+- A directory needs `plugin.py` or `__init__.py`; a manifest alone is not enough.
+  Database records whose plugin files are missing can still appear as missing.
 - The loader reads `plugin.json` for metadata without executing plugin code.
 - Plugin code is only imported and instantiated when the plugin is enabled.
 - Metadata (name, version, description) and a per-plugin settings JSON are stored in the DB.
@@ -208,6 +210,10 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 
   Dispatcharr creates the data directory when it builds a runtime or leadership context, not when it discovers or imports the plugin. Do not assume the directory exists at module import time or in `Plugin.__init__()`. The directory survives plugin updates. On uninstall, an empty data directory is removed automatically; if it contains data, the user can keep it for a future reinstall or explicitly delete it.
 
+  Plugins can optionally define `get_fields(self, context)` to build fields at discovery time. Its context contains `settings`, `data_dir`, `code_dir`, `logger`, and `dispatcharr`. Settings are the saved values before field defaults are merged. The data directory may not exist yet. When present, `get_fields` takes precedence over the `fields` attribute; an empty result falls back to manifest fields. Fields are rebuilt on discovery or reload, not automatically when a catalog changes.
+
+  `context["dispatcharr"]["directories"]` provides the watched `logos`, `m3u`, and `epg` paths. `context["dispatcharr"]["ensure_directory"](name)` creates a named watched directory on demand and returns its path. `context["dispatcharr"]["remove_directory"](path)` removes a directory tree beneath the plugin data directory or a watched directory; it rejects the roots themselves, paths outside them, and symlink traversal. A missing target raises `FileNotFoundError`. Plugins must still check that shared-directory content belongs to them before removing it. Shared directory creation and deletion require `filesystem_write` for manifest version 2 or later; versions 0 and 1 remain advisory. Runtime helpers stop working when their loaded plugin instance is replaced or removed. Discovery helpers expire when `get_fields` returns. These helpers do not make the plugin sandbox an isolation boundary.
+
 ---
 
 ## Plugin Interface
@@ -233,6 +239,18 @@ Dispatcharr records the Celery tasks your plugin registers in its own modules (`
 Deleting a plugin keeps shared interval and crontab definitions. These do not run without a `PeriodicTask` row.
 
 ### Settings Schema
+Settings features are versioned by `manifest_version`, including fields provided
+by `fields` or `get_fields`. Version 0 supports the legacy types `boolean`,
+`number`, `string`, `text`, `select`, and `info`. Version 1 or later is required
+for `multiselect`, `section`, `table`, and `file`, and for the `section`,
+`collapsed`, `columns`, `accept`, `max_size`, and `rows` field attributes.
+Unsupported types are ignored, while unsupported attributes are removed and the
+remaining field is retained. Dispatcharr logs a warning for each. Set
+`manifest_version` in `plugin.json` even when defining fields in Python. Version
+2 also enables the runtime guards described above. Discovery does not remove
+saved settings, but saving settings can drop values for fields omitted by the
+version policy. Set the correct manifest version before saving.
+
 Supported field `type`s:
 - `boolean`
 - `number`
@@ -273,6 +291,7 @@ Group related fields into collapsible sections by declaring a `section`-type mar
 
 ```json
 {
+  "manifest_version": 1,
   "fields": [
     { "id": "enabled", "label": "Enable plugin", "type": "boolean" },
 
@@ -428,7 +447,18 @@ For queued actions, a returned dictionary can report its outcome with `status`:
 - `{"status": "error", "message": "Scan failed"}` marks the task as failed. Use `error` or `message` to provide a reason; `error` takes precedence. The returned dictionary is retained in task history. Raising an exception also fails the task.
 - `{"status": "partial", "message": "Some items could not be scanned"}` records a distinct warning outcome without failing the Celery task. Include a message to explain what needs attention.
 
-These outcomes apply to both awaited manual actions and background plugin actions. A partial result remains available in the returned result for awaited actions and in background task history for asynchronous actions.
+These outcomes apply to both awaited manual actions and background plugin actions. Returned results are available to awaited actions and retained in background task history for all outcomes, including plugin-returned errors. JSON-serializable results can be downloaded from run history as JSON, subject to the retention limits below. An exception without a returned result does not produce a result file.
+
+Action results must be JSON serializable. An invalid result fails the task and is not retained. An awaited action returning `status: error` responds with HTTP 500 and includes its returned dictionary in the `result` field alongside `success: false` and `error`.
+
+An action can request a refresh in its returned dictionary:
+
+```python
+return {"status": "ok", "message": "Updated", "_dispatcharr": {"refresh": "ui"}}
+# Or use "plugin" instead of "ui" to reload the plugin as well.
+```
+
+`ui` fetches current plugin metadata and settings; it does not rebuild discovery-time `get_fields` values. Unsaved edits to individual settings remain staged over the refreshed values. If both the user and server changed the same setting, the unsaved edit wins until saved or discarded. `plugin` reloads the plugin on the worker after the action returns, then refreshes the UI. Other workers pick up the reload on their next discovery. Reload runs stop hooks and affects persistent services, just like a manual reload. Explicit single-plugin reloads wait for active actions and other explicit reloads across workers sharing the plugin directory. Queued actions do not count as active. These directives apply to successful and partial results, including background actions, but not errors. If the requested reload fails, the task reports an error even though the action has already run.
 
 Background history records the trigger as `manual`, `action`, `schedule`, or `event`; older records can be `unknown`. Set `PLUGIN_TASK_HISTORY_MAX_ENTRIES` to adjust retention per plugin (default 50, maximum 5000) and `PLUGIN_TASK_HISTORY_TTL_SECONDS` to adjust expiry (default seven days, maximum 90 days). Values are clamped to at least 1. The task history endpoint accepts an optional `trigger` query parameter with one of these values.
 

@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import API from '../api';
 
+export function refreshAfterPluginAction(result) {
+  if (!['ui', 'plugin'].includes(result?._dispatcharr?.refresh)) return;
+  return usePluginStore.getState().fetchPlugins();
+}
+
 // True if the plugin declares a capability the user hasn't acknowledged yet
 // (via the enable confirmation dialog), covering both a brand-new plugin and
 // an already-enabled one that added a capability in an update. Unknown
@@ -25,7 +30,7 @@ export const usePluginStore = create((set, get) => ({
   availableError: null,
 
   // Async plugin action tasks (see WebSocket.jsx plugin_task_progress/
-  // plugin_task_complete and PluginDetail.jsx's "Background Tasks" section). Keyed by
+  // plugin_task_complete and PluginDetail.jsx's "Tasks" section). Keyed by
   // task_id (globally unique Celery id), so this map can hold entries for
   // more than one plugin at once without collision.
   //

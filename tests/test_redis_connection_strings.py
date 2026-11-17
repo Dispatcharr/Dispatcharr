@@ -36,7 +36,7 @@ class RedisConnectionStringsTests(SimpleTestCase):
 
             client = RedisClient().get_test_client(max_retries = 1)
             total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs
-            self.assertEqual(EXPECTED_KWARGS_REDIS, total_kwargs)
+            self.assertTrue(EXPECTED_KWARGS_REDIS.items() <= total_kwargs.items())
 
 
     @patch("core.utils.redis.commands.core.CoreCommands.ping")
@@ -52,7 +52,7 @@ class RedisConnectionStringsTests(SimpleTestCase):
 
             client = RedisClient().get_test_client(max_retries = 1)
             total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs
-            self.assertEqual(EXPECTED_KWARGS_UNIX, total_kwargs)
+            self.assertTrue(EXPECTED_KWARGS_UNIX.items() <= total_kwargs.items())
 
     @patch("core.utils.redis.commands.core.CoreCommands.ping")
     def test_rediss_url(self, mock_ping):

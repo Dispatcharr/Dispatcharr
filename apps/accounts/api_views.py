@@ -435,14 +435,18 @@ class UserViewSet(viewsets.ModelViewSet):
         user = request.user
         if request.method == "PATCH":
             ALLOWED_FIELDS = {"custom_properties", "first_name", "last_name", "email", "password"}
-            disallowed = set(request.data.keys()) - ALLOWED_FIELDS
+            data = request.data.copy()
+            disallowed = set(data.keys()) - ALLOWED_FIELDS
 
             for key in disallowed:
-                request.data.pop(key, None)
+                data.pop(key, None)
+
+            serializer = UserSerializer(user, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
 
             # Strip admin-managed keys from custom_properties so users cannot
-            # set their own XC credentials, network rules, or catchup/VOD
-            # access via this endpoint.
+            # set their own XC credentials, network rules, catchup/VOD access,
+            # or turn off an admin Hide Mature Content filter via this endpoint.
             ADMIN_ONLY_PROPS = {
                 "xc_password",
                 "allowed_networks",
@@ -451,14 +455,13 @@ class UserViewSet(viewsets.ModelViewSet):
                 "vod_series_enabled",
                 "dvr_access",
                 "allowed_m3u_profile_ids",
+                "hide_adult_content",
             }
-            cp = request.data.get("custom_properties")
+            cp = serializer.validated_data.get("custom_properties")
             if isinstance(cp, dict):
                 for key in ADMIN_ONLY_PROPS:
                     cp.pop(key, None)
 
-            serializer = UserSerializer(user, data=request.data, partial=True)
-            serializer.is_valid(raise_exception=True)
             serializer.save()
             return Response(serializer.data)
         serializer = UserSerializer(user)

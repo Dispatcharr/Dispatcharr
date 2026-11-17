@@ -1,4 +1,7 @@
 import contextlib
+import copy
+import fcntl
+import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -29,6 +32,7 @@ from .capabilities import (
     manifest_version_supported,
 )
 from .context import running_as_plugin
+from .field_versions import FIELD_ATTRIBUTE_VERSIONS, FIELD_TYPE_VERSIONS, feature_supported
 from .keys import normalize_plugin_key
 from .sandbox import plugin_builtins, stable_plugin_data_path
 from .service_runner import PluginServiceRunner
@@ -37,6 +41,28 @@ from .version_utils import get_plugin_status
 from version import __timestamp__, __version__
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _plugin_reload_lock(plugins_dir: str, key: str, *, shared: bool = False):
+    """Coordinate actions and explicit reloads of one plugin across workers."""
+    os.makedirs(plugins_dir, exist_ok=True)
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    lock_path = os.path.join(plugins_dir, f".plugin-reload-{digest}.lock")
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        while True:
+            try:
+                mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                fcntl.flock(lock_file.fileno(), mode | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                from gevent import sleep
+
+                sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 _plugin_module_contexts: Dict[str, Tuple[str, str, str, Sequence[str], int]] = {}
@@ -541,6 +567,7 @@ class PluginManager:
                     storage_key=cfg.slug or cfg.key,
                     capabilities=previous.capabilities if previous else (),
                     manifest_schema_version=previous.manifest_schema_version if previous else 0,
+                    saved_settings=cfg.settings or {},
                 )
                 if loaded is None:
                     raise ValueError(f"Plugin '{cfg.key}' could not be loaded")
@@ -680,10 +707,10 @@ class PluginManager:
             manifest_description = manifest.get("description") if isinstance(manifest.get("description"), str) else None
             manifest_author = manifest.get("author") if isinstance(manifest.get("author"), str) else None
             manifest_help_url = manifest.get("help_url") if isinstance(manifest.get("help_url"), str) else None
-            manifest_fields = self._normalize_fields(manifest.get("fields", []))
+            manifest_schema_version = parse_manifest_version(manifest)
+            manifest_fields = self._normalize_fields(manifest.get("fields", []), manifest_schema_version)
             manifest_actions = self._normalize_actions(manifest.get("actions", []))
             manifest_capabilities = compute_effective_capabilities(manifest)
-            manifest_schema_version = parse_manifest_version(manifest)
             if not manifest_version_supported(
                 manifest_schema_version,
                 __version__,
@@ -735,6 +762,7 @@ class PluginManager:
                 storage_key=cfg.slug if cfg and cfg.slug else plugin_key,
                 capabilities=manifest_capabilities,
                 manifest_schema_version=manifest_schema_version,
+                saved_settings=cfg.settings or {},
             )
             if not lp:
                 return _make_placeholder(), None, None
@@ -792,6 +820,7 @@ class PluginManager:
         storage_key: str,
         capabilities: Sequence[str] = (),
         manifest_schema_version: int = 0,
+        saved_settings: Optional[Dict[str, Any]] = None,
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
         path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
@@ -889,9 +918,29 @@ class PluginManager:
         description = getattr(instance, "description", "")
         author = getattr(instance, "author", "")
         help_url = getattr(instance, "help_url", "")
-        fields = getattr(instance, "fields", [])
+        get_fields = getattr(instance, "get_fields", None)
+        if callable(get_fields):
+            active = [True]
+            def authorize_discovery(shared):
+                if not active[0]:
+                    raise PermissionError("Plugin discovery context has expired")
+                if shared and manifest_version_enforces_sandbox(manifest_schema_version) and "filesystem_write" not in capabilities:
+                    raise PermissionError(f"Plugin '{key}' requires the 'filesystem_write' capability")
+            from .filesystem import make_filesystem_context
+            discovery_context = {
+                "settings": copy.deepcopy(saved_settings or {}), "data_dir": data_dir,
+                "code_dir": path, "logger": logger,
+                "dispatcharr": make_filesystem_context(data_dir, authorize_discovery),
+            }
+            try:
+                with running_as_plugin(key, capabilities=capabilities, manifest_schema_version=manifest_schema_version):
+                    fields = get_fields(discovery_context)
+            finally:
+                active[0] = False
+        else:
+            fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
-        fields = self._normalize_fields(fields)
+        fields = self._normalize_fields(fields, manifest_schema_version)
         actions = self._normalize_actions(actions)
 
         lp = LoadedPlugin(
@@ -1093,9 +1142,8 @@ class PluginManager:
         settings = settings or {}
         lp = self.get_plugin(key)
         fields = (lp.fields if lp else None) or []
-        # Drop (not reject) keys with no matching field. A plugin update can
-        # legitimately remove a settings field, leaving an orphaned key in an
-        # old saved settings blob, and rejecting would break that save.
+        # Ignore unknown submitted keys, but preserve existing plugin-managed
+        # settings that are not represented by the native settings form.
         known_ids = {f.get("id") for f in fields if f.get("id")}
         if known_ids:
             settings = {k: v for k, v in settings.items() if k in known_ids}
@@ -1105,10 +1153,15 @@ class PluginManager:
             elif field_def.get("type") == "multiselect" and field_def.get("id") in settings:
                 self._validate_multiselect_value(field_def, settings[field_def["id"]])
 
-        cfg = PluginConfig.objects.get(key=key)
-        cfg.settings = settings
-        cfg.save(update_fields=["settings", "updated_at"])
-        return cfg.settings
+        with transaction.atomic():
+            cfg = PluginConfig.objects.select_for_update().get(key=key)
+            if known_ids:
+                preserved = {k: v for k, v in (cfg.settings or {}).items() if k not in known_ids}
+                cfg.settings = {**preserved, **settings}
+            else:
+                cfg.settings = settings
+            cfg.save(update_fields=["settings", "updated_at"])
+            return cfg.settings
 
     def _validate_multiselect_value(self, field_def: Dict[str, Any], value: Any) -> None:
         """Validate a submitted 'multiselect' field value against declared options."""
@@ -1123,6 +1176,16 @@ class PluginManager:
                 )
 
     def run_action(
+        self,
+        key: str,
+        action_id: str,
+        params: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        with _plugin_reload_lock(self.plugins_dir, key, shared=True):
+            return self._run_action(key, action_id, params, task_id)
+
+    def _run_action(
         self,
         key: str,
         action_id: str,
@@ -1377,6 +1440,7 @@ class PluginManager:
             "get_settings": self._make_settings_accessor(lp),
             "data_dir": lp.data_dir,
             "code_dir": lp.path or "",
+            "dispatcharr": self._plugin_filesystem_context(lp),
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id=None),
@@ -1596,16 +1660,12 @@ class PluginManager:
         re-import any other plugin locally. A successful reload broadcasts
         through the shared token so other worker processes converge on their
         next cached discovery.
-        Concurrent reloads of the same key are rejected (returns False)
-        rather than racing with an in-progress unload/re-import.
+        Explicit reloads wait for active actions and other explicit reloads.
         """
-        with self._lock:
-            if not hasattr(self, "_reloading_keys"):
-                self._reloading_keys = set()
-            if key in self._reloading_keys:
-                return False
-            self._reloading_keys.add(key)
+        with _plugin_reload_lock(self.plugins_dir, key):
+            return self._reload_plugin(key)
 
+    def _reload_plugin(self, key: str) -> bool:
         try:
             self.stop_plugin(key, reason="reload")
 
@@ -1674,8 +1734,6 @@ class PluginManager:
             return True
         finally:
             close_old_connections()
-            with self._lock:
-                self._reloading_keys.discard(key)
 
     def _resolve_package_name(self, key: str) -> str:
         safe_key = self._safe_module_name(key)
@@ -1697,18 +1755,35 @@ class PluginManager:
             safe = f"p_{safe}"
         return safe
 
-    def _normalize_fields(self, fields: Any) -> List[Dict[str, Any]]:
-        try:
-            from .serializers import PluginFieldSerializer
-        except Exception:
-            return fields if isinstance(fields, list) else []
+    def _normalize_fields(self, fields: Any, manifest_version: int = 0) -> List[Dict[str, Any]]:
         if not isinstance(fields, list):
             return []
-        serializer = PluginFieldSerializer(data=fields, many=True)
+        filtered = []
+        for item in fields:
+            if not isinstance(item, dict):
+                filtered.append(item)
+                continue
+            field_type = item.get("type")
+            bounds = FIELD_TYPE_VERSIONS.get(field_type) if isinstance(field_type, str) else None
+            if bounds and not feature_supported(bounds, manifest_version):
+                logger.warning("Plugin field %r type %r is unsupported by manifest version %s (bounds: %s); ignored",
+                               item.get("id"), field_type, manifest_version, bounds)
+                continue
+            item = item.copy()
+            for attribute, bounds in FIELD_ATTRIBUTE_VERSIONS.items():
+                field_types = bounds["field_types"]
+                if (attribute in item and (field_types is None or (isinstance(field_type, str) and field_type in field_types))
+                        and not feature_supported(bounds, manifest_version)):
+                    logger.warning("Plugin field %r attribute %r is unsupported by manifest version %s (bounds: %s); ignored",
+                                   item.get("id"), attribute, manifest_version, bounds)
+                    del item[attribute]
+            filtered.append(item)
+        from .serializers import PluginFieldSerializer
+        serializer = PluginFieldSerializer(data=filtered, many=True)
         if serializer.is_valid():
             return serializer.validated_data
         normalized: List[Dict[str, Any]] = []
-        for item in fields:
+        for item in filtered:
             item_ser = PluginFieldSerializer(data=item)
             if item_ser.is_valid():
                 normalized.append(item_ser.validated_data)
@@ -1792,12 +1867,25 @@ class PluginManager:
             "settings": settings,
             "data_dir": lp.data_dir,
             "code_dir": lp.path or "",
+            "dispatcharr": self._plugin_filesystem_context(lp),
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id),
             "dispatch_task": self._make_task_dispatcher(lp),
             "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
         }
+
+    def _plugin_filesystem_context(self, lp: LoadedPlugin):
+        from .filesystem import make_filesystem_context
+
+        def authorize(shared):
+            current = self.get_plugin(lp.key)
+            if current is not lp or not current.instance:
+                raise PermissionError(f"Plugin '{lp.key}' context is no longer active")
+            if shared and manifest_version_enforces_sandbox(current.manifest_schema_version) and "filesystem_write" not in (current.capabilities or []):
+                raise PermissionError(f"Plugin '{lp.key}' requires the 'filesystem_write' capability")
+
+        return make_filesystem_context(lp.data_dir, authorize)
 
     def _make_settings_accessor(self, lp: LoadedPlugin):
         """Read current settings on demand, including field defaults."""

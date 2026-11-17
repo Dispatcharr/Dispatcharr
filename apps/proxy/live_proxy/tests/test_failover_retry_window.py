@@ -199,6 +199,96 @@ class FailoverRotationCooldownTests(TestCase):
         self.assertIsNone(sm._rotation_cooldown_until)
 
 
+class StableBeforeBufferingTests(TestCase):
+    """A connection that played well before buffering counts as a fresh rotation."""
+
+    def _buffering_manager(self, healthy_for, **overrides):
+        buffering_start = 5000.0
+        values = dict(
+            connection_start_time=buffering_start - healthy_for,
+            buffering_start_time=buffering_start,
+            _failover_rotation_passes=3,
+            _rotation_cooldown_until=time.time() + 60,
+        )
+        values.update(overrides)
+        return _make_manager(**values)
+
+    def test_stable_connection_resets_rotation_state(self):
+        sm = self._buffering_manager(healthy_for=2283.7)
+
+        self.assertTrue(sm._note_stable_before_buffering())
+
+        self.assertEqual(sm.tried_stream_ids, {100})
+        self.assertEqual(sm._failover_rotation_passes, 0)
+        self.assertIsNone(sm._rotation_cooldown_until)
+
+    def test_threshold_boundary_counts_as_stable(self):
+        sm = self._buffering_manager(healthy_for=30)
+        self.assertTrue(sm._note_stable_before_buffering())
+
+    def test_connection_unstable_before_buffering_keeps_state(self):
+        sm = self._buffering_manager(healthy_for=29.9)
+
+        self.assertFalse(sm._note_stable_before_buffering())
+
+        self.assertEqual(sm.tried_stream_ids, {100, 200, 300})
+        self.assertEqual(sm._failover_rotation_passes, 3)
+        self.assertIsNotNone(sm._rotation_cooldown_until)
+
+    def test_unknown_connection_start_keeps_state(self):
+        sm = self._buffering_manager(healthy_for=2283.7, connection_start_time=0)
+        self.assertFalse(sm._note_stable_before_buffering())
+        self.assertEqual(sm.tried_stream_ids, {100, 200, 300})
+
+        del sm.connection_start_time
+        sm.buffering_start_time = 6000.0
+        self.assertFalse(sm._note_stable_before_buffering())
+        self.assertEqual(sm.tried_stream_ids, {100, 200, 300})
+
+    def test_no_buffering_start_keeps_state(self):
+        sm = self._buffering_manager(healthy_for=2283.7, buffering_start_time=None)
+        self.assertFalse(sm._note_stable_before_buffering())
+        self.assertEqual(sm.tried_stream_ids, {100, 200, 300})
+
+    def test_resets_once_per_connection(self):
+        sm = self._buffering_manager(healthy_for=2283.7)
+        self.assertTrue(sm._note_stable_before_buffering())
+
+        # State the throttle depends on, rebuilt by failed switches. A speed
+        # recovery starts a new episode on the same connection.
+        sm.tried_stream_ids = {100, 200, 300}
+        sm._failover_rotation_passes = 1
+        sm._rotation_cooldown_until = time.time() + 60
+        sm.buffering_start_time = 9000.0
+
+        self.assertFalse(sm._note_stable_before_buffering())
+
+        self.assertEqual(sm.tried_stream_ids, {100, 200, 300})
+        self.assertEqual(sm._failover_rotation_passes, 1)
+        self.assertIsNotNone(sm._rotation_cooldown_until)
+
+    def test_early_buffering_does_not_block_a_later_stable_episode(self):
+        sm = self._buffering_manager(healthy_for=5)
+        self.assertFalse(sm._note_stable_before_buffering())
+        self.assertEqual(sm.tried_stream_ids, {100, 200, 300})
+
+        # Same connection, now buffered after playing past the threshold.
+        sm.buffering_start_time = sm.connection_start_time + 120
+        self.assertTrue(sm._note_stable_before_buffering())
+        self.assertEqual(sm.tried_stream_ids, {100})
+
+    def test_new_connection_resets_again(self):
+        sm = self._buffering_manager(healthy_for=2283.7)
+        self.assertTrue(sm._note_stable_before_buffering())
+
+        sm.tried_stream_ids = {100, 200, 300}
+        sm.connection_start_time = 8000.0
+        sm.buffering_start_time = 8000.0 + 120
+
+        self.assertTrue(sm._note_stable_before_buffering())
+        self.assertEqual(sm.tried_stream_ids, {100})
+
+
 class FailoverConfigDefaultsTests(SimpleTestCase):
     def test_retry_window_default(self):
         self.assertEqual(ConfigHelper.retry_window_seconds(), 1800)

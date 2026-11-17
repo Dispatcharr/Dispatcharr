@@ -229,7 +229,7 @@ class PluginSingleReloadAPIView(PluginAuthMixin, APIView):
         pm = PluginManager.get()
         ok = pm.reload_plugin(key)
         if not ok:
-            return Response({"success": False, "error": "Plugin not found or already reloading"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"success": False, "error": "Plugin could not be reloaded"}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"success": True})
 
 
@@ -884,6 +884,9 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         return self._run_via_worker(key, action, params)
 
     def _error_response(self, exc):
+        from .tasks import PluginActionResultError
+        if isinstance(exc, PluginActionResultError):
+            return Response({"success": False, "error": str(exc), "result": exc.result}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         if isinstance(exc, PermissionError):
             return Response({"success": False, "error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         logger.exception("Plugin action failed")
