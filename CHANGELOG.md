@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **System Events formats experimental buffering context fields.** `channel_buffering` details show **Speed**, **Empty for**, and **Since last buffering** with units instead of raw keys.
 
+## [0.34.1] - 2026-11-17
+
 ### Fixed
 
 - **Plugin sockets support context managers again.** Using `with socket.socket()` closes the socket on exit while retaining plugin network capability checks. (Fixes #1990)
