@@ -64,7 +64,7 @@ describe('TimeshiftConnectionCard logos', () => {
       <TimeshiftConnectionCard
         timeshiftSession={{
           session_id: 'sess-1',
-          channel_name: 'US | A&E',
+          channel_name: 'Test Channel',
           logo_id: 77,
           programme_start: '2026-07-17:20-00-00',
           connections: [
@@ -81,5 +81,53 @@ describe('TimeshiftConnectionCard logos', () => {
 
     const img = screen.getByAltText('channel logo');
     expect(img.getAttribute('src')).toBe('logo-77.png');
+  });
+});
+
+describe('TimeshiftConnectionCard audio badge', () => {
+  const session = (overrides = {}) => ({
+    session_id: 'sess-1',
+    channel_name: 'Test Channel',
+    programme_start: '2026-07-17:20-00-00',
+    connections: [
+      {
+        session_id: 'sess-1',
+        client_id: 'sess-1',
+        ip_address: '10.0.0.5',
+        connected_at: 1_700_000_000,
+      },
+    ],
+    ...overrides,
+  });
+
+  it('shows the best track with a count of the other tracks', () => {
+    render(
+      <TimeshiftConnectionCard
+        timeshiftSession={session({
+          audio_language: 'eng',
+          audio_channels: '5.1',
+          audio_codec: 'ac3',
+          audio_streams: [{ index: 1 }, { index: 2 }, { index: 3 }],
+        })}
+      />
+    );
+    expect(screen.getByText('ENG 5.1 AC3 +2')).toBeInTheDocument();
+  });
+
+  it('falls back to channels and codec without a track list', () => {
+    render(
+      <TimeshiftConnectionCard
+        timeshiftSession={session({
+          audio_channels: 'stereo',
+          audio_codec: 'aac',
+        })}
+      />
+    );
+    expect(screen.getByText('stereo AAC')).toBeInTheDocument();
+  });
+
+  it('renders no audio badge when no audio info exists', () => {
+    render(<TimeshiftConnectionCard timeshiftSession={session()} />);
+    expect(screen.queryByText(/AAC|AC3/)).not.toBeInTheDocument();
   });
 });

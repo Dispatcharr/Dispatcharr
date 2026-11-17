@@ -219,8 +219,8 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         data['icon'] = cp.get('icon')
         data['images'] = cp.get('images') or []
 
-        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth.
-        # ``?v=`` tracks the sd_icon URI so nginx/browser caches bust when artwork changes.
+        # SD poster: absolute proxy URL so clients never need SD auth.
+        # ``?v=`` is a hash of the artwork URI. nginx caches on that hash.
         sd_icon = cp.get('sd_icon')
         if sd_icon:
             poster_path = sd_poster_proxy_path(obj.id, sd_icon)

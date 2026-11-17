@@ -357,10 +357,10 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
             "client-1",
             "127.0.0.1",
             "agent",
-            channel_name="CNN",
+            channel_name="Test Channel",
         )
 
-        self.assertEqual(gen.channel_name, "CNN")
+        self.assertEqual(gen.channel_name, "Test Channel")
 
     @patch("apps.proxy.live_proxy.channel_status.close_old_connections")
     @patch("apps.proxy.live_proxy.channel_status.ProxyServer")

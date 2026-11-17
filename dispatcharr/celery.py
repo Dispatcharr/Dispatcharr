@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready
+from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready, worker_shutdown
 
 from dispatcharr.startup_log import configure_early_logging
 
@@ -64,6 +64,19 @@ def init_worker_process(**_kwargs):
         PluginManager.get().discover_plugins(sync_db=False)
     except Exception:
         logger.exception("plugin discovery on worker_process_init failed")
+
+
+@worker_shutdown.connect(weak=False)
+def release_plugin_leaderships_on_shutdown(**_kwargs):
+    """Best-effort graceful leadership release (see PluginManager
+    release_all_leaderships). Not the only safety net for leader-election
+    plugins; a hard kill (SIGKILL/OOM) never fires this signal, which is
+    why the Redis lease also has a TTL that expires on its own."""
+    try:
+        from apps.plugins.loader import PluginManager
+        PluginManager.get().release_all_leaderships()
+    except Exception:
+        logger.exception("plugin leadership release on worker_shutdown failed")
 
 
 # Configure Celery logging
@@ -202,6 +215,34 @@ def setup_celery_logging(**kwargs):
 
 
 @worker_ready.connect
+def register_plugin_tasks(sender=None, **kwargs):
+    """Fixes #1460/#1244: a prefork worker's *parent* process snapshots
+    app.tasks into consumer.strategies at startup and never refreshes it.
+    Plugin @shared_task modules are only imported lazily in forked children
+    (worker_process_init, above), never in the parent, so plugin tasks
+    routed to the default `celery` queue are permanently rejected as
+    "unregistered" even though a child process has them registered fine.
+
+    Runs discovery here (in the parent, pre-fork of any *future* autoscale
+    children) purely for its @shared_task import side effect, then asks the
+    consumer to pick up any newly-registered task names. Must run on every
+    worker_ready firing (every process, every boot), unlike on_worker_ready
+    below, this must NOT be guarded by the one-shot cluster lock.
+    """
+    try:
+        from apps.plugins.loader import PluginManager
+        PluginManager.get().discover_plugins(sync_db=False, use_cache=True)
+    except Exception:
+        logger.exception("plugin task registration import failed")
+
+    if sender is not None and hasattr(sender, "update_strategies"):
+        try:
+            sender.update_strategies()
+        except Exception:
+            logger.exception("update_strategies() failed during plugin task registration")
+
+
+@worker_ready.connect
 def on_worker_ready(**kwargs):
     """Tasks to run once the worker is fully connected and ready.
 
@@ -244,4 +285,3 @@ def on_worker_ready(**kwargs):
     if _claim("core:version_check_dispatch_lock"):
         from core.tasks import check_for_version_update
         check_for_version_update.delay()
-

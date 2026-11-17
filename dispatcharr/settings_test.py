@@ -23,6 +23,12 @@ from dispatcharr.settings import *  # noqa: F401,F403
 
 TEST_RUNNER = "dispatcharr.test_runner.DispatcharrDiscoverRunner"
 
+# Signals PluginManager not to spawn its leader-election background thread --
+# unit tests construct bare PluginManager() instances liberally (bypassing
+# the process singleton for isolation), and a real daemon thread per
+# instantiation would leak across the suite for no test benefit.
+TESTING = True
+
 # Fast password hashing for tests.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 

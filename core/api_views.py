@@ -280,6 +280,8 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "stream_startup_timeout": 8,
                 "connection_timeout": 10,
                 "validate_redirect_urls": True,
+                "max_retries": 3,
+                "stream_retry_timeout": 3,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,
@@ -782,6 +784,10 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
             dismissal.action_taken = action_taken
             dismissal.save()
 
+        if notification.source == SystemNotification.Source.PLUGIN_MANIFEST:
+            from apps.plugins.manifest_messages import dismiss_message
+            dismiss_message(request.user, notification.action_data.get("manifest_message_id"))
+
         return Response({
             'success': True,
             'message': 'Notification dismissed',
@@ -805,6 +811,9 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
             for n in to_dismiss
         ]
         NotificationDismissal.objects.bulk_create(dismissals, ignore_conflicts=True)
+        for notification in to_dismiss.filter(source=SystemNotification.Source.PLUGIN_MANIFEST):
+            from apps.plugins.manifest_messages import dismiss_message
+            dismiss_message(request.user, notification.action_data.get("manifest_message_id"))
 
         return Response({
             'success': True,
@@ -823,4 +832,3 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
         return Response({
             'unread_count': unread_count
         })
-

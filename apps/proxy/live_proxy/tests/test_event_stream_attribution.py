@@ -145,7 +145,8 @@ class BufferingEventAttributionTests(SimpleTestCase):
             clock[0] = 11.5
             sm._parse_ffmpeg_stats(STALLED_LINE)
             self.assertEqual(len(_calls_for(mock_log, "channel_error")), 1)
-            self.assertEqual(try_next.call_count, 3)
+            # The 11.5 line falls inside the retry window opened by the 11.0 attempt.
+            self.assertEqual(try_next.call_count, 2)
 
             # Speed recovers, then a new stall times out again.
             clock[0] = 12.0
@@ -218,7 +219,7 @@ class BufferingEventAttributionTests(SimpleTestCase):
 def _make_switchable_manager(current_stream_id=100, url="http://current", redis_client=None):
     sm = StreamManager.__new__(StreamManager)
     sm.channel_id = CHANNEL_ID
-    sm.channel_name = "BBC News"
+    sm.channel_name = "Test Channel"
     sm.url = url
     sm.user_agent = "ua"
     sm.transcode = False

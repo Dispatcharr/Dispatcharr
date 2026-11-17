@@ -15,6 +15,8 @@ ADMIN_ONLY_UPDATE_TYPES = frozenset({
     "timeshift_stats",
     "vod_started",
     "vod_stopped",
+    "plugin_task_progress",
+    "plugin_task_complete",
 })
 
 # m3u_profile_test runs sync regex on Daphne's event loop. Cap inputs and

@@ -134,8 +134,10 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
                 Command-line arguments passed to the command.
                 <br />
                 Use <strong>{'{streamUrl}'}</strong>,{' '}
-                <strong>{'{userAgent}'}</strong>, and{' '}
-                <strong>{'{channelId}'}</strong> as placeholders - they are
+                <strong>{'{userAgent}'}</strong>,{' '}
+                <strong>{'{channelId}'}</strong>,{' '}
+                <strong>{'{channelName}'}</strong>, and{' '}
+                <strong>{'{tvgId}'}</strong> as placeholders - they are
                 substituted at stream time.
                 {COMMAND_EXAMPLES[commandSelection] && (
                   <>

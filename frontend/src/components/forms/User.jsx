@@ -24,7 +24,11 @@ import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import usePlaylistsStore from '../../store/playlists';
 import useOutputProfilesStore from '../../store/outputProfiles';
-import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
+import {
+  OUTPUT_FORMAT_OPTIONS,
+  USER_LEVEL_LABELS,
+  USER_LEVELS,
+} from '../../constants';
 import { DVR_ACCESS } from '../../utils/dvrAccess';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
@@ -519,11 +523,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                   clearable
                   placeholder="System default"
                   disabled={!isAdmin}
-                  data={[
-                    { value: 'mpegts', label: 'MPEG-TS' },
-                    { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
-                    { value: 'hls', label: 'HLS' },
-                  ]}
+                  data={OUTPUT_FORMAT_OPTIONS}
                   {...form.getInputProps('output_format')}
                   key={form.key('output_format')}
                 />

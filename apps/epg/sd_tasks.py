@@ -1640,11 +1640,14 @@ def fetch_schedules_direct(
                 continue
 
             if cached_prog:
-                # Unchanged program — reuse cached data from before surgical delete
+                # Unchanged program, reuse cached data from before surgical delete.
                 title = cached_prog['title'] or 'No Title'
                 desc = cached_prog['description'] or ''
                 episode_title = cached_prog['sub_title'] or ''
-                custom_props = cached_prog['custom_properties'] or {}
+                custom_props = dict(cached_prog['custom_properties'] or {})
+                # Airing flags belong to the schedule slot, not the cached program.
+                for key in ('live', 'new', 'previously_shown', 'premiere'):
+                    custom_props.pop(key, None)
             else:
                 titles = meta.get('titles', [{}])
                 title = titles[0].get('title120', '') if titles else ''
@@ -1781,16 +1784,6 @@ def fetch_schedules_direct(
                 if credits:
                     custom_props['credits'] = credits
 
-                # Airing flags
-                if airing.get('liveTapeDelay') == 'Live':
-                    custom_props['live'] = True
-                if airing.get('new'):
-                    custom_props['new'] = True
-                else:
-                    custom_props['previously_shown'] = True
-                if airing.get('premiere'):
-                    custom_props['premiere'] = True
-
                 # Original air date — full date, not just year.
                 # Keep date for year / production_date compat, and also store the
                 # canonical original-air slot used by the programme API and export.
@@ -1833,6 +1826,15 @@ def fetch_schedules_direct(
                 event_details = meta.get('eventDetails', {})
                 if event_details:
                     custom_props['event_details'] = event_details
+
+            if airing.get('liveTapeDelay') == 'Live':
+                custom_props['live'] = True
+            if airing.get('new'):
+                custom_props['new'] = True
+            else:
+                custom_props['previously_shown'] = True
+            if airing.get('premiere'):
+                custom_props['premiere'] = True
 
             all_programs_to_create.append(ProgramData(
                 epg_id=epg_db_id,

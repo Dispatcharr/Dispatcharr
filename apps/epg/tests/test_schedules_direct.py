@@ -16,15 +16,18 @@ Covers:
 
 import hashlib
 import json
+import re
 import time
+import unittest
 from datetime import date, datetime, timedelta, timezone as dt_timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from apps.channels.models import Channel
-from apps.epg.models import EPGSource, EPGData, ProgramData, SDScheduleMD5
+from apps.epg.models import EPGSource, EPGData, ProgramData, SDProgramMD5, SDScheduleMD5
 from apps.epg.serializers import EPGSourceSerializer
 from apps.epg.tasks import (
     _sd_backfill_schedule_dates_without_data,
@@ -1317,6 +1320,147 @@ class SDScheduleDeltaIntegrationTests(TestCase):
             {'EP0001'},
         )
         self.assertEqual(needed, set())
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_cached_program_applies_per_slot_airing_flags(
+        self, mock_post, mock_get, mock_send_epg_update,
+    ):
+        """Cached program metadata must not carry another slot's airing flags."""
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+
+        date_list = self._build_date_list(3)
+        today = date.today()
+        pid = 'EP062700991016'
+        prog_md5 = 'prog-md5-stable'
+
+        prior_start = datetime(
+            today.year, today.month, today.day, 4, 30, tzinfo=dt_timezone.utc,
+        )
+        ProgramData.objects.create(
+            epg=mapped_epg,
+            start_time=prior_start,
+            end_time=prior_start + timedelta(hours=3),
+            title='College Football: California at SMU',
+            description='ACC Network game',
+            tvg_id=self.MAPPED_STATION,
+            program_id=pid,
+            custom_properties={
+                'live': True,
+                'new': True,
+                'categories': ['Sports', 'Football'],
+            },
+        )
+        SDProgramMD5.objects.create(
+            epg_source=source,
+            program_id=pid,
+            md5=prog_md5,
+        )
+        for i, ds in enumerate(date_list):
+            SDScheduleMD5.objects.create(
+                epg_source=source,
+                station_id=self.MAPPED_STATION,
+                date=today + timedelta(days=i),
+                md5=f'md5-old-{ds}' if i == 0 else f'md5-{ds}',
+                last_modified=timezone.now(),
+            )
+
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        schedule_payload = [{
+            'stationID': self.MAPPED_STATION,
+            'metadata': {
+                'startDate': date_list[0],
+                'md5': f'md5-{date_list[0]}',
+                'modified': '2026-06-11T00:00:00Z',
+            },
+            'programs': [
+                {
+                    'programID': pid,
+                    'airDateTime': f'{date_list[0]}T00:00:00Z',
+                    'duration': 3600,
+                    'md5': prog_md5,
+                    'liveTapeDelay': 'Live',
+                    'new': True,
+                },
+                {
+                    'programID': pid,
+                    'airDateTime': f'{date_list[0]}T04:30:00Z',
+                    'duration': 10800,
+                    'md5': prog_md5,
+                    'repeat': True,
+                },
+            ],
+        }]
+
+        programs_calls = []
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={'code': 0, 'token': 'tok'}),
+                )
+            if url.endswith('/schedules/md5'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={
+                        self.MAPPED_STATION: {
+                            ds: {
+                                'code': 0,
+                                'md5': f'md5-{ds}',
+                                'lastModified': '2026-06-11T00:00:00Z',
+                            }
+                            for ds in date_list
+                        },
+                    }),
+                )
+            if url.endswith('/schedules'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=schedule_payload),
+                )
+            if url.endswith('/programs'):
+                programs_calls.append(kwargs.get('json'))
+                raise AssertionError(
+                    'Unchanged program MD5 must not re-fetch /programs'
+                )
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        self.assertEqual(programs_calls, [])
+        rows = list(
+            ProgramData.objects.filter(epg=mapped_epg, program_id=pid)
+            .order_by('start_time')
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].title, 'College Football: California at SMU')
+        self.assertEqual(rows[1].title, 'College Football: California at SMU')
+
+        live_props = rows[0].custom_properties or {}
+        repeat_props = rows[1].custom_properties or {}
+        self.assertTrue(live_props.get('live'))
+        self.assertTrue(live_props.get('new'))
+        self.assertFalse(live_props.get('previously_shown'))
+        self.assertEqual(live_props.get('categories'), ['Sports', 'Football'])
+
+        self.assertTrue(repeat_props.get('previously_shown'))
+        self.assertFalse(repeat_props.get('live'))
+        self.assertFalse(repeat_props.get('new'))
+        self.assertEqual(repeat_props.get('categories'), ['Sports', 'Football'])
 
 
 # ---------------------------------------------------------------------------
@@ -2883,6 +3027,75 @@ class SDPosterProxyErrorHandlingTests(TestCase):
 
     @patch('requests.get')
     @patch('requests.post')
+    def test_matching_v_serves_image(self, mock_post, mock_get):
+        from apps.epg.utils import sd_poster_cache_bust
+
+        mock_post.return_value = self._auth_ok()
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
+
+        v = sd_poster_cache_bust(self.program.custom_properties['sd_icon'])
+        resp = self.client.get(self.url, {'v': v})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b'\xff\xd8\xffjpeg-bytes')
+        mock_get.assert_called_once()
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_mismatched_v_redirects_and_does_not_fetch(self, mock_post, mock_get):
+        from apps.epg.utils import sd_poster_proxy_path
+
+        resp = self.client.get(self.url, {'v': 'not-the-artwork'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Cache-Control'], 'no-store')
+        self.assertEqual(
+            resp['Location'],
+            sd_poster_proxy_path(
+                self.program.id, self.program.custom_properties['sd_icon']
+            ),
+        )
+        mock_get.assert_not_called()
+        mock_post.assert_not_called()
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_stale_v_redirects_to_current_artwork(self, mock_post, mock_get):
+        """A stale v redirects to the current URL instead of fetching under it."""
+        from apps.epg.utils import sd_poster_cache_bust, sd_poster_proxy_path
+
+        old_v = sd_poster_cache_bust(self.program.custom_properties['sd_icon'])
+        new_icon = (
+            'https://json.schedulesdirect.org/20141201/image/assets/other.jpg'
+        )
+        self.program.custom_properties = {'sd_icon': new_icon}
+        self.program.save(update_fields=['custom_properties'])
+
+        resp = self.client.get(self.url, {'v': old_v})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            resp['Location'], sd_poster_proxy_path(self.program.id, new_icon)
+        )
+        mock_get.assert_not_called()
+        mock_post.assert_not_called()
+
+        mock_post.return_value = self._auth_ok()
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
+        followed = self.client.get(self.url, {'v': old_v}, follow=True)
+        self.assertEqual(followed.status_code, 200)
+        self.assertEqual(followed.content, b'\xff\xd8\xffjpeg-bytes')
+        mock_get.assert_called_once()
+
+    @patch('requests.get')
+    @patch('requests.post')
     def test_poster_serves_image_for_image_accept_header(self, mock_post, mock_get):
         """Native image loaders send Accept: image/*; that must not 406."""
         mock_post.return_value = self._auth_ok()
@@ -2964,4 +3177,56 @@ class SDPosterProxyErrorHandlingTests(TestCase):
         )
         from apps.epg.api_views import ProgramViewSet
         self.assertNotIn(self.source.id, ProgramViewSet._sd_poster_error_cache)
+
+
+_NGINX_CONF = Path(__file__).resolve().parents[3] / 'docker' / 'nginx.conf'
+
+
+@unittest.skipUnless(_NGINX_CONF.exists(), 'docker/nginx.conf not present')
+class SDPosterNginxKeyContractTests(SimpleTestCase):
+    """
+    nginx shares a poster cache key only for the exact query Django emits.
+    Other shapes (duplicate ``v``, ``V``) are parsed differently by nginx and
+    Django, so sharing a key for them would bypass the view's ``v`` check.
+    """
+
+    def _shared_key_regex(self):
+        match = re.search(
+            r'map \$args \$sd_poster_cache_key \{\s*"~(?P<rx>[^"]+)"',
+            _NGINX_CONF.read_text(),
+        )
+        self.assertIsNotNone(match, 'sd_poster_cache_key map not found')
+        # nginx (PCRE) writes named groups as (?<name>...); Python needs (?P<name>...).
+        return re.compile(match.group('rx').replace('(?<', '(?P<'))
+
+    def test_emitted_query_shares_key_by_hash(self):
+        from apps.epg.utils import sd_poster_cache_bust, sd_poster_proxy_path
+
+        rx = self._shared_key_regex()
+        for uri in (
+            'https://json.schedulesdirect.org/20141201/image/assets/a.jpg',
+            'https://json.schedulesdirect.org/20141201/image/assets/b.jpg',
+        ):
+            query = sd_poster_proxy_path(5, uri).split('?', 1)[1]
+            match = rx.fullmatch(query)
+            self.assertIsNotNone(match, query)
+            self.assertEqual(match.group(1), sd_poster_cache_bust(uri))
+
+    def test_other_query_shapes_do_not_share_a_key(self):
+        rx = self._shared_key_regex()
+        h = 'a' * 12
+        for query in (
+            '',
+            'v=',
+            f'v={h}&v={"b" * 12}',
+            f'V={h}',
+            f'v={h}&x=1',
+            f'x=1&v={h}',
+            f'v={h}&',
+            f'v={h.upper()}',
+            f'v={"a" * 11}',
+            f'v={"a" * 13}',
+            f'v=%61{"a" * 11}',
+        ):
+            self.assertIsNone(rx.fullmatch(query), query)
 

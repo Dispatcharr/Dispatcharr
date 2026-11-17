@@ -124,6 +124,7 @@ const setupMocks = ({
     log_max_mb: 5,
     log_keep: 5,
     log_persist: true,
+    log_redact: true,
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -182,7 +183,7 @@ describe('SystemSettingsForm', () => {
     it('renders the NumberInput for max_system_events', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toBeInTheDocument();
+      expect(screen.getAllByTestId('number-input')[0]).toBeInTheDocument();
     });
 
     it('renders the NumberInput label', () => {
@@ -250,6 +251,12 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
+    it('renders the Redact Credentials in Logs switch', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByTestId('log_redact')).toBeInTheDocument();
+    });
+
 
 
 
@@ -279,7 +286,7 @@ describe('SystemSettingsForm', () => {
     it('renders NumberInput with value from form values', () => {
       setupMocks({ settings: makeSettings({ max_system_events: 250 }) });
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toHaveValue(250);
+      expect(screen.getAllByTestId('number-input')[0]).toHaveValue(250);
     });
 
     it('falls back to 100 when max_system_events is 0/falsy', () => {
@@ -311,7 +318,7 @@ describe('SystemSettingsForm', () => {
       vi.mocked(saveGroupSettings).mockResolvedValue(undefined);
 
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toHaveValue(100);
+      expect(screen.getAllByTestId('number-input')[0]).toHaveValue(100);
     });
   });
 
@@ -334,6 +341,7 @@ describe('SystemSettingsForm', () => {
         log_max_mb: 5,
         log_keep: 5,
         log_persist: true,
+        log_redact: true,
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
@@ -381,7 +389,7 @@ describe('SystemSettingsForm', () => {
     it('calls form.setFieldValue when NumberInput changes', () => {
       const { formMock } = setupMocks();
       render(<SystemSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('number-input'), {
+      fireEvent.change(screen.getAllByTestId('number-input')[0], {
         target: { value: '200' },
       });
       expect(formMock.setFieldValue).toHaveBeenCalledWith(

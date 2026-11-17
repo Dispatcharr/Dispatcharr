@@ -448,6 +448,9 @@ describe('dateTimeUtils', () => {
       expect(result.current.timeFormat).toBe('h:mma');
       expect(result.current.dateFormat).toBe('MMM D');
       expect(result.current.dateYearFormat).toBe('MMM D, YYYY');
+      expect(result.current.fullDateFormat).toBe('MM/DD/YYYY');
+      expect(result.current.shortDateFormat).toBe('MM/DD');
+      expect(result.current.fullDateTimeFormat).toBe('MM/DD/YYYY, h:mm:ss A');
     });
 
     it('should return 24h format when set', () => {
@@ -469,6 +472,41 @@ describe('dateTimeUtils', () => {
 
       expect(result.current.dateFormat).toBe('D MMM');
       expect(result.current.dateYearFormat).toBe('D MMM YYYY');
+      expect(result.current.fullDateFormat).toBe('DD/MM/YYYY');
+      expect(result.current.shortDateFormat).toBe('DD/MM');
+    });
+
+    it('should return ISO 8601 formats when ymd is set', () => {
+      useBrowserStorage
+        .mockReturnValueOnce(['24h', vi.fn()])
+        .mockReturnValueOnce(['ymd', vi.fn()]);
+
+      const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
+
+      expect(result.current.dateFormat).toBe('YYYY-MM-DD');
+      expect(result.current.dateYearFormat).toBe('YYYY-MM-DD');
+      expect(result.current.fullDateFormat).toBe('YYYY-MM-DD');
+      expect(result.current.shortDateFormat).toBe('YYYY-MM-DD');
+      expect(result.current.fullDateTimeFormat).toBe('YYYY-MM-DD, HH:mm:ss');
+      expect(result.current.dateFormatSetting).toBe('ymd');
+    });
+  });
+
+  describe('getDateFormats', () => {
+    it('should fall back to month-first for an unknown setting', () => {
+      expect(dateTimeUtils.getDateFormats('bogus')).toEqual(
+        dateTimeUtils.getDateFormats('mdy')
+      );
+      expect(dateTimeUtils.getDateFormats(undefined).fullDateFormat).toBe(
+        'MM/DD/YYYY'
+      );
+    });
+
+    it('should have an entry for every selectable option', () => {
+      const values = dateTimeUtils.DATE_FORMAT_OPTIONS.map((o) => o.value);
+      expect(values).toEqual(['mdy', 'dmy', 'ymd']);
+      const formats = values.map((v) => dateTimeUtils.getDateFormats(v));
+      expect(new Set(formats.map((f) => f.fullDateFormat)).size).toBe(3);
     });
   });
 

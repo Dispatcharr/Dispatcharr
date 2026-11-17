@@ -12,9 +12,11 @@ import {
   Text,
   Textarea,
   TextInput,
+  Tooltip,
 } from '@mantine/core';
 import { KeyRound, Plus, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
 import ConfirmationDialog from '../ConfirmationDialog.jsx';
+import PluginRepositoryIcon from '../PluginRepositoryIcon.jsx';
 import { usePluginStore } from '../../store/plugins.jsx';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
@@ -26,6 +28,7 @@ import {
 export default function ManageReposModal({ opened, onClose }) {
   const repos = usePluginStore((s) => s.repos);
   const reposLoading = usePluginStore((s) => s.reposLoading);
+  const fetchRepos = usePluginStore((s) => s.fetchRepos);
   const fetchAvailablePlugins = usePluginStore((s) => s.fetchAvailablePlugins);
   const refreshRepo = usePluginStore((s) => s.refreshRepo);
   const addRepo = usePluginStore((s) => s.addRepo);
@@ -163,10 +166,13 @@ export default function ManageReposModal({ opened, onClose }) {
     fetchAvailablePlugins,
   ]);
 
-  // Load settings when modal opens
+  // Load repositories and settings when modal opens
   useEffect(() => {
-    if (opened) loadRepoSettings();
-  }, [opened, loadRepoSettings]);
+    if (opened) {
+      fetchRepos();
+      loadRepoSettings();
+    }
+  }, [opened, fetchRepos, loadRepoSettings]);
 
   // Cleanup any pending timers on unmount
   useEffect(() => {
@@ -232,38 +238,22 @@ export default function ManageReposModal({ opened, onClose }) {
                 }}
               >
                 <Box style={{ minWidth: 0, flex: 1 }}>
-                  <Group gap="xs" align="center">
+                  <Group gap={5} align="center">
+                    <span style={{ color: 'var(--mantine-color-dimmed)', display: 'inline-flex' }}>
+                      <PluginRepositoryIcon isOfficial={repo.is_official} size={14} />
+                    </span>
                     <Text fw={500} size="sm" lineClamp={1}>
                       {repo.name}
                     </Text>
-                    {repo.is_official && (
-                      <Badge
-                        size="xs"
-                        variant="filled"
-                        style={{ backgroundColor: '#14917E' }}
-                      >
-                        Official Repo
-                      </Badge>
-                    )}
                     {repo.signature_verified === true && (
-                      <Badge
-                        size="xs"
-                        variant="light"
-                        color="green"
-                        leftSection={<ShieldCheck size={10} />}
-                      >
-                        Verified Signature
-                      </Badge>
+                      <Tooltip label="Valid Signature">
+                        <span aria-label="Valid Signature" style={{ color: 'var(--mantine-color-dimmed)', display: 'inline-flex' }}><ShieldCheck size={14} /></span>
+                      </Tooltip>
                     )}
                     {repo.signature_verified === false && (
-                      <Badge
-                        size="xs"
-                        variant="light"
-                        color="red"
-                        leftSection={<ShieldAlert size={10} />}
-                      >
-                        Invalid Signature
-                      </Badge>
+                      <Tooltip label="Invalid Signature">
+                        <span aria-label="Invalid Signature" style={{ color: 'var(--mantine-color-red-6)', display: 'inline-flex' }}><ShieldAlert size={14} /></span>
+                      </Tooltip>
                     )}
                   </Group>
                   {repo.registry_url ? (
@@ -409,7 +399,7 @@ export default function ManageReposModal({ opened, onClose }) {
                             color="green"
                             leftSection={<ShieldCheck size={10} />}
                           >
-                            Verified Signature
+                            Valid Signature
                           </Badge>
                         )}
                         {repoPreview.signature_verified === false && (

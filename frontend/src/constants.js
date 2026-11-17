@@ -82,6 +82,18 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
+  max_retries: {
+    label: 'Max Connection Attempts',
+    advanced: true,
+    description:
+      'Maximum connection attempts for a stream before failing over to the next stream',
+  },
+  stream_retry_timeout: {
+    label: 'Stream Retry Timeout',
+    advanced: true,
+    description:
+      'Maximum time (in seconds) to wait for an available stream slot when provider connection limits are reached (e.g. during rapid channel switching). 0 = try once with no wait.',
+  },
   validate_redirect_urls: {
     label: 'Validate Redirect URLs',
     type: 'boolean',
@@ -131,6 +143,14 @@ export const M3U_FILTER_TYPES = [
     label: 'Stream URL',
     value: 'url',
   },
+];
+
+// Shared by Default Output Format, HDHR Default Output Format, user override,
+// and M3U URL builder selects. Keep in sync with proxy format aliases.
+export const OUTPUT_FORMAT_OPTIONS = [
+  { value: 'mpegts', label: 'MPEG-TS' },
+  { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+  { value: 'hls', label: 'HLS' },
 ];
 
 export const REGION_CHOICES = [

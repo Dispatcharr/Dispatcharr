@@ -38,6 +38,7 @@ import { TableHelper } from '../../helpers/index.jsx';
 import logo from '../../images/logo.png';
 import LazyLogo from '../LazyLogo.jsx';
 import { formatBytes, formatSpeed } from '../../utils/networkUtils.js';
+import AudioStreamBadge from '../AudioStreamBadge.jsx';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
   connectedAccessor,
@@ -680,20 +681,7 @@ const StreamConnectionCard = ({
               </Badge>
             </Tooltip>
           )}
-          {channel.audio_codec && (
-            <Tooltip label="Audio codec">
-              <Badge size="sm" variant="light" color="pink">
-                {channel.audio_codec.toUpperCase()}
-              </Badge>
-            </Tooltip>
-          )}
-          {channel.audio_channels && (
-            <Tooltip label="Audio channel configuration">
-              <Badge size="sm" variant="light" color="pink">
-                {channel.audio_channels}
-              </Badge>
-            </Tooltip>
-          )}
+          <AudioStreamBadge stats={channel} />
           {channel.stream_type && (
             <Tooltip label="Stream type">
               <Badge size="sm" variant="light" color="cyan">

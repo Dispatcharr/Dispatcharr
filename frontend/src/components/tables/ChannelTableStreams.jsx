@@ -1,7 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { copyToClipboard } from '../../utils';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
-import { ChevronDown, ChevronRight, Eye, GripHorizontal, SquareMinus, } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  GripHorizontal,
+  SquareMinus,
+} from 'lucide-react';
 import {
   ActionIcon,
   Badge,
@@ -15,7 +27,11 @@ import {
   Tooltip,
   useMantineTheme,
 } from '@mantine/core';
-import { flexRender, getCoreRowModel, useReactTable, } from '@tanstack/react-table';
+import {
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+} from '@tanstack/react-table';
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import usePlaylistsStore from '../../store/playlists';
@@ -33,7 +49,12 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
-import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy, } from '@dnd-kit/sortable';
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { shallow } from 'zustand/shallow';
 import useAuthStore from '../../store/auth';
@@ -45,6 +66,11 @@ import {
   getChannelStreamStats,
   reorderChannelStreams,
 } from '../../utils/tables/ChannelTableStreamsUtils.js';
+import AudioStreamBadge from '../AudioStreamBadge.jsx';
+import {
+  getAudioTrackFields,
+  groupAudioStreamsByLanguage,
+} from '../../utils/audioStreamUtils.js';
 
 // ── Static values (created once, shared across all instances) ────────────────
 
@@ -138,21 +164,71 @@ const DraggableRow = React.memo(
 const StatsCategory = ({ categoryName, stats }) => {
   if (!stats || Object.keys(stats).length === 0) return null;
 
+  const audioStreams = Array.isArray(stats.audio_streams)
+    ? stats.audio_streams
+    : null;
+  const otherEntries = Object.entries(stats).filter(
+    ([key]) => key !== 'audio_streams'
+  );
+
   return (
     <Box key={categoryName} mb="xs">
       <Text size="xs" fw={600} mb={4} tt="uppercase" c="dimmed">
         {categoryName}
       </Text>
-      <Group gap={4} mb="xs">
-        {Object.entries(stats).map(([key, value]) => (
-          <Tooltip key={key} label={`${key}: ${formatStatValue(key, value)}`}>
-            <Badge size="xs" variant="light" color="gray">
-              {formatStatKey(key)}:{' '}
-              {formatStatValue(key, value)}
-            </Badge>
-          </Tooltip>
-        ))}
-      </Group>
+      {otherEntries.length > 0 && (
+        <Group gap={4} mb={audioStreams?.length ? 6 : 'xs'}>
+          {otherEntries.map(([key, value]) => (
+            <Tooltip key={key} label={`${key}: ${formatStatValue(key, value)}`}>
+              <Badge size="xs" variant="light" color="gray">
+                {formatStatKey(key)}: {formatStatValue(key, value)}
+              </Badge>
+            </Tooltip>
+          ))}
+        </Group>
+      )}
+      {audioStreams && audioStreams.length > 0 && (
+        <Flex direction="column" gap={6} mb="xs">
+          {groupAudioStreamsByLanguage(audioStreams).map(
+            ({ language, tracks }) => (
+              <Box key={language}>
+                <Text size="xs" fw={600} mb={2}>
+                  {language}
+                </Text>
+                <Flex direction="column" gap={2} pl={8}>
+                  {tracks.map((track, index) => {
+                    const fields = getAudioTrackFields(track, {
+                      omitLanguage: true,
+                    });
+                    if (fields.length === 0) return null;
+                    return (
+                      <Text
+                        key={track.index ?? track.pid ?? `${language}-${index}`}
+                        size="xs"
+                        style={{ lineHeight: 1.45 }}
+                      >
+                        {fields.map((field, fieldIndex) => (
+                          <Text
+                            key={field.key}
+                            component="span"
+                            size="xs"
+                            mr={fieldIndex < fields.length - 1 ? 10 : 0}
+                          >
+                            <Text component="span" c="dimmed">
+                              {field.label}:
+                            </Text>{' '}
+                            {field.value}
+                          </Text>
+                        ))}
+                      </Text>
+                    );
+                  })}
+                </Flex>
+              </Box>
+            )
+          )}
+        </Flex>
+      )}
     </Box>
   );
 };
@@ -290,16 +366,7 @@ const StreamInfoCell = React.memo(
                 <Text size="xs" c="dimmed" fw={500}>
                   Audio:
                 </Text>
-                {stream.stream_stats.audio_channels && (
-                  <Badge size="xs" variant="light" color="pink">
-                    {stream.stream_stats.audio_channels}
-                  </Badge>
-                )}
-                {stream.stream_stats.audio_codec && (
-                  <Badge size="xs" variant="light" color="pink">
-                    {stream.stream_stats.audio_codec.toUpperCase()}
-                  </Badge>
-                )}
+                <AudioStreamBadge stats={stream.stream_stats} size="xs" />
               </>
             )}
 

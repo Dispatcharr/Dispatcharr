@@ -8,6 +8,7 @@ import useOutputProfilesStore from './outputProfiles';
 import useUserAgentsStore from './userAgents';
 import useServerGroupsStore from './serverGroups';
 import useUsersStore from './users';
+import { usePluginStore } from './plugins';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
 import { DEFAULT_ADMIN_ORDER, DEFAULT_USER_ORDER } from '../config/navigation';
@@ -109,6 +110,19 @@ const useAuthStore = create((set, get) => ({
     return await get().updateUserPreferences({ hiddenNav: newHiddenNav });
   },
 
+  getPinnedPlugins: () => {
+    const user = get().user;
+    return user?.custom_properties?.pinnedPlugins || [];
+  },
+
+  togglePinnedPlugin: async (pluginKey) => {
+    const pinnedPlugins = get().getPinnedPlugins();
+    const newPinnedPlugins = pinnedPlugins.includes(pluginKey)
+      ? pinnedPlugins.filter((key) => key !== pluginKey)
+      : [...pinnedPlugins, pluginKey];
+    return await get().updateUserPreferences({ pinnedPlugins: newPinnedPlugins });
+  },
+
   initData: async () => {
     // Prevent multiple simultaneous initData calls
     if (get().isInitializing || get().isInitialized) {
@@ -143,7 +157,10 @@ const useAuthStore = create((set, get) => ({
       ]);
 
       if (user.user_level >= USER_LEVELS.ADMIN) {
-        await Promise.all([useUsersStore.getState().fetchUsers()]);
+        await Promise.all([
+          useUsersStore.getState().fetchUsers(),
+          usePluginStore.getState().fetchPlugins(),
+        ]);
       }
 
       // Only set isAuthenticated and isInitialized AFTER essential data is loaded

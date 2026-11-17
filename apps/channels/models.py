@@ -96,7 +96,7 @@ class Stream(models.Model):
     """
 
     name = models.CharField(max_length=512, default="Default Stream", db_index=True)
-    url = models.URLField(max_length=4096, blank=True, null=True)
+    url = models.URLField(max_length=8192, blank=True, null=True)
     m3u_account = models.ForeignKey(
         M3UAccount,
         on_delete=models.CASCADE,
@@ -676,14 +676,35 @@ class Channel(models.Model):
         except ChannelOverride.DoesNotExist:
             return None
 
-    def _resolve_effective_fk(self, field_name):
-        """Pick the override's FK object if set, otherwise the channel's own."""
+    def _resolve_effective_field(self, field_name):
+        """Pick the override value when set, otherwise the channel's own."""
         override = self._resolved_override()
         if override is not None:
             override_val = getattr(override, field_name, None)
             if override_val is not None:
                 return override_val
         return getattr(self, field_name)
+
+    def _resolve_effective_fk(self, field_name):
+        """Pick the override's FK object if set, otherwise the channel's own."""
+        return self._resolve_effective_field(field_name)
+
+    def get_effective_name(self):
+        """Override name when set, otherwise the channel name.
+
+        A method, not a property: ``with_effective_values()`` already
+        annotates ``effective_name``, and a same-named property has no
+        setter so Django cannot apply that annotation.
+        """
+        return self._resolve_effective_field("name")
+
+    def get_effective_tvg_id(self):
+        """Override tvg_id when set, otherwise the channel tvg_id.
+
+        Same constraint as ``get_effective_name``: the annotation name
+        ``effective_tvg_id`` must stay assignable.
+        """
+        return self._resolve_effective_field("tvg_id")
 
     @property
     def effective_logo_obj(self):

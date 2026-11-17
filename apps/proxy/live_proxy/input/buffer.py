@@ -2,7 +2,8 @@
 
 import threading
 import time
-import random
+from ..discontinuity_sidecar import DiscontinuitySidecarMixin
+from ..psi_scan import PsiScanCache
 from ..redis_keys import RedisKeys
 from ..config_helper import ConfigHelper
 from ..constants import TS_PACKET_SIZE
@@ -14,7 +15,7 @@ import gevent
 logger = get_logger()
 
 
-class StreamBuffer:
+class StreamBuffer(DiscontinuitySidecarMixin):
     """Manages stream data buffering with optimized chunk storage"""
 
     def __init__(self, channel_id=None, redis_client=None,
@@ -30,6 +31,10 @@ class StreamBuffer:
         self.buffer_prefix = buffer_chunk_prefix or (RedisKeys.buffer_chunk_prefix(channel_id) if channel_id else "")
 
         self.chunk_ttl = ConfigHelper.redis_chunk_ttl()
+
+        # PAT/PMT locations per chunk, shared by every output reading this
+        # buffer so each chunk is scanned once, not once per output.
+        self.psi_scan_cache = PsiScanCache()
 
         # Initialize from Redis if available
         if self.redis_client and channel_id:
@@ -236,57 +241,6 @@ class StreamBuffer:
         self._write_buffer = bytearray(self._write_buffer[aligned:])
         return self._write_chunk_unlocked(chunk_data)
 
-    def _record_discontinuity_unlocked(self, chunk_index):
-        """Publish chunk_index as a discontinuity start into the sidecar set."""
-        if not self.redis_client or not self.discontinuities_key:
-            return
-        try:
-            pipe = self.redis_client.pipeline(transaction=False)
-            pipe.zadd(self.discontinuities_key, {str(chunk_index): float(chunk_index)})
-            # Keep the sidecar no larger than the chunk retention window.
-            pipe.zremrangebyscore(
-                self.discontinuities_key, '-inf', float(chunk_index) - 10000
-            )
-            pipe.expire(self.discontinuities_key, self.chunk_ttl)
-            pipe.execute()
-        except Exception as e:
-            logger.error(
-                f"Error recording discontinuity index {chunk_index} for "
-                f"channel {self.channel_id}: {e}"
-            )
-
-    def discontinuities_in_range(self, start_index_exclusive, end_index_inclusive):
-        """
-        Return sorted chunk indices D where start_index_exclusive < D <= end_index_inclusive.
-
-        These are the first Redis chunks of a new source era; consumers should
-        treat the boundary before D as a discontinuity.
-        """
-        if (
-            not self.redis_client
-            or not self.discontinuities_key
-            or end_index_inclusive <= start_index_exclusive
-        ):
-            return []
-        try:
-            members = self.redis_client.zrangebyscore(
-                self.discontinuities_key,
-                float(start_index_exclusive) + 1e-9,
-                float(end_index_inclusive),
-            )
-            out = []
-            for m in members or []:
-                try:
-                    out.append(int(m))
-                except (TypeError, ValueError):
-                    continue
-            return out
-        except Exception as e:
-            logger.debug(
-                f"Error reading discontinuities for channel {self.channel_id}: {e}"
-            )
-            return []
-
     def reset_buffer_position(self):
         """
         Reset internal buffers for a clean stream transition (failover).
@@ -323,90 +277,18 @@ class StreamBuffer:
                 f"Error resetting buffer position for channel {self.channel_id}: {e}"
             )
 
-    def get_chunks(self, start_index=None):
-        """Get chunks from the buffer with detailed logging"""
-        try:
-            request_id = f"req_{random.randint(1000, 9999)}"
-            logger.debug(f"[{request_id}] get_chunks called with start_index={start_index}")
+    def _get_chunks_exact_indexed(self, start_index, count):
+        """Return [(redis_index, bytes), ...] for the chunks that still exist.
 
-            if not self.redis_client:
-                logger.error("Redis not available, cannot retrieve chunks")
-                return []
-
-            # If no start_index provided, use most recent chunks
-            if start_index is None:
-                start_index = max(0, self.index - 10)  # Start closer to current position
-                logger.debug(f"[{request_id}] No start_index provided, using {start_index}")
-
-            # Get current index from Redis
-            current_index = int(self.redis_client.get(self.buffer_index_key) or 0)
-
-            # Calculate range of chunks to retrieve
-            start_id = start_index + 1
-            chunks_behind = current_index - start_id
-
-            # Adaptive chunk retrieval based on how far behind
-            if chunks_behind > 100:
-                fetch_count = 15
-                logger.debug(f"[{request_id}] Client very behind ({chunks_behind} chunks), fetching {fetch_count}")
-            elif chunks_behind > 50:
-                fetch_count = 10
-                logger.debug(f"[{request_id}] Client moderately behind ({chunks_behind} chunks), fetching {fetch_count}")
-            elif chunks_behind > 20:
-                fetch_count = 5
-                logger.debug(f"[{request_id}] Client slightly behind ({chunks_behind} chunks), fetching {fetch_count}")
-            else:
-                fetch_count = 3
-                logger.debug(f"[{request_id}] Client up-to-date (only {chunks_behind} chunks behind), fetching {fetch_count}")
-
-            end_id = min(current_index + 1, start_id + fetch_count)
-
-            if start_id >= end_id:
-                logger.debug(f"[{request_id}] No new chunks to fetch (start_id={start_id}, end_id={end_id})")
-                return []
-
-            # Log the range we're retrieving
-            logger.debug(f"[{request_id}] Retrieving chunks {start_id} to {end_id-1} (total: {end_id-start_id})")
-
-            # Directly fetch from Redis using pipeline for efficiency
-            pipe = self.redis_client.pipeline()
-            for idx in range(start_id, end_id):
-                chunk_key = f"{self.buffer_prefix}{idx}"
-                pipe.get(chunk_key)
-
-            results = pipe.execute()
-
-            # Process results
-            chunks = [result for result in results if result is not None]
-
-            # Count non-None results
-            found_chunks = len(chunks)
-            missing_chunks = len(results) - found_chunks
-
-            if missing_chunks > 0:
-                logger.debug(f"[{request_id}] Missing {missing_chunks}/{len(results)} chunks in Redis")
-
-            # Update local tracking
-            if chunks:
-                self.index = end_id - 1
-
-            # Final log message
-            chunk_sizes = [len(c) for c in chunks]
-            total_bytes = sum(chunk_sizes) if chunks else 0
-            logger.debug(f"[{request_id}] Returning {len(chunks)} chunks ({total_bytes} bytes)")
-
-            return chunks
-
-        except Exception as e:
-            logger.error(f"Error getting chunks from buffer: {e}", exc_info=True)
-            return []
-
-    def get_chunks_exact(self, start_index, count):
-        """Get exactly the requested number of chunks from given index"""
+        Missing keys are omitted. The index is the real Redis chunk number, so
+        a hole in the middle does not renumber the chunks that follow it.
+        Returns None when the read failed, and an empty list when every
+        requested key is absent or the range is past the buffer head.
+        """
         try:
             if not self.redis_client:
                 logger.error("Redis not available, cannot retrieve chunks")
-                return []
+                return None
 
             # Calculate range to retrieve
             start_id = start_index + 1
@@ -430,18 +312,23 @@ class StreamBuffer:
 
             results = pipe.execute()
 
-            # Filter out None results
-            chunks = [result for result in results if result is not None]
+            # Keep the Redis index with each hit. A missing key is a hole,
+            # not a shift of every later chunk.
+            indexed = [
+                (idx, result)
+                for idx, result in zip(range(start_id, end_id), results)
+                if result is not None
+            ]
 
             # Update local index if needed
-            if chunks and start_id + len(chunks) - 1 > self.index:
-                self.index = start_id + len(chunks) - 1
+            if indexed and indexed[-1][0] > self.index:
+                self.index = indexed[-1][0]
 
-            return chunks
+            return indexed
 
         except Exception as e:
             logger.error(f"Error getting exact chunks: {e}", exc_info=True)
-            return []
+            return None
 
     def stop(self):
         """Stop the buffer and cancel all timers"""
@@ -479,12 +366,25 @@ class StreamBuffer:
             logger.error(f"Error during buffer stop: {e}")
 
     def get_optimized_client_data(self, client_index):
-        """Get optimal amount of data for client streaming based on position and target size"""
+        """Get optimal amount of data for client streaming based on position and target size."""
+        indexed, new_index = self.get_optimized_client_data_indexed(client_index)
+        return [data for _idx, data in indexed], new_index
+
+    def get_optimized_client_data_indexed(self, client_index):
+        """Same batch as get_optimized_client_data, with each chunk's Redis index.
+
+        Returns ([(index, bytes), ...], new_index). ``new_index`` is the end of
+        the requested range, including holes, so the caller does not read the
+        same gap again. A first batch under about 1MB is followed by more
+        batches until that target, the 2MB cap, the per-call chunk ceiling,
+        or the buffer head.
+        """
         # Define limits
         MIN_CHUNKS = 3                      # Minimum chunks to read for efficiency
-        MAX_CHUNKS = 20                     # Safety limit to prevent memory spikes
-        TARGET_SIZE = 1024 * 1024           # Target ~1MB per response (typical media buffer)
-        MAX_SIZE = 2 * 1024 * 1024          # Hard cap at 2MB
+        MAX_CHUNKS = 20                     # Max chunks per Redis read
+        MAX_CHUNKS_PER_CALL = 100           # Ceiling across top-up batches (bounds round-trips)
+        TARGET_SIZE = 1024 * 1024           # Keep reading small chunks until ~1MB
+        MAX_SIZE = 2 * 1024 * 1024          # Do not append a further batch past this
 
         # Calculate how far behind we are
         chunks_behind = self.index - client_index
@@ -497,36 +397,55 @@ class StreamBuffer:
             # Reasonable amount behind, catch up completely
             chunk_count = chunks_behind
         else:
-            # Way behind, retrieve MAX_CHUNKS to avoid memory pressure
+            # Way behind. First read is one batch; the loop below tops up
+            # when those chunks are still under the size target.
             chunk_count = MAX_CHUNKS
 
-        # Retrieve chunks
-        chunks = self.get_chunks_exact(client_index, chunk_count)
+        # Retrieve chunks. Each entry is (redis_index, bytes); holes are omitted.
+        indexed = self._get_chunks_exact_indexed(client_index, chunk_count)
+        if indexed is None:
+            # Transient Redis failure: keep the caller's index so the next
+            # attempt retries the same range instead of skipping past it.
+            return [], client_index
 
         # Check if we got significantly fewer chunks than expected (likely due to expiration)
         # Only check if we expected multiple chunks and got none or very few
-        if chunk_count > 3 and len(chunks) == 0 and chunks_behind > 10:
-            # Chunks are missing - likely expired from Redis
-            # Return empty list to signal client should skip forward
+        if not indexed and chunk_count > 3 and chunks_behind > 10:
+            # Chunks are missing. Signal the caller to skip forward.
             logger.debug(f"Chunks missing for client at index {client_index}, buffer at {self.index} ({chunks_behind} behind)")
             return [], client_index
 
         # Check total size
-        total_size = sum(len(c) for c in chunks)
+        total_size = sum(len(c) for _idx, c in indexed)
 
-        # If we're under target and have more chunks available, get more
-        if total_size < TARGET_SIZE and chunks_behind > chunk_count:
-            # Calculate how many more chunks we can get
-            additional = min(MAX_CHUNKS - chunk_count, chunks_behind - chunk_count)
-            more_chunks = self.get_chunks_exact(client_index + chunk_count, additional)
+        # The first batch is capped at MAX_CHUNKS, so a run of small chunks
+        # can sit under the 1MB target with more data still buffered. Keep
+        # reading one batch at a time. A failed read (None) stops without
+        # skipping ahead; an empty one is a hole and is advanced over.
+        while (
+            total_size < TARGET_SIZE
+            and chunks_behind > chunk_count
+            and chunk_count < MAX_CHUNKS_PER_CALL
+        ):
+            additional = min(
+                MAX_CHUNKS,
+                chunks_behind - chunk_count,
+                MAX_CHUNKS_PER_CALL - chunk_count,
+            )
+            more_chunks = self._get_chunks_exact_indexed(
+                client_index + chunk_count, additional
+            )
+            if more_chunks is None:
+                break
+            additional_size = sum(len(c) for _idx, c in more_chunks)
+            if total_size + additional_size > MAX_SIZE:
+                break
+            indexed.extend(more_chunks)
+            total_size += additional_size
+            # Requested span, not hit count, so a hole is not read again.
+            chunk_count += additional
 
-            # Check if adding more would exceed MAX_SIZE
-            additional_size = sum(len(c) for c in more_chunks)
-            if total_size + additional_size <= MAX_SIZE:
-                chunks.extend(more_chunks)
-                chunk_count += len(more_chunks)
-
-        return chunks, client_index + chunk_count
+        return indexed, client_index + chunk_count
 
     # Lua script that runs an atomic binary search on the Redis server.
     # Chunks expire in FIFO order (same TTL, sequential writes), so the

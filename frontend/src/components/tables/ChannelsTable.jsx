@@ -95,7 +95,7 @@ import {
 import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useAuthStore from '../../store/auth';
-import { USER_LEVELS } from '../../constants';
+import { OUTPUT_FORMAT_OPTIONS, USER_LEVELS } from '../../constants';
 import {
   buildEPGUrl,
   buildFetchParams,
@@ -1551,11 +1551,7 @@ const ChannelsTable = ({ onReady }) => {
                         }))
                       }
                       comboboxProps={{ withinPortal: false }}
-                      data={[
-                        { value: 'mpegts', label: 'MPEG-TS' },
-                        { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
-                        { value: 'hls', label: 'HLS' },
-                      ]}
+                      data={OUTPUT_FORMAT_OPTIONS}
                     />
                     <Select
                       label="Output Profile"

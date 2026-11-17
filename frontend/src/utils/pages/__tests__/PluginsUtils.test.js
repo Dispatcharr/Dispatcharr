@@ -145,7 +145,7 @@ describe('PluginsUtils', () => {
 
       await PluginsUtils.setPluginEnabled(key, next);
 
-      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, true);
+      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, true, []);
       expect(API.setPluginEnabled).toHaveBeenCalledTimes(1);
     });
 
@@ -155,7 +155,7 @@ describe('PluginsUtils', () => {
 
       await PluginsUtils.setPluginEnabled(key, next);
 
-      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, false);
+      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, false, []);
     });
 
     it('should return API response', async () => {
@@ -176,7 +176,7 @@ describe('PluginsUtils', () => {
 
       await PluginsUtils.setPluginEnabled(key, next);
 
-      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, 'yes');
+      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, 'yes', []);
     });
 
     it('should handle falsy values', async () => {
@@ -185,7 +185,7 @@ describe('PluginsUtils', () => {
 
       await PluginsUtils.setPluginEnabled(key, next);
 
-      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, 0);
+      expect(API.setPluginEnabled).toHaveBeenCalledWith(key, 0, []);
     });
 
     it('should propagate API errors', async () => {

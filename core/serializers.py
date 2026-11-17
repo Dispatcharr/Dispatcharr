@@ -16,6 +16,7 @@ from .models import (
     EPG_HISTORY_MIN_DAYS_DEFAULT,
     EPG_SETTINGS_KEY,
     NETWORK_ACCESS_KEY,
+    PROXY_SETTINGS_KEY,
     SYSTEM_SETTINGS_KEY,
     REVERSE_PROXY_AUTH_KEY,
 )
@@ -129,6 +130,17 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
         model = CoreSettings
         fields = "__all__"
 
+    def validate(self, attrs):
+        key = attrs.get("key")
+        if key is None and self.instance is not None:
+            key = self.instance.key
+        if key == PROXY_SETTINGS_KEY and isinstance(attrs.get("value"), dict):
+            proxy_serializer = ProxySettingsSerializer(data=attrs["value"])
+            if not proxy_serializer.is_valid():
+                raise serializers.ValidationError({"value": proxy_serializer.errors})
+            attrs["value"] = proxy_serializer.validated_data
+        return attrs
+
     def create(self, validated_data):
         if validated_data.get("key") == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))
@@ -173,6 +185,8 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     )
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
+                if "log_redact" in value:
+                    value["log_redact"] = value["log_redact"] is not False
 
         if instance.key == EPG_SETTINGS_KEY:
             _clamp_epg_history_fields(validated_data.get("value"))
@@ -229,6 +243,8 @@ class ProxySettingsSerializer(serializers.Serializer):
     stream_startup_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=8)
     connection_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=10)
     validate_redirect_urls = serializers.BooleanField(required=False, default=True)
+    max_retries = serializers.IntegerField(min_value=1, max_value=10, required=False, default=3)
+    stream_retry_timeout = serializers.IntegerField(min_value=0, max_value=30, required=False, default=3)
 
     def validate_buffering_timeout(self, value):
         if value < 0 or value > 300:
@@ -281,6 +297,16 @@ class ProxySettingsSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Stream idle timeout must be between 1 and 120 seconds"
             )
+        return value
+
+    def validate_max_retries(self, value):
+        if value < 1 or value > 10:
+            raise serializers.ValidationError("Max retries must be between 1 and 10")
+        return value
+
+    def validate_stream_retry_timeout(self, value):
+        if value < 0 or value > 30:
+            raise serializers.ValidationError("Stream retry timeout must be between 0 and 30 seconds")
         return value
 
 

@@ -21,7 +21,9 @@ setup_locales() {
   apt-get install -y locales
   sed -i '/en_US.UTF-8 UTF-8/s/^# //g' /etc/locale.gen
   locale-gen
-  update-locale LANG=en_US.UTF-8
+  # Persist both LANG and LC_ALL so login shells and pam_env agree.
+  # uWSGI can use ascii filesystem encoding under a POSIX/C locale.
+  update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
   export LANG=en_US.UTF-8
   export LC_ALL=en_US.UTF-8
 }
@@ -365,6 +367,9 @@ lazy-apps = true
 buffer-size = 65536
 socket-timeout = 600
 thunder-lock = true
+# Keep UTF-8 filesystem encoding even when the process environment is minimal.
+env = LANG=en_US.UTF-8
+env = LC_ALL=en_US.UTF-8
 EOF
 
   chown ${DISPATCH_USER}:${DISPATCH_GROUP} ${APP_DIR}/uwsgi-debian.ini
@@ -383,6 +388,8 @@ RuntimeDirectory=${UWSGI_RUNTIME_DIR}
 RuntimeDirectoryMode=0775
 EnvironmentFile=/opt/dispatcharr/.env
 Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="LANG=en_US.UTF-8"
+Environment="LC_ALL=en_US.UTF-8"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -411,6 +418,8 @@ Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=/opt/dispatcharr/.env
 Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="LANG=en_US.UTF-8"
+Environment="LC_ALL=en_US.UTF-8"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -439,6 +448,8 @@ Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=/opt/dispatcharr/.env
 Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="LANG=en_US.UTF-8"
+Environment="LC_ALL=en_US.UTF-8"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -467,6 +478,8 @@ Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=/opt/dispatcharr/.env
 Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="LANG=en_US.UTF-8"
+Environment="LC_ALL=en_US.UTF-8"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -486,6 +499,15 @@ EOF
 server {
     listen ${NGINX_HTTP_PORT};
     client_max_body_size 0;
+    # Redirect stream profiles return the provider URL in a Location header.
+    # The response headers must fit in uwsgi_buffer_size or nginx answers 502
+    # (upstream sent too big header). The default is one memory page (4k on
+    # most hosts), too small for URLs near Stream.url's 8192-character max.
+    # 16k fits that Location plus the other headers. uwsgi_busy_buffers_size is
+    # set explicitly because its derived default (2 x buffer_size) fails nginx -t
+    # against the default body buffers on 4k-page hosts.
+    uwsgi_buffer_size 16k;
+    uwsgi_busy_buffers_size 16k;
 
     location / {
         include uwsgi_params;

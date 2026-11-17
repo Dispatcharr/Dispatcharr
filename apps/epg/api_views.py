@@ -13,6 +13,7 @@ from core.image_proxy import RawImageContentNegotiationMixin
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
+from django.db import DataError, transaction
 from django.db.models import Q
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -210,14 +211,14 @@ class ProgramViewSet(
                 OpenApiTypes.STR,
                 description='Title search query. Supports AND/OR operators (case-insensitive), quoted phrases, and parentheses. Double-quote a phrase to match it literally: `"Law and Order"`. Unquoted space-separated terms are matched as a phrase; use AND/OR to combine separate terms.',
             ),
-            OpenApiParameter('title_regex', OpenApiTypes.BOOL, description='Enable regex matching for title (case-insensitive, default: false). e.g. `^The` matches titles starting with "The".'),
+            OpenApiParameter('title_regex', OpenApiTypes.BOOL, description='Enable regex matching for title (case-insensitive, default: false). Each AND/OR term is a regex. Regex parentheses stay inside the term: `(?...)` groups (lookahead, non-capturing, flags), a group followed by a quantifier such as `(The )?`, escaped `\\(` / `\\)`, and parentheses inside a bracket expression such as `[(]`. e.g. `^The` matches titles starting with "The".'),
             OpenApiParameter('title_whole_words', OpenApiTypes.BOOL, description='Match whole words only in title (default: false). e.g. `new` matches "Newcastle" normally but not with whole words enabled.'),
             OpenApiParameter(
                 'description',
                 OpenApiTypes.STR,
                 description='Description search query. Same syntax and features as title search.'
             ),
-            OpenApiParameter('description_regex', OpenApiTypes.BOOL, description='Enable regex matching for description (case-insensitive, default: false).'),
+            OpenApiParameter('description_regex', OpenApiTypes.BOOL, description='Enable regex matching for description (case-insensitive, default: false). Same term rules as title_regex, including regex parentheses.'),
             OpenApiParameter('description_whole_words', OpenApiTypes.BOOL, description='Match whole words only in description (default: false). Same behaviour as title_whole_words.'),
             OpenApiParameter('start_after', OpenApiTypes.DATETIME, description='Filter programs starting at or after this time. ISO 8601 format, e.g. `2026-02-14T18:00:00Z`.'),
             OpenApiParameter('start_before', OpenApiTypes.DATETIME, description='Filter programs starting at or before this time. ISO 8601 format.'),
@@ -388,7 +389,14 @@ class ProgramViewSet(
 
         # Paginate
         paginator = ProgramSearchPagination()
-        page = paginator.paginate_queryset(queryset, request)
+        try:
+            with transaction.atomic():
+                page = paginator.paginate_queryset(queryset, request)
+        except DataError as exc:
+            return Response(
+                {"error": f"Invalid search pattern: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Bulk-load effective channel mappings for the page (one query,
         # covers override-only links, avoids N+1 in the serializer).
