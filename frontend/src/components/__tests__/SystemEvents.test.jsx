@@ -235,6 +235,37 @@ describe('SystemEvents', () => {
     });
   });
 
+  it('formats channel_buffering context fields with labels and units', async () => {
+    API.getSystemEvents.mockResolvedValue({
+      events: [
+        {
+          id: 3,
+          event_type: 'channel_buffering',
+          event_type_display: 'Channel Buffering',
+          channel_name: 'News',
+          timestamp: '2024-01-15T10:30:45Z',
+          details: {
+            speed: 0.94,
+            empty_for: 1.18,
+            since_last_buffering: 45.5,
+          },
+        },
+      ],
+      total: 1,
+    });
+
+    render(<SystemEvents />);
+    fireEvent.click(screen.getByRole('button', { name: '' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'Speed: 0.940x, Empty for: 1.18 s, Since last buffering: 45.5 s'
+        )
+      ).toBeInTheDocument();
+    });
+  });
+
   it('should change page when pagination is clicked', async () => {
     API.getSystemEvents.mockResolvedValue({
       events: mockEventsResponse.events,

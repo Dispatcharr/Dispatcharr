@@ -131,6 +131,31 @@ const getSystemEvents = (eventsLimit, offset) => {
   return API.getSystemEvents(eventsLimit, offset);
 };
 
+const DETAIL_KEY_LABELS = {
+  speed: 'Speed',
+  empty_for: 'Empty for',
+  since_last_buffering: 'Since last buffering',
+};
+
+const formatDetailKey = (key) => DETAIL_KEY_LABELS[key] || key;
+
+const formatDetailValue = (key, value) => {
+  if (value === null || value === undefined) return '';
+  if (key === 'speed') {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toFixed(3)}x` : String(value);
+  }
+  if (key === 'empty_for') {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toFixed(2)} s` : String(value);
+  }
+  if (key === 'since_last_buffering') {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toFixed(1)} s` : String(value);
+  }
+  return String(value);
+};
+
 const Event = ({ event }) => {
   const { shortDateFormat } = useDateTimeFormat();
 
@@ -163,7 +188,10 @@ const Event = ({ event }) => {
               <Text size="xs" c="dimmed">
                 {Object.entries(event.details)
                   .filter(([key]) => !['stream_url', 'new_url'].includes(key))
-                  .map(([key, value]) => `${key}: ${value}`)
+                  .map(
+                    ([key, value]) =>
+                      `${formatDetailKey(key)}: ${formatDetailValue(key, value)}`
+                  )
                   .join(', ')}
               </Text>
             )}

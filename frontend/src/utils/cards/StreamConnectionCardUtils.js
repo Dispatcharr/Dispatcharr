@@ -5,16 +5,54 @@ import {
   toFriendlyDuration,
 } from '../dateTimeUtils.js';
 
-// Get buffering_speed from proxy settings
+// Speed at or above Buffering Speed is healthy. Below it the badge is red.
 export const getBufferingSpeedThreshold = (proxySetting) => {
   try {
     if (proxySetting?.value) {
-      return parseFloat(proxySetting.value.buffering_speed) || 1.0;
+      const value = parseFloat(proxySetting.value.buffering_speed);
+      if (Number.isFinite(value) && value > 0) {
+        return value;
+      }
     }
   } catch (error) {
     console.error('Error getting buffering speed:', error);
   }
-  return 1.0; // Default fallback
+  return 1.0;
+};
+
+export const isSpeedHealthy = (speed, proxySetting) => {
+  return speed >= getBufferingSpeedThreshold(proxySetting);
+};
+
+// New Client Buffer budget for the experimental cushion badge.
+export const getNewClientBehindSeconds = (proxySetting) => {
+  try {
+    if (proxySetting?.value) {
+      const value = parseFloat(proxySetting.value.new_client_behind_seconds);
+      if (Number.isFinite(value) && value >= 0) {
+        return value;
+      }
+    }
+  } catch (error) {
+    console.error('Error getting new client behind seconds:', error);
+  }
+  return 5.0;
+};
+
+// Green above half of New Client Buffer, orange from half down to empty,
+// red at 0. Hard buffering waits for empty held for the confirm window.
+export const getBufferBudgetColor = (remaining, budget) => {
+  if (!Number.isFinite(remaining) || !Number.isFinite(budget) || budget <= 0) {
+    return 'gray';
+  }
+  const half = budget * 0.5;
+  if (remaining > half) {
+    return 'green';
+  }
+  if (remaining > 0) {
+    return 'orange';
+  }
+  return 'red';
 };
 
 export const getStartDate = (startedAt) => {

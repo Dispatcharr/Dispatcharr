@@ -43,7 +43,9 @@ import { showNotification } from '../../utils/notificationUtils.js';
 import {
   connectedAccessor,
   durationAccessor,
-  getBufferingSpeedThreshold,
+  isSpeedHealthy,
+  getBufferBudgetColor,
+  getNewClientBehindSeconds,
   getChannelStreams,
   getM3uAccountsMap,
   getSelectedStream,
@@ -528,6 +530,15 @@ const StreamConnectionCard = ({
     return null;
   }
 
+  // parseFloat is NaN for null, '' and undefined, so a real 0 still shows.
+  const speedValue = parseFloat(channel.ffmpeg_speed);
+  const hasSpeed = Number.isFinite(speedValue);
+  const cushionBudget = getNewClientBehindSeconds(settings['proxy_settings']);
+  const cushionRemaining = parseFloat(channel.cushion_remaining);
+  const hasCushion =
+    Number.isFinite(cushionRemaining) &&
+    settings['proxy_settings']?.value?.experimental_ingest_buffer;
+
   return (
     <Card
       key={channel.channel_id}
@@ -689,21 +700,31 @@ const StreamConnectionCard = ({
               </Badge>
             </Tooltip>
           )}
-          {channel.ffmpeg_speed && (
-            <Tooltip
-              label={`Current Speed: ${parseFloat(channel.ffmpeg_speed).toFixed(2)}x`}
-            >
+          {hasSpeed && (
+            <Tooltip label={`Current Speed: ${speedValue.toFixed(2)}x`}>
               <Badge
                 size="sm"
                 variant="light"
                 color={
-                  parseFloat(channel.ffmpeg_speed) >=
-                  getBufferingSpeedThreshold(settings['proxy_settings'])
+                  isSpeedHealthy(speedValue, settings['proxy_settings'])
                     ? 'green'
                     : 'red'
                 }
               >
-                {parseFloat(channel.ffmpeg_speed).toFixed(2)}x
+                {speedValue.toFixed(2)}x
+              </Badge>
+            </Tooltip>
+          )}
+          {hasCushion && (
+            <Tooltip
+              label={`Buffer budget: ${cushionRemaining.toFixed(1)} s of ${cushionBudget.toFixed(1)} s`}
+            >
+              <Badge
+                size="sm"
+                variant="light"
+                color={getBufferBudgetColor(cushionRemaining, cushionBudget)}
+              >
+                {cushionRemaining.toFixed(1)} s
               </Badge>
             </Tooltip>
           )}

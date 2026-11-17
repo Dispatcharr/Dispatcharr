@@ -48,6 +48,7 @@ from apps.proxy.ts_psi import (
     parse_pmt_section,
     parse_pmt_streams,
 )
+from apps.proxy.live_proxy.ts_clock import PTS_WRAP_SECONDS, extract_pts
 
 TS_SYNC_BYTE = 0x47
 
@@ -56,10 +57,6 @@ _H264_PARAM_TYPES = (7, 8)       # SPS, PPS
 _HEVC_PARAM_TYPES = (32, 33, 34)  # VPS, SPS, PPS
 _MAX_PARAM_NAL_BYTES = 512
 
-PTS_CLOCK = 90000.0
-# 33-bit PTS wraps every ~26.5 hours.
-PTS_WRAP = 1 << 33
-PTS_WRAP_SECONDS = PTS_WRAP / PTS_CLOCK
 # Open-GOP leading pictures are typically tens of ms behind the CRA.
 # A multi-second backward jump that is not a 33-bit wrap is an encoder
 # timeline reset and must hard-cut, not be mistaken for B-frame reorder.
@@ -93,27 +90,6 @@ def packet_random_access(packet):
     if afc in (0x02, 0x03) and packet[4] > 0:
         return bool(packet[5] & 0x40)
     return False
-
-
-def extract_pts(packet):
-    """PTS in seconds from a PES header starting in this packet, or None."""
-    base = packet_payload_offset(packet)
-    if base is None or base + 13 >= TS_PACKET_SIZE:
-        return None
-    if packet[base] != 0x00 or packet[base + 1] != 0x00 or packet[base + 2] != 0x01:
-        return None
-    flags = packet[base + 7]
-    if not (flags & 0x80):
-        return None
-    b = packet
-    pts = (
-        ((b[base + 9] >> 1) & 0x07) << 30
-        | b[base + 10] << 22
-        | ((b[base + 11] >> 1) & 0x7F) << 15
-        | b[base + 12] << 7
-        | (b[base + 13] >> 1)
-    )
-    return pts / PTS_CLOCK
 
 
 def _iter_start_code_offsets(packet):

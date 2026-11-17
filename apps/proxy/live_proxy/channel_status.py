@@ -23,6 +23,17 @@ class ChannelStatus:
         # Then divide by 1000 to get Kbps
         return (total_bytes * 8) / duration / 1000
 
+    @staticmethod
+    def _parse_cushion_remaining(metadata):
+        """Seconds of New Client Buffer runway left (experimental ingest), or None."""
+        raw = metadata.get(ChannelMetadataField.CUSHION_REMAINING)
+        if raw is None or raw == '':
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     def get_detailed_channel_info(channel_id):
         proxy_server = ProxyServer.get_instance()
 
@@ -360,6 +371,10 @@ class ChannelStatus:
         if ffmpeg_speed:
             info['ffmpeg_speed'] = ffmpeg_speed
 
+        cushion_remaining = ChannelStatus._parse_cushion_remaining(metadata)
+        if cushion_remaining is not None:
+            info['cushion_remaining'] = cushion_remaining
+
         ffmpeg_fps = metadata.get(ChannelMetadataField.FFMPEG_FPS)
         if ffmpeg_fps:
             info['ffmpeg_fps'] = ffmpeg_fps
@@ -567,6 +582,10 @@ class ChannelStatus:
             ffmpeg_speed = metadata.get(ChannelMetadataField.FFMPEG_SPEED)
             if ffmpeg_speed:
                 info['ffmpeg_speed'] = float(ffmpeg_speed)
+
+            cushion_remaining = ChannelStatus._parse_cushion_remaining(metadata)
+            if cushion_remaining is not None:
+                info['cushion_remaining'] = cushion_remaining
 
             audio_codec = metadata.get(ChannelMetadataField.AUDIO_CODEC)
             if audio_codec:

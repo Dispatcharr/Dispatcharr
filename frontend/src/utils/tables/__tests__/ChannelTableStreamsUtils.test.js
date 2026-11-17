@@ -124,6 +124,12 @@ describe('ChannelTableStreamsUtils', () => {
       expect(result.technical).toEqual(stats);
     });
 
+    it('categorizes join prebuffer under technical', () => {
+      const stats = { join_prebuffer_seconds: 12.5 };
+      const result = ChannelTableStreamsUtils.categorizeStreamStats(stats);
+      expect(result.technical.join_prebuffer_seconds).toBe(12.5);
+    });
+
     it('places unknown fields in other', () => {
       const stats = { custom_field: 'value', another_field: 42 };
       const result = ChannelTableStreamsUtils.categorizeStreamStats(stats);
@@ -249,6 +255,12 @@ describe('ChannelTableStreamsUtils', () => {
         '1920'
       );
     });
+
+    it('formats join_prebuffer_seconds with seconds suffix', () => {
+      expect(
+        ChannelTableStreamsUtils.formatStatValue('join_prebuffer_seconds', 8.2)
+      ).toBe('8.2 s');
+    });
   });
 
   // ── formatStatKey ───────────────────────────────────────────────────────────
@@ -280,6 +292,13 @@ describe('ChannelTableStreamsUtils', () => {
         ChannelTableStreamsUtils.formatStatKey('ffmpeg_output_bitrate')
       ).toBe('Output Bitrate');
     });
+
+    it('labels join prebuffer stat', () => {
+      expect(
+        ChannelTableStreamsUtils.formatStatKey('join_prebuffer_seconds')
+      ).toBe('Join prebuffer');
+    });
+
   });
 
   // ── API wrappers ────────────────────────────────────────────────────────────

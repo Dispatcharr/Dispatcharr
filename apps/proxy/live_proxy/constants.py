@@ -91,6 +91,8 @@ class ChannelMetadataField:
     FFMPEG_OUTPUT_BITRATE = "ffmpeg_output_bitrate"
     FFMPEG_BITRATE = "ffmpeg_bitrate"
     FFMPEG_STATS_UPDATED = "ffmpeg_stats_updated"
+    # Experimental ingest: seconds of New Client Buffer runway still left.
+    CUSHION_REMAINING = "cushion_remaining"
 
     # Video stream info
     VIDEO_CODEC = "video_codec"

@@ -33,6 +33,7 @@ const categoryMapping = {
     'file_size',
     'ffmpeg_output_bitrate',
     'input_bitrate',
+    'join_prebuffer_seconds',
   ],
   other: [],
 };
@@ -92,6 +93,8 @@ export const formatStatValue = (key, value) => {
       return typeof value === 'number'
         ? formatDuration(value, { alwaysShowHours: true })
         : value;
+    case 'join_prebuffer_seconds':
+      return typeof value === 'number' ? `${value} s` : value;
     default:
       return value.toString();
   }
@@ -100,6 +103,7 @@ export const formatStatValue = (key, value) => {
 export const formatStatKey = (key) => {
   // Keep the stored field name, but the UI label matches the summary badge.
   if (key === 'ffmpeg_output_bitrate') return 'Output Bitrate';
+  if (key === 'join_prebuffer_seconds') return 'Join prebuffer';
   return key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
 };
 
