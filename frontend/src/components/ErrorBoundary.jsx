@@ -125,6 +125,9 @@ class ErrorBoundary extends React.Component {
       if (this.state.dismissed) return null;
 
       const { inline } = this.props;
+      const isImportError = /failed to fetch dynamically imported module|error loading dynamically imported module|importing a module script failed/i.test(
+        this.state.error?.message || ''
+      );
       const Heading = inline ? 'h2' : 'h1';
       const panel = (
         <section
@@ -158,12 +161,24 @@ class ErrorBoundary extends React.Component {
           </button>
           <Heading style={{ marginTop: 0 }}>Something went wrong</Heading>
           <p>{this.state.error?.message || 'An unexpected error occurred.'}</p>
+          {isImportError && (
+            <p>
+              This page couldn't load a required file. Dispatcharr may have been
+              updated, or your connection may have been interrupted. Reload the
+              page to try again. Unsaved changes will be lost.
+            </p>
+          )}
           <p style={{ color: '#a1a1aa', fontSize: 14 }}>
             Copy the diagnostic report when asking for support. It contains
             the error and React component stacks, route, build mode, and
             browser.
           </p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {isImportError && (
+              <button type="button" onClick={() => window.location.reload()}>
+                Reload page
+              </button>
+            )}
             <button
               type="button"
               onClick={this.copyDiagnosticReport}

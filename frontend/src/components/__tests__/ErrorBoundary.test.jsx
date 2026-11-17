@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import ErrorBoundary from '../ErrorBoundary';
 
 // Component that throws an error for testing
-const ThrowError = ({ shouldThrow }) => {
+const ThrowError = ({ shouldThrow, message = 'Test error' }) => {
   if (shouldThrow) {
-    throw new Error('Test error');
+    throw new Error(message);
   }
   return <div>Child component</div>;
 };
@@ -40,6 +40,22 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByText(/Something went wrong/)).toBeInTheDocument();
     expect(screen.queryByText('Child component')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reload page' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    'Failed to fetch dynamically imported module: /assets/PluginCard.js',
+    'error loading dynamically imported module: /assets/PluginCard.js',
+    'Importing a module script failed.',
+  ])('offers a manual reload for an import error: %s', (message) => {
+    render(
+      <ErrorBoundary>
+        <ThrowError shouldThrow message={message} />
+      </ErrorBoundary>
+    );
+
+    expect(screen.getByRole('button', { name: 'Reload page' })).toBeInTheDocument();
+    expect(screen.getByText(/unsaved changes will be lost/i)).toBeInTheDocument();
   });
 
   it('should not render error message when child component does not throw', () => {
