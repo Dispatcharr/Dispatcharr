@@ -56,40 +56,67 @@ describe('StreamConnectionCardUtils', () => {
     });
   });
 
-  describe('isSpeedHealthy', () => {
+  describe('getSpeedBadgeColor', () => {
     const defaultMode = { value: { buffering_speed: 1.0 } };
     const ingestMode = {
       value: { buffering_speed: 1.0, experimental_ingest_buffer: true },
     };
 
-    it('uses Buffering Speed as the healthy line in both modes', () => {
-      expect(StreamConnectionCardUtils.isSpeedHealthy(1.0, defaultMode)).toBe(
-        true
-      );
-      expect(StreamConnectionCardUtils.isSpeedHealthy(0.99, defaultMode)).toBe(
-        false
-      );
-      expect(StreamConnectionCardUtils.isSpeedHealthy(0.99, ingestMode)).toBe(
-        false
-      );
-      expect(StreamConnectionCardUtils.isSpeedHealthy(0.9, ingestMode)).toBe(
-        false
-      );
+    it('is hard green/red at the threshold in classic mode', () => {
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(1.0, defaultMode)
+      ).toBe('green');
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(0.99, defaultMode)
+      ).toBe('red');
     });
 
-    it('scales with a custom buffering speed', () => {
+    it('uses 2% green and 5% orange bands in experimental mode', () => {
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(1.0, ingestMode)
+      ).toBe('green');
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(0.98, ingestMode)
+      ).toBe('green');
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(0.979, ingestMode)
+      ).toBe('orange');
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(0.95, ingestMode)
+      ).toBe('orange');
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(0.949, ingestMode)
+      ).toBe('red');
+    });
+
+    it('scales the bands with a custom buffering speed', () => {
       const setting = {
         value: { buffering_speed: 2.0, experimental_ingest_buffer: true },
       };
-      expect(StreamConnectionCardUtils.isSpeedHealthy(2.0, setting)).toBe(true);
-      expect(StreamConnectionCardUtils.isSpeedHealthy(1.9, setting)).toBe(
-        false
+      expect(StreamConnectionCardUtils.getSpeedBadgeColor(1.96, setting)).toBe(
+        'green'
+      );
+      expect(StreamConnectionCardUtils.getSpeedBadgeColor(1.9, setting)).toBe(
+        'orange'
+      );
+      expect(StreamConnectionCardUtils.getSpeedBadgeColor(1.89, setting)).toBe(
+        'red'
       );
     });
 
-    it('falls back to 1.0 when settings are missing', () => {
-      expect(StreamConnectionCardUtils.isSpeedHealthy(1.0, null)).toBe(true);
-      expect(StreamConnectionCardUtils.isSpeedHealthy(0.5, null)).toBe(false);
+    it('falls back to a 1.0 classic threshold when settings are missing', () => {
+      expect(StreamConnectionCardUtils.getSpeedBadgeColor(1.0, null)).toBe(
+        'green'
+      );
+      expect(StreamConnectionCardUtils.getSpeedBadgeColor(0.5, null)).toBe(
+        'red'
+      );
+    });
+
+    it('stays green above the threshold in experimental mode', () => {
+      expect(
+        StreamConnectionCardUtils.getSpeedBadgeColor(1.2, ingestMode)
+      ).toBe('green');
     });
   });
 

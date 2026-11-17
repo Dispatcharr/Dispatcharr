@@ -43,7 +43,7 @@ import { showNotification } from '../../utils/notificationUtils.js';
 import {
   connectedAccessor,
   durationAccessor,
-  isSpeedHealthy,
+  getSpeedBadgeColor,
   getBufferBudgetColor,
   getNewClientBehindSeconds,
   getChannelStreams,
@@ -705,11 +705,10 @@ const StreamConnectionCard = ({
               <Badge
                 size="sm"
                 variant="light"
-                color={
-                  isSpeedHealthy(speedValue, settings['proxy_settings'])
-                    ? 'green'
-                    : 'red'
-                }
+                color={getSpeedBadgeColor(
+                  speedValue,
+                  settings['proxy_settings']
+                )}
               >
                 {speedValue.toFixed(2)}x
               </Badge>

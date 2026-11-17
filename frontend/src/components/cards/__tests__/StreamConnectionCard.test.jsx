@@ -46,7 +46,7 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 vi.mock('../../../utils/cards/StreamConnectionCardUtils.js', () => ({
   connectedAccessor: vi.fn(() => () => '01/01/2024 10:00 AM'),
   durationAccessor: vi.fn(() => () => '5m 30s'),
-  isSpeedHealthy: vi.fn((speed) => speed >= 1),
+  getSpeedBadgeColor: vi.fn((speed) => (speed >= 1 ? 'green' : 'red')),
   getBufferBudgetColor: vi.fn(() => 'green'),
   getNewClientBehindSeconds: vi.fn(() => 5),
   getChannelStreams: vi.fn(() => Promise.resolve([])),

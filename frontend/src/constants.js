@@ -41,12 +41,12 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Experimental ingest buffer detection',
     type: 'boolean',
     description:
-      'Off by default. When on, hard buffering uses MPEG-TS cushion debt (empty New Client Buffer held for 1s) from socket-arrival PTS/PCR, not FFmpeg lifetime speed. Buffering Speed still colors the Current Speed badge. Applies the next time a channel starts.',
+      'Off by default. When on, hard buffering uses MPEG-TS cushion debt (empty New Client Buffer held for 1s) from socket-arrival PTS/PCR, not FFmpeg lifetime speed. Buffering Speed still colors the Current Speed badge, with a small tolerance (see Buffering Speed). Applies the next time a channel starts.',
   },
   buffering_speed: {
     label: 'Buffering Speed',
     description:
-      'Speed threshold for the Current Speed badge and for FFmpeg-based buffering when experimental ingest detection is off (1.0 = normal speed). Not the experimental debt trip line.',
+      'Speed threshold for the Current Speed badge and for FFmpeg-based buffering when experimental ingest detection is off (1.0 = normal speed). With experimental on, badge color is relative to this value: green within 2%, orange from 5% to 2% below, red farther below. Not the experimental debt trip line.',
   },
   stream_startup_timeout: {
     label: 'Stream Startup Timeout',

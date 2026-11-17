@@ -5,23 +5,25 @@ import {
   toFriendlyDuration,
 } from '../dateTimeUtils.js';
 
-// Speed at or above Buffering Speed is healthy. Below it the badge is red.
 export const getBufferingSpeedThreshold = (proxySetting) => {
-  try {
-    if (proxySetting?.value) {
-      const value = parseFloat(proxySetting.value.buffering_speed);
-      if (Number.isFinite(value) && value > 0) {
-        return value;
-      }
-    }
-  } catch (error) {
-    console.error('Error getting buffering speed:', error);
-  }
-  return 1.0;
+  const value = parseFloat(proxySetting?.value?.buffering_speed);
+  return Number.isFinite(value) && value > 0 ? value : 1.0;
 };
 
-export const isSpeedHealthy = (speed, proxySetting) => {
-  return speed >= getBufferingSpeedThreshold(proxySetting);
+// Classic: hard green/red at Buffering Speed. Experimental: green within 2%
+// of that threshold, orange from 5% to 2% below, red farther below.
+export const getSpeedBadgeColor = (speed, proxySetting) => {
+  if (!Number.isFinite(speed)) {
+    return 'gray';
+  }
+  const threshold = getBufferingSpeedThreshold(proxySetting);
+  if (!proxySetting?.value?.experimental_ingest_buffer) {
+    return speed >= threshold ? 'green' : 'red';
+  }
+  const ratio = speed / threshold;
+  if (ratio >= 0.98) return 'green';
+  if (ratio >= 0.95) return 'orange';
+  return 'red';
 };
 
 // New Client Buffer budget for the experimental cushion badge.
