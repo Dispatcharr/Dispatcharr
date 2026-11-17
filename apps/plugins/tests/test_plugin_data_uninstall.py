@@ -16,13 +16,15 @@ class PluginDataUninstallTests(TestCase):
         client.force_authenticate(user=user)
         for choice in ("keep", "delete", "empty"):
             with self.subTest(choice=choice), tempfile.TemporaryDirectory() as root:
-                config = PluginConfig.objects.create(key="example", name="Example")
+                config = PluginConfig.objects.create(key="example", name="Example", slug="canonical")
                 code = Path(root, "example")
                 code.mkdir()
-                data = Path(root, "_data", "example")
+                data = Path(root, "_data", "canonical")
                 data.mkdir(parents=True)
                 if choice != "empty":
-                    (data / "saved.txt").write_text("saved")
+                    uploads = data / "_uploads" / "image"
+                    uploads.mkdir(parents=True)
+                    (uploads / "saved.txt").write_text("saved")
                 manager = Mock(plugins_dir=root)
                 manager.get_plugin.return_value = None
                 manager.get_plugin_path.return_value = str(code)
