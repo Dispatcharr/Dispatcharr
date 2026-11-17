@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-11-17
+
 ### Added
 
 - **Proxy connection attempts and the slot-wait timeout are configurable.** Settings → Proxy → Advanced adds **Max Connection Attempts** (`max_retries`, default 3, allowed 1 through 10) and **Stream Retry Timeout** (`stream_retry_timeout`, default 3 seconds, allowed 0 through 30). Max Connection Attempts is how many times the live proxy tries to open a stream URL before failing over to the next one. Stream Retry Timeout is how long channel startup waits for a free provider connection when every active M3U profile is already at its connection limit, which is what happens when a player opens the next channel before the previous connection has finished closing. 0 tries once and does not wait. (Closes #1600) - Thanks [@matthewkdies](https://github.com/matthewkdies)
