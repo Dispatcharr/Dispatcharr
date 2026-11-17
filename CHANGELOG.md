@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Plugin sockets support context managers again.** Using `with socket.socket()` closes the socket on exit while retaining plugin network capability checks. (Fixes #1990)
 - **Plugin file uploads survive updates.** New uploads are stored in the plugin's persistent data directory instead of its replaceable code directory. Existing uploads are not moved and may need to be uploaded again after an update. (Fixes #1988)
 - **Plugin data directories remain stable when managed plugins become unmanaged.** Dispatcharr retains the plugin's existing data directory when a repository removes it or a ZIP import replaces it.
 
