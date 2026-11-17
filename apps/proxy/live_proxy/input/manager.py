@@ -1828,38 +1828,45 @@ class StreamManager:
                         buffering_duration > self.buffering_timeout
                         and now >= getattr(self, "_buffering_failover_retry_at", 0)
                     ):
-                        logger.error(
-                            f"Buffering timeout reached for channel {self.channel_id} "
-                            f"after {buffering_duration:.1f} seconds"
-                        )
-                        failed_stream_id = self.current_stream_id
-                        previous_stream = {}
-                        self._note_stable_before_buffering()
-                        if failover_async:
-                            # Ingest detection evaluates several times a second.
-                            # One in-flight spawn is enough; failed attempts are
-                            # spaced by Buffering Timeout below.
-                            if not self._buffering_failover_running:
+                        if failover_async and self._buffering_failover_running:
+                            # An attempt is already in flight. Do not log or
+                            # spawn again until it finishes and sets the retry.
+                            switched_after_buffering_timeout = True
+                        else:
+                            logger.error(
+                                f"Buffering timeout reached for channel {self.channel_id} "
+                                f"after {buffering_duration:.1f} seconds"
+                            )
+                            failed_stream_id = self.current_stream_id
+                            previous_stream = {}
+                            self._note_stable_before_buffering()
+                            if failover_async:
+                                # Ingest detection evaluates several times a second.
+                                # Hold the retry gate for this attempt so later
+                                # evaluations do not log or spawn until it ends.
                                 self._buffering_failover_running = True
+                                self._buffering_failover_retry_at = (
+                                    now + self.buffering_timeout
+                                )
                                 gevent.spawn(
                                     self._buffering_timeout_failover,
                                     buffering_duration,
                                     failed_stream_id,
                                     previous_stream,
                                 )
-                            switched_after_buffering_timeout = True
-                        elif self._try_next_stream(
-                            reason="buffering_timeout",
-                            previous_stream_info=previous_stream,
-                        ):
-                            self._after_buffering_failover(
-                                buffering_duration,
-                                failed_stream_id,
-                                previous_stream,
-                            )
-                            switched_after_buffering_timeout = True
-                        else:
-                            self._buffering_timeout_no_stream(failed_stream_id)
+                                switched_after_buffering_timeout = True
+                            elif self._try_next_stream(
+                                reason="buffering_timeout",
+                                previous_stream_info=previous_stream,
+                            ):
+                                self._after_buffering_failover(
+                                    buffering_duration,
+                                    failed_stream_id,
+                                    previous_stream,
+                                )
+                                switched_after_buffering_timeout = True
+                            else:
+                                self._buffering_timeout_no_stream(failed_stream_id)
             else:
                 self.buffering = True
                 now = time.time()
