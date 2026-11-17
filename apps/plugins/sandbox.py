@@ -37,6 +37,12 @@ class _SocketProxy:
     def __init__(self, socket):
         self._socket = socket
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._socket.close()
+
     def bind(self, *args, **kwargs):
         require_plugin_capability("network_listener")
         return self._socket.bind(*args, **kwargs)
