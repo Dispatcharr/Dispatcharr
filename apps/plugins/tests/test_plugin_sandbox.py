@@ -123,6 +123,46 @@ class PluginSandboxTests(SimpleTestCase):
         self.assertEqual(require.call_count, 2)
         require.assert_called_with("outbound_network")
 
+    def test_socket_context_manager_closes_and_keeps_capability_checks(self):
+        values = plugin_builtins("example", "/data/plugins/example")
+        with patch("apps.plugins.sandbox.require_plugin_capability") as require, patch(
+            "socket.socket"
+        ) as socket_factory:
+            with running_as_plugin("example"):
+                proxy = values["__import__"]("socket").socket()
+                with proxy as sock:
+                    self.assertIs(sock, proxy)
+                    sock.bind(("127.0.0.1", 0))
+                    sock.listen()
+                    sock.connect(("127.0.0.1", 1234))
+                socket_factory.return_value.close.assert_called_once_with()
+
+        self.assertEqual(
+            [call.args[0] for call in require.call_args_list],
+            ["network_listener", "network_listener", "outbound_network"],
+        )
+
+    def test_socket_context_manager_closes_on_exception(self):
+        values = plugin_builtins("example", "/data/plugins/example")
+        with running_as_plugin("example"):
+            proxy = values["__import__"]("socket").socket()
+            with self.assertRaisesRegex(ValueError, "failure"):
+                with proxy as sock:
+                    self.assertGreaterEqual(sock.fileno(), 0)
+                    raise ValueError("failure")
+            self.assertEqual(proxy.fileno(), -1)
+
+    def test_socket_context_manager_does_not_bypass_denied_capability(self):
+        values = plugin_builtins("example", "/data/plugins/example")
+        with patch("apps.plugins.sandbox.require_plugin_capability", side_effect=PermissionError), patch(
+            "socket.socket"
+        ) as socket_factory:
+            with running_as_plugin("example"), self.assertRaises(PermissionError):
+                with values["__import__"]("socket").socket() as sock:
+                    sock.connect(("127.0.0.1", 1234))
+            socket_factory.return_value.connect.assert_not_called()
+            socket_factory.return_value.close.assert_called_once_with()
+
     def test_thread_inherits_plugin_context(self):
         values = plugin_builtins("example", "/data/plugins/example")
         plugin = LoadedPlugin(key="example", name="Example", manifest_schema_version=2)
