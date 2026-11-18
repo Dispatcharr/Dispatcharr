@@ -21,6 +21,7 @@ import {
 import { FileImage, Upload, X } from 'lucide-react';
 import { showNotification } from '../../utils/notificationUtils.js';
 import ConfirmationDialog from '../ConfirmationDialog.jsx';
+import { withBasePath } from '../../utils/basePath.js';
 import {
   createLogo,
   getFilenameWithoutExtension,
@@ -251,7 +252,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
                     width={100}
                     height={75}
                     fit="contain"
-                    fallbackSrc="/logo.png"
+                    fallbackSrc={withBasePath('/logo.png')}
                     style={{
                       transition: 'transform 0.3s ease',
                       cursor: 'pointer',

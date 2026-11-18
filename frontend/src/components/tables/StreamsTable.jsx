@@ -69,6 +69,7 @@ import useStreamsTableStore from '../../store/streamsTable';
 import { showNotification } from '../../utils/notificationUtils.js';
 import { requeryChannels } from '../../utils/forms/ChannelUtils.js';
 import API from '../../api.js';
+import { withBasePath } from '../../utils/basePath.js';
 import {
   addStreamsToChannel,
   appendFetchPageParams,
@@ -1082,7 +1083,9 @@ const StreamsTable = ({ onReady }) => {
   };
 
   function handleWatchStream(streamHash, streamName) {
-    let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
+    let vidUrl = buildLiveStreamUrl(
+      withBasePath(`/proxy/ts/stream/${streamHash}`)
+    );
     if (env_mode == 'dev') {
       vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
     }

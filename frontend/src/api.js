@@ -16,11 +16,12 @@ import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 import useConnectStore from './store/connect';
 import Limiter, { formatApiError } from './utils';
+import { getBasePath, withBasePath } from './utils/basePath';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
   ? `http://${window.location.hostname}:5656`
-  : '';
+  : getBasePath();
 
 const errorNotification = (message, error) => {
   const errorMessage = formatApiError(error);
@@ -243,7 +244,7 @@ export default class API {
       if (error.status === 401 || error.message?.includes('does not exist')) {
         localStorage.removeItem('token');
         localStorage.removeItem('refreshToken');
-        window.location.href = '/login'; // Redirect to login
+        window.location.href = withBasePath('/login'); // Redirect to login
       }
       throw error;
     }

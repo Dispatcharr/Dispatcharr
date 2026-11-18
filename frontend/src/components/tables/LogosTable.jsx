@@ -32,6 +32,7 @@ import {
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import { showNotification } from '../../utils/notificationUtils.js';
+import { withBasePath } from '../../utils/basePath.js';
 import {
   cleanupUnusedLogos,
   deleteLogo,
@@ -372,7 +373,7 @@ const LogosTable = () => {
               width={40}
               height={30}
               fit="contain"
-              fallbackSrc="/logo.png"
+              fallbackSrc={withBasePath('/logo.png')}
               style={{
                 transition: 'transform 0.3s ease',
                 cursor: 'pointer',

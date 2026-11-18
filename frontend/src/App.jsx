@@ -40,6 +40,7 @@ import { Notifications } from '@mantine/notifications';
 import M3URefreshNotification from './components/M3URefreshNotification';
 import ErrorBoundary from './components/ErrorBoundary';
 import { defaultRoute, getSafeNextPath } from './utils/loginRedirect';
+import { getBasePath, withBasePath } from './utils/basePath';
 import 'allotment/dist/style.css';
 
 const drawerWidth = 240;
@@ -98,7 +99,7 @@ const App = () => {
           localStorage.removeItem('accessToken');
           localStorage.removeItem('refreshToken');
           localStorage.removeItem('tokenExpiration');
-          window.location.href = '/login';
+          window.location.href = withBasePath('/login');
         }
       }
     }
@@ -137,7 +138,7 @@ const App = () => {
     >
       <ErrorBoundary name="application">
         <WebsocketProvider>
-          <Router>
+          <Router basename={getBasePath()}>
             <AppShell
               header={{
                 height: 0,

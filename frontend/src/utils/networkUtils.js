@@ -1,3 +1,5 @@
+import { getBasePath } from './basePath.js';
+
 // IPv4 CIDR regex - validates IP address and prefix length (0-32)
 export const IPV4_CIDR_REGEX =
   /^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\/(3[0-2]|[12]?[0-9])$/;
@@ -12,7 +14,7 @@ export const getPublicBaseUrl = (envMode) => {
   if (envMode == 'dev') {
     return `${window.location.protocol}//${window.location.hostname}:5656`;
   }
-  return `${window.location.protocol}//${window.location.host}`;
+  return `${window.location.protocol}//${window.location.host}${getBasePath()}`;
 };
 
 export function formatBytes(bytes) {

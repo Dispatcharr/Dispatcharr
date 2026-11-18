@@ -67,6 +67,7 @@ import {
   reorderChannelStreams,
 } from '../../utils/tables/ChannelTableStreamsUtils.js';
 import AudioStreamBadge from '../AudioStreamBadge.jsx';
+import { withBasePath } from '../../utils/basePath.js';
 import {
   getAudioTrackFields,
   groupAudioStreamsByLanguage,
@@ -467,7 +468,9 @@ const ChannelStreams = ({ channel }) => {
 
   const handleWatchStream = useCallback(
     (streamHash, streamName, streamId) => {
-      let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
+      let vidUrl = buildLiveStreamUrl(
+        withBasePath(`/proxy/ts/stream/${streamHash}`)
+      );
       if (env_mode === 'dev') {
         vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
       }

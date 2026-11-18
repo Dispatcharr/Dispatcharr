@@ -3,6 +3,7 @@ import useChannelsStore from '../../store/channels.jsx';
 import defaultLogo from '../../images/logo.png';
 import { formatSeasonEpisode } from '../guideUtils.js';
 import { buildLiveStreamUrl } from '../components/FloatingVideoUtils.js';
+import { withBasePath } from '../basePath.js';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -29,7 +30,7 @@ export const removeRecording = (id) => {
 export const getChannelLogoUrl = (channel) => {
   if (!channel) return null;
   let url = channel.logo_id
-    ? `/api/channels/logos/${channel.logo_id}/cache/`
+    ? withBasePath(`/api/channels/logos/${channel.logo_id}/cache/`)
     : channel.logo?.cache_url || null;
   if (
     url &&
@@ -45,7 +46,7 @@ export const getChannelLogoUrl = (channel) => {
 
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
   let purl = posterLogoId
-    ? `/api/channels/logos/${posterLogoId}/cache/`
+    ? withBasePath(`/api/channels/logos/${posterLogoId}/cache/`)
     : customProperties?.poster_url || posterUrl || null;
   if (
     purl &&
@@ -60,7 +61,7 @@ export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
 };
 
 export const getShowVideoUrl = (channel, env_mode) => {
-  let url = `/proxy/ts/stream/${channel.uuid}`;
+  let url = withBasePath(`/proxy/ts/stream/${channel.uuid}`);
   if (env_mode === 'dev') {
     url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
   }

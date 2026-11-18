@@ -56,6 +56,7 @@ import {
 } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useVideoStore from '../../store/useVideoStore';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
+import { withBasePath } from '../../utils/basePath.js';
 
 // Create a separate component for each channel card to properly handle the hook
 const StreamConnectionCard = ({
@@ -512,7 +513,9 @@ const StreamConnectionCard = ({
     const actualChannel = channels[channelDbId];
     if (!actualChannel?.uuid) return;
 
-    const uri = buildLiveStreamUrl(`/proxy/ts/stream/${actualChannel.uuid}`);
+    const uri = buildLiveStreamUrl(
+      withBasePath(`/proxy/ts/stream/${actualChannel.uuid}`)
+    );
     let url = `${window.location.protocol}//${window.location.host}${uri}`;
     if (env_mode === 'dev') {
       url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;

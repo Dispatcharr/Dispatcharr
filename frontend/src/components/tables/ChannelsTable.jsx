@@ -96,6 +96,7 @@ import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useAuthStore from '../../store/auth';
 import { OUTPUT_FORMAT_OPTIONS, USER_LEVELS } from '../../constants';
+import { withBasePath } from '../../utils/basePath.js';
 import {
   buildEPGUrl,
   buildFetchParams,
@@ -775,7 +776,7 @@ const ChannelsTable = ({ onReady }) => {
         return '';
       }
 
-      const path = `/proxy/ts/stream/${channel.uuid}`;
+      const path = withBasePath(`/proxy/ts/stream/${channel.uuid}`);
       if (env_mode == 'dev') {
         return `${window.location.protocol}//${window.location.hostname}:5656${path}`;
       }
@@ -787,7 +788,7 @@ const ChannelsTable = ({ onReady }) => {
   const handleWatchStream = useCallback(
     (channel) => {
       if (!channel || !channel.uuid) return;
-      const path = `/proxy/ts/stream/${channel.uuid}`;
+      const path = withBasePath(`/proxy/ts/stream/${channel.uuid}`);
       const uri = buildLiveStreamUrl(path);
       let url = `${window.location.protocol}//${window.location.host}${uri}`;
       if (env_mode == 'dev') {
