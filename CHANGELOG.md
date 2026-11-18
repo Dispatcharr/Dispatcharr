@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Plugin capability approval is required when changing repositories.** When an enabled plugin is adopted from another repository or an unmanaged installation, updates that request new capabilities now prompt for approval before the updated plugin runs.
 - **Plugin task triggers appear without refreshing the page.** Newly started actions show their recorded trigger immediately when available instead of temporarily showing `unknown`.
 - **The user modal no longer appears behind the TV Guide filter bar.** - Thanks [@subzero79](https://github.com/subzero79)
 - **Adding a user no longer regenerates the administrator's API key.** Generating a key for an unsaved user previously replaced the signed-in administrator's key. The form now hides key controls until the user is saved; reopen the user to generate a key. (Closes #1964) - Thanks [@crunchingcode](https://github.com/crunchingcode)

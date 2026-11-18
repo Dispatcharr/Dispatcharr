@@ -148,7 +148,7 @@ def _effective_capabilities_from_zip(zip_file):
                 basename = os.path.basename(normalized)
                 if basename in ("plugin.py", "__init__.py"):
                     directory = os.path.dirname(normalized)
-                    depth = len(directory.split(os.sep)) if directory else 0
+                    depth = max(1, len(directory.split(os.sep))) if directory else 1
                     candidates.append((0 if basename == "plugin.py" else 1, depth, directory))
             if not candidates:
                 return []
@@ -181,7 +181,7 @@ def _plugin_key_from_zip(zip_file, file_name):
                 basename = os.path.basename(normalized)
                 if basename in {"plugin.py", "__init__.py"}:
                     directory = os.path.dirname(normalized)
-                    depth = len(directory.split(os.sep)) if directory else 0
+                    depth = max(1, len(directory.split(os.sep))) if directory else 1
                     candidates.append((0 if basename == "plugin.py" else 1, depth, directory))
             if not candidates:
                 return None
@@ -416,8 +416,8 @@ def _install_plugin_from_zip(
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerelease):
-    """Apply a downloaded managed release while holding the mutation lock."""
+def _managed_install_target(tmp_file, repo, slug):
+    """Resolve both the overwrite permission and the config the archive will use."""
     managed_configs = list(
         PluginConfig.objects.filter(source_repo=repo, slug=slug).order_by("id")
     )
@@ -435,6 +435,15 @@ def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerele
         underscore_key = plugin_key.replace("-", "_")
         if underscore_key != plugin_key:
             existing_cfg = PluginConfig.objects.filter(key=underscore_key).first()
+
+    actual_key = existing_cfg.key if managed_configs else _plugin_key_from_zip(tmp_file, f"{slug}.zip")
+    target_cfg = PluginConfig.objects.filter(key=actual_key).first() if actual_key else None
+    return managed_configs, existing_cfg, target_cfg
+
+
+def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerelease,
+                                   managed_configs, existing_cfg, approved_capabilities):
+    """Apply a downloaded managed release while holding the mutation lock."""
 
     result = _install_plugin_from_zip(
         tmp_file,
@@ -516,6 +525,12 @@ def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerele
         cfg.installed_version_is_prerelease = is_prerelease
         cfg.deprecated = is_deprecated
         cfg.save(update_fields=["version", "slug", "source_repo", "installed_version_is_prerelease", "deprecated", "updated_at"])
+
+    if approved_capabilities:
+        cfg.acknowledged_capabilities = sorted(
+            set(cfg.acknowledged_capabilities or []) | set(approved_capabilities)
+        )
+        cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
 
     pm.discover_plugins(force_reload=True)
     try:
@@ -1930,6 +1945,8 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
+                    tmp_file.flush()
+                    managed_configs, overwrite_cfg, existing_cfg = _managed_install_target(tmp_file, repo, slug)
                     effective_capabilities = _effective_capabilities_from_zip(tmp_file)
                     unacknowledged_capabilities = (
                         sorted(set(effective_capabilities) - set(existing_cfg.acknowledged_capabilities or []))
@@ -1974,15 +1991,9 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                     tmp_file.flush()
                     tmp_file.seek(0)
                     response = _finish_managed_plugin_install(
-                        pm, tmp_file, repo, slug, version, bool(request.data.get("prerelease", False))
+                        pm, tmp_file, repo, slug, version, bool(request.data.get("prerelease", False)),
+                        managed_configs, overwrite_cfg, unacknowledged_capabilities,
                     )
-                    if response.status_code < 300 and unacknowledged_capabilities:
-                        cfg = PluginConfig.objects.filter(source_repo=repo, slug=slug).first()
-                        if cfg:
-                            cfg.acknowledged_capabilities = sorted(
-                                set(cfg.acknowledged_capabilities or []) | set(unacknowledged_capabilities)
-                            )
-                            cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
                     return response
             finally:
                 resp.close()
