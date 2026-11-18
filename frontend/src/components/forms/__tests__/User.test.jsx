@@ -662,6 +662,18 @@ describe('User', () => {
   // ── API key generation ────────────────────────────────────────────────────────
 
   describe('API key generation', () => {
+    it('does not offer API key generation for an unsaved new user', () => {
+      setupMocks({ authUser: makeAdminUser() });
+      render(<User isOpen={true} onClose={vi.fn()} />);
+
+      expect(screen.queryByText('Generate API Key')).not.toBeInTheDocument();
+      expect(screen.queryByText('Revoke API Key')).not.toBeInTheDocument();
+      expect(
+        screen.getByText('Save the user first to generate an API key.')
+      ).toBeInTheDocument();
+      expect(UserUtils.generateApiKey).not.toHaveBeenCalled();
+    });
+
     it('shows "Generate API Key" when no key exists', () => {
       setupMocks({ authUser: makeAdminUser() });
       render(

@@ -244,8 +244,11 @@ const User = ({ user = null, isOpen, onClose }) => {
     );
   };
 
+  // Key endpoints fall back to the signed-in user when no user_id is sent, so
+  // only allow generate/revoke once the target user has been saved.
   const canGenerateKey =
-    authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
+    !!user?.id &&
+    (authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user.id);
 
   const onGenerateKey = async () => {
     if (!canGenerateKey) {
@@ -552,6 +555,11 @@ const User = ({ user = null, isOpen, onClose }) => {
                   {...form.getInputProps('allowed_ips')}
                   key={form.key('allowed_ips')}
                 />
+              )}
+              {isAdmin && !user?.id && (
+                <Text size="sm" c="dimmed">
+                  Save the user first to generate an API key.
+                </Text>
               )}
               {canGenerateKey && (
                 <Stack gap="xs">
