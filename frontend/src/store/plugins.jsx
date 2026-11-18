@@ -41,12 +41,12 @@ export const usePluginStore = create((set, get) => ({
   // started in this session.
   pluginTasks: {},
 
-  startPluginTask: (taskId, { pluginKey, plugin, actionId, actionLabel }) => {
+  startPluginTask: (taskId, { pluginKey, plugin, actionId, actionLabel, trigger }) => {
     set((state) => ({
       pluginTasks: {
         ...state.pluginTasks,
         [taskId]: {
-          pluginKey, plugin, actionId, actionLabel,
+          pluginKey, plugin, actionId, actionLabel, trigger,
           status: 'running', percent: null, message: null,
           startedAt: null, updatedAt: null,
         },
@@ -98,7 +98,7 @@ export const usePluginStore = create((set, get) => ({
       for (const t of tasks) {
         if (!t || typeof t.task_id !== 'string' || !t.task_id.trim() || !(t.action_id || t.action_label)) continue;
         if (next[t.task_id]) {
-          if (!next[t.task_id].trigger && t.trigger) {
+          if ((!next[t.task_id].trigger || next[t.task_id].trigger === 'unknown') && t.trigger && t.trigger !== 'unknown') {
             next[t.task_id] = { ...next[t.task_id], trigger: t.trigger };
           }
           continue;

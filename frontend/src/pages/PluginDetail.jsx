@@ -379,6 +379,7 @@ function PluginDetailForKey({ routeKey: key }) {
           plugin: plugin.name,
           actionId: action.id,
           actionLabel: action.label,
+          trigger: resp.trigger,
         });
         showNotification({
           id: `plugin-task-${resp.task_id}`,

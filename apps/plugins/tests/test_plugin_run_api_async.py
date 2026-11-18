@@ -61,7 +61,7 @@ class PluginRunAPIViewAsyncTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            response.data, {"success": True, "status": "started", "task_id": "task-123"}
+            response.data, {"success": True, "status": "started", "task_id": "task-123", "trigger": "manual"}
         )
         mock_record.assert_called_once_with("my-plugin", ANY, "slow", "Slow", trigger="manual")
         mock_apply_async.assert_called_once_with(
@@ -118,7 +118,23 @@ class PluginRunAPIViewAsyncTests(TestCase):
         async_result.get.return_value = {"status": "started", "task_id": "self-1"}
         with patch(
             "apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result
-        ):
+        ), patch("apps.plugins.task_history.get_task_history", return_value=[]):
             response = self._post("quick")
 
         self.assertEqual(response.data, {"success": True, "status": "started", "task_id": "self-1"})
+
+    def test_started_result_includes_recorded_trigger(self):
+        async_result = MagicMock(id="task-999")
+        async_result.get.return_value = {"status": "started", "task_id": "self-1"}
+        with patch(
+            "apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result
+        ), patch("apps.plugins.task_history.get_task_history", return_value=[
+            {"task_id": "other", "trigger": "manual"},
+            {"task_id": "self-1", "trigger": "action"},
+        ]) as history:
+            response = self._post("quick")
+
+        history.assert_called_once_with("my-plugin")
+        self.assertEqual(response.data, {
+            "success": True, "status": "started", "task_id": "self-1", "trigger": "action",
+        })

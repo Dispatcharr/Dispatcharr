@@ -909,17 +909,22 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         logger.exception("Plugin action failed")
         return Response({"success": False, "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def _response_for_result(self, result):
+    def _response_for_result(self, key, result):
         # A plugin can self-dispatch via context['dispatch_task'] and return
         # this shape; normalize it to the same contract _dispatch_async uses.
         if isinstance(result, dict) and result.get("status") == "started" and result.get("task_id"):
-            return Response({"success": True, "status": "started", "task_id": result["task_id"]})
+            from .task_history import get_task_history
+            response = {"success": True, "status": "started", "task_id": result["task_id"]}
+            task = next((t for t in get_task_history(key) if t["task_id"] == result["task_id"]), None)
+            if task and task.get("trigger"):
+                response["trigger"] = task["trigger"]
+            return Response(response)
         return Response({"success": True, "result": result})
 
     def _dispatch_async(self, key, action, params, action_label):
         from .tasks import dispatch_plugin_action_task
         async_result = dispatch_plugin_action_task(key, action, params, action_label)
-        return Response({"success": True, "status": "started", "task_id": async_result.id})
+        return Response({"success": True, "status": "started", "task_id": async_result.id, "trigger": "manual"})
 
     def _run_via_worker(self, key, action, params):
         from celery.exceptions import TimeoutError as CeleryTimeoutError
@@ -942,7 +947,7 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
             )
         except Exception as e:
             return self._error_response(e)
-        return self._response_for_result(result)
+        return self._response_for_result(key, result)
 
 
 class PluginTaskHistoryAPIView(PluginAuthMixin, APIView):
