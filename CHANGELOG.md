@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The user modal no longer appears behind the TV Guide filter bar.** - Thanks [@subzero79](https://github.com/subzero79)
 - **Adding a user no longer regenerates the administrator's API key.** Generating a key for an unsaved user previously replaced the signed-in administrator's key. The form now hides key controls until the user is saved; reopen the user to generate a key. (Closes #1964) - Thanks [@crunchingcode](https://github.com/crunchingcode)
 
 ## [0.34.1] - 2026-11-17
