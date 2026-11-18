@@ -30,6 +30,8 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
             acknowledged_capabilities=["background_tasks"],
         )
         self.factory = APIRequestFactory()
+        self.plugins_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.plugins_dir.cleanup)
 
     def _archive(self, manifest):
         archive = BytesIO()
@@ -76,7 +78,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
 
     def test_denied_capability_update_disables_and_resets_acknowledgements(self):
         content = self._archive({"manifest_version": 2, "capabilities": ["persistent_service"]})
-        pm = MagicMock()
+        pm = MagicMock(plugins_dir=self.plugins_dir.name)
         pm.list_plugins.return_value = []
         with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)), patch(
             "apps.plugins.api_views.PluginManager.get", return_value=pm
@@ -94,7 +96,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
 
     def test_confirmed_update_installs_and_records_new_acknowledgement(self):
         content = self._archive({"manifest_version": 2, "capabilities": ["persistent_service"]})
-        pm = MagicMock()
+        pm = MagicMock(plugins_dir=self.plugins_dir.name)
         pm.list_plugins.return_value = [{"key": "my_plugin", "enabled": True}]
         with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)), patch(
             "apps.plugins.api_views.PluginManager.get", return_value=pm
@@ -127,7 +129,7 @@ class PluginUpdateCapabilityConfirmationTests(TestCase):
 
     def test_update_without_new_capabilities_installs_immediately(self):
         content = self._archive({"manifest_version": 2, "capabilities": ["background_tasks"]})
-        pm = MagicMock()
+        pm = MagicMock(plugins_dir=self.plugins_dir.name)
         pm.list_plugins.return_value = [{"key": "my_plugin", "enabled": True}]
         with patch("apps.plugins.api_views.get_with_validated_redirects", return_value=self._download(content)), patch(
             "apps.plugins.api_views.PluginManager.get", return_value=pm
