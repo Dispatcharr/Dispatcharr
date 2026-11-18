@@ -121,7 +121,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
     libpcre2-8-0 libopenblas0 procps pciutils jq \
-    nginx libargtable2-0 \
+    libargtable2-0 \
     libavformat62 libavcodec62 libavutil60 libswscale9 \
     vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
