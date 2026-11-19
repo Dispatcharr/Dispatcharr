@@ -204,14 +204,14 @@ class FMP4StreamGenerator:
             self.local_index = 0
             logger.info(f"[{self.client_id}] fMP4 channel initializer: starting at index 0")
         else:
-            # Same time-based join as a TS client.
+            # Same behind-head join as a TS client (PublishedClock scores).
             behind_seconds = ConfigHelper.new_client_behind_seconds()
             if behind_seconds > 0:
-                time_index = self.fmp4_buffer.find_chunk_index_by_time(behind_seconds)
+                time_index = self.fmp4_buffer.find_chunk_index_behind(behind_seconds)
                 if time_index is not None:
                     self.local_index = max(0, time_index)
                     logger.info(
-                        f"[{self.client_id}] fMP4 time-based start: "
+                        f"[{self.client_id}] fMP4 behind-head start: "
                         f"{behind_seconds}s behind -> index {self.local_index} "
                         f"(buffer head at {current})"
                     )

@@ -60,15 +60,123 @@ class _FakeRedis:
 
     def zrangebyscore(self, key, min_s, max_s):
         z = self.zsets.get(key, {})
-        lo = float(min_s)
-        hi = float(max_s)
+        lo = float("-inf") if min_s == "-inf" else float(min_s)
+        hi = float("inf") if max_s in ("+inf", "inf") else float(max_s)
         return [m for m, s in sorted(z.items(), key=lambda kv: kv[1]) if lo <= s <= hi]
+
+    def zrevrangebyscore(self, key, max_s, min_s, start=None, num=None, withscores=False):
+        members = list(reversed(self.zrangebyscore(key, min_s, max_s)))
+        if start is not None and num is not None:
+            members = members[int(start) : int(start) + int(num)]
+        if withscores:
+            z = self.zsets.get(key, {})
+            return [(m, z[m]) for m in members]
+        return members
+
+    def zrange(self, key, start, end, withscores=False):
+        z = self.zsets.get(key, {})
+        ordered = sorted(z.items(), key=lambda kv: kv[1])
+        end = None if end == -1 else end + 1
+        ordered = ordered[start:end]
+        if withscores:
+            return [(m, s) for m, s in ordered]
+        return [m for m, _s in ordered]
+
+    def zscore(self, key, member):
+        z = self.zsets.get(key, {})
+        score = z.get(str(member))
+        return None if score is None else float(score)
+
+    def zremrangebyrank(self, key, start, end):
+        z = self.zsets.get(key, {})
+        ordered = sorted(z.items(), key=lambda kv: kv[1])
+        end = None if end == -1 else end + 1
+        drop = [m for m, _s in ordered[start:end]]
+        for m in drop:
+            del z[m]
+        return len(drop)
+
+    def zrem(self, key, *members):
+        z = self.zsets.get(key, {})
+        dropped = 0
+        for member in members:
+            if z.pop(str(member), None) is not None:
+                dropped += 1
+        return dropped
+
+    def delete(self, *keys):
+        n = 0
+        for key in keys:
+            if key in self.kv:
+                del self.kv[key]
+                n += 1
+            if key in self.zsets:
+                del self.zsets[key]
+                n += 1
+        return n
 
     def pipeline(self, transaction=False):
         return _FakePipeline(self)
 
-    def register_script(self, *_a, **_k):
-        return None
+    def register_script(self, script):
+        redis = self
+        if "head_raw" in script:
+            def _behind_head(keys=None, args=None, client=None):
+                scores_key = keys[0]
+                index_key = keys[1]
+                disc_key = keys[2]
+                behind = float(args[0])
+                lookback = int(float(args[1])) if len(args) > 1 else 0
+                use_disc = int(float(args[2])) if len(args) > 2 else 0
+
+                head_raw = redis.kv.get(index_key)
+                if head_raw is None:
+                    return [-2]
+                head = int(head_raw)
+                if head <= 0:
+                    return [-2]
+
+                era_floor = 0
+                if use_disc == 1 and disc_key in redis.zsets:
+                    discs = redis.zrevrangebyscore(disc_key, head, "-inf", start=0, num=1)
+                    if discs:
+                        era_floor = int(discs[0])
+
+                head_score = redis.zscore(scores_key, str(head))
+                if head_score is None:
+                    low = max(era_floor, head - lookback) if lookback else era_floor
+                    for i in range(head - 1, low - 1, -1):
+                        head_score = redis.zscore(scores_key, str(i))
+                        if head_score is not None:
+                            break
+                if head_score is None:
+                    return [-1]
+
+                target = float(head_score) - behind
+                for member in redis.zrevrangebyscore(scores_key, target, "-inf"):
+                    if int(member) >= era_floor:
+                        return [int(member), target]
+
+                members = redis.zrange(scores_key, 0, -1)
+                min_idx = None
+                for member in members:
+                    idx = int(member)
+                    if idx >= era_floor and (min_idx is None or idx < min_idx):
+                        min_idx = idx
+                return [min_idx, target] if min_idx is not None else [-1]
+
+            return _behind_head
+
+        def _find(keys=None, args=None, client=None):
+            ts_key = keys[0]
+            target = float(args[0])
+            min_index = int(float(args[1])) if len(args) > 1 else 0
+            for member in redis.zrevrangebyscore(ts_key, target, "-inf"):
+                if int(member) >= min_index:
+                    return int(member)
+            return -1
+
+        return _find
 
 
 class _FakePipeline:
@@ -92,12 +200,28 @@ class _FakePipeline:
         self.ops.append(("zadd", a))
         return self
 
+    def zscore(self, *a):
+        self.ops.append(("zscore", a))
+        return self
+
     def zremrangebyscore(self, *a):
         self.ops.append(("zremrangebyscore", a))
         return self
 
     def expire(self, *a):
         self.ops.append(("expire", a))
+        return self
+
+    def zremrangebyrank(self, *a):
+        self.ops.append(("zremrangebyrank", a))
+        return self
+
+    def zrem(self, *a):
+        self.ops.append(("zrem", a))
+        return self
+
+    def delete(self, *a):
+        self.ops.append(("delete", a))
         return self
 
     def execute(self):

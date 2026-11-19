@@ -19,7 +19,7 @@ from .ingest_lag import (
     IngestLagTracker,
 )
 from ..ts_clock import (
-    last_clock_on_pid,
+    last_clock_on_pid_with_offset,
     sample_media_clock,
     sample_media_clock_for_relock,
 )
@@ -109,6 +109,7 @@ class StreamManager:
             )
             self._init_ingest_lag_state()
             if buffer is not None:
+                buffer.enable_media_index(True)
                 buffer.on_packets_received = self._on_packets_received
 
         # Sockets used for transcode jobs
@@ -1527,11 +1528,14 @@ class StreamManager:
         armed_before = tracker.is_armed
         released_clock = False
         pid = tracker.locked_pid
+        media_offset = None
         if pid is None:
             media, kind, pid = sample_media_clock(packet_data)
         else:
             kind = tracker.locked_kind
-            media = last_clock_on_pid(packet_data, pid, kind)
+            media, media_offset = last_clock_on_pid_with_offset(
+                packet_data, pid, kind
+            )
             # After a PTS jump the old PID may be gone. Relock onto whatever
             # clock this batch actually carries instead of sampling nothing
             # until reconnect.
@@ -1546,6 +1550,7 @@ class StreamManager:
                         tracker.reset()
                         released_clock = True
                     media, kind, pid = alt_media, alt_kind, alt_pid
+                    media_offset = None
         if media is None:
             # A clockless read must not consume the sample slot, or the next
             # packet (the one that has the PTS) would be skipped.
@@ -1554,7 +1559,8 @@ class StreamManager:
         finished_cluster = tracker.observe(wall, media, kind, pid)
         # Hard PTS discontinuity or PID relock after a jump disarms without
         # _reset_ingest_lag. Clear the latch and stale cushion so a healthy new
-        # timeline is not stuck until buffering timeout.
+        # timeline is not stuck until buffering timeout. Clear media scores
+        # before noting this sample so the new clock is not wiped with the old.
         timeline_break = released_clock or (
             armed_before and not tracker.is_armed
         )
@@ -1562,6 +1568,16 @@ class StreamManager:
             if self.buffering:
                 self._update_buffering_state(False)
             self._clear_published_ingest_stats()
+            if self.buffer is not None:
+                self.buffer.clear_media_scores()
+        # Hand this sample to the chunk buffer as the clock for the chunk it
+        # lands in. It is already the locked clock, and already parsed.
+        if self.buffer is not None:
+            self.buffer.note_media_clock(
+                media,
+                append_len=len(packet_data),
+                offset_in_append=media_offset,
+            )
         self._adapt_ingest_sample_interval(tracker, after_gap=after_gap)
         self._arm_ingest_quiet_timer()
         # Publish speed as soon as we have intervals (including join catch-up),
@@ -1777,6 +1793,8 @@ class StreamManager:
         self._ingest_last_eval_wall = None
         self._ingest_sample_interval = 0.0
         tracker.reset()
+        if self.buffer is not None:
+            self.buffer.clear_media_scores()
         if not publish:
             self.buffering = False
             self.buffering_start_time = None

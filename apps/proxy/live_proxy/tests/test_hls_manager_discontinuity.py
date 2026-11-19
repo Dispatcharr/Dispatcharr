@@ -106,18 +106,18 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
 
         ts_buffer = MagicMock()
         ts_buffer.index = 2
-        ts_buffer.find_chunk_index_by_time.return_value = 0
+        ts_buffer.resolve_join_position.return_value = (0, None)
         ts_buffer.discontinuities_in_range.return_value = [2]
 
         def get_data(local_index):
             if local_index == 0:
                 # Contiguous chunks 1 and 2; index 2 is the new-source era.
-                return [chunk_pre, chunk_post], 2
+                return [(1, chunk_pre), (2, chunk_post)], 2
             # Second poll: stop the loop.
             mgr.running = False
             return [], local_index
 
-        ts_buffer.get_optimized_client_data.side_effect = get_data
+        ts_buffer.get_optimized_client_data_indexed.side_effect = get_data
 
         mgr = self._manager(ts_buffer)
         # Capture the segmenter instance the loop constructs.
@@ -148,16 +148,16 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         chunk = b"STEADY"
         ts_buffer = MagicMock()
         ts_buffer.index = 1
-        ts_buffer.find_chunk_index_by_time.return_value = 0
+        ts_buffer.resolve_join_position.return_value = (0, None)
         ts_buffer.discontinuities_in_range.return_value = []
 
         def get_data(local_index):
             if local_index == 0:
-                return [chunk], 1
+                return [(1, chunk)], 1
             mgr.running = False
             return [], local_index
 
-        ts_buffer.get_optimized_client_data.side_effect = get_data
+        ts_buffer.get_optimized_client_data_indexed.side_effect = get_data
         mgr = self._manager(ts_buffer)
         constructed = []
 
@@ -184,14 +184,14 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         """
         ts_buffer = MagicMock()
         ts_buffer.index = 0
-        ts_buffer.find_chunk_index_by_time.return_value = 0
+        ts_buffer.resolve_join_position.return_value = (0, None)
 
         def get_data(local_index):
             # No new chunks; stop right after the heartbeat fires once.
             mgr.running = False
             return [], local_index
 
-        ts_buffer.get_optimized_client_data.side_effect = get_data
+        ts_buffer.get_optimized_client_data_indexed.side_effect = get_data
 
         mgr = self._manager(ts_buffer)
         t0 = 1_000_000.0
@@ -209,13 +209,13 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
         """Stalled input still drops expired advertised URIs; ts is not touched."""
         ts_buffer = MagicMock()
         ts_buffer.index = 0
-        ts_buffer.find_chunk_index_by_time.return_value = 0
+        ts_buffer.resolve_join_position.return_value = (0, None)
 
         def get_data(local_index):
             mgr.running = False
             return [], local_index
 
-        ts_buffer.get_optimized_client_data.side_effect = get_data
+        ts_buffer.get_optimized_client_data_indexed.side_effect = get_data
         mgr = self._manager(ts_buffer)
         mgr._prune_playlist_window.return_value = True
         t0 = 1_000_000.0
@@ -229,13 +229,13 @@ class HLSManagerDiscontinuityTests(SimpleTestCase):
     def test_heartbeat_skips_republish_before_first_segment(self):
         ts_buffer = MagicMock()
         ts_buffer.index = 0
-        ts_buffer.find_chunk_index_by_time.return_value = 0
+        ts_buffer.resolve_join_position.return_value = (0, None)
 
         def get_data(local_index):
             mgr.running = False
             return [], local_index
 
-        ts_buffer.get_optimized_client_data.side_effect = get_data
+        ts_buffer.get_optimized_client_data_indexed.side_effect = get_data
         mgr = self._manager(ts_buffer)
         mgr._last_segment_ts = None
         mgr._playlist_published = False

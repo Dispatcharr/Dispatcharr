@@ -123,7 +123,7 @@ class ProxySettingsSerializerTests(SimpleTestCase):
             "channel_shutdown_delay": 0,
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
-            "new_client_behind_seconds": 5,
+            "new_client_behind_seconds": 6,
             "stream_startup_timeout": 8,
             "connection_timeout": 10,
             "validate_redirect_urls": True,
@@ -238,6 +238,7 @@ class CoreSettingsProxyDefaultsTests(TestCase):
         defaults = CoreSettings.get_proxy_settings()
         self.assertEqual(defaults["channel_init_grace_period"], 60)
         self.assertEqual(defaults["channel_client_wait_period"], 5)
+        self.assertEqual(defaults["new_client_behind_seconds"], 6)
         self.assertEqual(defaults["stream_startup_timeout"], 8)
         self.assertEqual(defaults["connection_timeout"], 10)
         self.assertTrue(defaults["validate_redirect_urls"])
@@ -279,7 +280,7 @@ class Migration0026ProxySettingsTests(TestCase):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
-                "new_client_behind_seconds": 5,
+                "new_client_behind_seconds": 6,
             }
         )
 
@@ -297,7 +298,7 @@ class Migration0026ProxySettingsTests(TestCase):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 45,
-                "new_client_behind_seconds": 5,
+                "new_client_behind_seconds": 6,
             }
         )
 
@@ -314,7 +315,7 @@ class Migration0026ProxySettingsTests(TestCase):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 90,
-                "new_client_behind_seconds": 5,
+                "new_client_behind_seconds": 6,
             }
         )
 

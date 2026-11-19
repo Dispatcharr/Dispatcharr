@@ -138,8 +138,11 @@ class ScriptedInput:
         self.index = index
         self.calls = []
 
-    def find_chunk_index_by_time(self, seconds):
+    def find_chunk_index_behind(self, seconds):
         return self.start_index
+
+    def resolve_join_position(self, seconds):
+        return self.start_index, None
 
     def get_optimized_client_data(self, client_index):
         indexed, new_index = self.get_optimized_client_data_indexed(client_index)

@@ -235,9 +235,15 @@ class HLSOutputManager:
             segmenter.flag_discontinuity()
 
         # Start behind live so the first segments cover the same window a
-        # new TS client would receive.
+        # new TS client would receive. Stream-time joins also carry a target
+        # media clock so the first chunk can be mid-chunk trimmed to a RAP.
         behind_seconds = self.start_behind
-        start_index = self.ts_buffer.find_chunk_index_by_time(behind_seconds) if behind_seconds > 0 else None
+        join_target = None
+        start_index = None
+        if behind_seconds > 0:
+            start_index, join_target = self.ts_buffer.resolve_join_position(
+                behind_seconds
+            )
         if start_index is None:
             start_index = self.ts_buffer.index
         local_index = start_index
@@ -291,29 +297,33 @@ class HLSOutputManager:
                             )
                             idle_demand_checks = 0
 
-                chunks, new_index = self.ts_buffer.get_optimized_client_data(local_index)
+                indexed, new_index = self.ts_buffer.get_optimized_client_data_indexed(
+                    local_index
+                )
 
-                if chunks:
-                    # Chunks are local_index+1 .. local_index+len(chunks) when
-                    # nothing has expired (same assumption as the buffer reader).
-                    # Advance by what we actually feed so a discontinuity cut
-                    # lands on the real boundary, not a padded new_index.
-                    end_index = local_index + len(chunks)
+                if indexed:
+                    # Use each chunk's real Redis index so a hole does not slide
+                    # discontinuity marks, and so mid-chunk join trim targets
+                    # the first delivered chunk correctly.
                     disc_at = set(
                         self.ts_buffer.discontinuities_in_range(
-                            local_index, end_index
+                            local_index, new_index
                         )
                     )
-                    chunk_index = local_index
-                    for chunk in chunks:
+                    prev_index = local_index
+                    for chunk_index, chunk in indexed:
                         if not self.running:
                             break
-                        chunk_index += 1
-                        if chunk_index in disc_at:
+                        if any(prev_index < disc <= chunk_index for disc in disc_at):
                             self._cut_for_discontinuity(
                                 segmenter,
                                 reason=f"buffer index {chunk_index}",
                             )
+                        if join_target is not None:
+                            chunk = self.ts_buffer.prepare_first_join_chunk(
+                                chunk_index, chunk, join_target
+                            )
+                            join_target = None
                         for segment in segmenter.feed(chunk):
                             self._store_segment(segment)
                             if not first_segment_stored:
@@ -323,7 +333,8 @@ class HLSOutputManager:
                                     f"[HLS:{self.channel_id}] First segment stored "
                                     f"({segment.duration:.2f}s, {len(segment.data)} bytes)"
                                 )
-                    local_index = chunk_index
+                        prev_index = chunk_index
+                    local_index = new_index
                 else:
                     if self.ts_buffer.index > local_index + 20:
                         # Fell too far behind (slow consumer / provider burst):
@@ -331,6 +342,7 @@ class HLSOutputManager:
                         # open segment is hard-cut so pre-gap and post-gap
                         # data never share a segment.
                         local_index = self.ts_buffer.index - 5
+                        join_target = None
                         self._cut_for_discontinuity(segmenter, reason="buffer skip-ahead")
                         logger.debug(
                             f"[HLS:{self.channel_id}] Skipped forward to index {local_index}"

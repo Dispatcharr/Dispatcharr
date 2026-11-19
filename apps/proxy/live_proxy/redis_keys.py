@@ -82,8 +82,17 @@ class RedisKeys:
     @staticmethod
     def chunk_timestamps(channel_id):
         """Sorted set mapping chunk receive-timestamps (score) to chunk indices (member).
-        Used for time-based client positioning."""
+        Used for wall-clock client positioning (fallback when media scores absent)."""
         return f"live:channel:{channel_id}:input:buffer:chunk_timestamps"
+
+    @staticmethod
+    def chunk_media_scores(channel_id):
+        """Sorted set mapping end-of-chunk media seconds (PTS/PCR) to chunk indices.
+
+        Written when experimental ingest buffer detection is on so new clients
+        can join by stream time behind the buffer head.
+        """
+        return f"live:channel:{channel_id}:input:buffer:chunk_media_scores"
 
     @staticmethod
     def buffer_discontinuities(channel_id):
@@ -142,6 +151,15 @@ class RedisKeys:
     def output_chunk_timestamps(channel_id, fmt):
         """Sorted set mapping fragment receive-timestamps to fragment indices."""
         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
+
+    @staticmethod
+    def output_chunk_media_scores(channel_id, fmt):
+        """Sorted set of end-of-chunk media times for stream-time join on an output ring.
+
+        Used by MPEG-TS output profiles (``mpegts:p{id}``). fMP4 keeps join
+        scores on ``output_chunk_timestamps`` via PublishedClock instead.
+        """
+        return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_media_scores"
 
     @staticmethod
     def output_buffer_discontinuities(channel_id, fmt):

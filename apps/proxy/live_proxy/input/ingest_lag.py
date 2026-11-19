@@ -13,7 +13,7 @@ buffering asks a different question: has ingest emptied the worst client's
 runway and held it empty long enough to count?
 
 New clients start ``new_client_behind_seconds`` behind the live PTS at the
-moment the join arms (default 5). That PTS is the debt zero for the session:
+moment the join arms (default 6). That PTS is the debt zero for the session:
 
     debt = max(0, wall_since_live - media_since_live - gap_credit)
 

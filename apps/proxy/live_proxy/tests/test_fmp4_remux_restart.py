@@ -408,7 +408,7 @@ class RecordingFmp4Output:
         self.events = []
         self.index = 0
 
-    def put_chunk(self, data):
+    def put_chunk(self, data, score=None):
         with self.lock:
             self.index += 1
             self.events.append(("data", bytes(data)))

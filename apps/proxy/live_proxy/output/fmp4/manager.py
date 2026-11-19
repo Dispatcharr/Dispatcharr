@@ -535,7 +535,7 @@ class FMP4RemuxManager:
                 return None
             watcher_arg.reset()
             rewind = (
-                self.ts_buffer.find_chunk_index_by_time(behind_seconds)
+                self.ts_buffer.find_chunk_index_behind(behind_seconds)
                 if behind_seconds > 0
                 else None
             )
@@ -686,7 +686,7 @@ class FMP4RemuxManager:
 
             fragment = self._clock.patch(bytes(frag_buf[:next_moof]))
             del frag_buf[:next_moof]
-            self.fmp4_buffer.put_chunk(fragment)
+            self.fmp4_buffer.put_chunk(fragment, score=self._clock.end)
             logger.debug(
                 f"[fMP4Remux:{self.channel_id}] Fragment {self.fmp4_buffer.index}: "
                 f"{len(fragment)} bytes"
@@ -762,7 +762,8 @@ class FMP4RemuxManager:
             logger.error(f"[fMP4Remux:{self.channel_id}] Reader loop error: {e}", exc_info=True)
         finally:
             if frag_buf and init_stored and not slot.abandoned.is_set():
-                self.fmp4_buffer.put_chunk(self._clock.patch(bytes(frag_buf)))
+                patched = self._clock.patch(bytes(frag_buf))
+                self.fmp4_buffer.put_chunk(patched, score=self._clock.end)
             # Leave running set. The writer replaces a dead process, and clearing it here would race that.
             logger.info(f"[fMP4Remux:{self.channel_id}] Reader loop exited")
 

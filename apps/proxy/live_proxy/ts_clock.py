@@ -51,6 +51,14 @@ def extract_pcr(packet):
     return base / PTS_CLOCK
 
 
+def packet_random_access(packet):
+    """True when the adaptation-field random_access_indicator is set."""
+    afc = (packet[3] >> 4) & 0x03
+    if afc in (0x02, 0x03) and packet[4] > 0:
+        return bool(packet[5] & 0x40)
+    return False
+
+
 def wrap_delta_seconds(newer, older):
     """Signed media-clock delta that tolerates a single 33-bit wrap."""
     delta = newer - older
@@ -132,14 +140,16 @@ def sample_media_clock_for_relock(data, former_pid=None):
     return newest_pts_by_pid[pid], CLOCK_PTS, pid
 
 
-def last_clock_on_pid(data, pid, clock_kind):
-    """Newest clock of ``clock_kind`` on ``pid`` in ``data``, or None.
+def last_clock_on_pid_with_offset(data, pid, clock_kind):
+    """Newest ``clock_kind`` clock on ``pid`` and its byte offset, or ``(None, None)``.
 
     Only the last ``MAX_CLOCK_SCAN_PACKETS`` packets are searched. Sync, PID,
     and PUSI are read from byte offsets so non-matching packets are not sliced.
+    The offset is where the clock packet starts in ``data``; ingest passes it
+    to the chunk buffer so the sample can be placed inside the Redis chunk.
     """
     if not data or pid is None or clock_kind is None:
-        return None
+        return None, None
     n = len(data) // TS_PACKET_SIZE
     start = max(0, n - MAX_CLOCK_SCAN_PACKETS)
     for i in range(n - 1, start - 1, -1):
@@ -153,12 +163,12 @@ def last_clock_on_pid(data, pid, clock_kind):
                 continue
             pts = extract_pts(data[off : off + TS_PACKET_SIZE])
             if pts is not None:
-                return pts
+                return float(pts), off
         elif clock_kind == CLOCK_PCR:
             afc = (data[off + 3] >> 4) & 0x03
             if afc not in (0x02, 0x03):
                 continue
             pcr = extract_pcr(data[off : off + TS_PACKET_SIZE])
             if pcr is not None:
-                return pcr
-    return None
+                return float(pcr), off
+    return None, None

@@ -1234,8 +1234,8 @@ class IngestSampleGateTests(SimpleTestCase):
         arm_with_burst(manager.ingest_lag)
         manager._ingest_last_sample_wall = None
         with patch(
-            "apps.proxy.live_proxy.input.manager.last_clock_on_pid",
-            return_value=None,
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(None, None),
         ):
             manager._on_packets_received(b"\x47" * 188, wall=3_000.0)
         self.assertIsNone(manager._ingest_last_sample_wall)
@@ -1245,8 +1245,8 @@ class IngestSampleGateTests(SimpleTestCase):
         manager = self._manager()
         _settle, media = arm_with_burst(manager.ingest_lag)
         with patch(
-            "apps.proxy.live_proxy.input.manager.last_clock_on_pid",
-            return_value=media + 1.0,
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(media + 1.0, 0),
         ):
             manager._on_packets_received(b"\x47" * 188, wall=4_000.0)
         self.assertEqual(manager._ingest_last_sample_wall, 4_000.0)
@@ -1256,6 +1256,50 @@ class IngestSampleGateTests(SimpleTestCase):
                 manager.ingest_lag,
                 4_000.0 + manager._ingest_sample_interval * 0.5,
             )
+        )
+
+    def test_a_clock_sample_is_handed_to_the_chunk_buffer(self):
+        # The clock is parsed once, by ingest. The buffer only records it.
+        manager = self._manager()
+        manager.buffer = MagicMock()
+        _settle, media = arm_with_burst(manager.ingest_lag)
+        with patch(
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(media + 1.0, 376),
+        ):
+            manager._on_packets_received(b"\x47" * 188 * 5, wall=4_000.0)
+        manager.buffer.note_media_clock.assert_called_once_with(
+            media + 1.0, append_len=188 * 5, offset_in_append=376
+        )
+
+    def test_a_clockless_read_is_not_handed_to_the_chunk_buffer(self):
+        manager = self._manager()
+        manager.buffer = MagicMock()
+        arm_with_burst(manager.ingest_lag)
+        with patch(
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(None, None),
+        ):
+            manager._on_packets_received(b"\x47" * 188, wall=4_000.0)
+        manager.buffer.note_media_clock.assert_not_called()
+
+    def test_timeline_break_clears_scores_before_noting_the_new_clock(self):
+        manager = self._manager()
+        manager.stopping = False
+        manager.running = True
+        manager.channel_name = "gate"
+        manager.buffer = MagicMock()
+        manager.buffer.redis_client = MagicMock()
+        settle, media = arm_with_burst(manager.ingest_lag)
+        with patch(
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(media - 30.0, 0),
+        ):
+            manager._on_packets_received(b"\x47" * 188, wall=settle + 1.0)
+        self.assertFalse(manager.ingest_lag.is_armed)
+        calls = [name for name, _args, _kwargs in manager.buffer.method_calls]
+        self.assertLess(
+            calls.index("clear_media_scores"), calls.index("note_media_clock")
         )
 
     def test_reset_does_not_allocate_when_experimental_off(self):
@@ -1533,8 +1577,8 @@ class IngestSampleGateTests(SimpleTestCase):
         settle, media = arm_with_burst(manager.ingest_lag)
         manager._last_published_cushion_remaining = 1.2
         with patch(
-            "apps.proxy.live_proxy.input.manager.last_clock_on_pid",
-            return_value=media - 30.0,
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(media - 30.0, 0),
         ):
             manager._on_packets_received(b"\x47" * 188, wall=settle + 1.0)
         self.assertFalse(manager.ingest_lag.is_armed)
@@ -1612,8 +1656,8 @@ class IngestSampleGateTests(SimpleTestCase):
         self.assertTrue(manager.ingest_lag.clock_loose)
         resumed = media + 50.0
         with patch(
-            "apps.proxy.live_proxy.input.manager.last_clock_on_pid",
-            return_value=None,
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(None, None),
         ), patch(
             "apps.proxy.live_proxy.input.manager.sample_media_clock_for_relock",
             return_value=(resumed, "pts", old_pid),
@@ -1635,8 +1679,8 @@ class IngestSampleGateTests(SimpleTestCase):
         self.assertEqual(manager.ingest_lag.locked_pid, old_pid)
         new_pid = old_pid + 1
         with patch(
-            "apps.proxy.live_proxy.input.manager.last_clock_on_pid",
-            return_value=None,
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(None, None),
         ), patch(
             "apps.proxy.live_proxy.input.manager.sample_media_clock_for_relock",
             return_value=(2000.0, "pts", new_pid),
@@ -1670,8 +1714,8 @@ class IngestSampleGateTests(SimpleTestCase):
         manager._last_published_cushion_remaining = 1.2
         new_pid = old_pid + 1
         with patch(
-            "apps.proxy.live_proxy.input.manager.last_clock_on_pid",
-            return_value=None,
+            "apps.proxy.live_proxy.input.manager.last_clock_on_pid_with_offset",
+            return_value=(None, None),
         ), patch(
             "apps.proxy.live_proxy.input.manager.sample_media_clock_for_relock",
             return_value=(2000.0, "pts", new_pid),

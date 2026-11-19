@@ -252,24 +252,27 @@ class StreamGenerator:
             logger.error(f"[{self.client_id}] No buffer found for channel {self.channel_id}")
             return False
 
-        # Client state tracking — determine start position
-        # When behind_seconds > 0, use time-based positioning to start
-        # the client that many seconds behind live.
-        # When behind_seconds == 0, start at live (buffer head).
+        # Client state tracking: start this many seconds behind the buffer
+        # head (stream time when experimental media scores exist, else wall).
+        # behind_seconds == 0 starts at live. Stream-time joins also carry a
+        # target media clock so the first chunk can be mid-chunk trimmed.
         behind_seconds = ConfigHelper.new_client_behind_seconds()
         current_buffer_index = buffer.index
+        self._join_target = None
 
         if behind_seconds > 0:
-            time_index = buffer.find_chunk_index_by_time(behind_seconds)
+            time_index, self._join_target = buffer.resolve_join_position(
+                behind_seconds
+            )
             if time_index is not None:
                 self.local_index = max(0, time_index)
                 logger.info(
-                    f"[{self.client_id}] Time-based positioning: "
+                    f"[{self.client_id}] Behind-head positioning: "
                     f"{behind_seconds}s behind -> index {self.local_index} "
                     f"(buffer head at {current_buffer_index})"
                 )
             else:
-                # Not enough buffer for the requested time — start as far
+                # Not enough buffer for the requested depth: start as far
                 # back as possible (oldest available chunk).
                 oldest = buffer.find_oldest_available_chunk(0)
                 if oldest is not None:
@@ -280,10 +283,10 @@ class StreamGenerator:
                         f"(buffer head at {current_buffer_index})"
                     )
                 else:
-                    # No timestamp data at all — start at live
+                    # No score data at all: start at live
                     self.local_index = current_buffer_index
                     logger.info(
-                        f"[{self.client_id}] No timestamp data, starting at live: "
+                        f"[{self.client_id}] No behind-head score data, starting at live: "
                         f"index {self.local_index} (buffer head at {current_buffer_index})"
                     )
         else:
@@ -319,10 +322,22 @@ class StreamGenerator:
                 break
 
             # Get chunks at client's position using improved strategy
-            chunks, next_index = self.buffer.get_optimized_client_data(self.local_index)
+            indexed, next_index = self.buffer.get_optimized_client_data_indexed(
+                self.local_index
+            )
 
-            if chunks:
+            if indexed:
                 keepalive_start_time = None  # Each recovery restarts the cap independently.
+                if self._join_target is not None:
+                    first_idx, first_data = indexed[0]
+                    indexed[0] = (
+                        first_idx,
+                        self.buffer.prepare_first_join_chunk(
+                            first_idx, first_data, self._join_target
+                        ),
+                    )
+                    self._join_target = None
+                chunks = [data for _idx, data in indexed]
                 yield from self._process_chunks(chunks, next_index)
                 self.local_index = next_index
                 self.last_yield_time = time.time()
@@ -349,6 +364,7 @@ class StreamGenerator:
                             f"(skipped {skipped} chunks, buffer head at {self.buffer.index})"
                         )
                         self.local_index = new_index
+                        self._join_target = None
                     else:
                         # No chunks available at all — jump to near the buffer head
                         initial_behind = ConfigHelper.initial_behind_chunks()
@@ -359,6 +375,7 @@ class StreamGenerator:
                             f"(buffer head at {self.buffer.index})"
                         )
                         self.local_index = new_index
+                        self._join_target = None
 
                     self.consecutive_empty = 0
                     continue  # Retry immediately with the new position
