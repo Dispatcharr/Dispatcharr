@@ -26,6 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New Client Buffer defaults to 6 seconds** (was 5). Existing saved proxy settings are unchanged.
 - **System Events formats experimental buffering context fields.** `channel_buffering` details show **Speed**, **Empty for**, and **Since last buffering** with units instead of raw keys.
 
+### Fixed
+
+- **Plugin capability approval is required when changing repositories.** When an enabled plugin is adopted from another repository or an unmanaged installation, updates that request new capabilities now prompt for approval before the updated plugin runs.
+- **Plugin task triggers appear without refreshing the page.** Newly started actions show their recorded trigger immediately when available instead of temporarily showing `unknown`.
+- **The user modal no longer appears behind the TV Guide filter bar.** - Thanks [@subzero79](https://github.com/subzero79)
+- **Adding a user no longer regenerates the administrator's API key.** Generating a key for an unsaved user previously replaced the signed-in administrator's key. The form now hides key controls until the user is saved; reopen the user to generate a key. (Closes #1964) - Thanks [@crunchingcode](https://github.com/crunchingcode)
+
+## [0.34.1] - 2026-11-17
+
+### Fixed
+
+- **Plugin sockets support context managers again.** Using `with socket.socket()` closes the socket on exit while retaining plugin network capability checks. (Fixes #1990)
+- **Plugin file uploads survive updates.** New uploads are stored in the plugin's persistent data directory instead of its replaceable code directory. Existing uploads are not moved and may need to be uploaded again after an update. (Fixes #1988)
+- **Plugin data directories remain stable when managed plugins become unmanaged.** Dispatcharr retains the plugin's existing data directory when a repository removes it or a ZIP import replaces it.
+
 ## [0.34.0] - 2026-11-17
 
 ### Added

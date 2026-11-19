@@ -405,6 +405,21 @@ describe('PluginDetail', () => {
       actions: [{ id: 'a1', label: 'Do Thing' }],
     };
 
+    it('passes the started task trigger to the live task store', async () => {
+      const startPluginTask = vi.fn();
+      const state = usePluginStore.getState();
+      usePluginStore.getState.mockReturnValue({ ...state, startPluginTask });
+      runPluginAction.mockResolvedValue({ success: true, status: 'started', task_id: 'task-1', trigger: 'action' });
+      usePluginStore.mockImplementation((selector) =>
+        selector({ plugins: [pluginWithActions], loading: false, ...enableConfirmDefaults })
+      );
+      render(<PluginDetail />);
+      fireEvent.click(screen.getByText('run-action'));
+      await waitFor(() => expect(startPluginTask).toHaveBeenCalledWith('task-1', {
+        pluginKey: 'test-plugin', plugin: 'Test Plugin', actionId: 'a1', actionLabel: 'Do Thing', trigger: 'action',
+      }));
+    });
+
     it('refreshes after a synchronous action result', async () => {
       const result = { _dispatcharr: { refresh: 'ui' } };
       runPluginAction.mockResolvedValue({ success: true, result });

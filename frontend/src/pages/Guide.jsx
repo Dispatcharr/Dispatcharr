@@ -1481,7 +1481,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       <Flex
         direction="column"
         style={{
-          zIndex: 1000,
+          zIndex: 200,
           position: 'sticky',
         }}
         c="#ffffff"

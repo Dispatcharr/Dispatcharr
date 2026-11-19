@@ -195,7 +195,7 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
   - Unknown/future capability ids are ignored gracefully by older Dispatcharr builds; the registry is intentionally extensible.
 - Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin.
 - **`context["dispatch_task"]` is enforced for manifest version 2 and later:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. Versions `0` and `1` remain non-enforcing during the transition period. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
-- **Plugin directories:** `context["code_dir"]` is the installed plugin code directory. `context["data_dir"]` is the version-stable durable-data directory under `_data/<canonical-plugin-id>`. Managed plugins use their repository slug as the canonical, version-free ID; unmanaged plugins use their version-free plugin key. Both paths are available in `run()`, `stop()`, and leadership hooks, so plugins never need to derive them themselves.
+- **Plugin directories:** `context["code_dir"]` is the installed plugin code directory. `context["data_dir"]` is the version-stable durable-data directory under `_data/<canonical-plugin-id>`. Managed plugins use their repository slug as the canonical, version-free ID; unmanaged plugins use their version-free plugin key, or retain their slug if previously managed. Both paths are available in `run()`, `stop()`, and leadership hooks, so plugins never need to derive them themselves.
 
   ```python
   import os
@@ -333,8 +333,9 @@ A `file` field lets the user upload a file (e.g. a config, cert, or overlay imag
 
 Server-side, for safety:
 - Only a fixed extension allowlist is accepted (config/text formats, certs, and common image formats). Script/executable extensions are always rejected.
-- The upload is written under a dedicated `uploads/<field_id>/` subdirectory inside the plugin's own directory, never into the plugin's root, so it can never overwrite `plugin.py`, `plugin.json`, or `__init__.py`.
-- Re-uploading to the same field replaces the previous file. Uninstalling the plugin removes the file along with the rest of the plugin's directory.
+- The upload is written under `_uploads/<field_id>/` in the plugin's durable `data_dir`, separate from its code. The `_uploads` directory is reserved for Dispatcharr-managed files.
+- Re-uploading to the same field replaces the previous file. Uploads survive plugin updates and follow the keep-or-delete data choice when uninstalling.
+- Uploads created before this change are not moved automatically and may need to be uploaded again after an update.
 
 ```json
 {

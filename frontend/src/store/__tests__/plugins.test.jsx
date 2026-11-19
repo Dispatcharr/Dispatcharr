@@ -276,7 +276,7 @@ describe('usePluginStore', () => {
       const { result } = renderHook(() => usePluginStore());
 
       act(() => {
-        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work', trigger: 'manual' });
       });
 
       expect(result.current.pluginTasks['task-1']).toEqual({
@@ -284,6 +284,7 @@ describe('usePluginStore', () => {
         plugin: 'My Plugin',
         actionId: undefined,
         actionLabel: 'Do Work',
+        trigger: 'manual',
         status: 'running',
         percent: null,
         message: null,
@@ -369,6 +370,25 @@ describe('usePluginStore', () => {
       });
       expect(Object.keys(usePluginStore.getState().pluginTasks)).toEqual(['valid']);
       expect(usePluginStore.getState().pluginTasks.valid.actionLabel).toBe('sync');
+    });
+
+    it('preserves triggers through updates and fills unknown history without clobbering status', () => {
+      act(() => {
+        const store = usePluginStore.getState();
+        store.startPluginTask('live', { trigger: 'action' });
+        store.updatePluginTaskProgress('live', { percent: 40 });
+        store.completePluginTask('live', { status: 'ok' });
+        store.hydratePluginTasks('my-plugin', 'My Plugin', [
+          { task_id: 'legacy', action_id: 'sync', status: 'ok' },
+          { task_id: 'live', action_id: 'sync', trigger: 'unknown', status: 'running' },
+        ]);
+        store.hydratePluginTasks('my-plugin', 'My Plugin', [
+          { task_id: 'legacy', action_id: 'sync', trigger: 'manual', status: 'running' },
+          { task_id: 'live', action_id: 'sync', trigger: 'manual', status: 'running' },
+        ]);
+      });
+      expect(usePluginStore.getState().pluginTasks.live).toMatchObject({ trigger: 'action', status: 'ok', percent: 40 });
+      expect(usePluginStore.getState().pluginTasks.legacy).toMatchObject({ trigger: 'manual', status: 'ok' });
     });
   });
 });

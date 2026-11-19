@@ -38,6 +38,7 @@ from .loader import PluginManager
 from .keys import normalize_plugin_key
 from .models import PluginConfig, PluginRepo
 from .serializers import PluginRepoSerializer
+from .sandbox import stable_plugin_data_path
 from .version_utils import compare_versions, get_plugin_status
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,20 @@ def _sanitize_plugin_key(value: str) -> str:
     base = re.sub(r"[^a-z0-9_-]", "_", base)
     base = base.strip("._-")
     return base or "plugin"
+
+
+def _upload_directory(plugins_dir, key, storage_key, field_id):
+    data_dir = stable_plugin_data_path(key, os.path.join(plugins_dir, key), storage_key)
+    root = os.path.abspath(plugins_dir)
+    dest = os.path.join(data_dir, "_uploads", _sanitize_plugin_key(field_id))
+    current = root
+    for part in os.path.relpath(dest, root).split(os.sep):
+        if part in ("..", "."):
+            raise ValueError("Invalid upload directory")
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Symlinks are not allowed in upload directories")
+    return dest
 
 
 def _create_plugin_import_dir(plugins_dir):
@@ -133,7 +148,7 @@ def _effective_capabilities_from_zip(zip_file):
                 basename = os.path.basename(normalized)
                 if basename in ("plugin.py", "__init__.py"):
                     directory = os.path.dirname(normalized)
-                    depth = len(directory.split(os.sep)) if directory else 0
+                    depth = max(1, len(directory.split(os.sep))) if directory else 1
                     candidates.append((0 if basename == "plugin.py" else 1, depth, directory))
             if not candidates:
                 return []
@@ -166,7 +181,7 @@ def _plugin_key_from_zip(zip_file, file_name):
                 basename = os.path.basename(normalized)
                 if basename in {"plugin.py", "__init__.py"}:
                     directory = os.path.dirname(normalized)
-                    depth = len(directory.split(os.sep)) if directory else 0
+                    depth = max(1, len(directory.split(os.sep))) if directory else 1
                     candidates.append((0 if basename == "plugin.py" else 1, depth, directory))
             if not candidates:
                 return None
@@ -401,8 +416,8 @@ def _install_plugin_from_zip(
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerelease):
-    """Apply a downloaded managed release while holding the mutation lock."""
+def _managed_install_target(tmp_file, repo, slug):
+    """Resolve both the overwrite permission and the config the archive will use."""
     managed_configs = list(
         PluginConfig.objects.filter(source_repo=repo, slug=slug).order_by("id")
     )
@@ -420,6 +435,15 @@ def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerele
         underscore_key = plugin_key.replace("-", "_")
         if underscore_key != plugin_key:
             existing_cfg = PluginConfig.objects.filter(key=underscore_key).first()
+
+    actual_key = existing_cfg.key if managed_configs else _plugin_key_from_zip(tmp_file, f"{slug}.zip")
+    target_cfg = PluginConfig.objects.filter(key=actual_key).first() if actual_key else None
+    return managed_configs, existing_cfg, target_cfg
+
+
+def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerelease,
+                                   managed_configs, existing_cfg, approved_capabilities):
+    """Apply a downloaded managed release while holding the mutation lock."""
 
     result = _install_plugin_from_zip(
         tmp_file,
@@ -501,6 +525,12 @@ def _finish_managed_plugin_install(pm, tmp_file, repo, slug, version, is_prerele
         cfg.installed_version_is_prerelease = is_prerelease
         cfg.deprecated = is_deprecated
         cfg.save(update_fields=["version", "slug", "source_repo", "installed_version_is_prerelease", "deprecated", "updated_at"])
+
+    if approved_capabilities:
+        cfg.acknowledged_capabilities = sorted(
+            set(cfg.acknowledged_capabilities or []) | set(approved_capabilities)
+        )
+        cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
 
     pm.discover_plugins(force_reload=True)
     try:
@@ -620,7 +650,8 @@ def _unmanage_dropped_slugs(repo, new_manifest_data):
     current_slugs = set(plugin_entries.keys())
 
     dropped = PluginConfig.objects.filter(source_repo=repo).exclude(slug__in=current_slugs)
-    count = dropped.update(source_repo=None, slug="", deprecated=False)
+    # Keep the slug as the data directory identity after removing the repo.
+    count = dropped.update(source_repo=None, deprecated=False)
     if count:
         logger.info(
             "Unmanaged %d plugin(s) removed from repo '%s' manifest",
@@ -704,8 +735,7 @@ class PluginImportAPIView(PluginAuthMixin, APIView):
             if cfg and cfg.source_repo_id:
                 was_managed = True
                 cfg.source_repo = None
-                cfg.slug = ""
-                cfg.save(update_fields=["source_repo", "slug", "updated_at"])
+                cfg.save(update_fields=["source_repo", "updated_at"])
                 logger.info("Plugin '%s' manually replaced - cleared managed repo link", plugin_key)
         except Exception:
             cfg = None
@@ -759,7 +789,7 @@ class PluginSettingsAPIView(PluginAuthMixin, APIView):
 class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
     """Handles uploads for a plugin's 'file' settings field.
 
-    Writes only under <plugins_dir>/<key>/uploads/<field_id>/, never into the
+    Writes only under the plugin's data directory, never into the
     plugin's own root, so a request can never overwrite plugin.py/plugin.json/
     __init__.py. field_id must name a field the plugin itself declared with
     type "file"; an arbitrary/undeclared field_id is rejected before it is
@@ -822,12 +852,14 @@ class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        safe_field_id = _sanitize_plugin_key(field_id)
-        dest_dir = os.path.join(pm.plugins_dir, key, "uploads", safe_field_id)
         try:
+            cfg = PluginConfig.objects.filter(key=key).first()
+            dest_dir = _upload_directory(pm.plugins_dir, key, cfg.slug if cfg and cfg.slug else key, field_id)
             os.makedirs(dest_dir, exist_ok=True)
             for existing in os.listdir(dest_dir):
                 existing_path = os.path.join(dest_dir, existing)
+                if os.path.islink(existing_path):
+                    raise ValueError("Symlinks are not allowed in upload directories")
                 if os.path.isfile(existing_path):
                     os.remove(existing_path)
 
@@ -892,17 +924,22 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         logger.exception("Plugin action failed")
         return Response({"success": False, "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def _response_for_result(self, result):
+    def _response_for_result(self, key, result):
         # A plugin can self-dispatch via context['dispatch_task'] and return
         # this shape; normalize it to the same contract _dispatch_async uses.
         if isinstance(result, dict) and result.get("status") == "started" and result.get("task_id"):
-            return Response({"success": True, "status": "started", "task_id": result["task_id"]})
+            from .task_history import get_task_history
+            response = {"success": True, "status": "started", "task_id": result["task_id"]}
+            task = next((t for t in get_task_history(key) if t["task_id"] == result["task_id"]), None)
+            if task and task.get("trigger"):
+                response["trigger"] = task["trigger"]
+            return Response(response)
         return Response({"success": True, "result": result})
 
     def _dispatch_async(self, key, action, params, action_label):
         from .tasks import dispatch_plugin_action_task
         async_result = dispatch_plugin_action_task(key, action, params, action_label)
-        return Response({"success": True, "status": "started", "task_id": async_result.id})
+        return Response({"success": True, "status": "started", "task_id": async_result.id, "trigger": "manual"})
 
     def _run_via_worker(self, key, action, params):
         from celery.exceptions import TimeoutError as CeleryTimeoutError
@@ -925,7 +962,7 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
             )
         except Exception as e:
             return self._error_response(e)
-        return self._response_for_result(result)
+        return self._response_for_result(key, result)
 
 
 class PluginTaskHistoryAPIView(PluginAuthMixin, APIView):
@@ -1083,7 +1120,6 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
             if not abs_target.startswith(abs_plugins):
                 return Response({"success": False, "error": "Invalid plugin path"}, status=status.HTTP_400_BAD_REQUEST)
 
-            from .sandbox import stable_plugin_data_path
             cfg = PluginConfig.objects.filter(key=key).first()
             data_dir = stable_plugin_data_path(key, target_dir, cfg.slug if cfg and cfg.slug else key)
             data_root = os.path.join(os.path.abspath(plugins_dir), "_data")
@@ -1654,7 +1690,11 @@ class AvailablePluginsAPIView(PluginAuthMixin, APIView):
                 managed = installed_by_slug.get(slug) or installed_by_slug.get(slug.replace("-", "_"))
                 sanitized_slug = _sanitize_plugin_key(slug)
                 key_match = sanitized_slug in installed_by_key or sanitized_slug in installed_by_key_norm
-                if managed:
+                if managed and not managed["source_repo_id"]:
+                    is_installed = True
+                    installed_version = managed["version"]
+                    install_status = "unmanaged"
+                elif managed:
                     is_installed = True
                     installed_version = managed["version"]
                     latest = plugin_data.get("latest_version")
@@ -1905,6 +1945,8 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
+                    tmp_file.flush()
+                    managed_configs, overwrite_cfg, existing_cfg = _managed_install_target(tmp_file, repo, slug)
                     effective_capabilities = _effective_capabilities_from_zip(tmp_file)
                     unacknowledged_capabilities = (
                         sorted(set(effective_capabilities) - set(existing_cfg.acknowledged_capabilities or []))
@@ -1949,15 +1991,9 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                     tmp_file.flush()
                     tmp_file.seek(0)
                     response = _finish_managed_plugin_install(
-                        pm, tmp_file, repo, slug, version, bool(request.data.get("prerelease", False))
+                        pm, tmp_file, repo, slug, version, bool(request.data.get("prerelease", False)),
+                        managed_configs, overwrite_cfg, unacknowledged_capabilities,
                     )
-                    if response.status_code < 300 and unacknowledged_capabilities:
-                        cfg = PluginConfig.objects.filter(source_repo=repo, slug=slug).first()
-                        if cfg:
-                            cfg.acknowledged_capabilities = sorted(
-                                set(cfg.acknowledged_capabilities or []) | set(unacknowledged_capabilities)
-                            )
-                            cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
                     return response
             finally:
                 resp.close()

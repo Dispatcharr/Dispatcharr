@@ -20,7 +20,7 @@ class PluginRepoRefreshAPIViewTests(TestCase):
 
     def test_refreshes_root_manifest_and_unmanages_removed_plugins(self):
         config = PluginConfig.objects.create(
-            key="removed-plugin",
+            key="local-plugin",
             name="Removed Plugin",
             slug="removed-plugin",
             source_repo=self.repo,
@@ -50,6 +50,7 @@ class PluginRepoRefreshAPIViewTests(TestCase):
         self.assertEqual(self.repo.cached_manifest, manifest)
         self.assertTrue(self.repo.signature_verified)
         self.assertIsNone(config.source_repo)
+        self.assertEqual(config.slug, "removed-plugin")
         delete_many.assert_called_once()
 
     def test_returns_bad_gateway_when_root_manifest_fetch_fails(self):
@@ -60,6 +61,18 @@ class PluginRepoRefreshAPIViewTests(TestCase):
 
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.data["error"], "Failed to fetch manifest. Check the URL and try again.")
+
+    def test_retained_slug_is_listed_as_unmanaged(self):
+        self.repo.cached_manifest = {"manifest": {"plugins": [{"slug": "canonical-plugin"}]}}
+        self.repo.save(update_fields=["cached_manifest"])
+        PluginConfig.objects.create(
+            key="different-local-key", name="Plugin", slug="canonical-plugin", version="1.0"
+        )
+        response = self.client.get("/api/plugins/repos/available/")
+        self.assertEqual(response.status_code, 200)
+        plugin = next(p for p in response.data["plugins"] if p["slug"] == "canonical-plugin")
+        self.assertTrue(plugin["installed"])
+        self.assertEqual(plugin["install_status"], "unmanaged")
 
     def test_rejects_an_invalid_root_manifest(self):
         with patch(
