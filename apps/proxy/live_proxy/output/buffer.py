@@ -16,6 +16,12 @@ import time
 
 import gevent.event
 
+from ..chunk_time_lookup import (
+    FIND_CHUNK_BEHIND_HEAD_LUA,
+    HEAD_SCORE_LOOKBACK,
+    last_consumed_from_lua_result,
+    media_score_min_index,
+)
 from ..discontinuity_sidecar import DiscontinuitySidecarMixin
 from ..redis_keys import RedisKeys
 from ..config_helper import ConfigHelper
@@ -55,28 +61,32 @@ class OutputStreamBuffer(DiscontinuitySidecarMixin):
 
         self.chunk_available = gevent.event.Event()
 
-        # Lua script for time-based start positioning (same as StreamBuffer)
-        _LUA = """
-        local ts_key = KEYS[1]
-        local target = tonumber(ARGV[1])
-        local result = redis.call('ZREVRANGEBYSCORE', ts_key, target, '-inf', 'LIMIT', 0, 1)
-        if #result == 0 then return -1 end
-        return tonumber(result[1])
-        """
         if self.redis_client:
             try:
-                self._find_chunk_by_time_sha = self.redis_client.register_script(_LUA)
+                self._find_chunk_behind_sha = self.redis_client.register_script(
+                    FIND_CHUNK_BEHIND_HEAD_LUA
+                )
             except Exception:
-                self._find_chunk_by_time_sha = None
+                self._find_chunk_behind_sha = None
         else:
-            self._find_chunk_by_time_sha = None
+            self._find_chunk_behind_sha = None
 
-    def put_chunk(self, data: bytes) -> bool:
-        """Store one complete output unit (fragment, segment, ...) as its own Redis chunk."""
+    def put_chunk(self, data: bytes, score=None) -> bool:
+        """Store one complete output unit (fragment, segment, ...) as its own Redis chunk.
+
+        ``score`` defaults to wall ``time.time()`` (HLS playlist TTL prune).
+        fMP4 remux passes ``PublishedClock.end`` so clients join by stream time
+        behind the buffer head. An explicit score is media time and is pruned
+        by chunk index, not by treating it as a unix timestamp.
+        """
         if not data or not self.redis_client:
             return False
         try:
-            now = time.time()
+            media_score = score is not None
+            if score is None:
+                score = time.time()
+            else:
+                score = float(score)
             with self.lock:
                 # Local index + publish-after-write: avoids permanent holes when
                 # an INCR succeeds but the chunk pipeline fails (same contract
@@ -86,8 +96,17 @@ class OutputStreamBuffer(DiscontinuitySidecarMixin):
                 pipe = self.redis_client.pipeline(transaction=False)
                 pipe.setex(chunk_key, self.chunk_ttl, data)
                 pipe.set(self.buffer_index_key, chunk_index)
-                pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
-                pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
+                pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): score})
+                if media_score:
+                    # Media time cannot expire by score. One member ages out of
+                    # the retention window per chunk; drop it directly (no scan).
+                    min_keep = media_score_min_index(chunk_index, self.chunk_ttl)
+                    if min_keep > 0:
+                        pipe.zrem(self.chunk_timestamps_key, str(min_keep - 1))
+                else:
+                    pipe.zremrangebyscore(
+                        self.chunk_timestamps_key, '-inf', score - self.chunk_ttl
+                    )
                 pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
                 try:
                     pipe.execute()
@@ -167,38 +186,40 @@ class OutputStreamBuffer(DiscontinuitySidecarMixin):
             logger.error(f"[OutputBuffer:{self.fmt}:{self.channel_id}] Error getting chunks: {e}")
             return [], self.index
 
-    def find_chunk_index_by_time(self, seconds_behind):
-        """Return the chunk index that was received ~seconds_behind seconds ago.
+    def find_chunk_index_behind(self, seconds_behind):
+        """Return the chunk index approximately *seconds_behind* the buffer head.
 
-        Returns an int (last-consumed convention: next read starts at index+1)
-        or None if no suitable chunk exists.
+        Uses the zset score of the head chunk (wall time or PublishedClock end)
+        minus ``seconds_behind``. Last-consumed convention: next read starts
+        at index+1. None if no suitable chunk exists.
         """
-        if not self.redis_client or not self._find_chunk_by_time_sha:
+        if not self.redis_client or not self._find_chunk_behind_sha:
             return None
-        target_time = time.time() - seconds_behind
+        disc_key = self.discontinuities_key or self.buffer_index_key
+        use_disc = 1 if self.discontinuities_key else 0
         try:
-            result = self._find_chunk_by_time_sha(
-                keys=[self.chunk_timestamps_key],
-                args=[target_time],
+            result = self._find_chunk_behind_sha(
+                keys=[
+                    self.chunk_timestamps_key,
+                    self.buffer_index_key,
+                    disc_key,
+                ],
+                args=[seconds_behind, HEAD_SCORE_LOOKBACK, use_disc],
             )
-            if result is None or int(result) == -1:
-                oldest = self.redis_client.zrange(self.chunk_timestamps_key, 0, 0)
-                if oldest:
-                    return max(0, int(oldest[0]) - 1)
-                return None
-            return max(0, int(result) - 1)
+            return last_consumed_from_lua_result(result)
         except Exception as e:
             logger.error(
                 f"[OutputBuffer:{self.fmt}:{self.channel_id}] "
-                f"Error in find_chunk_index_by_time: {e}"
+                f"Error in find_chunk_index_behind: {e}"
             )
             return None
 
     def surviving_chunk_scores(self):
         """Map chunk index -> write timestamp for chunks still tracked in Redis.
 
-        The zset is pruned to chunk_ttl on write; members here are the segments
-        that should still be fetchable (subject to key TTL race on the oldest).
+        The zset is pruned to chunk_ttl on write for wall scores; members here
+        are the segments that should still be fetchable (subject to key TTL
+        race on the oldest).
         """
         if not self.redis_client or not self.chunk_timestamps_key:
             return {}

@@ -64,11 +64,10 @@ def run_ts_buffer_writer(
     current one, or False to stop. ``on_feed_failure`` returns True to retry
     the batch on the next poll, so ``before_poll`` can respawn, or False to stop.
     """
-    start_index = (
-        ts_buffer.find_chunk_index_by_time(behind_seconds)
-        if behind_seconds > 0
-        else None
-    )
+    join_target = None
+    start_index = None
+    if behind_seconds > 0:
+        start_index, join_target = ts_buffer.resolve_join_position(behind_seconds)
     if start_index is None:
         start_index = ts_buffer.index
     local_index = start_index
@@ -82,6 +81,7 @@ def run_ts_buffer_writer(
                 return
             if updated is not None:
                 local_index = updated
+                join_target = None
 
         indexed, new_index = ts_buffer.get_optimized_client_data_indexed(local_index)
 
@@ -104,6 +104,11 @@ def run_ts_buffer_writer(
                         return
                     if outcome == RestartOutcome.REPLACED:
                         watcher.reset()
+                if join_target is not None:
+                    chunk = ts_buffer.prepare_first_join_chunk(
+                        chunk_index, chunk, join_target
+                    )
+                    join_target = None
                 if not feed_chunk(chunk, watcher, chunk_index):
                     if on_feed_failure is not None and on_feed_failure():
                         break
@@ -127,4 +132,5 @@ def run_ts_buffer_writer(
                     if outcome == RestartOutcome.REPLACED:
                         watcher.reset()
                 local_index = skip_to
+                join_target = None
             sleep_fn(idle_sleep)

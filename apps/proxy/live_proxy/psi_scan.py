@@ -43,11 +43,49 @@ def _packet_offsets(high, low, pid, require_pusi):
     return offsets
 
 
-def locate_psi_packets(data, pmt_pid):
-    """``((offset, is_pat), ...)`` in order, or None when ``data`` is not packet-aligned.
+class PsiHeaderIndex:
+    """Strided PID header planes from one sync check of an aligned TS buffer.
 
-    ``is_pat`` is a PAT packet (PID 0 with the payload-start flag). The others
-    are packets on ``pmt_pid``. With ``pmt_pid`` None only PATs are reported.
+    Build once with ``index_psi_headers``, then filter for PAT and/or a PMT PID
+    without touching the chunk bytes again.
+    """
+
+    __slots__ = ("_high", "_low")
+
+    def __init__(self, high, low):
+        self._high = high
+        self._low = low
+
+    def pat_offsets(self):
+        """Byte offsets of PAT starts (PID 0 with payload-start)."""
+        return _packet_offsets(self._high, self._low, _PAT_PID, True)
+
+    def pid_offsets(self, pid, require_pusi=False):
+        """Byte offsets of packets on ``pid``."""
+        return _packet_offsets(self._high, self._low, pid, require_pusi)
+
+    def locate(self, pmt_pid, pats=None):
+        """``((offset, is_pat), ...)`` in order, matching ``locate_psi_packets``.
+
+        Pass ``pats`` when the caller already has ``pat_offsets()`` so the PAT
+        filter is not run twice.
+        """
+        if pats is None:
+            pats = self.pat_offsets()
+        if pmt_pid is None or pmt_pid == _PAT_PID:
+            return tuple((offset, True) for offset in pats)
+        pmts = self.pid_offsets(pmt_pid, False)
+        return tuple(
+            sorted(
+                [(offset, True) for offset in pats]
+                + [(offset, False) for offset in pmts]
+            )
+        )
+
+
+def index_psi_headers(data):
+    """``PsiHeaderIndex`` for packet-aligned ``data``, or None when a walk is required.
+
     None means the caller has to walk packets: strided reads would land mid-packet.
     """
     count, remainder = divmod(len(data), TS_PACKET_SIZE)
@@ -56,16 +94,20 @@ def locate_psi_packets(data, pmt_pid):
     end = count * TS_PACKET_SIZE
     if data[0:end:TS_PACKET_SIZE].count(_SYNC_BYTE) != count:
         return None
+    return PsiHeaderIndex(data[1:end:TS_PACKET_SIZE], data[2:end:TS_PACKET_SIZE])
 
-    high = data[1:end:TS_PACKET_SIZE]
-    low = data[2:end:TS_PACKET_SIZE]
-    pats = _packet_offsets(high, low, _PAT_PID, True)
-    if pmt_pid is None or pmt_pid == _PAT_PID:
-        return tuple((offset, True) for offset in pats)
-    pmts = _packet_offsets(high, low, pmt_pid, False)
-    return tuple(sorted(
-        [(offset, True) for offset in pats] + [(offset, False) for offset in pmts]
-    ))
+
+def locate_psi_packets(data, pmt_pid):
+    """``((offset, is_pat), ...)`` in order, or None when ``data`` is not packet-aligned.
+
+    ``is_pat`` is a PAT packet (PID 0 with the payload-start flag). The others
+    are packets on ``pmt_pid``. With ``pmt_pid`` None only PATs are reported.
+    None means the caller has to walk packets: strided reads would land mid-packet.
+    """
+    index = index_psi_headers(data)
+    if index is None:
+        return None
+    return index.locate(pmt_pid)
 
 
 class PsiScanCache:

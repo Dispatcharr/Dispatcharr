@@ -60,7 +60,7 @@ class BaseConfig:
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
-                "new_client_behind_seconds": 5,
+                "new_client_behind_seconds": 6,
                 "stream_startup_timeout": 8,
                 "connection_timeout": 10,
                 "validate_redirect_urls": True,
@@ -104,7 +104,7 @@ class TSConfig(BaseConfig):
     # Buffer settings
     INITIAL_BEHIND_CHUNKS = 4  # How many chunks behind to start a client (4 chunks = ~1MB)
     CHUNK_BATCH_SIZE = 5       # How many chunks to fetch in one batch
-    NEW_CLIENT_BEHIND_SECONDS = 5  # Start new clients this many seconds behind live (0 = start at live)
+    NEW_CLIENT_BEHIND_SECONDS = 6  # Start new clients this many seconds behind live (0 = start at live)
     KEEPALIVE_INTERVAL = 0.5   # Seconds between keepalive packets when at buffer head
     # Chunk read timeout
     CHUNK_TIMEOUT = 5        # Seconds to wait for each chunk read

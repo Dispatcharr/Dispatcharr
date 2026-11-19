@@ -2,11 +2,27 @@
 
 import threading
 import time
+from ..chunk_time_lookup import (
+    FIND_CHUNK_BEHIND_HEAD_LUA,
+    HEAD_SCORE_LOOKBACK,
+    behind_head_from_lua_result,
+    media_score_min_index,
+)
 from ..discontinuity_sidecar import DiscontinuitySidecarMixin
+from ..join_trim import (
+    KEYFRAME_LOOKBACK_MAX_CHUNKS,
+    KEYFRAME_LOOKBACK_SECONDS,
+    discover_layout_in_chunks,
+    discover_video_layout,
+    merge_parameter_sets_from_chunks,
+    prepare_join_chunk,
+    resolve_join_cut,
+)
 from ..psi_scan import PsiScanCache
 from ..redis_keys import RedisKeys
 from ..config_helper import ConfigHelper
 from ..constants import TS_PACKET_SIZE
+from ..ts_clock import packet_random_access, sample_media_clock
 from .ts_discontinuity import stamp_first_packet_per_pid
 from ..utils import get_logger
 import gevent.event
@@ -18,9 +34,15 @@ logger = get_logger()
 class StreamBuffer(DiscontinuitySidecarMixin):
     """Manages stream data buffering with optimized chunk storage"""
 
+    # Recent chunks whose in-memory (offset, media, is_rap) map is retained,
+    # counted in chunk indexes behind the head. Redis only keeps the end score
+    # per chunk; this is the owner-side detail for mid-chunk join trim and
+    # future splice/reconnect work, so it stays small.
+    MEDIA_MAP_KEEP_CHUNKS = 32
+
     def __init__(self, channel_id=None, redis_client=None,
                  buffer_index_key=None, buffer_chunk_prefix=None, chunk_timestamps_key=None,
-                 discontinuities_key=None):
+                 discontinuities_key=None, chunk_media_scores_key=None):
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.lock = threading.Lock()
@@ -49,8 +71,19 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         self._write_buffer = bytearray()
         self.target_chunk_size = ConfigHelper.get('BUFFER_CHUNK_SIZE', TS_PACKET_SIZE * 5644)  # ~1MB default
 
-        # Sorted-set key for chunk receive-timestamps (time-based positioning)
+        # Sorted-set key for chunk receive-timestamps (wall-clock join fallback)
         self.chunk_timestamps_key = chunk_timestamps_key or (RedisKeys.chunk_timestamps(channel_id) if channel_id else "")
+        # Stream-time scores (PTS/PCR). Only written when media indexing is on.
+        if chunk_media_scores_key is not None:
+            self.chunk_media_scores_key = chunk_media_scores_key
+        elif channel_id and buffer_index_key is None:
+            self.chunk_media_scores_key = RedisKeys.chunk_media_scores(channel_id)
+        else:
+            self.chunk_media_scores_key = ""
+        # When True and the ingest sparse map did not cover this chunk, publish
+        # an end score from a cheap tail clock sample (output-profile rings).
+        # Input ingest leaves this False so unscored stretches stay unscored.
+        self.media_score_from_chunk_end = False
         # Sidecar: chunk indices where a source discontinuity begins. Optional for
         # profile output buffers that do not participate in failover marking.
         if discontinuities_key is not None:
@@ -67,6 +100,16 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         self._disc_stamped_pids = set()
         self._disc_mark_index = 0
 
+        # Experimental ingest: score each chunk by end-of-chunk media time so
+        # joins use stream time behind the head. Samples are passed through from
+        # the ingest hook (no second TS parse): (offset into _write_buffer,
+        # media seconds) pairs, consumed as chunks flush to Redis.
+        self.media_index_enabled = False
+        self._coalesce_media_map = []
+        # chunk index -> its (offset in chunk, media seconds) pairs, newest
+        # MEDIA_MAP_KEEP_CHUNKS only. Insertion ordered so trimming is O(1).
+        self._chunk_media_maps = {}
+
         # Register Lua scripts once — subsequent calls use EVALSHA (just the
         # SHA hash) instead of sending the full script text on every invocation.
         if self.redis_client:
@@ -76,9 +119,13 @@ class StreamBuffer(DiscontinuitySidecarMixin):
             self._find_chunk_by_time_sha = self.redis_client.register_script(
                 self._FIND_CHUNK_BY_TIME_LUA
             )
+            self._find_chunk_behind_sha = self.redis_client.register_script(
+                FIND_CHUNK_BEHIND_HEAD_LUA
+            )
         else:
             self._find_oldest_chunk_sha = None
             self._find_chunk_by_time_sha = None
+            self._find_chunk_behind_sha = None
 
         # Track timers for proper cleanup
         self.stopping = False
@@ -86,10 +133,80 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         self.chunk_available = gevent.event.Event()
         # Optional callable(packet_bytes, wall=...) for ingest lag. Wall is
         # stamped when this socket payload arrives; the bytes are the complete
-        # TS packets formed from that payload. Redis write is unrelated.
-        # Called outside self.lock.
+        # TS packets formed from that payload. Called outside self.lock after
+        # those packets are extended onto _write_buffer and before Redis flush,
+        # so note_media_clock can record the sample (or skip if failover
+        # already flushed the append).
         self.on_packets_received = None
         self._hook_failure_logged = False
+
+    def enable_media_index(self, enabled=True):
+        """Turn stream-time chunk scoring on or off (experimental ingest).
+
+        Either direction drops the published scores: a new session must not
+        read the previous one's, and readers must stop joining on a timeline
+        nobody maintains. Only the owning writer calls this; readers on other
+        workers decide from the setting (see ``_media_join_active``).
+        """
+        enabled = bool(enabled) and bool(self.chunk_media_scores_key)
+        if enabled == self.media_index_enabled:
+            return
+        self.media_index_enabled = enabled
+        self.clear_media_scores()
+
+    def chunk_media_map(self, chunk_index):
+        """In-memory ``(offset, media_seconds, is_rap)`` triples for a recent chunk, or ()."""
+        return tuple(self._chunk_media_maps.get(int(chunk_index), ()))
+
+    def _clear_media_maps(self):
+        self._coalesce_media_map = []
+        self._chunk_media_maps = {}
+
+    def note_media_clock(self, media, append_len, offset_in_append=None):
+        """Record one ingest sample onto the in-flight coalesce map.
+
+        Called from the packet-receive hook after a successful PTS/PCR sample,
+        so the clock is parsed once, by ingest. ``append_len`` is the size of
+        the socket read the sample came from and ``offset_in_append`` is the
+        clock packet's offset in it (end of the read when unknown). Those bytes
+        are already in ``_write_buffer``; if failover flushed or cleared them
+        first the sample is dropped. ``is_rap`` is taken from the clock
+        packet's adaptation-field random_access_indicator when present.
+        """
+        if not self.media_index_enabled:
+            return
+        if offset_in_append is None:
+            offset_in_append = append_len - self.TS_PACKET_SIZE
+        with self.lock:
+            buffered = len(self._write_buffer)
+            if buffered < append_len:
+                return
+            abs_off = buffered - append_len + offset_in_append
+            # Ingest samples the locked video clock; RAP here marks a join keyframe.
+            is_rap = False
+            end = abs_off + self.TS_PACKET_SIZE
+            if abs_off >= 0 and end <= buffered:
+                packet = self._write_buffer[abs_off:end]
+                if len(packet) == self.TS_PACKET_SIZE and packet[0] == 0x47:
+                    is_rap = packet_random_access(packet)
+            self._coalesce_media_map.append((abs_off, media, is_rap))
+
+    def _take_coalesce_media_for_chunk(self, chunk_len):
+        """Pop the pairs that fall in the next ``chunk_len`` bytes; rebase the rest.
+
+        The caller has already removed those bytes from ``_write_buffer``, so
+        the pairs go whether or not the Redis write succeeds. Keeping them after
+        a failed write would leave stale offsets pointing into the next chunk.
+        """
+        pairs = self._coalesce_media_map
+        if not pairs:
+            return pairs
+        self._coalesce_media_map = [
+            (off - chunk_len, media, is_rap)
+            for off, media, is_rap in pairs
+            if off >= chunk_len
+        ]
+        return [pair for pair in pairs if pair[0] < chunk_len]
 
     def add_chunk(self, chunk):
         """Add data with optimized Redis storage and TS packet alignment"""
@@ -138,17 +255,11 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                 # Add completed packets to write buffer
                 self._write_buffer.extend(complete_packets)
 
-                # Only write to Redis when we have enough data for an optimized chunk
-                while len(self._write_buffer) >= self.target_chunk_size:
-                    chunk_data = bytes(self._write_buffer[:self.target_chunk_size])
-                    del self._write_buffer[:self.target_chunk_size]
-                    if self._write_chunk_unlocked(chunk_data):
-                        writes_done += 1
+                # No ingest hook: flush in the same locked section.
+                if hook is None:
+                    writes_done = self._flush_full_chunks_unlocked()
 
-            if writes_done > 0:
-                logger.debug(f"Added {writes_done} chunks ({self.target_chunk_size} bytes each) to Redis for channel {self.channel_id} at index {self.index}")
-
-            if sample_packets is not None and hook is not None:
+            if sample_packets is not None:
                 try:
                     hook(sample_packets, wall=arrival_wall)
                 except Exception as e:
@@ -167,6 +278,17 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                             f"Packet receive hook failed for channel {self.channel_id}: {e}"
                         )
 
+                # The hook runs first so its note_media_clock lands in the
+                # chunk these packets complete. The bytes are already buffered
+                # (a concurrent failover flush is handled by the note itself).
+                # Peek without the lock; the flush re-checks under it.
+                if len(self._write_buffer) >= self.target_chunk_size:
+                    with self.lock:
+                        writes_done = self._flush_full_chunks_unlocked()
+
+            if writes_done > 0:
+                logger.debug(f"Added {writes_done} chunks ({self.target_chunk_size} bytes each) to Redis for channel {self.channel_id} at index {self.index}")
+
             self.chunk_available.set()  # Signal that new data is available
             self.chunk_available.clear()  # Reset for next notification
 
@@ -175,6 +297,19 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         except Exception as e:
             logger.error(f"Error adding chunk to buffer: {e}")
             return False
+
+    def _flush_full_chunks_unlocked(self):
+        """Write every full target-size chunk waiting in ``_write_buffer``.
+
+        Caller holds ``self.lock``. Returns how many reached Redis.
+        """
+        written = 0
+        while len(self._write_buffer) >= self.target_chunk_size:
+            chunk_data = bytes(self._write_buffer[:self.target_chunk_size])
+            del self._write_buffer[:self.target_chunk_size]
+            if self._write_chunk_unlocked(chunk_data):
+                written += 1
+        return written
 
     def _write_chunk_unlocked(self, chunk_data):
         """Write one packet-aligned chunk to Redis. Caller must hold self.lock.
@@ -200,6 +335,32 @@ class StreamBuffer(DiscontinuitySidecarMixin):
             pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
             pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
 
+        media_map = None
+        end_score = None
+        if self.media_index_enabled:
+            # The caller already removed these bytes from _write_buffer, so
+            # take their pairs now, whether or not Redis accepts the chunk.
+            media_map = self._take_coalesce_media_for_chunk(len(chunk_data))
+            if media_map:
+                end_score = media_map[-1][1]
+            elif self.media_score_from_chunk_end:
+                # Output-profile path: no ingest samples, score the last PTS/PCR
+                # in this chunk's tail (MAX_CLOCK_SCAN_PACKETS).
+                end_score, _kind, _pid = sample_media_clock(chunk_data)
+            if end_score is not None:
+                pipe.zadd(
+                    self.chunk_media_scores_key,
+                    {str(chunk_index): float(end_score)},
+                )
+            # Refresh TTL even on unscored chunks so a quiet stretch cannot
+            # expire the join index while the channel is live.
+            pipe.expire(self.chunk_media_scores_key, self.chunk_ttl)
+            # One member ages out of the retention window per chunk. Dropping
+            # it directly is O(log N); no scan of the set.
+            min_keep = media_score_min_index(chunk_index, self.chunk_ttl)
+            if min_keep > 0:
+                pipe.zrem(self.chunk_media_scores_key, str(min_keep - 1))
+
         try:
             pipe.execute()
         except Exception as e:
@@ -210,6 +371,15 @@ class StreamBuffer(DiscontinuitySidecarMixin):
             return False
 
         self.index = chunk_index
+        if media_map:
+            maps = self._chunk_media_maps
+            maps[chunk_index] = media_map
+            floor = chunk_index - self.MEDIA_MAP_KEEP_CHUNKS
+            while True:
+                oldest = next(iter(maps))
+                if oldest > floor:
+                    break
+                del maps[oldest]
 
         # First Redis chunk after a discontinuity mark finishes the in-band
         # stamping pass (PAT/PMT/A/V first packets are already in this chunk).
@@ -217,6 +387,23 @@ class StreamBuffer(DiscontinuitySidecarMixin):
             self._disc_stamp_active = False
 
         return True
+
+    def clear_media_scores(self):
+        """Drop stream-time join scores (discontinuity or ingest timeline reset)."""
+        with self.lock:
+            self._clear_media_maps()
+            self._delete_media_scores_key_unlocked()
+
+    def _delete_media_scores_key_unlocked(self):
+        """Delete the Redis media-score zset. Caller holds ``self.lock`` or accepts the race."""
+        if not self.redis_client or not self.chunk_media_scores_key:
+            return
+        try:
+            self.redis_client.delete(self.chunk_media_scores_key)
+        except Exception as e:
+            logger.warning(
+                f"Failed to clear media scores for channel {self.channel_id}: {e}"
+            )
 
     def mark_discontinuity(self):
         """
@@ -248,6 +435,10 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                 self._disc_stamp_active = True
                 self._disc_stamped_pids = set()
                 self._record_discontinuity_unlocked(next_index)
+                # New era gets a fresh media timeline. Clear under this same
+                # lock (clear_media_scores also takes the lock).
+                self._clear_media_maps()
+                self._delete_media_scores_key_unlocked()
 
             if flushed:
                 self.chunk_available.set()
@@ -294,6 +485,7 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                 old_partial_size = len(getattr(self, '_partial_packet', b''))
 
                 self._write_buffer = bytearray()
+                self._coalesce_media_map = []
                 if hasattr(self, '_partial_packet'):
                     self._partial_packet = bytearray()
 
@@ -622,6 +814,213 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         except Exception as e:
             logger.error(f"Error in find_chunk_index_by_time for channel {self.channel_id}: {e}")
             return None
+
+    def find_chunk_index_behind(self, seconds_behind):
+        """Find the chunk index approximately *seconds_behind* the buffer head.
+
+        Uses stream-time scores (PTS/PCR) when experimental ingest is scoring
+        chunks, else chunk receive wall time. Either way it is one Redis round
+        trip (a Lua script) in the common case.
+
+        Returns:
+            int or None: Last-consumed index (next read starts at index+1),
+            or None if no suitable chunk exists.
+        """
+        last_consumed, _target = self.resolve_join_position(seconds_behind)
+        return last_consumed
+
+    def resolve_join_position(self, seconds_behind):
+        """Return ``(last_consumed, target_media)`` for a behind-head join.
+
+        ``target_media`` is set only for stream-time joins so the first chunk
+        can be mid-chunk trimmed. Wall-clock joins return ``(index, None)``.
+        Either element may be None when positioning is unavailable.
+        """
+        if self._media_join_active():
+            last_consumed, target = self._find_media_join(seconds_behind)
+            if last_consumed is not None:
+                return last_consumed, target
+        return self.find_chunk_index_by_time(seconds_behind), None
+
+    def prepare_first_join_chunk(self, chunk_index, chunk_data, target_media):
+        """Trim the first delivered chunk to ``target_media`` (keyframe when possible).
+
+        Uses the owner-side sparse map when present; otherwise scans this one
+        chunk once. PAT/PMT often ride only with keyframes, so a chunk can
+        carry none; the stream layout is then learned from older chunks. When
+        the opening keyframe is in a prior Redis chunk (GOP spanning a
+        boundary), priors are chosen by end-score in about two seconds of
+        media before ``target_media`` (join depth unchanged), fetched once,
+        and prepended from the RAP. When the opening keyframe lacks SPS/PPS
+        (VPS), the same prior fetch supplies in-band parameter sets. Safe
+        no-op when ``target_media`` is None. Skips Redis entirely when the
+        in-chunk cut already lands on a keyframe that carries decoder init,
+        and for any keyframe that does not need H.264/HEVC parameter sets.
+        """
+        if target_media is None or not chunk_data:
+            return chunk_data
+        chunk_index = int(chunk_index)
+        media_map = self.chunk_media_map(chunk_index)
+        priors = None
+        video_pid, stream_type = discover_video_layout(chunk_data)
+        if video_pid is None:
+            priors = self._load_join_prior_chunks(
+                chunk_index, target_media=target_media
+            )
+            video_pid, stream_type = discover_layout_in_chunks(priors)
+        cut = resolve_join_cut(
+            chunk_data,
+            target_media,
+            media_map=media_map,
+            video_pid=video_pid,
+            stream_type=stream_type,
+        )
+        if cut["skip_prior_fetch"]:
+            return prepare_join_chunk(
+                chunk_data, target_media, media_map=media_map, cut=cut
+            )
+
+        if priors is None:
+            priors = self._load_join_prior_chunks(
+                chunk_index, target_media=target_media
+            )
+        extra = None
+        if cut["needs_prior_for_params"]:
+            extra = merge_parameter_sets_from_chunks(
+                priors, cut["video_pid"], cut["stream_type"]
+            )
+        return prepare_join_chunk(
+            chunk_data,
+            target_media,
+            media_map=media_map,
+            cut=cut,
+            prior_chunks=priors if cut["needs_prior_for_kf"] else None,
+            extra_param_sets=extra,
+        )
+
+    def _join_era_floor(self, chunk_index):
+        """First chunk index of the current discontinuity era (inclusive)."""
+        era_floor = 1
+        if not self.discontinuities_key:
+            return era_floor
+        try:
+            discs = self.discontinuities_in_range(0, chunk_index)
+            if discs:
+                # Disc index D is the first chunk of the new source era.
+                era_floor = max(era_floor, max(discs))
+        except Exception as e:
+            logger.debug(
+                f"Join prior discontinuity lookup failed for channel "
+                f"{self.channel_id}: {e}"
+            )
+        return era_floor
+
+    def _join_prior_indexes(self, chunk_index, target_media=None):
+        """Prior chunk indexes newest-first for RAP / decoder-init lookback.
+
+        Scores are end-of-chunk media times taken from the last sampled clock,
+        so a chunk can run slightly past its recorded end, and some chunks are
+        unscored. The span therefore starts at the newest chunk that appears to
+        end before ``target - KEYFRAME_LOOKBACK_SECONDS`` (join depth
+        unchanged), as a one-chunk margin, and runs contiguously through
+        ``chunk_index - 1``. Unscored chunks inside that span are included,
+        never skipped. With no such chunk (a short or newly scored buffer) the
+        span reaches back to the discontinuity era. Always bounded by the era
+        and ``KEYFRAME_LOOKBACK_MAX_CHUNKS``.
+        """
+        chunk_index = int(chunk_index)
+        era_floor = self._join_era_floor(chunk_index)
+        if era_floor >= chunk_index:
+            return []
+
+        newest = chunk_index - 1
+        oldest = era_floor
+        if (
+            target_media is not None
+            and self.redis_client
+            and self.chunk_media_scores_key
+        ):
+            try:
+                floor = float(target_media) - float(KEYFRAME_LOOKBACK_SECONDS)
+                before = self.redis_client.zrevrangebyscore(
+                    self.chunk_media_scores_key, floor, "-inf", start=0, num=1
+                )
+                if before:
+                    oldest = max(oldest, int(before[0]))
+            except Exception as e:
+                logger.debug(
+                    f"Join prior score window failed for channel "
+                    f"{self.channel_id}: {e}"
+                )
+
+        oldest = max(oldest, newest - KEYFRAME_LOOKBACK_MAX_CHUNKS + 1)
+        return list(range(newest, oldest - 1, -1))
+
+    def _load_join_prior_chunks(self, chunk_index, target_media=None):
+        """Chunk bytes newest-first, contiguous with ``chunk_index``.
+
+        Stops at the first missing chunk: chunks expire oldest first, so
+        anything beyond a gap is stale, and joining across it would put a hole
+        in the delivered timeline.
+        """
+        if not self.redis_client or not self.buffer_prefix:
+            return []
+        indices = self._join_prior_indexes(chunk_index, target_media=target_media)
+        if not indices:
+            return []
+        try:
+            pipe = self.redis_client.pipeline(transaction=False)
+            for idx in indices:
+                pipe.get(f"{self.buffer_prefix}{idx}")
+            values = pipe.execute()
+        except Exception as e:
+            logger.debug(
+                f"Join prior chunk load failed for channel {self.channel_id}: {e}"
+            )
+            return []
+        priors = []
+        for data in values:
+            if not data:
+                break
+            priors.append(data)
+        return priors
+
+    def _media_join_active(self):
+        """True when a stream-time join is worth trying.
+
+        The owning writer sets ``media_index_enabled``. A reader on another
+        worker never enables indexing (that clears the published scores), so it
+        follows the experimental setting, which is cached in-process. With the
+        feature off this costs no Redis call, so the default join stays a
+        single wall-clock script.
+        """
+        return bool(self.chunk_media_scores_key) and (
+            self.media_index_enabled or ConfigHelper.experimental_ingest_buffer()
+        )
+
+    def _find_media_join(self, seconds_behind):
+        """Stream-time ``(last_consumed, target_media)``, or ``(None, None)``."""
+        if not self.redis_client or not self._find_chunk_behind_sha:
+            return None, None
+        # Profile/custom-keyed buffers have no discontinuity sidecar; the script
+        # ignores KEYS[3] then, but it still needs a key to pass.
+        disc_key = self.discontinuities_key or self.buffer_index_key
+        try:
+            result = self._find_chunk_behind_sha(
+                keys=[self.chunk_media_scores_key, self.buffer_index_key, disc_key],
+                args=[
+                    seconds_behind,
+                    HEAD_SCORE_LOOKBACK,
+                    1 if self.discontinuities_key else 0,
+                ],
+            )
+            return behind_head_from_lua_result(result)
+        except Exception as e:
+            logger.error(
+                f"Error in media find_chunk_index_behind for channel "
+                f"{self.channel_id}: {e}"
+            )
+            return None, None
 
     def schedule_timer(self, delay, callback, *args, **kwargs):
         """Schedule a timer and track it for proper cleanup"""

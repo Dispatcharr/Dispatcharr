@@ -13,6 +13,12 @@ from apps.proxy.live_proxy.server import ProxyServer
 
 class StreamManagerShutdownTests(TestCase):
     def setUp(self):
+        # The stand-in buffer has no media index. Pin the setting rather than
+        # reading proxy settings, which another test may have left cached.
+        self.enterContext(patch(
+            'apps.proxy.live_proxy.input.manager.ConfigHelper.experimental_ingest_buffer',
+            return_value=False,
+        ))
         self.redis = Mock()
         self.redis.get.return_value = b'test-worker'
         self.redis.hget.return_value = ChannelState.CONNECTING.encode()

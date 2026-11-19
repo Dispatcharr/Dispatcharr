@@ -8,7 +8,7 @@ from apps.proxy.live_proxy.ts_clock import (
     MAX_CLOCK_SCAN_PACKETS,
     extract_pcr,
     extract_pts,
-    last_clock_on_pid,
+    last_clock_on_pid_with_offset,
     sample_media_clock,
     sample_media_clock_for_relock,
     wrap_delta_seconds,
@@ -28,14 +28,20 @@ def make_filler(pid=0x1FFF):
     return bytes(packet)
 
 
-def make_pes_pts(pid, pts_seconds, pusi=True):
+def make_pes_pts(pid, pts_seconds, pusi=True, random_access=False):
     packet = bytearray(TS_PACKET_SIZE)
     packet[0] = 0x47
     packet[1] = ((pid >> 8) & 0x1F) | (0x40 if pusi else 0)
     packet[2] = pid & 0xFF
-    packet[3] = 0x10
     pts = int(pts_seconds * 90000) & ((1 << 33) - 1)
-    base = 4
+    if random_access:
+        packet[3] = 0x30  # adaptation + payload
+        packet[4] = 1
+        packet[5] = 0x40  # random_access_indicator
+        base = 6
+    else:
+        packet[3] = 0x10
+        base = 4
     packet[base : base + 4] = b"\x00\x00\x01\xe0"
     packet[base + 4] = 0
     packet[base + 5] = 0
@@ -90,7 +96,26 @@ class TsClockTests(SimpleTestCase):
 
     def test_last_clock_on_pid_ignores_other_pids(self):
         data = make_pes_pts(0x101, 9.0) + make_pes_pts(VIDEO_PID, 3.0)
-        self.assertAlmostEqual(last_clock_on_pid(data, VIDEO_PID, CLOCK_PTS), 3.0, places=3)
+        media, _ = last_clock_on_pid_with_offset(data, VIDEO_PID, CLOCK_PTS)
+        self.assertAlmostEqual(media, 3.0, places=3)
+
+    def test_last_clock_on_pid_returns_the_clock_packet_offset(self):
+        data = make_filler() + make_pes_pts(VIDEO_PID, 3.0) + make_filler()
+        media, off = last_clock_on_pid_with_offset(data, VIDEO_PID, CLOCK_PTS)
+        self.assertAlmostEqual(media, 3.0, places=3)
+        self.assertEqual(off, TS_PACKET_SIZE)
+
+    def test_last_clock_on_pid_misses_return_none(self):
+        data = make_filler() * 4 + make_pes_pts(0x101, 9.0)
+        self.assertEqual(
+            last_clock_on_pid_with_offset(data, VIDEO_PID, CLOCK_PTS), (None, None)
+        )
+
+    def test_last_clock_on_pid_reads_pcr(self):
+        data = make_filler() + make_pcr(VIDEO_PID, 4.5)
+        media, off = last_clock_on_pid_with_offset(data, VIDEO_PID, CLOCK_PCR)
+        self.assertAlmostEqual(media, 4.5, places=3)
+        self.assertEqual(off, TS_PACKET_SIZE)
 
     def test_sample_scan_ignores_clocks_past_the_tail_cap(self):
         # A PTS older than the tail window must not be found; one inside must.

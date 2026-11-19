@@ -98,10 +98,12 @@ class OutputProfileManager:
                 f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
                 "Another worker owns transcode, using shared buffer"
             )
+            # Read-only: do not enable media indexing (that would clear scores).
             self.output_buffer = self._make_buffer()
             return False
 
         self.output_buffer = self._make_buffer()
+        self._enable_output_media_scores(self.output_buffer)
 
         try:
             from ...utils import posix_spawn_proc
@@ -379,7 +381,22 @@ class OutputProfileManager:
             discontinuities_key=RedisKeys.output_buffer_discontinuities(
                 self.channel_id, fmt
             ),
+            chunk_media_scores_key=RedisKeys.output_chunk_media_scores(
+                self.channel_id, fmt
+            ),
         )
+
+    def _enable_output_media_scores(self, buffer: StreamBuffer):
+        """Score each flushed chunk from its last PTS/PCR when experimental is on.
+
+        Unlike ingest, there is no dense sample map or cushion tracking here:
+        only an end-of-chunk clock so later clients can stream-time join and
+        mid-chunk trim the profile ring.
+        """
+        if not ConfigHelper.experimental_ingest_buffer():
+            return
+        buffer.media_score_from_chunk_end = True
+        buffer.enable_media_index(True)
 
     def _acquire_owner_lock(self) -> bool:
         if not self._redis:
@@ -440,6 +457,7 @@ class OutputProfileManager:
                 RedisKeys.output_owner(self.channel_id, fmt),
                 RedisKeys.output_buffer_index(self.channel_id, fmt),
                 RedisKeys.output_chunk_timestamps(self.channel_id, fmt),
+                RedisKeys.output_chunk_media_scores(self.channel_id, fmt),
                 RedisKeys.output_buffer_discontinuities(self.channel_id, fmt),
             ]
             self._redis.delete(*keys)
