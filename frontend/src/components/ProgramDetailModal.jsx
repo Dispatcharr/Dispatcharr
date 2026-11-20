@@ -24,6 +24,7 @@ import {
   useDateTimeFormat,
 } from '../utils/dateTimeUtils';
 import { imdbUrl, tmdbUrl } from '../utils/externalUrls';
+import { getBasePath } from '../utils/basePath';
 
 const overlayProps = { color: '#000', backgroundOpacity: 0.55, blur: 0 };
 
@@ -44,7 +45,7 @@ function resolveApiUrl(url) {
   if (!url || url.startsWith('http')) return url;
   const apiHost = import.meta.env.DEV
     ? `http://${window.location.hostname}:5656`
-    : '';
+    : getBasePath();
   return `${apiHost}${url}`;
 }
 

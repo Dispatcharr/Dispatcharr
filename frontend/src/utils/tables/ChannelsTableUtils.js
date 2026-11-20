@@ -3,6 +3,7 @@ import {
   OVERRIDABLE_FIELDS,
 } from '../forms/ChannelUtils.js';
 import API from '../../api.js';
+import { getBasePath } from '../basePath.js';
 
 // Inline edits on auto-synced channels route into the override row so
 // sync cannot overwrite them. If the new value matches the provider's,
@@ -100,9 +101,10 @@ export const getLogoOptions = (channelLogos) => {
   return options;
 };
 
-export const m3uUrlBase = `${window.location.protocol}//${window.location.host}/output/m3u`;
-export const epgUrlBase = `${window.location.protocol}//${window.location.host}/output/epg`;
-export const hdhrUrlBase = `${window.location.protocol}//${window.location.host}/hdhr`;
+const publicOrigin = `${window.location.protocol}//${window.location.host}${getBasePath()}`;
+export const m3uUrlBase = `${publicOrigin}/output/m3u`;
+export const epgUrlBase = `${publicOrigin}/output/epg`;
+export const hdhrUrlBase = `${publicOrigin}/hdhr`;
 
 export const reorderChannel = (channelId, insertAfterId) => {
   return API.reorderChannel(channelId, insertAfterId);

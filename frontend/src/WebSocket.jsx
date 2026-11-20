@@ -17,6 +17,7 @@ import useAuthStore from './store/auth';
 import useUsersStore from './store/users';
 import { refreshAfterPluginAction, usePluginStore } from './store/plugins.jsx';
 import { computeBackoffDelay } from './utils/backoff';
+import { getBasePath } from './utils/basePath';
 import { WebsocketContext } from './WebSocketContext';
 
 // UI WebSocket reconnect: grow slowly, cap at 30s, half-jitter so many tabs
@@ -87,8 +88,8 @@ export const WebsocketProvider = ({ children }) => {
     // In production mode, use the same port as the main application so nginx
     // can forward the WebSocket upgrade.
     return appPort
-      ? `${protocol}//${host}:${appPort}/ws/?token=${token}`
-      : `${protocol}//${host}/ws/?token=${token}`;
+      ? `${protocol}//${host}:${appPort}${getBasePath()}/ws/?token=${token}`
+      : `${protocol}//${host}${getBasePath()}/ws/?token=${token}`;
   }, []);
 
   const scheduleReconnect = useCallback(() => {

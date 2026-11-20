@@ -25,6 +25,7 @@ import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import { showNotification } from '../../utils/notificationUtils.js';
+import { withBasePath } from '../../utils/basePath.js';
 
 const VODLogoRowActions = ({ theme, row, deleteLogo }) => {
   const [tableSize] = useBrowserStorage('table-size', 'default');
@@ -266,7 +267,7 @@ export default function VODLogosTable() {
               width={40}
               height={30}
               fit="contain"
-              fallbackSrc="/logo.png"
+              fallbackSrc={withBasePath('/logo.png')}
               style={{
                 transition: 'transform 0.3s ease',
                 cursor: 'pointer',
