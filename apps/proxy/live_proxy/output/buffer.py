@@ -18,8 +18,7 @@ import gevent.event
 
 from ..chunk_time_lookup import (
     FIND_CHUNK_BEHIND_HEAD_LUA,
-    HEAD_SCORE_LOOKBACK,
-    last_consumed_from_lua_result,
+    eval_behind_head_join,
     media_score_min_index,
 )
 from ..discontinuity_sidecar import DiscontinuitySidecarMixin
@@ -195,18 +194,16 @@ class OutputStreamBuffer(DiscontinuitySidecarMixin):
         """
         if not self.redis_client or not self._find_chunk_behind_sha:
             return None
-        disc_key = self.discontinuities_key or self.buffer_index_key
-        use_disc = 1 if self.discontinuities_key else 0
         try:
-            result = self._find_chunk_behind_sha(
-                keys=[
-                    self.chunk_timestamps_key,
-                    self.buffer_index_key,
-                    disc_key,
-                ],
-                args=[seconds_behind, HEAD_SCORE_LOOKBACK, use_disc],
+            last_consumed, _target = eval_behind_head_join(
+                self._find_chunk_behind_sha,
+                self.chunk_timestamps_key,
+                self.buffer_index_key,
+                self.discontinuities_key,
+                seconds_behind,
+                use_discontinuity=bool(self.discontinuities_key),
             )
-            return last_consumed_from_lua_result(result)
+            return last_consumed
         except Exception as e:
             logger.error(
                 f"[OutputBuffer:{self.fmt}:{self.channel_id}] "

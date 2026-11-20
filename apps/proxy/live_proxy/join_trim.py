@@ -17,7 +17,7 @@ from apps.proxy.ts_psi import (
 )
 
 from .psi_scan import index_psi_headers
-from .ts_clock import extract_pts, packet_random_access
+from .ts_clock import align_media_to_reference, extract_pts, packet_random_access
 from .ts_nal import (
     build_parameter_set_packets,
     extract_parameter_sets,
@@ -46,17 +46,41 @@ def _is_video_pusi(data, off, video_pid):
     )
 
 
-def discover_video_layout(data):
+def _video_pusi_offsets(data, video_pid, index=None):
+    """Byte offsets of video PUSI packets, oldest-first.
+
+    Prefers the strided ``PsiHeaderIndex`` so callers do not walk every packet
+    in Python. Pass ``index`` when the caller already indexed ``data`` (same
+    object, one join). Falls back to a linear scan when the buffer is not
+    aligned. The index is immutable header planes only; no locking.
+    """
+    if not data or video_pid is None:
+        return []
+    if index is None:
+        index = index_psi_headers(data)
+    if index is not None:
+        return index.pid_offsets(video_pid, require_pusi=True)
+    offsets = []
+    last_full = (len(data) // TS_PACKET_SIZE - 1) * TS_PACKET_SIZE
+    for off in range(0, last_full + 1, TS_PACKET_SIZE):
+        if _is_video_pusi(data, off, video_pid):
+            offsets.append(off)
+    return offsets
+
+
+def discover_video_layout(data, index=None):
     """Return ``(video_pid, stream_type)`` from the first PAT/PMT in ``data``.
 
     ``(None, None)`` when the chunk carries no usable PSI. That is common:
     muxers often send PAT/PMT only with keyframes, so a chunk shorter than the
     GOP may have none. Callers can then try an older chunk. One header-plane
     index finds both PAT and PMT offsets, so the chunk is not scanned twice.
+    Pass ``index`` from ``index_psi_headers(data)`` to reuse a prior build.
     """
     if not data:
         return None, None
-    index = index_psi_headers(data)
+    if index is None:
+        index = index_psi_headers(data)
     if index is None:
         return None, None
     pats = index.pat_offsets()
@@ -89,61 +113,59 @@ def discover_layout_in_chunks(chunks):
     return None, None
 
 
-def is_keyframe_at(data, offset, video_pid, stream_type):
-    """True when ``data[offset:]`` opens on a video keyframe packet."""
-    if (
-        not data
-        or video_pid is None
-        or offset is None
-        or offset < 0
-        or offset + TS_PACKET_SIZE > len(data)
-    ):
-        return False
-    if not _is_video_pusi(data, offset, video_pid):
-        return False
-    return starts_keyframe(
-        data[offset : offset + TS_PACKET_SIZE], stream_type
-    )
-
-
 def normalize_media_entries(pairs):
-    """Normalize stored pairs to ``(offset, media, is_rap)``."""
+    """Normalize stored triples to ``(offset, media, is_rap)``.
+
+    Owner maps and ``scan_chunk_media_entries`` always store three fields.
+    Shorter items are ignored.
+    """
     out = []
     for item in pairs or ():
-        if len(item) >= 3:
-            out.append((int(item[0]), float(item[1]), bool(item[2])))
-        elif len(item) == 2:
-            out.append((int(item[0]), float(item[1]), False))
+        if len(item) < 3:
+            continue
+        out.append((int(item[0]), float(item[1]), bool(item[2])))
     return out
 
 
-def scan_chunk_media_entries(data, video_pid=None, stream_type=None):
+def scan_chunk_media_entries(data, video_pid=None, stream_type=None, index=None):
     """Build ``(offset, pts, is_kf)`` entries by walking one chunk once.
 
     Used when the owner-side sparse map is unavailable (other workers). With a
     known ``video_pid``, only that elementary stream is considered for PTS and
-    keyframe markers.
+    keyframe markers. PTS values are the raw packet clocks; callers that
+    compare against an unwrapped join target should align via
+    ``align_media_to_reference``. Pass ``index`` when ``data`` was already
+    indexed for this join.
     """
     if not data:
         return []
+    if index is None:
+        index = index_psi_headers(data)
     if video_pid is None and stream_type is None:
-        video_pid, stream_type = discover_video_layout(data)
-    n = len(data) // TS_PACKET_SIZE
+        video_pid, stream_type = discover_video_layout(data, index=index)
     entries = []
+    if video_pid is not None:
+        offsets = _video_pusi_offsets(data, video_pid, index=index)
+        for off in offsets:
+            packet = data[off : off + TS_PACKET_SIZE]
+            pts = extract_pts(packet)
+            if pts is None:
+                continue
+            entries.append(
+                (off, float(pts), starts_keyframe(packet, stream_type))
+            )
+        return entries
+    n = len(data) // TS_PACKET_SIZE
     for i in range(n):
         off = i * TS_PACKET_SIZE
         b1 = data[off + 1]
         if data[off] != 0x47 or not (b1 & 0x40):
             continue
-        if video_pid is not None and (((b1 & 0x1F) << 8) | data[off + 2]) != video_pid:
-            continue
         packet = data[off : off + TS_PACKET_SIZE]
         pts = extract_pts(packet)
         if pts is None:
             continue
-        # PUSI (and video PID when known) already matched; do not re-gate.
-        is_kf = video_pid is not None and starts_keyframe(packet, stream_type)
-        entries.append((off, float(pts), is_kf))
+        entries.append((off, float(pts), False))
     return entries
 
 
@@ -152,10 +174,17 @@ def resolve_start_offset(entries, target_media):
 
     Prefers the last keyframe marker at or before ``target_media``. Falls back
     to the last PTS sample at or before the target, then to 0 (start of chunk).
+    Sample media may be raw PTS while ``target_media`` is unwrapped; each
+    sample is aligned into the target's wrap era before comparison.
     """
     if not entries or target_media is None:
         return 0
-    at_or_before = [e for e in entries if e[1] <= target_media]
+    target = float(target_media)
+    at_or_before = []
+    for offset, media, is_kf in entries:
+        aligned = align_media_to_reference(media, target)
+        if aligned is not None and aligned <= target:
+            at_or_before.append((offset, aligned, is_kf))
     if not at_or_before:
         return 0
     for offset, _media, is_kf in reversed(at_or_before):
@@ -164,12 +193,13 @@ def resolve_start_offset(entries, target_media):
     return int(at_or_before[-1][0])
 
 
-def snap_back_to_keyframe(data, offset, video_pid, stream_type):
+def snap_back_to_keyframe(data, offset, video_pid, stream_type, index=None):
     """Move ``offset`` back to the last video keyframe at or before it, if any.
 
-    Walks backward and stops at the first keyframe, so the cost is the distance
-    to the nearest keyframe behind ``offset`` (at most one GOP), not the whole
-    chunk. Returns ``offset`` unchanged when no keyframe is found.
+    Walks video PUSI packets newest-first and stops at the first keyframe, so
+    the cost is the distance to the nearest keyframe behind ``offset`` (at most
+    one GOP), not the whole chunk. Returns ``offset`` unchanged when no
+    keyframe is found.
     """
     if not data or offset is None or video_pid is None:
         return 0 if offset is None else int(offset)
@@ -180,51 +210,64 @@ def snap_back_to_keyframe(data, offset, video_pid, stream_type):
     if last_full < 0:
         return 0
     offset = min(offset, last_full)
-    for off in range(offset, -1, -TS_PACKET_SIZE):
-        if not _is_video_pusi(data, off, video_pid):
+    for off in reversed(_video_pusi_offsets(data, video_pid, index=index)):
+        if off > offset:
             continue
         if starts_keyframe(data[off : off + TS_PACKET_SIZE], stream_type):
             return off
     return offset
 
 
-def find_last_keyframe_offset(data, video_pid, stream_type, target_media=None):
+def find_last_keyframe_offset(
+    data, video_pid, stream_type, target_media=None, index=None
+):
     """Last video keyframe offset in ``data``, or None.
 
-    Walks backward from the end and stops at the first hit. When
+    Walks video PUSI packets newest-first and stops at the first hit. When
     ``target_media`` is set, keyframes whose PTS is strictly after the target
-    are skipped (undated RAP packets are kept).
+    are skipped (undated RAP packets are kept). Raw packet PTS is aligned to
+    the (possibly unwrapped) target before comparison.
     """
     if not data or video_pid is None:
         return None
-    last_full = (len(data) // TS_PACKET_SIZE - 1) * TS_PACKET_SIZE
-    for off in range(last_full, -1, -TS_PACKET_SIZE):
-        if not _is_video_pusi(data, off, video_pid):
-            continue
+    target = float(target_media) if target_media is not None else None
+    for off in reversed(_video_pusi_offsets(data, video_pid, index=index)):
         packet = data[off : off + TS_PACKET_SIZE]
         if not starts_keyframe(packet, stream_type):
             continue
-        if target_media is not None:
+        if target is not None:
             pts = extract_pts(packet)
-            if pts is not None and float(pts) > float(target_media):
-                continue
+            if pts is not None:
+                aligned = align_media_to_reference(float(pts), target)
+                if aligned is not None and aligned > target:
+                    continue
         return off
     return None
 
 
-def psi_prefix_from_head(head):
-    """Last PAT and its PMT section (PUSI start plus continuations) from the head."""
-    if not head:
+def psi_prefix_before(data, end_offset, index=None):
+    """Last PAT and its PMT section from ``data`` before ``end_offset``.
+
+    ``index`` must be from ``index_psi_headers(data)`` when provided (same
+    buffer). Offsets at or past ``end_offset`` are ignored so a full-chunk
+    index can serve a mid-chunk cut without rebuilding on the discarded head.
+    """
+    if not data or end_offset is None or end_offset <= 0:
         return b""
-    index = index_psi_headers(head)
+    end_offset = min(int(end_offset), len(data))
+    end_offset = (end_offset // TS_PACKET_SIZE) * TS_PACKET_SIZE
+    if end_offset <= 0:
+        return b""
+    if index is None:
+        index = index_psi_headers(data)
     if index is None:
         return b""
-    pats = index.pat_offsets()
+    pats = [off for off in index.pat_offsets() if off + TS_PACKET_SIZE <= end_offset]
     if not pats:
         return b""
     pmt_pid = None
     for off in reversed(pats):
-        pmt_pid = parse_pat(head[off : off + TS_PACKET_SIZE])
+        pmt_pid = parse_pat(data[off : off + TS_PACKET_SIZE])
         if pmt_pid is not None:
             break
     located = index.locate(pmt_pid, pats=pats)
@@ -233,7 +276,9 @@ def psi_prefix_from_head(head):
     last_pat = None
     pmt_run = []
     for offset, is_pat in located:
-        packet = head[offset : offset + TS_PACKET_SIZE]
+        if offset + TS_PACKET_SIZE > end_offset:
+            continue
+        packet = data[offset : offset + TS_PACKET_SIZE]
         if is_pat:
             last_pat = packet
             pmt_run = []
@@ -251,17 +296,26 @@ def psi_prefix_from_head(head):
     return last_pat
 
 
+def psi_prefix_from_head(head):
+    """Last PAT and its PMT section (PUSI start plus continuations) from the head."""
+    if not head:
+        return b""
+    return psi_prefix_before(head, len(head))
+
+
 def parameter_sets_complete(param_sets, stream_type):
     """True when ``param_sets`` has every NAL type needed to start decoding."""
     wanted = param_types_for(stream_type)
     return bool(wanted) and bool(param_sets) and all(t in param_sets for t in wanted)
 
 
-def collect_parameter_sets(data, video_pid, stream_type, end_offset=None):
+def collect_parameter_sets(
+    data, video_pid, stream_type, end_offset=None, index=None
+):
     """Gather H.264/HEVC parameter-set NALs closest to ``end_offset``.
 
-    Walks packets newest-first so a later SPS/PPS (closer to the join cut)
-    wins over an older one from earlier in the same chunk.
+    Walks video PUSI packets newest-first so a later SPS/PPS (closer to the
+    join cut) wins over an older one from earlier in the same chunk.
     """
     if not data or video_pid is None or stream_type not in (0x1B, 0x24):
         return {}
@@ -270,8 +324,8 @@ def collect_parameter_sets(data, video_pid, stream_type, end_offset=None):
     end_offset = min(int(end_offset), len(data))
     end_offset = (end_offset // TS_PACKET_SIZE) * TS_PACKET_SIZE
     params = {}
-    for off in range(end_offset - TS_PACKET_SIZE, -1, -TS_PACKET_SIZE):
-        if not _is_video_pusi(data, off, video_pid):
+    for off in reversed(_video_pusi_offsets(data, video_pid, index=index)):
+        if off + TS_PACKET_SIZE > end_offset:
             continue
         found = extract_parameter_sets(data[off : off + TS_PACKET_SIZE], stream_type)
         if not found:
@@ -300,14 +354,15 @@ def merge_parameter_sets_from_chunks(chunks, video_pid, stream_type):
     return params
 
 
-def find_opening_video_packet(data, video_pid):
+def find_opening_video_packet(data, video_pid, index=None):
     """``(offset, packet)`` of the first video PUSI packet in ``data``, or ``(None, None)``."""
     if not data or video_pid is None:
         return None, None
-    for off in range(0, len(data) - TS_PACKET_SIZE + 1, TS_PACKET_SIZE):
-        if _is_video_pusi(data, off, video_pid):
-            return off, data[off : off + TS_PACKET_SIZE]
-    return None, None
+    offsets = _video_pusi_offsets(data, video_pid, index=index)
+    if not offsets:
+        return None, None
+    off = offsets[0]
+    return off, data[off : off + TS_PACKET_SIZE]
 
 
 def inject_decoder_init(
@@ -354,7 +409,12 @@ def inject_decoder_init(
 
 
 def trim_chunk_at_offset(
-    data, offset, video_pid=None, stream_type=None, extra_param_sets=None
+    data,
+    offset,
+    video_pid=None,
+    stream_type=None,
+    extra_param_sets=None,
+    index=None,
 ):
     """Return ``data[offset:]`` with PAT/PMT and decoder-init when needed.
 
@@ -362,7 +422,7 @@ def trim_chunk_at_offset(
     ``data`` unchanged. Parameter sets are collected from the discarded head
     (and the opening keyframe packet), merged with ``extra_param_sets`` from
     earlier chunks, and injected only when that keyframe does not already
-    carry them.
+    carry them. ``index`` must be from ``index_psi_headers(data)`` when set.
     """
     if not data or offset is None or offset <= 0:
         body = data
@@ -381,16 +441,24 @@ def trim_chunk_at_offset(
             body = data[offset:]
     if not body:
         return data
-    prefix = psi_prefix_from_head(head) if head else b""
+    if index is None and data:
+        index = index_psi_headers(data)
+    # Reuse the full-chunk index for the discarded head (offsets filtered).
+    prefix = psi_prefix_before(data, offset, index=index) if head else b""
     out = prefix + body if prefix else body
     if video_pid is not None and stream_type in (0x1B, 0x24):
+        # ``out`` may differ from ``data`` after PAT/PMT prepend; index separately.
         opening_off, opening = find_opening_video_packet(out, video_pid)
         if opening is None or packet_has_decoder_init(opening, stream_type):
             return out
         # Prefer a complete set closest to the cut. Do not mix a newer SPS from
         # the head with an older PPS from lookback (or the reverse).
         head_params = collect_parameter_sets(
-            data, video_pid, stream_type, end_offset=offset + TS_PACKET_SIZE
+            data,
+            video_pid,
+            stream_type,
+            end_offset=offset + TS_PACKET_SIZE,
+            index=index,
         )
         extra = extra_param_sets or {}
         if parameter_sets_complete(head_params, stream_type):
@@ -423,19 +491,26 @@ def resolve_join_cut(
     Returns a dict used by ``prepare_join_chunk`` and ``StreamBuffer`` so the
     join chunk is not scanned twice. Pass ``video_pid`` / ``stream_type`` when
     the caller already has them (for example learned from an older chunk when
-    this one carries no PAT/PMT).
+    this one carries no PAT/PMT). Builds one ``PsiHeaderIndex`` for
+    ``chunk_data`` and reuses it for layout, scan, and snap.
     """
     if not chunk_data or target_media is None:
         return None
+    index = index_psi_headers(chunk_data)
     if video_pid is None or stream_type is None:
-        video_pid, stream_type = discover_video_layout(chunk_data)
+        video_pid, stream_type = discover_video_layout(chunk_data, index=index)
     entries = normalize_media_entries(media_map)
     if not entries:
         entries = scan_chunk_media_entries(
-            chunk_data, video_pid=video_pid, stream_type=stream_type
+            chunk_data,
+            video_pid=video_pid,
+            stream_type=stream_type,
+            index=index,
         )
     offset = resolve_start_offset(entries, target_media)
-    offset = snap_back_to_keyframe(chunk_data, offset, video_pid, stream_type)
+    offset = snap_back_to_keyframe(
+        chunk_data, offset, video_pid, stream_type, index=index
+    )
     needs_param_sets = stream_type in (0x1B, 0x24)
     has_kf = False
     has_init = False
@@ -468,6 +543,9 @@ def resolve_join_cut(
         # fetch would be wasted.
         "skip_prior_fetch": video_pid is None
         or (has_kf and (not needs_param_sets or has_init)),
+        # Valid only for this ``chunk_data`` object; trim reuses it when the
+        # delivery stays on that single chunk.
+        "index": index,
     }
 
 
@@ -497,6 +575,9 @@ def prepare_join_chunk(
     video_pid = cut["video_pid"]
     stream_type = cut["stream_type"]
     offset = cut["offset"]
+    # Only reuse the cut's index when trimming the same chunk bytes it was
+    # built from. Concatenated prior+join buffers need a fresh index.
+    psi_index = cut.get("index")
 
     if cut["has_kf"] or not prior_chunks:
         return trim_chunk_at_offset(
@@ -505,6 +586,7 @@ def prepare_join_chunk(
             video_pid=video_pid,
             stream_type=stream_type,
             extra_param_sets=extra_param_sets,
+            index=psi_index,
         )
 
     # No in-chunk keyframe at the cut: walk older chunks newest-first. Chunks
@@ -534,4 +616,5 @@ def prepare_join_chunk(
         video_pid=video_pid,
         stream_type=stream_type,
         extra_param_sets=extra_param_sets,
+        index=psi_index,
     )

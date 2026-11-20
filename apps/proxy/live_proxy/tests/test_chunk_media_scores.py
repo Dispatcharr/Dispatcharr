@@ -14,7 +14,11 @@ from apps.proxy.live_proxy.tests.test_ts_clock import (
     make_filler,
     make_pes_pts,
 )
-from apps.proxy.live_proxy.ts_clock import CLOCK_PTS, last_clock_on_pid_with_offset
+from apps.proxy.live_proxy.ts_clock import (
+    CLOCK_PTS,
+    PTS_WRAP_SECONDS,
+    last_clock_on_pid_with_offset,
+)
 
 
 CHANNEL_ID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
@@ -318,9 +322,56 @@ class ChunkMediaScoreJoinTests(SimpleTestCase):
         self.assertTrue(buf.add_chunk(_chunk_with_pts(5.0)))
         self.assertNotIn("1", redis.zsets.get(buf.chunk_media_scores_key, {}))
 
+    def test_media_scores_stay_monotonic_across_pts_wrap(self):
+        """Raw PTS wrapping must not send a join back to the oldest chunk."""
+        buf, redis = self._buffer(media_index=True)
+        before = PTS_WRAP_SECONDS - 2.0
+        after = 2.0
+        self._write_pts_chunks(buf, [before - 2.0, before, after, after + 2.0])
+        scores = redis.zsets[buf.chunk_media_scores_key]
+        ordered = [scores[str(i)] for i in range(1, 5)]
+        self.assertEqual(ordered, sorted(ordered))
+        self.assertGreater(scores["3"], scores["2"])
+        # 2s behind the unwrapped head should land near the post-wrap chunk,
+        # not at the start of the retained window.
+        last_consumed, target = buf.resolve_join_position(2.0)
+        self.assertEqual(last_consumed, 2)
+        self.assertAlmostEqual(target, scores["4"] - 2.0, places=5)
+
+    def test_resolve_join_preserves_fractional_target(self):
+        buf, _redis = self._buffer(media_index=True)
+        self._write_pts_chunks(buf, [100.25, 102.25, 104.25, 106.25])
+        _last, target = buf.resolve_join_position(2.0)
+        self.assertAlmostEqual(target, 104.25, places=5)
+
+    def test_profile_end_scores_lock_to_first_clock_pid(self):
+        """Output-profile scoring stays on one PID across chunks."""
+        buf, redis = self._buffer(media_index=False)
+        buf.media_score_from_chunk_end = True
+        buf.enable_media_index(True)
+        # First chunk ends on audio; later chunks put video newer in the tail.
+        first = (
+            make_filler() * 2
+            + make_pes_pts(VIDEO_PID, 10.0)
+            + make_pes_pts(0x101, 10.5)
+        )
+        second = (
+            make_filler() * 2
+            + make_pes_pts(0x101, 11.0)
+            + make_pes_pts(VIDEO_PID, 12.0)
+        )
+        self.assertTrue(buf.add_chunk(first))
+        self.assertTrue(buf.add_chunk(second))
+        scores = redis.zsets[buf.chunk_media_scores_key]
+        # Locked to audio (newest on first chunk), so chunk 2 uses audio 11.0
+        # rather than the newer video PTS.
+        self.assertAlmostEqual(scores["1"], 10.5, places=3)
+        self.assertAlmostEqual(scores["2"], 11.0, places=3)
+        self.assertEqual(buf._media_score_pid, 0x101)
+
 
 class CoalesceMediaMapTests(SimpleTestCase):
-    """Ingest pass-through: (offset, media) pairs follow bytes into their chunk."""
+    """Ingest pass-through: (offset, media, is_rap) triples follow bytes into their chunk."""
 
     def setUp(self):
         patcher = patch(SETTING, return_value=False)
@@ -335,7 +386,7 @@ class CoalesceMediaMapTests(SimpleTestCase):
         buf.on_packets_received = _ingest_hook(buf)
         return buf, redis
 
-    def test_pairs_map_sample_offsets_inside_the_chunk(self):
+    def test_sample_map_offsets_inside_the_chunk(self):
         buf, redis = self._buffer()
         for pkt in (
             make_filler(),
@@ -348,15 +399,15 @@ class CoalesceMediaMapTests(SimpleTestCase):
         self.assertAlmostEqual(
             redis.zsets[buf.chunk_media_scores_key]["1"], 11.0, places=3
         )
-        pairs = buf.chunk_media_map(1)
+        samples = buf.chunk_media_map(1)
         self.assertEqual(
-            [off for off, _media, _rap in pairs],
+            [off for off, _media, _rap in samples],
             [TS_PACKET_SIZE, 3 * TS_PACKET_SIZE],
         )
-        self.assertAlmostEqual(pairs[0][1], 10.0, places=3)
-        self.assertAlmostEqual(pairs[1][1], 11.0, places=3)
-        self.assertFalse(pairs[0][2])
-        self.assertFalse(pairs[1][2])
+        self.assertAlmostEqual(samples[0][1], 10.0, places=3)
+        self.assertAlmostEqual(samples[1][1], 11.0, places=3)
+        self.assertFalse(samples[0][2])
+        self.assertFalse(samples[1][2])
         self.assertEqual(buf._coalesce_media_map, [])
 
     def test_sample_past_a_chunk_boundary_is_rebased_into_the_next_chunk(self):
@@ -377,7 +428,7 @@ class CoalesceMediaMapTests(SimpleTestCase):
         self.assertEqual(buf.chunk_media_map(2), ((0, 7.0, False),))
 
     def test_failed_write_drops_that_chunks_samples(self):
-        """The bytes are gone after a failed write, so their pairs must go too."""
+        """The bytes are gone after a failed write, so their samples must go too."""
         buf, redis = self._buffer()
         real_pipeline = redis.pipeline
         attempts = {"n": 0}

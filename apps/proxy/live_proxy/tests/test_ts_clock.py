@@ -6,6 +6,9 @@ from apps.proxy.live_proxy.ts_clock import (
     CLOCK_PCR,
     CLOCK_PTS,
     MAX_CLOCK_SCAN_PACKETS,
+    PTS_WRAP_SECONDS,
+    advance_unwrapped_media,
+    align_media_to_reference,
     extract_pcr,
     extract_pts,
     last_clock_on_pid_with_offset,
@@ -156,3 +159,20 @@ class TsClockTests(SimpleTestCase):
         )
         self.assertAlmostEqual(media, 10.0, places=3)
         self.assertEqual(pid, VIDEO_PID)
+
+    def test_advance_unwrapped_media_crosses_pts_wrap(self):
+        near_wrap = PTS_WRAP_SECONDS - 1.0
+        raw, unwrapped = advance_unwrapped_media(near_wrap, None, None)
+        self.assertAlmostEqual(raw, near_wrap, places=6)
+        self.assertAlmostEqual(unwrapped, near_wrap, places=6)
+        raw2, unwrapped2 = advance_unwrapped_media(1.5, raw, unwrapped)
+        self.assertAlmostEqual(raw2, 1.5, places=6)
+        self.assertAlmostEqual(unwrapped2, near_wrap + 2.5, places=5)
+
+    def test_align_media_to_reference_maps_raw_pts_into_unwrapped_era(self):
+        reference = PTS_WRAP_SECONDS + 5.0
+        self.assertAlmostEqual(
+            align_media_to_reference(4.0, reference), PTS_WRAP_SECONDS + 4.0, places=5
+        )
+        self.assertLess(align_media_to_reference(4.0, reference), reference)
+        self.assertGreater(align_media_to_reference(6.0, reference), reference)

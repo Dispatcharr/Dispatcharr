@@ -153,9 +153,11 @@ class _FakeRedis:
                     return [-1]
 
                 target = float(head_score) - behind
+                # Match real Redis: target is a string so fractional seconds survive.
+                target_s = format(target, ".12g")
                 for member in redis.zrevrangebyscore(scores_key, target, "-inf"):
                     if int(member) >= era_floor:
-                        return [int(member), target]
+                        return [int(member), target_s]
 
                 members = redis.zrange(scores_key, 0, -1)
                 min_idx = None
@@ -163,7 +165,7 @@ class _FakeRedis:
                     idx = int(member)
                     if idx >= era_floor and (min_idx is None or idx < min_idx):
                         min_idx = idx
-                return [min_idx, target] if min_idx is not None else [-1]
+                return [min_idx, target_s] if min_idx is not None else [-1]
 
             return _behind_head
 

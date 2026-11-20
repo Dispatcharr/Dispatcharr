@@ -27,7 +27,9 @@ HEAD_SCORE_LOOKBACK = 8
 #
 # Returns {chunk_index, target_media} to position at (caller subtracts 1 for
 # last-consumed). target_media is head_score - behind for mid-chunk trim.
-# {-2} = no buffer head, {-1} = no scored member in era (after shallow fallback).
+# Redis integer-replies truncate Lua numbers, so target_media is returned as a
+# string to keep fractional PTS seconds. {-2} = no buffer head, {-1} = no
+# scored member in era (after shallow fallback).
 FIND_CHUNK_BEHIND_HEAD_LUA = """
 local scores_key = KEYS[1]
 local index_key = KEYS[2]
@@ -83,10 +85,12 @@ if not head_score then
 end
 
 local target = tonumber(head_score) - behind
+-- tostring keeps fractional media seconds (Redis would truncate a number).
+local target_s = tostring(target)
 local result = redis.call('ZREVRANGEBYSCORE', scores_key, target, '-inf', 'LIMIT', 0, 64)
 for _, member in ipairs(result) do
     if tonumber(member) >= era_floor then
-        return {tonumber(member), target}
+        return {tonumber(member), target_s}
     end
 end
 
@@ -101,7 +105,7 @@ for _, member in ipairs(members) do
     end
 end
 if min_idx then
-    return {min_idx, target}
+    return {min_idx, target_s}
 end
 return {-1}
 """
@@ -140,7 +144,28 @@ def behind_head_from_lua_result(result):
     return max(0, code - 1), target
 
 
-def last_consumed_from_lua_result(result):
-    """Map behind-head Lua return to last-consumed index, or None."""
-    last_consumed, _target = behind_head_from_lua_result(result)
-    return last_consumed
+def eval_behind_head_join(
+    script,
+    scores_key,
+    index_key,
+    disc_key,
+    seconds_behind,
+    *,
+    use_discontinuity=False,
+):
+    """Run the behind-head Lua script; return ``(last_consumed, target_media)``.
+
+    ``disc_key`` may be None when discontinuity eras are unused; the script
+    still needs a placeholder key, so ``index_key`` is passed in that case.
+    """
+    if script is None or not scores_key or not index_key:
+        return None, None
+    result = script(
+        keys=[scores_key, index_key, disc_key or index_key],
+        args=[
+            seconds_behind,
+            HEAD_SCORE_LOOKBACK,
+            1 if use_discontinuity and disc_key else 0,
+        ],
+    )
+    return behind_head_from_lua_result(result)

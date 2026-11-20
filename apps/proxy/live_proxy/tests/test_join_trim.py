@@ -10,7 +10,6 @@ from apps.proxy.live_proxy.join_trim import (
     discover_video_layout,
     find_last_keyframe_offset,
     inject_decoder_init,
-    is_keyframe_at,
     prepare_join_chunk,
     psi_prefix_from_head,
     resolve_start_offset,
@@ -21,6 +20,7 @@ from apps.proxy.live_proxy.join_trim import (
 from apps.proxy.live_proxy.ts_nal import (
     build_parameter_set_packets,
     packet_has_decoder_init,
+    starts_keyframe,
 )
 from apps.proxy.live_proxy.tests.test_buffer_discontinuity import _FakeRedis
 from apps.proxy.live_proxy.tests.test_ts_clock import (
@@ -36,7 +36,11 @@ from apps.proxy.live_proxy.tests.test_ts_pmt_watcher import (
     make_pmt,
 )
 from apps.proxy.live_proxy.tests.test_ts_pmt_watcher import AUDIO_PID as PMT_AUDIO_PID
-from apps.proxy.live_proxy.ts_clock import last_clock_on_pid_with_offset, CLOCK_PTS
+from apps.proxy.live_proxy.ts_clock import (
+    CLOCK_PTS,
+    PTS_WRAP_SECONDS,
+    last_clock_on_pid_with_offset,
+)
 
 
 CHANNEL_ID = "cccccccc-dddd-eeee-ffff-000000000001"
@@ -63,6 +67,16 @@ class JoinTrimHelperTests(SimpleTestCase):
             (2 * TS_PACKET_SIZE, 12.0, False),
         ]
         self.assertEqual(resolve_start_offset(entries, 11.5), TS_PACKET_SIZE)
+
+    def test_resolve_aligns_raw_pts_to_unwrapped_target(self):
+        """Sparse/raw packet PTS can sit in [0, wrap) while the join target does not."""
+        entries = [
+            (0, 1.0, False),
+            (TS_PACKET_SIZE, 2.0, True),
+            (2 * TS_PACKET_SIZE, 4.0, False),
+        ]
+        target = PTS_WRAP_SECONDS + 3.0
+        self.assertEqual(resolve_start_offset(entries, target), TS_PACKET_SIZE)
 
     def test_scan_records_pts_and_rap(self):
         pat = make_pat()
@@ -344,9 +358,9 @@ class JoinTrimBufferTests(SimpleTestCase):
         # The sampled clock is the RAP packet itself (newest PTS in the read).
         rap = make_pes_pts(VIDEO_PID, 5.0, random_access=True)
         self.assertTrue(buf.add_chunk(make_filler() * 3 + rap))
-        pairs = buf.chunk_media_map(1)
-        self.assertEqual(len(pairs), 1)
-        self.assertTrue(pairs[0][2])
+        samples = buf.chunk_media_map(1)
+        self.assertEqual(len(samples), 1)
+        self.assertTrue(samples[0][2])
 
     def test_resolve_join_returns_target_and_prepare_trims_first_chunk(self):
         buf, _redis = self._buffer()
@@ -469,7 +483,7 @@ class JoinTrimBufferTests(SimpleTestCase):
         self.assertLess(len(trimmed), len(second))
         # Without the layout fallback this cut lands on a non-keyframe.
         self.assertTrue(trimmed.startswith(rap))
-        self.assertTrue(is_keyframe_at(trimmed, 0, VIDEO_PID, H264))
+        self.assertTrue(starts_keyframe(trimmed[:TS_PACKET_SIZE], H264))
 
     def test_prior_walk_stops_at_missing_chunk(self):
         buf, redis = self._buffer()

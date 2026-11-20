@@ -69,6 +69,38 @@ def wrap_delta_seconds(newer, older):
     return delta
 
 
+def advance_unwrapped_media(raw, last_raw, last_unwrapped):
+    """Advance a continuous media timeline across a 33-bit PTS/PCR wrap.
+
+    ``raw`` is the packet clock in ``[0, PTS_WRAP_SECONDS)``. Returns
+    ``(raw, unwrapped)`` where ``unwrapped`` continues forward from
+    ``last_unwrapped`` (or equals ``raw`` at the start of an era).
+    """
+    raw = float(raw)
+    if last_raw is None or last_unwrapped is None:
+        return raw, raw
+    return raw, float(last_unwrapped) + wrap_delta_seconds(raw, float(last_raw))
+
+
+def align_media_to_reference(sample, reference):
+    """Shift ``sample`` by whole wraps so it sits near ``reference``.
+
+    Packet PTS/PCR values stay in ``[0, PTS_WRAP_SECONDS)`` while join scores
+    may be unwrapped past a wrap. Use the aligned value for at-or-before
+    comparisons against a monotonic target.
+    """
+    if sample is None or reference is None:
+        return sample
+    aligned = float(sample)
+    reference = float(reference)
+    half = PTS_WRAP_SECONDS / 2
+    while aligned < reference - half:
+        aligned += PTS_WRAP_SECONDS
+    while aligned > reference + half:
+        aligned -= PTS_WRAP_SECONDS
+    return aligned
+
+
 def sample_media_clock(data):
     """Newest PTS (else PCR) in ``data``, walking packets backward.
 
