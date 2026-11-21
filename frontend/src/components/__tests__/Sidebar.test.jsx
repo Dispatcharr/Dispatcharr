@@ -55,7 +55,9 @@ vi.mock('lucide-react', async (importOriginal) => {
     PlugZap: ({ onClick }) => (
       <div data-testid="plug-zap-icon" onClick={onClick} />
     ),
-    LogOut: ({ onClick }) => <div data-testid="logout-icon" onClick={onClick} />,
+    LogOut: ({ onClick }) => (
+      <div data-testid="logout-icon" onClick={onClick} />
+    ),
     User: ({ onClick }) => <div data-testid="user-icon" onClick={onClick} />,
     FileImage: ({ onClick }) => (
       <div data-testid="file-image-icon" onClick={onClick} />
@@ -93,10 +95,23 @@ vi.mock('@mantine/core', async () => {
     Stack: ({ children }) => <div>{children}</div>,
     Box: ({ children }) => <div>{children}</div>,
     Text: ({ children }) => <div>{children}</div>,
-    UnstyledButton: ({ children, onClick, component, to, className }) => {
+    UnstyledButton: ({
+      children,
+      onClick,
+      component,
+      to,
+      className,
+      ...rest
+    }) => {
       const Component = component || 'button';
+
       return (
-        <Component onClick={onClick} to={to} className={className}>
+        <Component
+          onClick={onClick}
+          to={to}
+          className={className}
+          data-testid={rest?.['data-testid']}
+        >
           {children}
         </Component>
       );
@@ -288,7 +303,7 @@ describe('Sidebar', () => {
           getHiddenNav: () => [],
           getPinnedPlugins: () => [],
           togglePinnedPlugin: vi.fn(),
-      };
+        };
         return selector(state);
       });
     });
@@ -440,7 +455,7 @@ describe('Sidebar', () => {
           getHiddenNav: () => [],
           getPinnedPlugins: () => [],
           togglePinnedPlugin: vi.fn(),
-      };
+        };
         return selector(state);
       });
 
@@ -452,6 +467,16 @@ describe('Sidebar', () => {
       renderSidebar();
 
       const nameButton = screen.getByText('Admin');
+      fireEvent.click(nameButton);
+
+      expect(screen.getByTestId('user-form')).toBeInTheDocument();
+      expect(screen.getByText('User Form for admin')).toBeInTheDocument();
+    });
+
+    it('should open user form when username avatar is clicked and sidebar is collapsed', () => {
+      renderSidebar({ collapsed: true });
+
+      const nameButton = screen.getByTestId('user-avatar-button');
       fireEvent.click(nameButton);
 
       expect(screen.getByTestId('user-form')).toBeInTheDocument();
@@ -483,7 +508,7 @@ describe('Sidebar', () => {
           getHiddenNav: () => [],
           getPinnedPlugins: () => [],
           togglePinnedPlugin: vi.fn(),
-      };
+        };
         return selector(state);
       });
 
@@ -514,7 +539,7 @@ describe('Sidebar', () => {
           getHiddenNav: () => [],
           getPinnedPlugins: () => [],
           togglePinnedPlugin: vi.fn(),
-      };
+        };
         return selector(state);
       });
     });
@@ -680,7 +705,7 @@ describe('Sidebar', () => {
           getHiddenNav: () => [],
           getPinnedPlugins: () => [],
           togglePinnedPlugin: vi.fn(),
-      };
+        };
         return selector(state);
       });
 
@@ -701,7 +726,7 @@ describe('Sidebar', () => {
           getHiddenNav: () => [],
           getPinnedPlugins: () => [],
           togglePinnedPlugin: vi.fn(),
-      };
+        };
         return selector(state);
       });
 
