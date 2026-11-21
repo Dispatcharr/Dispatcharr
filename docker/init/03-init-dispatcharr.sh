@@ -65,7 +65,7 @@ fi
 sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
 # Configure nginx based on IPv6 availability
-if ip -6 addr show | grep -q "inet6"; then
+if grep -qs . /proc/net/if_inet6; then
     echo "✅ IPv6 is available, enabling IPv6 in nginx"
 else
     echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
