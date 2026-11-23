@@ -218,7 +218,10 @@ class PluginsListAPIView(PluginAuthMixin, APIView):
         # Prefer cached registry; reload explicitly via the reload endpoint
         pm.discover_plugins(sync_db=False, use_cache=True)
         plugins = pm.list_plugins()
+        is_admin = IsAdmin().has_permission(request, self)
         for plugin in plugins:
+            if not is_admin:
+                plugin.pop("settings", None)
             plugin["logo_url"] = _absolutize_logo_url(request, plugin.get("logo_url"))
         return Response({"plugins": plugins})
 

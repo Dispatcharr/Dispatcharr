@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The user modal no longer appears behind the TV Guide filter bar.** - Thanks [@subzero79](https://github.com/subzero79)
 - **Adding a user no longer regenerates the administrator's API key.** Generating a key for an unsaved user previously replaced the signed-in administrator's key. The form now hides key controls until the user is saved; reopen the user to generate a key. (Closes #1964) - Thanks [@crunchingcode](https://github.com/crunchingcode)
 
+### Security
+
+- **The plugin list API no longer returns stored settings to Standard users.** This changes the API response, not the frontend. Other plugin list fields and administrator responses are unchanged. Reported by [@PiratesIRC](https://github.com/PiratesIRC).
+
 ## [0.34.1] - 2026-11-17
 
 ### Fixed
