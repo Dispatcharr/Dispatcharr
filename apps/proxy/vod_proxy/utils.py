@@ -5,6 +5,7 @@ Utility functions for VOD proxy operations.
 import logging
 from django.http import HttpResponse
 
+from dispatcharr.log_redaction import redact_text
 from dispatcharr.utils import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,13 @@ logger = logging.getLogger(__name__)
 # Two such requests are not the same client, so session matching never treats
 # this value as an identity.
 UNKNOWN_CLIENT = "unknown"
+
+
+def vod_error_response(error, prefix="Streaming error"):
+    """Return diagnostic details with known credential patterns masked."""
+    return HttpResponse(
+        f"{prefix}: {redact_text(str(error))}", status=500, content_type="text/plain"
+    )
 
 
 def get_client_info(request):

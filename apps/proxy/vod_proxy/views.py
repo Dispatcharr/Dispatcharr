@@ -23,7 +23,7 @@ from apps.proxy.vod_proxy.multi_worker_connection_manager import (
     infer_content_type_from_url,
     session_user_id,
 )
-from .utils import get_client_info
+from .utils import get_client_info, vod_error_response
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
 from apps.accounts.models import User
@@ -994,7 +994,7 @@ def stream_vod(
 
     except Exception as e:
         logger.error(f"[VOD-EXCEPTION] Error streaming {content_type} {content_id}: {e}", exc_info=True)
-        return HttpResponse(f"Streaming error: {str(e)}", status=500)
+        return vod_error_response(e)
 
 @api_view(["HEAD"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
@@ -1191,7 +1191,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
 
     except Exception as e:
         logger.error(f"[VOD-HEAD] Error in HEAD request: {e}", exc_info=True)
-        return HttpResponse(f"HEAD error: {str(e)}", status=500)
+        return vod_error_response(e, prefix="HEAD error")
 
 def build_vod_stats_data(redis_client):
     """

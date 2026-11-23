@@ -16,7 +16,7 @@ from django.http import StreamingHttpResponse, HttpResponse
 from core.utils import RedisClient
 from apps.vod.models import Movie, Episode
 from apps.m3u.models import M3UAccountProfile
-from apps.proxy.vod_proxy.utils import UNKNOWN_CLIENT
+from apps.proxy.vod_proxy.utils import UNKNOWN_CLIENT, vod_error_response
 
 logger = logging.getLogger("vod_proxy")
 
@@ -1906,7 +1906,7 @@ class MultiWorkerVODConnectionManager:
                     cleanup_session=True,
                 )
 
-            return HttpResponse(f"Streaming error: {str(e)}", status=500)
+            return vod_error_response(e)
 
     def _apply_timeshift_parameters(self, original_url, utc_start=None, utc_end=None, offset=None):
         """Apply timeshift parameters to URL"""
