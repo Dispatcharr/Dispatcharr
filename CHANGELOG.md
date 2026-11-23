@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **OpenAPI schema requests no longer retain unbounded cached results.** Requests with language or version parameters are served without caching, and completed in-process builds are released after waiting requests receive their results. Schema requests are limited to 50 per minute per client IP. Reported by [@PiratesIRC](https://github.com/PiratesIRC).
 - **The plugin list API no longer returns stored settings to Standard users.** This changes the API response, not the frontend. Other plugin list fields and administrator responses are unchanged. Reported by [@PiratesIRC](https://github.com/PiratesIRC).
 
 ## [0.34.1] - 2026-11-17

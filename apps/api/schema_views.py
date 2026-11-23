@@ -24,6 +24,7 @@ from django.core.cache import cache
 from rest_framework.response import Response
 
 from drf_spectacular.views import SpectacularAPIView
+from apps.accounts.throttling import ClientIPRateThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,24 @@ except ImportError:  # pragma: no cover - non-gevent runtimes
 
 # Greenlet-safe after gevent monkey-patching.
 _guard = threading.Lock()
-_in_progress: Dict[str, threading.Event] = {}
-_flight_results: Dict[str, dict] = {}
+_in_progress: Dict[str, "_SchemaFlight"] = {}
 
 _SCHEMA_CACHE_PREFIX = "openapi:schema:"
 _SCHEMA_CACHE_VER_KEY = f"{_SCHEMA_CACHE_PREFIX}cache_ver"
 _BUILD_TIMEOUT_SECONDS = 120
+
+
+class _SchemaFlight(threading.Event):
+    def __init__(self):
+        super().__init__()
+        self.result = None
+
+
+class SchemaRateThrottle(ClientIPRateThrottle):
+    scope = "schema"
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
 
 
 def _run_schema_build(build: Callable[[], dict]) -> dict:
@@ -61,8 +74,6 @@ def _cache_supports_delete_pattern() -> bool:
 
 def clear_schema_cache() -> None:
     """Invalidate cached schemas (tests / forced refresh after deploy)."""
-    with _guard:
-        _flight_results.clear()
     try:
         if _cache_supports_delete_pattern():
             cache.delete_pattern(f"{_SCHEMA_CACHE_PREFIX}*")
@@ -89,6 +100,8 @@ def _key_namespace() -> str:
 
 class LockedSpectacularAPIView(SpectacularAPIView):
     """SpectacularAPIView with single-flight generation and Django cache."""
+
+    throttle_classes = [SchemaRateThrottle]
 
     def _resolve_version(self, request):
         return self.api_version or request.version or self._get_version_parameter(
@@ -134,19 +147,20 @@ class LockedSpectacularAPIView(SpectacularAPIView):
     def _get_schema_response(self, request):
         version = self._resolve_version(request)
         cache_key = self._cache_key(request)
+        cacheable = not (request.GET.get("lang") or request.GET.get("version"))
 
-        cached = self._cache_get(cache_key)
+        cached = self._cache_get(cache_key) if cacheable else None
         if cached is not None:
             return self._schema_response(request, version, cached)
 
         with _guard:
-            cached = self._cache_get(cache_key)
+            cached = self._cache_get(cache_key) if cacheable else None
             if cached is not None:
                 return self._schema_response(request, version, cached)
 
             event = _in_progress.get(cache_key)
             if event is None:
-                event = threading.Event()
+                event = _SchemaFlight()
                 _in_progress[cache_key] = event
                 is_builder = True
             else:
@@ -158,10 +172,7 @@ class LockedSpectacularAPIView(SpectacularAPIView):
                     {"detail": "Timed out waiting for OpenAPI schema generation."},
                     status=503,
                 )
-            cached = self._cache_get(cache_key)
-            if cached is None:
-                with _guard:
-                    cached = _flight_results.get(cache_key)
+            cached = event.result
             if cached is None:
                 return Response(
                     {"detail": "OpenAPI schema generation failed."},
@@ -173,9 +184,9 @@ class LockedSpectacularAPIView(SpectacularAPIView):
             schema = _run_schema_build(
                 lambda: self._build_schema(request, version)
             )
-            with _guard:
-                _flight_results[cache_key] = schema
-            self._cache_set(cache_key, schema)
+            event.result = schema
+            if cacheable:
+                self._cache_set(cache_key, schema)
             return self._schema_response(request, version, schema)
         except Exception:
             logger.exception("OpenAPI schema generation failed")
