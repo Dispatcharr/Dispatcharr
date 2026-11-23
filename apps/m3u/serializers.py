@@ -5,6 +5,7 @@ from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from .utils import parse_m3u_hash_keys
 from core.models import UserAgent
 from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
+from apps.channels.access import is_admin_user
 from apps.channels.serializers import (
     ChannelGroupM3UAccountSerializer,
 )
@@ -13,6 +14,12 @@ import logging
 import json
 
 logger = logging.getLogger(__name__)
+
+
+def _is_admin_request(context):
+    request = context.get("request")
+    user = getattr(request, "user", None)
+    return bool(user and getattr(user, "is_authenticated", False) and is_admin_user(user))
 
 
 class M3UFilterSerializer(serializers.ModelSerializer):
@@ -63,6 +70,13 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
             'replace_pattern': {'required': False, 'allow_blank': True},
             'exp_date': {'required': False, 'allow_null': True},
         }
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not _is_admin_request(self.context):
+            for field in ("search_pattern", "replace_pattern", "custom_properties"):
+                data.pop(field, None)
+        return data
 
     def create(self, validated_data):
         m3u_account = self.context.get("m3u_account")
@@ -243,10 +257,15 @@ class M3UAccountSerializer(serializers.ModelSerializer):
 
         # write_only strips password for everyone; re-add only for admins so
         # operator tooling / profile regex helpers still see credentials.
-        request = self.context.get("request")
-        user = getattr(request, "user", None) if request else None
-        if user is not None and getattr(user, "user_level", 0) >= 10:
+        if _is_admin_request(self.context):
             data["password"] = instance.password or ""
+        else:
+            for field in ("server_url", "username", "custom_properties"):
+                data.pop(field, None)
+            data["last_message"] = (
+                "M3U refresh failed. Contact an administrator."
+                if instance.status == M3UAccount.Status.ERROR else ""
+            )
 
         # Parse custom_properties to get VOD preference and auto_enable_new_groups settings
         custom_props = instance.custom_properties or {}

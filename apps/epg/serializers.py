@@ -51,6 +51,15 @@ class EPGSourceSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not (user and getattr(user, 'is_authenticated', False) and is_admin_user(user)):
+            for field in ('url', 'username', 'custom_properties'):
+                data.pop(field, None)
+            data['last_message'] = (
+                'EPG refresh failed. Contact an administrator.'
+                if instance.status == 'error' else ''
+            )
         # Derive cron_expression from the linked PeriodicTask's crontab (single source of truth)
         # But first check if we have a transient _cron_expression (from create/update before signal runs)
         cron_expr = ''

@@ -170,4 +170,14 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
     async def update(self, event):
         if not user_may_receive_update(self.scope.get("user"), event.get("data")):
             return
+        data = event.get("data") or {}
+        event_type = data.get("type")
+        if event_type in {"m3u_refresh", "epg_refresh"} and not user_is_admin(self.scope.get("user")):
+            # Provider error text may contain arbitrary credentials. Preserve
+            # progress and status while keeping messages on admin sockets only.
+            data = {key: value for key, value in data.items() if key not in {"message", "error"}}
+            if data.get("status") == "error":
+                source = "M3U" if event_type == "m3u_refresh" else "EPG"
+                data["message"] = f"{source} refresh failed. Contact an administrator."
+            event = {**event, "data": data}
         await self.send(text_data=json.dumps(event))

@@ -145,7 +145,7 @@ class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSe
             m3u_account__is_active=True
         ).select_related('m3u_account', 'category')
 
-        serializer = M3UMovieRelationSerializer(relations, many=True)
+        serializer = M3UMovieRelationSerializer(relations, many=True, context={"request": request})
         return Response(serializer.data)
 
 
@@ -445,7 +445,7 @@ class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewS
             m3u_account__is_active=True
         ).select_related('m3u_account', 'category')
 
-        serializer = M3USeriesRelationSerializer(relations, many=True)
+        serializer = M3USeriesRelationSerializer(relations, many=True, context={"request": request})
         return Response(serializer.data)
 
     @extend_schema(responses=EpisodeWithProvidersSerializer(many=True))

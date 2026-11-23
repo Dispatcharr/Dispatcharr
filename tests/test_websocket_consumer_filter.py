@@ -191,6 +191,50 @@ class ConsumerUpdateFilteringTests(SimpleTestCase):
         async_to_sync(consumer.update)(event)
         consumer.send.assert_awaited_once()
 
+    def test_m3u_refresh_hides_provider_messages_from_non_admins(self):
+        event = {
+            "type": "update",
+            "data": {
+                "type": "m3u_refresh", "account": 1, "progress": 100,
+                "status": "error", "message": "password=secret", "error": "secret",
+            },
+        }
+        for level in (User.UserLevel.STREAMER, User.UserLevel.STANDARD):
+            with self.subTest(level=level):
+                consumer = self._consumer(_user(user_level=level))
+                async_to_sync(consumer.update)(event)
+                data = json.loads(consumer.send.await_args.kwargs["text_data"])["data"]
+                self.assertEqual(data["message"], "M3U refresh failed. Contact an administrator.")
+                self.assertNotIn("error", data)
+                self.assertEqual(data["progress"], 100)
+        self.assertEqual(event["data"]["message"], "password=secret")
+
+    def test_m3u_refresh_preserves_admin_error_details(self):
+        consumer = self._consumer(_user(user_level=User.UserLevel.ADMIN))
+        event = {"type": "update", "data": {"type": "m3u_refresh", "message": "detail"}}
+        async_to_sync(consumer.update)(event)
+        self.assertEqual(json.loads(consumer.send.await_args.kwargs["text_data"]), event)
+
+    def test_epg_refresh_hides_provider_errors_from_non_admins(self):
+        event = {
+            "type": "update",
+            "data": {"type": "epg_refresh", "status": "error", "message": "password=secret", "error": "secret"},
+        }
+        for level in (User.UserLevel.STREAMER, User.UserLevel.STANDARD):
+            with self.subTest(level=level):
+                consumer = self._consumer(_user(user_level=level))
+                async_to_sync(consumer.update)(event)
+                data = json.loads(consumer.send.await_args.kwargs["text_data"])["data"]
+                self.assertEqual(data["message"], "EPG refresh failed. Contact an administrator.")
+                self.assertNotIn("error", data)
+        self.assertEqual(event["data"]["message"], "password=secret")
+
+    def test_epg_refresh_preserves_admin_error_details(self):
+        consumer = self._consumer(_user(user_level=User.UserLevel.ADMIN))
+        event = {"type": "update", "data": {"type": "epg_refresh", "error": "detail"}}
+        async_to_sync(consumer.update)(event)
+        self.assertEqual(json.loads(consumer.send.await_args.kwargs["text_data"]), event)
+
     def test_update_drops_admin_only_notification_for_standard_user(self):
         consumer = self._consumer(_user(user_level=User.UserLevel.STANDARD))
         event = {

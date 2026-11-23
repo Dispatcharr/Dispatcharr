@@ -80,7 +80,8 @@ class EPGSourceSerializerSDTests(TestCase):
             username='sduser',
             password='sdpass',
         )
-        data = EPGSourceSerializer(source).data
+        request = MagicMock(user=MagicMock(is_authenticated=True, user_level=10))
+        data = EPGSourceSerializer(source, context={'request': request}).data
         self.assertIn('username', data)
         self.assertEqual(data['username'], 'sduser')
 
@@ -3229,4 +3230,3 @@ class SDPosterNginxKeyContractTests(SimpleTestCase):
             f'v=%61{"a" * 11}',
         ):
             self.assertIsNone(rx.fullmatch(query), query)
-

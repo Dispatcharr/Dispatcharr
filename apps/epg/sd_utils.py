@@ -7,6 +7,7 @@ See https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import time
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from datetime import timedelta, timezone as dt_timezone
 
 import requests
+from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -114,7 +116,7 @@ def sd_credential_fingerprint(username, password):
     the user changes username or password.
     """
     raw = f'{(username or "").strip()}\0{(password or "").strip()}'
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+    return hmac.new(settings.SECRET_KEY.encode('utf-8'), raw.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
 def sd_get_cached_token(source_id, username=None, password=None):
@@ -297,6 +299,16 @@ def sd_auth_lockout_active(source, username=None, password=None):
 
     stored_fp = cp.get('sd_auth_lockout_credential_fp')
     current_fp = sd_credential_fingerprint(username, password)
+    # Existing lockouts used an unkeyed fingerprint. Preserve the cooldown and
+    # upgrade it on first use instead of retrying the same rejected credentials.
+    legacy_raw = f'{(username or "").strip()}\0{(password or "").strip()}'
+    legacy_fp = hashlib.sha256(legacy_raw.encode('utf-8')).hexdigest()
+    if stored_fp and stored_fp == legacy_fp:
+        cp = dict(cp)
+        cp['sd_auth_lockout_credential_fp'] = current_fp
+        source.custom_properties = cp
+        source.save(update_fields=['custom_properties'])
+        stored_fp = current_fp
     if not stored_fp or stored_fp != current_fp:
         sd_clear_auth_lockout(source)
         return False, None, None
