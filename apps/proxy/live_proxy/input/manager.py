@@ -9,9 +9,8 @@ import gevent
 import re
 from django.db import connection, close_old_connections
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel, Stream
+from apps.channels.models import Channel
 from core.utils import log_system_event
-from .buffer import StreamBuffer
 from .ingest_lag import (
     ADOPT_CUSHION_SECONDS,
     CLUSTER_GAP_SECONDS,
@@ -25,7 +24,7 @@ from ..ts_clock import (
 )
 from ..utils import detect_stream_type, get_logger, signal_process_tree
 from ..redis_keys import RedisKeys
-from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
+from ..constants import ChannelState, StreamType, ChannelMetadataField
 from ..config_helper import ConfigHelper
 from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
 from ..utils import resolve_channel_display_name
@@ -136,6 +135,7 @@ class StreamManager:
 
         # Add to your __init__ method
         self._buffer_check_timers = []
+        self._init_buffer_promoted = False
         self.stopping = False
         self.stop_requested = False
 
@@ -2327,6 +2327,9 @@ class StreamManager:
             self.buffer.stopping = True
         # Local state only: stop_channel has already deleted the Redis metadata.
         self._reset_ingest_lag(publish=False)
+        from ..init_buffer import clear_depth_error_log
+
+        clear_depth_error_log(self.channel_id)
 
         # Cancel all buffer check timers
         for timer in list(self._buffer_check_timers):
@@ -2403,8 +2406,6 @@ class StreamManager:
 
         logger.info(f"Switching stream URL from {self.url} to {new_url} for channel {self.channel_id}")
 
-        # Import both models for proper resource management
-        from apps.channels.models import Stream, Channel
         from django.db import connection
 
         # Update stream profile if we're switching streams
@@ -2547,6 +2548,24 @@ class StreamManager:
         self._connection_awaiting_data = True
         self.healthy = True
         self.needs_stream_switch = False
+        self._init_buffer_promoted = False
+        self._clear_init_min_buffer_clock()
+
+    def _clear_init_min_buffer_clock(self):
+        """Drop the shared experimental init max-wait anchor for this channel."""
+        channel_id = getattr(self, "channel_id", None)
+        redis_client = getattr(getattr(self, "buffer", None), "redis_client", None)
+        if not channel_id or not redis_client:
+            return
+        try:
+            redis_client.hdel(
+                RedisKeys.channel_metadata(channel_id),
+                ChannelMetadataField.INIT_MIN_BUFFER_REACHED_AT,
+            )
+        except Exception as e:
+            logger.debug(
+                f"Could not clear init buffer clock for channel {channel_id}: {e}"
+            )
 
     def _startup_no_data_switch_due(self, now=None):
         """True when this connection has sent nothing past stream_startup_timeout."""
@@ -2955,7 +2974,21 @@ class StreamManager:
             self._update_bytes_processed(chunk_size)
 
             # Add directly to buffer without TS-specific processing
+            index_before = getattr(self.buffer, "index", 0)
             success = self.buffer.add_chunk(chunk)
+            if (
+                success
+                and getattr(self, "experimental_ingest_buffer", False)
+                and not getattr(self, "_init_buffer_promoted", False)
+                and getattr(self.buffer, "index", 0) != index_before
+            ):
+                # Catch-up dumps can meet stream-time depth between 0.5s polls.
+                try:
+                    self._evaluate_init_buffer(schedule_retry=False)
+                except Exception as e:
+                    logger.error(
+                        f"Error checking init buffer for channel {self.channel_id}: {e}"
+                    )
 
             if success and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 last_data_key = RedisKeys.last_data(self.buffer.channel_id)
@@ -2975,7 +3008,7 @@ class StreamManager:
             return False
 
     def _set_waiting_for_clients(self):
-        """Set channel state to waiting for clients AFTER buffer has enough chunks"""
+        """Set channel state to waiting for clients AFTER the init buffer gate is met."""
         try:
             if hasattr(self.buffer, 'channel_id') and hasattr(self.buffer, 'redis_client'):
                 channel_id = self.buffer.channel_id
@@ -2997,21 +3030,13 @@ class StreamManager:
 
                     # Only update if not already past connecting
                     if not current_state or current_state in [ChannelState.INITIALIZING, ChannelState.CONNECTING]:
-                        # NEW CODE: Check if buffer has enough chunks
-                        # IMPORTANT: Read from Redis, not local buffer.index, because in multi-worker setup
-                        # each worker has its own StreamBuffer instance with potentially stale local index
-                        buffer_index_key = RedisKeys.buffer_index(channel_id)
-                        current_buffer_index = 0
-                        try:
-                            redis_index = redis_client.get(buffer_index_key)
-                            if redis_index:
-                                current_buffer_index = int(redis_index)
-                        except Exception as e:
-                            logger.error(f"Error reading buffer index from Redis: {e}")
+                        from ..init_buffer import channel_init_buffer_ready
 
-                        initial_chunks_needed = ConfigHelper.initial_behind_chunks()
-
-                        if current_buffer_index < initial_chunks_needed:
+                        # Readiness is Redis index / media scores, not local index.
+                        ready, status = channel_init_buffer_ready(
+                            channel_id, redis_client, stream_manager=self
+                        )
+                        if not ready:
                             # Not enough buffer yet - set to connecting state if not already
                             if current_state != ChannelState.CONNECTING:
                                 update_data = {
@@ -3019,65 +3044,169 @@ class StreamManager:
                                     ChannelMetadataField.STATE_CHANGED_AT: current_time
                                 }
                                 redis_client.hset(metadata_key, mapping=update_data)
-                                logger.info(f"Channel {channel_id} connected but waiting for buffer to fill: {current_buffer_index}/{initial_chunks_needed} chunks")
+                                logger.info(
+                                    f"Channel {channel_id} connected but waiting for "
+                                    f"init buffer to fill ({status.progress_label()})"
+                                )
 
-                            # Schedule a retry to check buffer status again
-                            timer = threading.Timer(0.5, self._check_buffer_and_set_state)
-                            timer.daemon = True
-                            timer.start()
+                            self._schedule_init_buffer_retry()
                             return False
 
                         from ..services.channel_service import ChannelService
 
-                        ChannelService.promote_channel_when_buffer_ready(channel_id)
+                        result = ChannelService.promote_channel_when_buffer_ready(
+                            channel_id, init_status=status
+                        )
+                        return self._finish_init_promote(
+                            redis_client,
+                            result,
+                            schedule_retry=True,
+                        )
                     else:
-                        logger.debug(f"Not changing state: channel {channel_id} already in {current_state} state")
+                        logger.debug(
+                            f"Not changing state: channel {channel_id} already "
+                            f"in {current_state} state"
+                        )
+                        # Latch so later chunk publishes skip readiness work.
+                        self._init_buffer_promoted = True
+                        self._cancel_buffer_check_timers()
         except Exception as e:
             logger.error(f"Error setting waiting for clients state for channel {channel_id}: {e}")
 
-    def _check_buffer_and_set_state(self):
-        """Check buffer size and set state to waiting_for_clients when ready"""
+    def _cancel_buffer_check_timers(self):
+        for timer in list(self._buffer_check_timers):
+            try:
+                if timer and timer.is_alive():
+                    timer.cancel()
+            except Exception:
+                pass
+        self._buffer_check_timers.clear()
+
+    def _schedule_init_buffer_retry(self):
+        """Arm one 0.5s poll; tracked so stop/failover can cancel it."""
+        if not self.running or getattr(self, "stopping", False):
+            return
+        timer = threading.Timer(0.5, self._check_buffer_and_set_state)
+        timer.daemon = True
+        timer.start()
+        self._buffer_check_timers = [
+            t for t in self._buffer_check_timers if t.is_alive()
+        ]
+        self._buffer_check_timers.append(timer)
+
+    def _init_gate_still_pending(self, redis_client):
+        """True while Redis state still expects init buffer fill."""
+        channel_id = getattr(self, "channel_id", None)
+        if not channel_id or not redis_client:
+            return True
         try:
-            # Enhanced stop detection with short-circuit return
-            if not self.running or getattr(self, 'stopping', False) or getattr(self, 'reconnecting', False):
-                logger.debug(f"Buffer check aborted - channel {self.buffer.channel_id} is stopping or reconnecting")
-                return False  # Return value to indicate check was aborted
+            state_raw = redis_client.hget(
+                RedisKeys.channel_metadata(channel_id),
+                ChannelMetadataField.STATE,
+            )
+            if not state_raw:
+                return True
+            state = (
+                state_raw.decode() if isinstance(state_raw, bytes) else state_raw
+            )
+            return state in (
+                ChannelState.INITIALIZING,
+                ChannelState.CONNECTING,
+            )
+        except Exception:
+            return True
 
-            # Clean up completed timers
-            self._buffer_check_timers = [t for t in self._buffer_check_timers if t.is_alive()]
+    def _finish_init_promote(self, redis_client, result, *, schedule_retry):
+        """Latch on success (or when init is over); keep polling on a transient miss.
 
-            if hasattr(self.buffer, 'channel_id') and hasattr(self.buffer, 'redis_client'):
-                channel_id = self.buffer.channel_id
-                redis_client = self.buffer.redis_client
+        ``promote_channel_when_buffer_ready`` can return None while Redis blips
+        or another worker races the state. Giving up forever would leave the
+        channel stuck in connecting until the init grace timeout. If state has
+        already left initializing/connecting, latch instead: there is nothing
+        left for this owner path to do.
+        """
+        if result is not None:
+            self._init_buffer_promoted = True
+            self._cancel_buffer_check_timers()
+            return True
 
-                # IMPORTANT: Read from Redis, not local buffer.index
-                buffer_index_key = RedisKeys.buffer_index(channel_id)
-                current_buffer_index = 0
-                try:
-                    redis_index = redis_client.get(buffer_index_key)
-                    if redis_index:
-                        current_buffer_index = int(redis_index)
-                except Exception as e:
-                    logger.error(f"Error reading buffer index from Redis: {e}")
+        if not self._init_gate_still_pending(redis_client):
+            self._init_buffer_promoted = True
+            self._cancel_buffer_check_timers()
+            logger.debug(
+                f"Init buffer promote skipped for channel {self.channel_id}: "
+                f"state already past connecting"
+            )
+            return True
 
-                initial_chunks_needed = ConfigHelper.initial_behind_chunks()  # Use ConfigHelper for consistency
+        logger.debug(
+            f"Init buffer ready for channel {self.channel_id} but promote "
+            f"returned nothing; will retry"
+        )
+        if schedule_retry:
+            self._schedule_init_buffer_retry()
+        return False
 
-                if current_buffer_index >= initial_chunks_needed:
-                    # We now have enough buffer, call _set_waiting_for_clients again
-                    logger.info(f"Buffer threshold reached for channel {channel_id}: {current_buffer_index}/{initial_chunks_needed} chunks")
-                    self._set_waiting_for_clients()
-                else:
-                    # Still waiting, log progress and schedule another check
-                    logger.debug(f"Buffer filling for channel {channel_id}: {current_buffer_index}/{initial_chunks_needed} chunks")
+    def _evaluate_init_buffer(self, *, schedule_retry):
+        """Promote when the init gate is met.
 
-                    # Schedule another check - NOW WITH STOPPING CHECK
-                    if self.running and not getattr(self, 'stopping', False):
-                        timer = threading.Timer(0.5, self._check_buffer_and_set_state)
-                        timer.daemon = True
-                        timer.start()
-                        self._buffer_check_timers.append(timer)
+        ``schedule_retry`` is for the quiet poll. Chunk publishes pass False so
+        a burst does not stack extra timers; the poll still covers a stream
+        that stops sending while the max-wait clock is running.
+        """
+        if getattr(self, "_init_buffer_promoted", False):
+            return True
+        if not self.running or getattr(self, 'stopping', False) or getattr(self, 'reconnecting', False):
+            logger.debug(
+                f"Buffer check aborted - channel {self.buffer.channel_id} "
+                f"is stopping or reconnecting"
+            )
+            return False
 
-            return True  # Return value to indicate check was successful
+        self._buffer_check_timers = [t for t in self._buffer_check_timers if t.is_alive()]
+
+        if not (hasattr(self.buffer, 'channel_id') and hasattr(self.buffer, 'redis_client')):
+            return False
+
+        channel_id = self.buffer.channel_id
+        redis_client = self.buffer.redis_client
+
+        if not self._init_gate_still_pending(redis_client):
+            self._init_buffer_promoted = True
+            self._cancel_buffer_check_timers()
+            return True
+
+        from ..init_buffer import channel_init_buffer_ready
+
+        ready, status = channel_init_buffer_ready(
+            channel_id, redis_client, stream_manager=self
+        )
+        if ready:
+            from ..services.channel_service import ChannelService
+
+            # Promote directly: avoid a second readiness pass through
+            # _set_waiting_for_clients (state is still connecting).
+            result = ChannelService.promote_channel_when_buffer_ready(
+                channel_id, init_status=status
+            )
+            return self._finish_init_promote(
+                redis_client,
+                result,
+                schedule_retry=schedule_retry,
+            )
+
+        if schedule_retry:
+            logger.debug(
+                f"Init buffer filling for channel {channel_id}: "
+                f"{status.progress_label()}"
+            )
+            self._schedule_init_buffer_retry()
+        return False
+
+    def _check_buffer_and_set_state(self):
+        """Poll init buffer readiness and promote when the gate is met."""
+        try:
+            return self._evaluate_init_buffer(schedule_retry=True)
         except Exception as e:
             logger.error(f"Error in buffer check for channel {self.channel_id}: {e}")
             return False

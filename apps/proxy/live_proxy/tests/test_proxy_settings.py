@@ -25,6 +25,14 @@ class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
         self.assertEqual(TSConfig.get_channel_client_wait_period(), 5)
 
     @patch.object(TSConfig, "get_proxy_settings", return_value={})
+    def test_init_min_buffer_seconds_default(self, _mock_settings):
+        self.assertEqual(TSConfig.get_init_min_buffer_seconds(), 2)
+
+    @patch.object(TSConfig, "get_proxy_settings", return_value={})
+    def test_init_buffer_max_wait_seconds_default(self, _mock_settings):
+        self.assertEqual(TSConfig.get_init_buffer_max_wait_seconds(), 3)
+
+    @patch.object(TSConfig, "get_proxy_settings", return_value={})
     def test_stream_startup_timeout_default(self, _mock_settings):
         self.assertEqual(TSConfig.get_stream_startup_timeout(), 8)
 
@@ -124,6 +132,8 @@ class ProxySettingsSerializerTests(SimpleTestCase):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 6,
+            "init_min_buffer_seconds": 2,
+            "init_buffer_max_wait_seconds": 3,
             "stream_startup_timeout": 8,
             "connection_timeout": 10,
             "validate_redirect_urls": True,
@@ -137,6 +147,59 @@ class ProxySettingsSerializerTests(SimpleTestCase):
         serializer = ProxySettingsSerializer(data=self._valid_payload())
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["channel_client_wait_period"], 5)
+
+    def test_accepts_init_buffer_knobs(self):
+        serializer = ProxySettingsSerializer(
+            data=self._valid_payload(
+                init_min_buffer_seconds=4,
+                init_buffer_max_wait_seconds=5,
+            )
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["init_min_buffer_seconds"], 4)
+        self.assertEqual(serializer.validated_data["init_buffer_max_wait_seconds"], 5)
+
+    def test_init_buffer_knobs_default_when_omitted(self):
+        payload = self._valid_payload()
+        payload.pop("init_min_buffer_seconds")
+        payload.pop("init_buffer_max_wait_seconds")
+        serializer = ProxySettingsSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["init_min_buffer_seconds"], 2)
+        self.assertEqual(serializer.validated_data["init_buffer_max_wait_seconds"], 3)
+
+    def test_init_min_buffer_rejects_above_120(self):
+        serializer = ProxySettingsSerializer(
+            data=self._valid_payload(init_min_buffer_seconds=121)
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("init_min_buffer_seconds", serializer.errors)
+
+    def test_init_buffer_max_wait_rejects_above_120(self):
+        serializer = ProxySettingsSerializer(
+            data=self._valid_payload(init_buffer_max_wait_seconds=121)
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("init_buffer_max_wait_seconds", serializer.errors)
+
+    def test_init_buffer_settings_reject_negative(self):
+        for field in ("init_min_buffer_seconds", "init_buffer_max_wait_seconds"):
+            with self.subTest(field=field):
+                serializer = ProxySettingsSerializer(
+                    data=self._valid_payload(**{field: -1})
+                )
+                self.assertFalse(serializer.is_valid())
+                self.assertIn(field, serializer.errors)
+
+    def test_init_buffer_settings_accept_zero_and_max(self):
+        for field in ("init_min_buffer_seconds", "init_buffer_max_wait_seconds"):
+            for value in (0, 120):
+                with self.subTest(field=field, value=value):
+                    serializer = ProxySettingsSerializer(
+                        data=self._valid_payload(**{field: value})
+                    )
+                    self.assertTrue(serializer.is_valid(), serializer.errors)
+                    self.assertEqual(serializer.validated_data[field], value)
 
     def test_accepts_validate_redirect_urls_false(self):
         serializer = ProxySettingsSerializer(data=self._valid_payload(validate_redirect_urls=False))
@@ -239,6 +302,8 @@ class CoreSettingsProxyDefaultsTests(TestCase):
         self.assertEqual(defaults["channel_init_grace_period"], 60)
         self.assertEqual(defaults["channel_client_wait_period"], 5)
         self.assertEqual(defaults["new_client_behind_seconds"], 6)
+        self.assertEqual(defaults["init_min_buffer_seconds"], 2)
+        self.assertEqual(defaults["init_buffer_max_wait_seconds"], 3)
         self.assertEqual(defaults["stream_startup_timeout"], 8)
         self.assertEqual(defaults["connection_timeout"], 10)
         self.assertTrue(defaults["validate_redirect_urls"])

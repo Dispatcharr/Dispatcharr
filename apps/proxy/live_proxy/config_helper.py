@@ -56,6 +56,18 @@ class ConfigHelper:
         return settings.get('new_client_behind_seconds', 6)
 
     @staticmethod
+    def init_min_buffer_seconds():
+        """Minimum stream-time seconds before experimental channel init may promote."""
+        from apps.proxy.config import TSConfig
+        return TSConfig.get_init_min_buffer_seconds()
+
+    @staticmethod
+    def init_buffer_max_wait_seconds():
+        """Wall-clock seconds to wait for full New Client Buffer after min is met."""
+        from apps.proxy.config import TSConfig
+        return TSConfig.get_init_buffer_max_wait_seconds()
+
+    @staticmethod
     def keepalive_interval():
         """Get keepalive interval in seconds"""
         return ConfigHelper.get('KEEPALIVE_INTERVAL', 0.5)

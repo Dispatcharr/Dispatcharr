@@ -95,6 +95,15 @@ class RedisKeys:
         return f"live:channel:{channel_id}:input:buffer:chunk_media_scores"
 
     @staticmethod
+    def chunk_media_starts(channel_id):
+        """Sorted set mapping start-of-chunk media seconds to chunk indices.
+
+        Paired with ``chunk_media_scores`` (end of chunk) so init depth can
+        include the media inside the oldest chunk.
+        """
+        return f"live:channel:{channel_id}:input:buffer:chunk_media_starts"
+
+    @staticmethod
     def buffer_discontinuities(channel_id):
         """Sorted set of input buffer chunk indices where a source discontinuity
         begins (score == member == chunk index). Consumers such as HLS cut

@@ -17,6 +17,7 @@ class _FakeRedis:
     def __init__(self):
         self.kv = {}
         self.zsets = {}
+        self.hashes = {}
         self.ttls = {}
         self._index = 0
 
@@ -34,6 +35,21 @@ class _FakeRedis:
 
     def get(self, key):
         return self.kv.get(key)
+
+    def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
+
+    def hset(self, key, field, value):
+        self.hashes.setdefault(key, {})[field] = value
+        return 1
+
+    def hdel(self, key, *fields):
+        bucket = self.hashes.get(key, {})
+        removed = 0
+        for field in fields:
+            if bucket.pop(field, None) is not None:
+                removed += 1
+        return removed
 
     def setex(self, key, ttl, value):
         self.kv[key] = value

@@ -43,6 +43,9 @@ class StreamBuffer(DiscontinuitySidecarMixin):
     # per chunk; this is the owner-side detail for mid-chunk join trim and
     # future splice/reconnect work, so it stays small.
     MEDIA_MAP_KEEP_CHUNKS = 32
+    # Time-cap for undersized Redis chunks (PTS span when sampled, else wall).
+    # High bitrate still hits ~256KB first; this is for low-bitrate / radio.
+    MAX_COALESCE_SECONDS = 6.0
 
     def __init__(self, channel_id=None, redis_client=None,
                  buffer_index_key=None, buffer_chunk_prefix=None, chunk_timestamps_key=None,
@@ -74,6 +77,7 @@ class StreamBuffer(DiscontinuitySidecarMixin):
 
         self._write_buffer = bytearray()
         self.target_chunk_size = ConfigHelper.get('BUFFER_CHUNK_SIZE', TS_PACKET_SIZE * 5644)  # ~1MB default
+        self._coalesce_started_at = None
 
         # Sorted-set key for chunk receive-timestamps (wall-clock join fallback)
         self.chunk_timestamps_key = chunk_timestamps_key or (RedisKeys.chunk_timestamps(channel_id) if channel_id else "")
@@ -84,6 +88,11 @@ class StreamBuffer(DiscontinuitySidecarMixin):
             self.chunk_media_scores_key = RedisKeys.chunk_media_scores(channel_id)
         else:
             self.chunk_media_scores_key = ""
+        # Start-of-chunk PTS for the default input buffer. Empty on output rings.
+        if self.chunk_media_scores_key and channel_id and buffer_index_key is None and chunk_media_scores_key is None:
+            self.chunk_media_starts_key = RedisKeys.chunk_media_starts(channel_id)
+        else:
+            self.chunk_media_starts_key = ""
         # When True and the ingest sparse map did not cover this chunk, publish
         # an end score from a cheap tail clock sample (output-profile rings).
         # Input ingest leaves this False so unscored stretches stay unscored.
@@ -259,15 +268,57 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         ]
         return [sample for sample in samples if sample[0] < chunk_len]
 
+    def _coalesce_span_seconds_unlocked(self, now=None):
+        """Seconds held in the coalesce buffer: max of PTS span and wall age.
+
+        PTS needs at least two samples. Wall age covers non-experimental and
+        pre-score feeds so either clock can trip the flush.
+        """
+        now = time.time() if now is None else float(now)
+        wall_span = 0.0
+        started = self._coalesce_started_at
+        if started is not None:
+            wall_span = max(0.0, now - float(started))
+
+        media_span = 0.0
+        samples = self._coalesce_media_map
+        if len(samples) >= 2:
+            media_span = max(0.0, float(samples[-1][1]) - float(samples[0][1]))
+
+        return max(wall_span, media_span)
+
+    def _coalesce_due_unlocked(self, now=None):
+        """True when the undersized coalesce buffer should publish to Redis."""
+        if not self._write_buffer:
+            return False
+        return self._coalesce_span_seconds_unlocked(now) >= self.MAX_COALESCE_SECONDS
+
+    def _flush_ready_chunks_unlocked(self, now=None):
+        """Flush full-size chunks, then a time-capped undersized remainder.
+
+        Caller holds ``self.lock``. Returns how many chunks reached Redis.
+        """
+        now = time.time() if now is None else float(now)
+        buffered_before = len(self._write_buffer)
+        written = self._flush_full_chunks_unlocked()
+        if self._write_buffer and len(self._write_buffer) < buffered_before:
+            # Remainder is new since this flush, not since the buffer was last
+            # empty. Key off shrink (bytes leave even when Redis rejects).
+            self._coalesce_started_at = now
+        if self._write_buffer and self._coalesce_due_unlocked(now):
+            if self._flush_write_buffer_unlocked():
+                written += 1
+        if not self._write_buffer:
+            self._coalesce_started_at = None
+        return written
+
     def add_chunk(self, chunk):
         """Add data with optimized Redis storage and TS packet alignment"""
         if not chunk or self.stopping:
             return False
 
-        # Stamp only when ingest detection is listening. The wall time has to
-        # be the socket arrival, before the Redis write below.
         hook = self.on_packets_received
-        arrival_wall = time.time() if hook is not None else None
+        arrival_wall = time.time()
 
         try:
             # Accumulate partial packets between chunks
@@ -304,11 +355,13 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                     sample_packets = complete_packets
 
                 # Add completed packets to write buffer
+                if complete_packets and not self._write_buffer:
+                    self._coalesce_started_at = arrival_wall
                 self._write_buffer.extend(complete_packets)
 
-                # No ingest hook: flush in the same locked section.
+                # With a hook, flush after sampling so PTS span can tip the cap.
                 if hook is None:
-                    writes_done = self._flush_full_chunks_unlocked()
+                    writes_done = self._flush_ready_chunks_unlocked(now=arrival_wall)
 
             if sample_packets is not None:
                 try:
@@ -329,16 +382,18 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                             f"Packet receive hook failed for channel {self.channel_id}: {e}"
                         )
 
-                # The hook runs first so its note_media_clock lands in the
-                # chunk these packets complete. The bytes are already buffered
-                # (a concurrent failover flush is handled by the note itself).
-                # Peek without the lock; the flush re-checks under it.
-                if len(self._write_buffer) >= self.target_chunk_size:
-                    with self.lock:
-                        writes_done = self._flush_full_chunks_unlocked()
+                # Flush under the lock: failover can clear the coalesce buffer
+                # on another thread between the hook and this write.
+                with self.lock:
+                    writes_done = self._flush_ready_chunks_unlocked(
+                        now=arrival_wall
+                    )
 
             if writes_done > 0:
-                logger.debug(f"Added {writes_done} chunks ({self.target_chunk_size} bytes each) to Redis for channel {self.channel_id} at index {self.index}")
+                logger.debug(
+                    f"Added {writes_done} chunk(s) to Redis for channel "
+                    f"{self.channel_id} at index {self.index}"
+                )
 
             self.chunk_available.set()  # Signal that new data is available
             self.chunk_available.clear()  # Reset for next notification
@@ -388,11 +443,13 @@ class StreamBuffer(DiscontinuitySidecarMixin):
 
         media_map = None
         end_score = None
+        start_score = None
         if self.media_index_enabled:
             # The caller already removed these bytes from _write_buffer, so
             # take their samples now, whether or not Redis accepts the chunk.
             media_map = self._take_coalesce_media_for_chunk(len(chunk_data))
             if media_map:
+                start_score = media_map[0][1]
                 end_score = media_map[-1][1]
             elif self.media_score_from_chunk_end:
                 # Output-profile path: no ingest samples, score the last PTS/PCR
@@ -403,14 +460,23 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                     self.chunk_media_scores_key,
                     {str(chunk_index): float(end_score)},
                 )
+            if start_score is not None and self.chunk_media_starts_key:
+                pipe.zadd(
+                    self.chunk_media_starts_key,
+                    {str(chunk_index): float(start_score)},
+                )
             # Refresh TTL even on unscored chunks so a quiet stretch cannot
             # expire the join index while the channel is live.
             pipe.expire(self.chunk_media_scores_key, self.chunk_ttl)
+            if self.chunk_media_starts_key:
+                pipe.expire(self.chunk_media_starts_key, self.chunk_ttl)
             # One member ages out of the retention window per chunk. Dropping
             # it directly is O(log N); no scan of the set.
             min_keep = media_score_min_index(chunk_index, self.chunk_ttl)
             if min_keep > 0:
                 pipe.zrem(self.chunk_media_scores_key, str(min_keep - 1))
+                if self.chunk_media_starts_key:
+                    pipe.zrem(self.chunk_media_starts_key, str(min_keep - 1))
 
         try:
             pipe.execute()
@@ -450,7 +516,12 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         if not self.redis_client or not self.chunk_media_scores_key:
             return
         try:
-            self.redis_client.delete(self.chunk_media_scores_key)
+            if self.chunk_media_starts_key:
+                self.redis_client.delete(
+                    self.chunk_media_scores_key, self.chunk_media_starts_key
+                )
+            else:
+                self.redis_client.delete(self.chunk_media_scores_key)
         except Exception as e:
             logger.warning(
                 f"Failed to clear media scores for channel {self.channel_id}: {e}"
@@ -476,6 +547,7 @@ class StreamBuffer(DiscontinuitySidecarMixin):
         try:
             with self.lock:
                 flushed = self._flush_write_buffer_unlocked()
+                self._coalesce_started_at = None
                 # Incomplete trailing bytes belong to the old source and must
                 # not be prepended to the new source's first packet.
                 if hasattr(self, '_partial_packet'):
@@ -541,6 +613,7 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                 old_partial_size = len(getattr(self, '_partial_packet', b''))
 
                 self._write_buffer = bytearray()
+                self._coalesce_started_at = None
                 if hasattr(self, '_partial_packet'):
                     self._partial_packet = bytearray()
                 # Same media-timeline wipe as mark_discontinuity's score clear,
@@ -643,6 +716,7 @@ class StreamBuffer(DiscontinuitySidecarMixin):
                 if hasattr(self, '_write_buffer') and len(self._write_buffer) > 0:
                     discarded = len(self._write_buffer)
                     self._write_buffer = bytearray()
+                    self._coalesce_started_at = None
                     if hasattr(self, '_partial_packet'):
                         self._partial_packet = bytearray()
                     logger.debug(

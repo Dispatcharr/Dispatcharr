@@ -79,6 +79,19 @@ class StreamManagerShutdownTests(TestCase):
         self.assertEqual(self.manager._buffer_check_timers, [])
         self.assert_no_failure_published()
 
+    def test_stop_clears_depth_error_silence_for_the_channel(self):
+        """A restarted channel must be able to warn about a depth failure again."""
+        from apps.proxy.live_proxy import init_buffer
+
+        channel_id = self.manager.channel_id
+        init_buffer._depth_error_logged.update({channel_id, 'other-channel'})
+        self.addCleanup(init_buffer.clear_depth_error_log)
+
+        self.manager.stop()
+
+        self.assertNotIn(channel_id, init_buffer._depth_error_logged)
+        self.assertIn('other-channel', init_buffer._depth_error_logged)
+
     def test_server_shutdown_signal_does_not_publish_failure(self):
         # stop_channel signals before scanning Redis, then joins/stops locally.
         # The manager can exit before the later call to manager.stop().

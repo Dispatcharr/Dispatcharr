@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from apps.proxy.live_proxy.constants import ChannelState
+from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 from apps.proxy.live_proxy.input.manager import StreamManager
 from apps.proxy.live_proxy.server import ProxyServer
 
@@ -176,22 +176,7 @@ class EnsureOwnerOrStopTests(SimpleTestCase):
 class InitializeChannelConnectingOrderTests(SimpleTestCase):
     """CONNECTING must be written before the stream manager thread starts."""
 
-    @patch("apps.proxy.live_proxy.server.close_old_connections")
-    @patch("apps.proxy.live_proxy.server.log_system_event")
-    @patch("apps.proxy.live_proxy.server.ClientManager")
-    @patch("apps.proxy.live_proxy.server.StreamBuffer")
-    @patch("apps.proxy.live_proxy.server.StreamManager")
-    @patch("apps.proxy.live_proxy.server.RedisClient")
-    def test_connecting_is_written_before_thread_start(
-        self, _redis_cls, _manager_cls, _buffer_cls, _client_cls, _log_event, _close
-    ):
-        order = []
-        thread = MagicMock()
-        thread.start.side_effect = lambda: order.append("thread_start")
-        thread_cls = MagicMock(
-            side_effect=lambda **kwargs: (order.append("thread_created"), thread)[1]
-        )
-
+    def _make_proxy(self, order):
         proxy = ProxyServer.__new__(ProxyServer)
         proxy.redis_client = MagicMock()
         proxy.redis_client.exists.return_value = False
@@ -215,11 +200,32 @@ class InitializeChannelConnectingOrderTests(SimpleTestCase):
         proxy._channel_init_locks = {}
         proxy._channels_setting_up = set()
         proxy._stopping_channels = set()
+        return proxy
 
+    def _initialize(self, proxy, order):
+        thread = MagicMock()
+        thread.start.side_effect = lambda: order.append("thread_start")
+        thread_cls = MagicMock(
+            side_effect=lambda **kwargs: (order.append("thread_created"), thread)[1]
+        )
         with patch("apps.proxy.live_proxy.server.threading.Thread", thread_cls):
-            result = proxy.initialize_channel(
+            return proxy.initialize_channel(
                 "http://example.com/stream.ts", CHANNEL_ID, user_agent="ua", stream_id=1
             )
+
+    @patch("apps.proxy.live_proxy.server.close_old_connections")
+    @patch("apps.proxy.live_proxy.server.log_system_event")
+    @patch("apps.proxy.live_proxy.server.ClientManager")
+    @patch("apps.proxy.live_proxy.server.StreamBuffer")
+    @patch("apps.proxy.live_proxy.server.StreamManager")
+    @patch("apps.proxy.live_proxy.server.RedisClient")
+    def test_connecting_is_written_before_thread_start(
+        self, _redis_cls, _manager_cls, _buffer_cls, _client_cls, _log_event, _close
+    ):
+        order = []
+        proxy = self._make_proxy(order)
+
+        result = self._initialize(proxy, order)
 
         self.assertTrue(result)
         proxy.update_channel_state.assert_called_once()
@@ -227,3 +233,27 @@ class InitializeChannelConnectingOrderTests(SimpleTestCase):
         self.assertEqual(args[0], CHANNEL_ID)
         self.assertEqual(args[1], ChannelState.CONNECTING)
         self.assertEqual(order, ["connecting", "thread_created", "thread_start"])
+
+    @patch("apps.proxy.live_proxy.server.close_old_connections")
+    @patch("apps.proxy.live_proxy.server.log_system_event")
+    @patch("apps.proxy.live_proxy.server.ClientManager")
+    @patch("apps.proxy.live_proxy.server.StreamBuffer")
+    @patch("apps.proxy.live_proxy.server.StreamManager")
+    @patch("apps.proxy.live_proxy.server.RedisClient")
+    def test_connecting_publishes_the_managers_frozen_experimental_flag(
+        self, _redis_cls, manager_cls, _buffer_cls, _client_cls, _log_event, _close
+    ):
+        """Workers without the manager gate init on the value it froze, not the live setting."""
+        for frozen, stored in ((True, "1"), (False, "0")):
+            with self.subTest(frozen=frozen):
+                manager_cls.return_value.experimental_ingest_buffer = frozen
+                order = []
+                proxy = self._make_proxy(order)
+
+                self.assertTrue(self._initialize(proxy, order))
+
+                extra = proxy.update_channel_state.call_args.args[2]
+                self.assertEqual(
+                    extra[ChannelMetadataField.EXPERIMENTAL_INGEST_BUFFER], stored
+                )
+                self.assertEqual(extra["owner"], WORKER)

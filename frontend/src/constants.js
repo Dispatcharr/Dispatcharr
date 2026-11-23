@@ -41,7 +41,7 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Experimental ingest buffer detection',
     type: 'boolean',
     description:
-      'Off by default. When on, hard buffering uses MPEG-TS cushion debt (empty New Client Buffer held for 1s) from socket-arrival PTS/PCR, not FFmpeg lifetime speed, and new clients join by stream time behind the buffer head. Buffering Speed still colors the Current Speed badge, with a small tolerance (see Buffering Speed). Applies the next time a channel starts.',
+      'Off by default. When on, hard buffering uses MPEG-TS cushion debt (empty New Client Buffer held for 1s) from socket-arrival PTS/PCR, not FFmpeg lifetime speed, new clients join by stream time behind the buffer head, and channel startup waits for stream-time buffer (see Stream Ready Minimum Buffer / Stream Ready Buffer Wait) instead of a fixed chunk count. Buffering Speed still colors the Current Speed badge, with a small tolerance (see Buffering Speed). Applies the next time a channel starts.',
   },
   buffering_speed: {
     label: 'Buffering Speed',
@@ -86,7 +86,19 @@ export const PROXY_SETTINGS_OPTIONS = {
   new_client_behind_seconds: {
     label: 'New Client Buffer (seconds)',
     description:
-      'Seconds to start behind live when a new client connects (0 = start at live). Default 6. With experimental ingest buffer detection on, this is stream time (PTS/PCR) behind the buffer head and the cushion runway before hard buffering. With experimental off, join position uses chunk receive wall time.',
+      'Seconds to start behind live when a new client connects (0 = start at live). Default 6. With experimental ingest buffer detection on, this is stream time (PTS/PCR) behind the buffer head, the cushion runway before hard buffering, and the preferred init depth for the first client. With experimental off, join position uses chunk receive wall time.',
+  },
+  init_min_buffer_seconds: {
+    label: 'Stream Ready Minimum Buffer (seconds)',
+    advanced: true,
+    description:
+      'With experimental ingest on, minimum stream time (PTS/PCR) required before the stream is ready for clients. The channel will not open below this. When New Client Buffer is above 0, a higher minimum is capped at that target and Stream Ready Buffer Wait does not run. Default 2. Ignored when experimental is off.',
+  },
+  init_buffer_max_wait_seconds: {
+    label: 'Stream Ready Buffer Wait (seconds)',
+    advanced: true,
+    description:
+      'With experimental ingest on, after Stream Ready Minimum Buffer is met, wall-clock seconds to keep waiting for the full New Client Buffer before opening anyway. Skipped when New Client Buffer is 0 or the minimum is already at least that target. Default 3. Ignored when experimental is off.',
   },
   max_retries: {
     label: 'Max Connection Attempts',

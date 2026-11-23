@@ -111,6 +111,75 @@ return {-1}
 """
 
 
+def _earliest_score_in_era(redis_client, key, era_floor):
+    """PTS score at the lowest chunk index in ``key`` that is still in the era.
+
+    Members are chunk indexes; zset order is by score, not index, so the first
+    member is not necessarily the oldest chunk in the buffer.
+    """
+    if not key:
+        return None
+    rows = redis_client.zrange(key, 0, -1, withscores=True)
+    min_idx = None
+    score_at_min = None
+    for member, score in rows or ():
+        try:
+            idx = int(member)
+        except (TypeError, ValueError):
+            continue
+        if idx < era_floor:
+            continue
+        if min_idx is None or idx < min_idx:
+            min_idx = idx
+            score_at_min = float(score)
+    return score_at_min
+
+
+def media_score_depth_seconds(
+    redis_client, scores_key, discontinuities_key, head, starts_key=None
+):
+    """Stream-time seconds from the oldest media in the current era to ``head``.
+
+    End scores are the last PTS in each chunk. Start scores are the first PTS.
+    Depth is head end minus the oldest start, so one chunk that spans 6 seconds
+    counts as 6 seconds. Without a start score, that chunk's end score is used
+    instead. Returns None when no scored chunk exists in the era.
+    """
+    if not redis_client or not scores_key:
+        return None
+    try:
+        head = int(head)
+    except (TypeError, ValueError):
+        return None
+    if head <= 0:
+        return None
+
+    era_floor = 1
+    if discontinuities_key:
+        discs = redis_client.zrevrangebyscore(
+            discontinuities_key, head, "-inf", start=0, num=1
+        )
+        if discs:
+            era_floor = max(era_floor, int(discs[0]))
+
+    head_score = redis_client.zscore(scores_key, str(head))
+    if head_score is None:
+        low = max(era_floor, head - HEAD_SCORE_LOOKBACK)
+        for i in range(head - 1, low - 1, -1):
+            head_score = redis_client.zscore(scores_key, str(i))
+            if head_score is not None:
+                break
+    if head_score is None:
+        return None
+
+    oldest = _earliest_score_in_era(redis_client, starts_key, era_floor)
+    if oldest is None:
+        oldest = _earliest_score_in_era(redis_client, scores_key, era_floor)
+    if oldest is None:
+        return None
+    return max(0.0, float(head_score) - oldest)
+
+
 def media_score_min_index(chunk_index, chunk_ttl):
     """Lowest chunk index still worth keeping in a media-score zset.
 

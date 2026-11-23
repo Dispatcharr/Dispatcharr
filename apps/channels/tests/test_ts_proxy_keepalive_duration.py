@@ -6,7 +6,8 @@ MAX_KEEPALIVE_DURATION seconds, and that the timer resets when real data resumes
 """
 
 import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
+
 from django.test import TestCase
 
 
@@ -35,10 +36,13 @@ def _make_generator(consecutive_empty=10, local_index=10, buffer_index=10):
     gen._last_health_check_result = False
     gen._health_check_interval = 2.0
     gen.proxy_server = None
+    # Mid-chunk join trim is armed only on the first real delivery.
+    gen._join_target = None
 
     buffer = MagicMock()
     buffer.index = buffer_index
-    buffer.get_optimized_client_data.return_value = ([], local_index)
+    # The generator unpacks ([(index, bytes), ...], next_index).
+    buffer.get_optimized_client_data_indexed.return_value = ([], local_index)
     buffer.find_oldest_available_chunk.return_value = None
     gen.buffer = buffer
 
@@ -47,15 +51,6 @@ def _make_generator(consecutive_empty=10, local_index=10, buffer_index=10):
 
 class KeepaliveDurationCapTests(TestCase):
     """MAX_KEEPALIVE_DURATION cap disconnects clients stuck in keepalive mode."""
-
-    def _run_generator_to_break(self, gen, max_iterations=20):
-        """Drive _stream_data_generator until it breaks or hits iteration limit."""
-        iterations = 0
-        for _ in gen._stream_data_generator():
-            iterations += 1
-            if iterations >= max_iterations:
-                break
-        return iterations
 
     def test_cap_fires_after_max_duration_exceeded(self):
         """Generator exits when keepalive has run longer than MAX_KEEPALIVE_DURATION."""
@@ -75,8 +70,8 @@ class KeepaliveDurationCapTests(TestCase):
             MockConfig.KEEPALIVE_INTERVAL = 0
             MockConfig.MAX_KEEPALIVE_DURATION = 30
 
-            # First call: keepalive_start_time not yet set (returns current)
-            # Second call: inside the cap check — simulate time elapsed > 30s
+            # First call: keepalive_start_time not yet set (returns current).
+            # Second call: inside the cap check, simulate time elapsed > 30s.
             mock_time.time.side_effect = [
                 1000.0,  # keepalive_start_time assignment
                 1031.0,  # cap check: 31s elapsed > 30s limit
@@ -84,7 +79,7 @@ class KeepaliveDurationCapTests(TestCase):
 
             packets = list(gen._stream_data_generator())
 
-        # No packets should be yielded — cap fires before yield
+        # No packets should be yielded: the cap fires before the yield.
         self.assertEqual(len(packets), 0)
 
     def test_cap_does_not_fire_before_max_duration(self):
@@ -96,10 +91,10 @@ class KeepaliveDurationCapTests(TestCase):
         def time_side_effect():
             nonlocal call_count
             call_count += 1
-            # keepalive_start_time set at t=1000; cap checks always see <30s elapsed
+            # keepalive_start_time set at t=1000; cap checks always see <30s elapsed.
             if call_count == 1:
                 return 1000.0  # keepalive_start_time
-            return 1010.0  # always 10s elapsed — under the 30s cap
+            return 1010.0  # always 10s elapsed, under the 30s cap
 
         with patch.object(gen, '_check_resources', side_effect=[True, True, False]), \
              patch.object(gen, '_should_send_keepalive', return_value=True), \
@@ -126,19 +121,16 @@ class KeepaliveDurationCapTests(TestCase):
         gen = _make_generator()
 
         chunk = b'\x47' * 188
-        real_chunks = ([chunk], gen.local_index + 1)
+        next_index = gen.local_index + 1
+        real_chunks = ([(next_index, chunk)], next_index)
         no_chunks = ([], gen.local_index)
 
-        # Sequence: no data (keepalive), then real data, then stop
-        gen.buffer.get_optimized_client_data.side_effect = [
+        # Sequence: no data (keepalive), then real data, then stop.
+        gen.buffer.get_optimized_client_data_indexed.side_effect = [
             no_chunks,    # iteration 1: keepalive
-            real_chunks,  # iteration 2: real data — should reset timer
-            no_chunks,    # iteration 3: keepalive again — timer restarts fresh
+            real_chunks,  # iteration 2: real data, should reset the timer
+            no_chunks,    # iteration 3: keepalive again, timer restarts fresh
         ]
-
-        captured_start_times = []
-
-        original_gen = gen
 
         with patch.object(gen, '_check_resources', side_effect=[True, True, True, False]), \
              patch.object(gen, '_should_send_keepalive', return_value=True), \
@@ -158,9 +150,8 @@ class KeepaliveDurationCapTests(TestCase):
 
             list(gen._stream_data_generator())
 
-        # Test passes if no exception and generator completes normally —
-        # if the timer were NOT reset, the second keepalive block would
-        # carry over the old start time rather than starting fresh.
+        # Completing without error is enough: if the timer were not reset, the
+        # second keepalive block would keep the old start time.
 
     def test_cap_uses_config_value(self):
         """Cap threshold reads MAX_KEEPALIVE_DURATION from Config, not a hardcoded value."""
@@ -183,13 +174,13 @@ class KeepaliveDurationCapTests(TestCase):
 
             mock_time.time.side_effect = [
                 1000.0,   # keepalive_start_time
-                1050.0,   # cap check: 50s elapsed — under 60s, should NOT fire
+                1050.0,   # cap check: 50s elapsed, under 60s, should NOT fire
                 1000.0,   # last_yield_time update
-                1070.0,   # cap check on next iteration: 70s elapsed — fires
+                1070.0,   # cap check on next iteration: 70s elapsed, fires
             ]
 
             packets = list(gen._stream_data_generator())
 
-        # First iteration: 50s < 60s cap — one keepalive yielded
-        # Second iteration: 70s > 60s cap — generator exits
+        # First iteration: 50s < 60s cap, one keepalive yielded.
+        # Second iteration: 70s > 60s cap, generator exits.
         self.assertEqual(len(packets), 1)
