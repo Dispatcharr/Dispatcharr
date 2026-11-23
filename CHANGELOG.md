@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Channel stream advanced stats show join prebuffer.** When experimental ingest detection measures the provider's initial burst, `join_prebuffer_seconds` appears under Technical in the channel streams table (seconds of media ahead of realtime in that dump).
-- **Experimental MPEG-TS ingest buffer detection, off by default.** Settings → Proxy adds **Experimental ingest buffer detection**. Applies the next time the channel starts. (Fixes #1918)
+- **Experimental MPEG-TS ingest buffer detection, on by default.** Settings → Proxy adds **Experimental ingest buffer detection**. Applies the next time the channel starts. Existing saved proxy settings keep their stored value. (Fixes #1918)
   - Off keeps FFmpeg lifetime `speed=` and **Buffering Speed** for hard buffering. The Current Speed badge stays hard green or red at that threshold.
   - On, the proxy tracks socket-arrival PTS/PCR: a 120s media/wall rate for the **Current Speed** badge, and **cushion debt** for hard buffering (wall ahead of media since the live PTS, with gap credit for the provider's own dump rhythm).
   - Buffering starts when **New Client Buffer** (default **6**) has been empty for **1 second**; brief empty blips are ignored. It clears once debt stays at or under a quarter of that trip line for 1 second, or, when a stall left debt that realtime delivery cannot pay down, once that delivery has held for 5 seconds. **Buffering Timeout** still owns failover while latched.
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Experimental ingest buffer detection defaults to on.** Fresh installs and missing proxy settings get the PTS/PCR path without flipping the switch. Installs that already saved the setting keep that value.
 - **Experimental init depth includes the media inside the first scored chunk.** Each chunk now stores its first PTS as well as its end PTS. A single published chunk that spans the New Client Buffer counts toward ready. Depth was previously the gap between end timestamps only, so the first chunk always read as zero.
 - **Live proxy publishes Redis chunks on a 6s coalesce time cap, not only at ~256KB.** Low-bitrate and radio feeds no longer wait tens of seconds for a full-sized chunk before clients or init can see data (which also caused head-of-line stutter between writes). High-bitrate video still hits the byte limit first. With experimental ingest on, the cap uses PTS/PCR span when samples exist; otherwise (and always as a fallback) it uses wall-clock age of the in-flight buffer. Same ingest path: after each socket read, flush when size or time tips over.
 - **New Client Buffer defaults to 6 seconds** (was 5). Existing saved proxy settings are unchanged.

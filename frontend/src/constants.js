@@ -41,7 +41,7 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Experimental ingest buffer detection',
     type: 'boolean',
     description:
-      'Off by default. When on, hard buffering uses MPEG-TS cushion debt (empty New Client Buffer held for 1s) from socket-arrival PTS/PCR, not FFmpeg lifetime speed, new clients join by stream time behind the buffer head, and channel startup waits for stream-time buffer (see Stream Ready Minimum Buffer / Stream Ready Buffer Wait) instead of a fixed chunk count. Buffering Speed still colors the Current Speed badge, with a small tolerance (see Buffering Speed). Applies the next time a channel starts.',
+      'On by default. When on, hard buffering uses MPEG-TS cushion debt (empty New Client Buffer held for 1s) from socket-arrival PTS/PCR, not FFmpeg lifetime speed, new clients join by stream time behind the buffer head, and channel startup waits for stream-time buffer (see Stream Ready Minimum Buffer / Stream Ready Buffer Wait) instead of a fixed chunk count. Buffering Speed still colors the Current Speed badge, with a small tolerance (see Buffering Speed). Applies the next time a channel starts.',
   },
   buffering_speed: {
     label: 'Buffering Speed',

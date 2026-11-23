@@ -55,7 +55,7 @@ class BaseConfig:
             return {
                 "buffering_timeout": 15,
                 "buffering_speed": 1.0,
-                "experimental_ingest_buffer": False,
+                "experimental_ingest_buffer": True,
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 60,
@@ -173,7 +173,7 @@ class TSConfig(BaseConfig):
     def get_experimental_ingest_buffer(cls):
         """Use MPEG-TS ingest buffer detection instead of FFmpeg speed."""
         settings = cls.get_proxy_settings()
-        return bool(settings.get("experimental_ingest_buffer", False))
+        return bool(settings.get("experimental_ingest_buffer", True))
 
     @classmethod
     def get_channel_init_grace_period(cls):

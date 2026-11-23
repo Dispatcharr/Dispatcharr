@@ -299,6 +299,7 @@ class CoreSettingsProxyDefaultsTests(TestCase):
     def test_get_proxy_settings_defaults_when_missing(self):
         CoreSettings.objects.filter(key="proxy_settings").delete()
         defaults = CoreSettings.get_proxy_settings()
+        self.assertTrue(defaults["experimental_ingest_buffer"])
         self.assertEqual(defaults["channel_init_grace_period"], 60)
         self.assertEqual(defaults["channel_client_wait_period"], 5)
         self.assertEqual(defaults["new_client_behind_seconds"], 6)
