@@ -810,7 +810,11 @@ class ProxyServer:
             if self.am_i_owner(channel_id):
                 self.update_channel_state(channel_id, ChannelState.CONNECTING, {
                     "init_time": str(time.time()),
-                    "owner": self.worker_id
+                    "owner": self.worker_id,
+                    # Frozen at manager construction so non-owner workers match.
+                    ChannelMetadataField.EXPERIMENTAL_INGEST_BUFFER: (
+                        "1" if stream_manager.experimental_ingest_buffer else "0"
+                    ),
                 })
 
                 # Set connection attempt start time

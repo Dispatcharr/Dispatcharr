@@ -75,6 +75,12 @@ class ChannelMetadataField:
     STATE_CHANGED_AT = "state_changed_at"
     INIT_TIME = "init_time"
     CONNECTION_READY_TIME = "connection_ready_time"
+    # Wall clock when experimental init first reached Stream Ready Minimum
+    # Buffer. Shared across workers so a non-owner promote can finish the wait.
+    INIT_MIN_BUFFER_REACHED_AT = "init_min_buffer_reached_at"
+    # Frozen when the owner StreamManager starts so non-owner promote uses the
+    # same init gate even if the global setting flips mid-channel.
+    EXPERIMENTAL_INGEST_BUFFER = "experimental_ingest_buffer"
 
     # Buffer and data tracking
     BUFFER_CHUNKS = "buffer_chunks"

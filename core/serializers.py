@@ -1,5 +1,4 @@
 # core/serializers.py
-import json
 import ipaddress
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -241,6 +240,8 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=6)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=6)
+    init_min_buffer_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=2)
+    init_buffer_max_wait_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=3)
     stream_startup_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=8)
     connection_timeout = serializers.IntegerField(min_value=1, max_value=120, required=False, default=10)
     validate_redirect_urls = serializers.BooleanField(required=False, default=True)

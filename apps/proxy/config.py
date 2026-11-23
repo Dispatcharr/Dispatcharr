@@ -61,6 +61,8 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 6,
+                "init_min_buffer_seconds": 2,
+                "init_buffer_max_wait_seconds": 3,
                 "stream_startup_timeout": 8,
                 "connection_timeout": 10,
                 "validate_redirect_urls": True,
@@ -105,6 +107,10 @@ class TSConfig(BaseConfig):
     INITIAL_BEHIND_CHUNKS = 4  # How many chunks behind to start a client (4 chunks = ~1MB)
     CHUNK_BATCH_SIZE = 5       # How many chunks to fetch in one batch
     NEW_CLIENT_BEHIND_SECONDS = 6  # Start new clients this many seconds behind live (0 = start at live)
+    # Experimental init: wait for at least this much stream time before promoting.
+    INIT_MIN_BUFFER_SECONDS = 2
+    # After min is met, wait this long (wall clock) for the full New Client Buffer.
+    INIT_BUFFER_MAX_WAIT_SECONDS = 3
     KEEPALIVE_INTERVAL = 0.5   # Seconds between keepalive packets when at buffer head
     # Chunk read timeout
     CHUNK_TIMEOUT = 5        # Seconds to wait for each chunk read
@@ -180,6 +186,20 @@ class TSConfig(BaseConfig):
         """Seconds to keep a ready channel alive waiting for the first client to connect."""
         settings = cls.get_proxy_settings()
         return settings.get("channel_client_wait_period", 5)
+
+    @classmethod
+    def get_init_min_buffer_seconds(cls):
+        """Minimum stream-time seconds before experimental channel init may promote."""
+        settings = cls.get_proxy_settings()
+        return settings.get("init_min_buffer_seconds", cls.INIT_MIN_BUFFER_SECONDS)
+
+    @classmethod
+    def get_init_buffer_max_wait_seconds(cls):
+        """Wall-clock seconds to wait for full New Client Buffer after min is met."""
+        settings = cls.get_proxy_settings()
+        return settings.get(
+            "init_buffer_max_wait_seconds", cls.INIT_BUFFER_MAX_WAIT_SECONDS
+        )
 
     @classmethod
     def get_validate_redirect_urls(cls):

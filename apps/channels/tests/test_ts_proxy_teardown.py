@@ -870,6 +870,92 @@ class PromoteChannelWhenBufferReadyTests(TestCase):
         self.assertIsNone(result)
         proxy_server.update_channel_state.assert_not_called()
 
+    @staticmethod
+    def _init_status(ready, buffer_index=7):
+        from apps.proxy.live_proxy.init_buffer import InitBufferStatus
+
+        return InitBufferStatus(
+            ready=ready,
+            experimental=True,
+            buffer_index=buffer_index,
+            media_depth=6.0 if ready else 1.0,
+            behind_seconds=6.0,
+            min_seconds=2.0,
+            max_wait_seconds=3.0,
+        )
+
+    def test_ready_init_status_skips_a_second_readiness_pass(self):
+        redis = MagicMock()
+        redis.hget.return_value = ChannelState.CONNECTING.encode()
+        redis.scard.return_value = 1
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        with ctx, patch(
+            "apps.proxy.live_proxy.init_buffer.channel_init_buffer_ready"
+        ) as readiness:
+            result = ChannelService.promote_channel_when_buffer_ready(
+                CHANNEL_ID, init_status=self._init_status(True)
+            )
+
+        self.assertEqual(result, ChannelState.ACTIVE)
+        readiness.assert_not_called()
+        extra = proxy_server.update_channel_state.call_args[0][2]
+        # The chunk count recorded comes from the caller's status.
+        self.assertEqual(extra[ChannelMetadataField.BUFFER_CHUNKS], "7")
+        self.assertEqual(extra["clients_at_activation"], "1")
+
+    def test_not_ready_init_status_is_checked_again(self):
+        redis = MagicMock()
+        redis.hget.return_value = ChannelState.CONNECTING.encode()
+        redis.scard.return_value = 0
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        with ctx, patch(
+            "apps.proxy.live_proxy.init_buffer.channel_init_buffer_ready",
+            return_value=(True, self._init_status(True, buffer_index=9)),
+        ) as readiness:
+            result = ChannelService.promote_channel_when_buffer_ready(
+                CHANNEL_ID, init_status=self._init_status(False)
+            )
+
+        self.assertEqual(result, ChannelState.WAITING_FOR_CLIENTS)
+        readiness.assert_called_once()
+        extra = proxy_server.update_channel_state.call_args[0][2]
+        self.assertEqual(extra[ChannelMetadataField.BUFFER_CHUNKS], "9")
+
+    def test_not_ready_init_status_stays_unpromoted_when_still_not_ready(self):
+        redis = MagicMock()
+        redis.hget.return_value = ChannelState.CONNECTING.encode()
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        with ctx, patch(
+            "apps.proxy.live_proxy.init_buffer.channel_init_buffer_ready",
+            return_value=(False, self._init_status(False)),
+        ):
+            result = ChannelService.promote_channel_when_buffer_ready(
+                CHANNEL_ID, init_status=self._init_status(False)
+            )
+
+        self.assertIsNone(result)
+        proxy_server.update_channel_state.assert_not_called()
+
+    def test_owner_stream_manager_supplies_the_frozen_experimental_flag(self):
+        """Without a status, the local manager's frozen flag drives the readiness check."""
+        redis = MagicMock()
+        redis.hget.return_value = ChannelState.CONNECTING.encode()
+        manager = MagicMock()
+        manager.experimental_ingest_buffer = True
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        proxy_server.stream_managers = {CHANNEL_ID: manager}
+        with ctx, patch(
+            "apps.proxy.live_proxy.init_buffer.channel_init_buffer_ready",
+            return_value=(False, self._init_status(False)),
+        ) as readiness:
+            ChannelService.promote_channel_when_buffer_ready(CHANNEL_ID)
+
+        self.assertIs(readiness.call_args.kwargs["stream_manager"], manager)
+
     def test_waiting_for_clients_with_clients_becomes_active(self):
         redis = MagicMock()
 
