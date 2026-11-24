@@ -68,7 +68,7 @@ _URL_CACHE_TTL = 300  # seconds
 
 
 def _validate_url(url, timeout=4):
-    """Validate that an HTTP(S) URL is reachable via HEAD request.
+    """Validate that an HTTP(S) URL is reachable via a restricted request.
     Returns True for non-HTTP URLs (skip validation) or 2xx/3xx responses.
     Results are cached per-worker for 5 minutes to avoid redundant requests
     when multiple recordings reference the same dead URL.
@@ -84,15 +84,19 @@ def _validate_url(url, timeout=4):
         return cached[0]
 
     try:
-        resp = requests.head(url, timeout=timeout, allow_redirects=True)
-        if resp.status_code == 405:
-            # Server doesn't support HEAD; fall back to ranged GET
-            resp = requests.get(
-                url, timeout=timeout, allow_redirects=True,
-                headers={"Range": "bytes=0-0"}, stream=True,
-            )
-            resp.close()
-        result = resp.status_code < 400
+        from core.http_security import get_with_validated_redirects
+
+        with get_with_validated_redirects(
+            url, timeout=timeout, method="HEAD", allow_private=True,
+        ) as resp:
+            status_code = resp.status_code
+        if status_code == 405:
+            with get_with_validated_redirects(
+                url, timeout=timeout, headers={"Range": "bytes=0-0"},
+                stream=True, allow_private=True,
+            ) as resp:
+                status_code = resp.status_code
+        result = status_code < 400
     except Exception:
         result = False
 

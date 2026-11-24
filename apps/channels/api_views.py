@@ -3003,10 +3003,11 @@ class BulkDeleteLogosAPIView(APIView):
 
         for logo in logos_to_delete:
             # Handle file deletion for local files
-            if delete_files and logo.url and logo.url.startswith('/data/logos'):
+            local_path = resolve_safe_local_data_path(logo.url) if delete_files else None
+            if local_path:
                 try:
-                    if os.path.exists(logo.url):
-                        os.remove(logo.url)
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
                         local_files_deleted += 1
                         logger.info(f"Deleted local logo file: {logo.url}")
                 except Exception as e:
@@ -3068,10 +3069,11 @@ class CleanupUnusedLogosAPIView(APIView):
         # Handle file deletion for local files if requested
         if delete_files:
             for logo in unused_logos:
-                if logo.url and logo.url.startswith('/data/logos'):
+                local_path = resolve_safe_local_data_path(logo.url)
+                if local_path:
                     try:
-                        if os.path.exists(logo.url):
-                            os.remove(logo.url)
+                        if os.path.exists(local_path):
+                            os.remove(local_path)
                             local_files_deleted += 1
                             logger.info(f"Deleted local logo file: {logo.url}")
                     except Exception as e:
@@ -3178,10 +3180,11 @@ class LogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
         delete_file = request.query_params.get('delete_file', 'false').lower() == 'true'
 
         # Check if it's a local file that should be deleted
-        if delete_file and logo.url and logo.url.startswith('/data/logos'):
+        local_path = resolve_safe_local_data_path(logo.url) if delete_file else None
+        if local_path:
             try:
-                if os.path.exists(logo.url):
-                    os.remove(logo.url)
+                if os.path.exists(local_path):
+                    os.remove(local_path)
                     logger.info(f"Deleted local logo file: {logo.url}")
             except Exception as e:
                 logger.error(f"Failed to delete logo file {logo.url}: {str(e)}")

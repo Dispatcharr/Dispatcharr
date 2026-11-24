@@ -230,6 +230,7 @@ def validate_outbound_http_url(
 def get_ssrf_safe(
     url: str,
     *,
+    method: str = "GET",
     timeout: float | tuple[float, float] = 15,
     allow_private: bool = False,
     allow_loopback: bool = False,
@@ -237,7 +238,7 @@ def get_ssrf_safe(
     headers: dict[str, str] | None = None,
     session: Any | None = None,
 ):
-    """GET *url* after SSRF validation, connecting only to validated IPs.
+    """GET or HEAD *url* after SSRF validation, connecting only to validated IPs.
 
     Resolves and validates once, then dials those addresses in order while
     preserving the original hostname for the ``Host`` header and (for HTTPS)
@@ -251,6 +252,9 @@ def get_ssrf_safe(
     and HTTP responses including error statuses, are not retried on another
     address.
     """
+    if method not in ("GET", "HEAD"):
+        raise ValueError("Only GET and HEAD requests are supported.")
+
     validated_ips = _dedupe_ips(
         validate_outbound_http_url(
             url,
@@ -282,7 +286,7 @@ def get_ssrf_safe(
             with _private_session(session) as sess:
                 if pin_tls:
                     _pin_tls_hostname(sess, sni_hostname)
-                return sess.get(
+                return getattr(sess, method.lower())(
                     pinned_url,
                     timeout=timeout,
                     allow_redirects=False,
@@ -306,6 +310,7 @@ def get_ssrf_safe(
 def get_with_validated_redirects(
     url: str,
     *,
+    method: str = "GET",
     timeout: float | tuple[float, float] = 15,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
     allow_private: bool = False,
@@ -314,7 +319,7 @@ def get_with_validated_redirects(
     headers: dict[str, str] | None = None,
     session: Any | None = None,
 ):
-    """GET *url*, re-validating SSRF policy on every redirect hop.
+    """GET or HEAD *url*, re-validating SSRF policy on every redirect hop.
 
     Automatic redirects are disabled. Each ``Location`` is joined against the
     current URL, then passed through :func:`get_ssrf_safe` (validate + pin IP)
@@ -329,6 +334,7 @@ def get_with_validated_redirects(
     for _ in range(max_redirects + 1):
         response = get_ssrf_safe(
             current_url,
+            method=method,
             timeout=timeout,
             allow_private=allow_private,
             allow_loopback=allow_loopback,
