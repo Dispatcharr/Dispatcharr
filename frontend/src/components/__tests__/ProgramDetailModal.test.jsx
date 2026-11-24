@@ -89,6 +89,7 @@ describe('ProgramDetailModal', () => {
 
   const baseChannel = {
     id: 'ch-1',
+    uuid: 'uuid-amc',
     name: 'AMC',
     channel_number: 4,
     logo: { url: 'http://logo.test/amc.png' },
@@ -255,6 +256,19 @@ describe('ProgramDetailModal', () => {
     );
 
     expect(screen.getByText('Watch Live')).toBeInTheDocument();
+  });
+
+  it('hides Watch Live when the channel has no uuid', () => {
+    render(
+      <ProgramDetailModal
+        program={baseProgram}
+        channel={{ ...baseChannel, uuid: undefined }}
+        opened={true}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText('Watch Live')).not.toBeInTheDocument();
   });
 
   it('hides Watch Live button for non-live programs', async () => {

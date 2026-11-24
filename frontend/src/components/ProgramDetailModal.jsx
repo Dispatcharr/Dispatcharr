@@ -271,7 +271,7 @@ export default function ProgramDetailModal({
             </Stack>
 
             <Group gap="sm">
-              {program.isLive && channel && (
+              {program.isLive && channel?.uuid && (
                 <Button
                   leftSection={<Video size={14} />}
                   variant="filled"

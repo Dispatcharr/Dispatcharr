@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import * as guideUtils from '../../utils/guideUtils';
@@ -306,6 +306,256 @@ describe('guideUtils', () => {
       const params = new URLSearchParams({ channel_profile_id: '3' });
       await guideUtils.fetchPrograms(params);
       expect(API.getGrid).toHaveBeenCalledWith(params);
+    });
+  });
+
+  // ── buildProgramSearchParams ──────────────────────────────────────────────
+
+  describe('buildProgramSearchParams', () => {
+    const anchor = '2024-01-15T12:00:00.000Z';
+    const baseSearch = {
+      query: 'news',
+      field: 'title',
+      window: '24h',
+      mode: 'contains',
+      page: 1,
+      anchor,
+    };
+
+    it('should search the title by default', () => {
+      const params = guideUtils.buildProgramSearchParams(baseSearch);
+
+      expect(params.get('title')).toBe('news');
+      expect(params.has('description')).toBe(false);
+    });
+
+    it('should search only the description when selected', () => {
+      const params = guideUtils.buildProgramSearchParams({
+        ...baseSearch,
+        field: 'description',
+      });
+
+      expect(params.get('description')).toBe('news');
+      expect(params.has('title')).toBe(false);
+    });
+
+    it('should use airing_at for the airing now window', () => {
+      const params = guideUtils.buildProgramSearchParams({
+        ...baseSearch,
+        window: 'now',
+      });
+
+      expect(params.get('airing_at')).toBe(anchor);
+      expect(params.has('end_after')).toBe(false);
+      expect(params.has('start_before')).toBe(false);
+    });
+
+    it('should include programs already airing in the next 24 hours', () => {
+      const params = guideUtils.buildProgramSearchParams(baseSearch);
+
+      expect(params.get('end_after')).toBe(anchor);
+      expect(params.get('start_before')).toBe('2024-01-16T12:00:00.000Z');
+      expect(params.has('airing_at')).toBe(false);
+    });
+
+    it('should cover the next 7 days', () => {
+      const params = guideUtils.buildProgramSearchParams({
+        ...baseSearch,
+        window: '7d',
+      });
+
+      expect(params.get('end_after')).toBe(anchor);
+      expect(params.get('start_before')).toBe('2024-01-22T12:00:00.000Z');
+    });
+
+    describe('across a daylight saving change', () => {
+      beforeEach(() => {
+        vi.stubEnv('TZ', 'America/Toronto');
+      });
+
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+
+      it('should end the next 24 hours 24 hours after the anchor', () => {
+        const params = guideUtils.buildProgramSearchParams({
+          ...baseSearch,
+          anchor: '2026-10-31T16:00:00.000Z',
+        });
+
+        expect(params.get('start_before')).toBe('2026-11-01T16:00:00.000Z');
+      });
+
+      it('should end the next 7 days 168 hours after the anchor', () => {
+        const params = guideUtils.buildProgramSearchParams({
+          ...baseSearch,
+          window: '7d',
+          anchor: '2026-10-28T16:00:00.000Z',
+        });
+
+        expect(params.get('start_before')).toBe('2026-11-04T16:00:00.000Z');
+      });
+    });
+
+    it('should set no match flags in contains mode', () => {
+      const params = guideUtils.buildProgramSearchParams(baseSearch);
+
+      expect(params.has('title_regex')).toBe(false);
+      expect(params.has('title_whole_words')).toBe(false);
+    });
+
+    it('should set the regex flag for the searched field in regex mode', () => {
+      const params = guideUtils.buildProgramSearchParams({
+        ...baseSearch,
+        field: 'description',
+        mode: 'regex',
+      });
+
+      expect(params.get('description_regex')).toBe('true');
+      expect(params.has('description_whole_words')).toBe(false);
+      expect(params.has('title_regex')).toBe(false);
+    });
+
+    it('should set the whole words flag in whole word mode', () => {
+      const params = guideUtils.buildProgramSearchParams({
+        ...baseSearch,
+        mode: 'search',
+      });
+
+      expect(params.get('title_whole_words')).toBe('true');
+      expect(params.has('title_regex')).toBe(false);
+    });
+
+    it('should keep the anchor when only the page changes', () => {
+      const first = guideUtils.buildProgramSearchParams(baseSearch);
+      const second = guideUtils.buildProgramSearchParams({
+        ...baseSearch,
+        page: 2,
+      });
+
+      expect(second.get('page')).toBe('2');
+      expect(second.get('end_after')).toBe(first.get('end_after'));
+      expect(second.get('start_before')).toBe(first.get('start_before'));
+    });
+
+    it('should request a page of results without streams', () => {
+      const params = guideUtils.buildProgramSearchParams(baseSearch);
+
+      expect(params.get('page')).toBe('1');
+      expect(params.get('page_size')).toBe('25');
+      expect(params.get('fields').split(',')).toEqual(
+        expect.arrayContaining(['id', 'custom_properties', 'channels'])
+      );
+      expect(params.get('fields')).not.toContain('streams');
+      expect(params.get('fields')).not.toContain('epg_icon_url');
+    });
+
+    it('should encode plus signs in the query', () => {
+      const params = guideUtils.buildProgramSearchParams({
+        ...baseSearch,
+        query: 'C++',
+      });
+
+      expect(params.toString()).toContain('title=C%2B%2B');
+    });
+  });
+
+  // ── mapSearchResultToGuideProgram ─────────────────────────────────────────
+
+  describe('mapSearchResultToGuideProgram', () => {
+    const startMs = dayjs('2024-01-15T12:00:00Z').valueOf();
+    const endMs = dayjs('2024-01-15T13:00:00Z').valueOf();
+    const result = {
+      id: 42,
+      title: 'Evening News',
+      sub_title: null,
+      start_time: '2024-01-15T12:00:00Z',
+      end_time: '2024-01-15T13:00:00Z',
+      tvg_id: 'news.us',
+      custom_properties: {},
+      channels: [],
+    };
+
+    it('should add guide timing fields and keep the raw fields', () => {
+      const mapped = guideUtils.mapSearchResultToGuideProgram(result, startMs);
+
+      expect(mapped.id).toBe(42);
+      expect(mapped.start_time).toBe(result.start_time);
+      expect(mapped.end_time).toBe(result.end_time);
+      expect(mapped.startMs).toBe(startMs);
+      expect(mapped.endMs).toBe(endMs);
+      expect(mapped.programStart.valueOf()).toBe(startMs);
+      expect(mapped.programEnd.valueOf()).toBe(endMs);
+      expect(mapped.custom_properties).toBe(result.custom_properties);
+    });
+
+    it('should mark the program as live from its start', () => {
+      const mapped = guideUtils.mapSearchResultToGuideProgram(result, startMs);
+
+      expect(mapped.isLive).toBe(true);
+      expect(mapped.isPast).toBe(false);
+    });
+
+    it('should mark the program as past at its end', () => {
+      const mapped = guideUtils.mapSearchResultToGuideProgram(result, endMs);
+
+      expect(mapped.isLive).toBe(false);
+      expect(mapped.isPast).toBe(true);
+    });
+
+    it('should mark the program as upcoming before its start', () => {
+      const mapped = guideUtils.mapSearchResultToGuideProgram(
+        result,
+        startMs - 1
+      );
+
+      expect(mapped.isLive).toBe(false);
+      expect(mapped.isPast).toBe(false);
+    });
+
+    it('should derive badges from custom_properties', () => {
+      const mapped = guideUtils.mapSearchResultToGuideProgram(
+        {
+          ...result,
+          custom_properties: {
+            season: 2,
+            episode: 5,
+            new: true,
+            live: true,
+            premiere: true,
+            premiere_text: 'Season Finale',
+          },
+        },
+        startMs
+      );
+
+      expect(mapped.season).toBe(2);
+      expect(mapped.episode).toBe(5);
+      expect(mapped.is_new).toBe(true);
+      expect(mapped.is_live).toBe(true);
+      expect(mapped.is_premiere).toBe(true);
+      expect(mapped.is_finale).toBe(true);
+    });
+
+    it('should default badges when custom_properties is missing', () => {
+      const mapped = guideUtils.mapSearchResultToGuideProgram(
+        { ...result, custom_properties: null },
+        startMs
+      );
+
+      expect(mapped.season).toBeNull();
+      expect(mapped.episode).toBeNull();
+      expect(mapped.is_new).toBe(false);
+      expect(mapped.is_live).toBe(false);
+      expect(mapped.is_premiere).toBe(false);
+      expect(mapped.is_finale).toBe(false);
+    });
+
+    it('should keep a null subtitle and an empty channel list', () => {
+      const mapped = guideUtils.mapSearchResultToGuideProgram(result, startMs);
+
+      expect(mapped.sub_title).toBeNull();
+      expect(mapped.channels).toEqual([]);
     });
   });
 

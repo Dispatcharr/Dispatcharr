@@ -20,6 +20,7 @@ import {
   Group,
   LoadingOverlay,
   Paper,
+  SegmentedControl,
   Select,
   Text,
   TextInput,
@@ -102,6 +103,9 @@ const SeriesRecordingModal = React.lazy(
 const ProgramDetailModal = React.lazy(
   () => import('../components/ProgramDetailModal')
 );
+const ProgramSearchPanel = React.lazy(
+  () => import('../components/ProgramSearchPanel')
+);
 import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import useAuthStore from '../store/auth';
@@ -135,6 +139,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const programProfileRef = useRef(null);
   const extendInflightRef = useRef({ forward: false, backward: false });
   const windowEpochRef = useRef(0);
+  const searchSelectEpochRef = useRef(0);
   const [now, setNow] = useState(getNow());
   const [selectedProgram, setSelectedProgram] = useState(null);
   const [selectedChannel, setSelectedChannel] = useState(null);
@@ -152,6 +157,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGroupId, setSelectedGroupId] = useState('all');
   const [selectedProfileId, setSelectedProfileId] = useState('all');
+  const [searchMode, setSearchMode] = useState('channels');
+  const [programSearchOpened, setProgramSearchOpened] = useState(false);
 
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
@@ -374,9 +381,18 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return map;
   }, [guideChannels]);
 
+  // Freeze grid live/past flags while Programs is shown. Remap when the
+  // program set changes or when Channels mode is active (including the
+  // switch back, which re-runs against the current clock).
+  const gridClock = searchMode === 'channels' ? now : null;
   const programsByChannelId = useMemo(
-    () => mapProgramsByChannel(programs, channelIdByTvgId),
-    [programs, channelIdByTvgId, now]
+    () =>
+      mapProgramsByChannel(
+        programs,
+        channelIdByTvgId,
+        convertToMs(gridClock ?? getNow())
+      ),
+    [programs, channelIdByTvgId, gridClock]
   );
 
   const recordingsByProgramId = useMemo(
@@ -1020,17 +1036,53 @@ export default function TVChannelGuide({ startDate, endDate }) {
     [env_mode, showVideo]
   );
 
+  const openProgramDetail = useCallback(
+    (program, channel) => {
+      setSelectedProgram(program);
+      setSelectedChannel(channel);
+      setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
+    },
+    [recordingsByProgramId]
+  );
+
   const handleProgramClick = useCallback(
     (program, channel, event) => {
       event.stopPropagation();
-      setSelectedProgram(program);
-      setSelectedChannel(channel || findChannelByTvgId(program.tvg_id));
-      setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
+      searchSelectEpochRef.current += 1;
+      openProgramDetail(program, channel || findChannelByTvgId(program.tvg_id));
     },
-    [findChannelByTvgId, recordingsByProgramId]
+    [findChannelByTvgId, openProgramDetail]
+  );
+
+  // Search results only carry the effective name and number, so take uuid
+  // and epg_data_id from the loaded channels or fetch the channel once.
+  const handleSearchResultSelect = useCallback(
+    async (program, searchChannel) => {
+      const epoch = ++searchSelectEpochRef.current;
+      let channel = searchChannel && channelById.get(searchChannel.id);
+      if (searchChannel && !channel) {
+        const fetched = await API.getChannel(searchChannel.id, {
+          includeStreams: false,
+          softFail: true,
+        });
+        if (searchSelectEpochRef.current !== epoch) return;
+        // On failure getChannel notifies and returns null. Open with the
+        // search payload so Record still works. Watch Live needs uuid.
+        channel = fetched
+          ? {
+              ...searchChannel,
+              uuid: fetched.uuid,
+              epg_data_id: fetched.effective_epg_data_id,
+            }
+          : searchChannel;
+      }
+      openProgramDetail(program, channel || null);
+    },
+    [channelById, openProgramDetail]
   );
 
   const handleCloseModal = useCallback(() => {
+    searchSelectEpochRef.current += 1;
     setSelectedProgram(null);
     setSelectedChannel(null);
     setRecordingForProgram(null);
@@ -1464,6 +1516,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const handleChangeSearchQuery = (e) => {
     setSearchQuery(e.target.value);
   };
+  const handleSearchModeChange = (value) => {
+    setSearchMode(value);
+    if (value === 'programs') {
+      setProgramSearchOpened(true);
+    }
+  };
 
   return (
     <Box
@@ -1513,50 +1571,64 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
         {/* Filter controls */}
         <Flex gap="md" align="center">
-          <TextInput
-            placeholder="Search channels..."
-            value={searchQuery}
-            onChange={handleChangeSearchQuery}
-            w={'250px'} // Reduced width from flex: 1
-            leftSection={<Search size={16} />}
-            rightSection={
-              searchQuery ? (
-                <ActionIcon
-                  onClick={handleClearSearchQuery}
-                  variant="subtle"
-                  color="gray"
-                  size="sm"
-                >
-                  <X size={14} />
-                </ActionIcon>
-              ) : null
-            }
+          <SegmentedControl
+            value={searchMode}
+            onChange={handleSearchModeChange}
+            style={{ flexShrink: 0 }}
+            data={[
+              { label: 'Channels', value: 'channels' },
+              { label: 'Programs', value: 'programs' },
+            ]}
           />
 
-          <Select
-            placeholder="Filter by group"
-            data={groupOptions}
-            value={selectedGroupId}
-            onChange={handleGroupChange} // Use the new handler
-            w={'220px'}
-            clearable={allowAllGroups} // Allow clearing the selection
-          />
+          {searchMode === 'channels' && (
+            <>
+              <TextInput
+                placeholder="Search channels..."
+                value={searchQuery}
+                onChange={handleChangeSearchQuery}
+                w={'250px'} // Reduced width from flex: 1
+                leftSection={<Search size={16} />}
+                rightSection={
+                  searchQuery ? (
+                    <ActionIcon
+                      onClick={handleClearSearchQuery}
+                      variant="subtle"
+                      color="gray"
+                      size="sm"
+                    >
+                      <X size={14} />
+                    </ActionIcon>
+                  ) : null
+                }
+              />
 
-          <Select
-            placeholder="Filter by profile"
-            data={profileOptions}
-            value={selectedProfileId}
-            onChange={handleProfileChange} // Use the new handler
-            w={'180px'}
-            clearable={true} // Allow clearing the selection
-          />
+              <Select
+                placeholder="Filter by group"
+                data={groupOptions}
+                value={selectedGroupId}
+                onChange={handleGroupChange} // Use the new handler
+                w={'220px'}
+                clearable={allowAllGroups} // Allow clearing the selection
+              />
 
-          {(searchQuery !== '' ||
-            selectedGroupId !== 'all' ||
-            selectedProfileId !== 'all') && (
-            <Button variant="subtle" onClick={clearFilters} size="sm">
-              Clear Filters
-            </Button>
+              <Select
+                placeholder="Filter by profile"
+                data={profileOptions}
+                value={selectedProfileId}
+                onChange={handleProfileChange} // Use the new handler
+                w={'180px'}
+                clearable={true} // Allow clearing the selection
+              />
+
+              {(searchQuery !== '' ||
+                selectedGroupId !== 'all' ||
+                selectedProfileId !== 'all') && (
+                <Button variant="subtle" onClick={clearFilters} size="sm">
+                  Clear Filters
+                </Button>
+              )}
+            </>
           )}
 
           {canManage && (
@@ -1574,10 +1646,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
             </Button>
           )}
 
-          <Text size="sm" c="dimmed">
-            {filteredChannels.length}{' '}
-            {filteredChannels.length === 1 ? 'channel' : 'channels'}
-          </Text>
+          {searchMode === 'channels' && (
+            <Text size="sm" c="dimmed">
+              {filteredChannels.length}{' '}
+              {filteredChannels.length === 1 ? 'channel' : 'channels'}
+            </Text>
+          )}
         </Flex>
       </Flex>
 
@@ -1588,13 +1662,16 @@ export default function TVChannelGuide({ startDate, endDate }) {
         }}
         display={'flex'}
         h={'calc(100vh - 120px)'}
+        pos="relative"
       >
         {/* Logo header - Sticky, non-scrollable */}
         <Box
           style={{
             zIndex: 100,
             position: 'sticky',
+            visibility: searchMode === 'programs' ? 'hidden' : undefined,
           }}
+          aria-hidden={searchMode === 'programs'}
           display={'flex'}
           top={0}
         >
@@ -1658,7 +1735,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
           style={{
             flex: 1,
             overflow: 'hidden',
+            visibility: searchMode === 'programs' ? 'hidden' : undefined,
           }}
+          aria-hidden={searchMode === 'programs'}
           pos="relative"
         >
           <LoadingOverlay visible={isProgramsLoading || isChannelsLoading} />
@@ -1718,6 +1797,22 @@ export default function TVChannelGuide({ startDate, endDate }) {
             </Box>
           )}
         </Box>
+
+        {/* Program search - covers the grid, which stays mounted */}
+        {programSearchOpened && (
+          <ErrorBoundary inline>
+            <Suspense fallback={<LoadingOverlay />}>
+              <ProgramSearchPanel
+                visible={searchMode === 'programs'}
+                nowMs={
+                  searchMode === 'programs' ? convertToMs(now) : null
+                }
+                recordingsByProgramId={recordingsByProgramId}
+                onSelect={handleSearchResultSelect}
+              />
+            </Suspense>
+          </ErrorBoundary>
+        )}
       </Box>
 
       {/* Record choice modal */}
@@ -1776,7 +1871,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               opened={!!selectedProgram}
               onClose={handleCloseModal}
               onRecord={
-                canManage
+                canManage && selectedChannel
                   ? (program) => openRecordChoice(program, selectedChannel)
                   : undefined
               }
