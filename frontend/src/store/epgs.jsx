@@ -123,7 +123,7 @@ const useEPGsStore = create((set) => ({
         status === 'error'
           ? data.error || 'Unknown error'
           : status === 'success'
-            ? data.message ?? ''
+            ? (data.message ?? '')
             : state.epgs[data.source]?.last_message;
 
       const currentEpg = state.epgs[data.source];
