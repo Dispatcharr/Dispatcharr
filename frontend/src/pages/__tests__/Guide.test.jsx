@@ -1157,7 +1157,10 @@ describe('Guide', () => {
       await user.click(screen.getByText('Select other channel'));
 
       const modal = await screen.findByTestId('program-detail-modal');
-      expect(API.getChannel).toHaveBeenCalledWith('channel-9');
+      expect(API.getChannel).toHaveBeenCalledWith('channel-9', {
+        includeStreams: false,
+        softFail: true,
+      });
       expect(modal).toHaveAttribute('data-channel-uuid', 'uuid-9');
 
       await user.click(screen.getByText('Record'));
@@ -1173,6 +1176,38 @@ describe('Guide', () => {
           })
         );
       });
+    });
+
+    it('opens a result when the channel fetch fails', async () => {
+      vi.useRealTimers();
+      API.getChannel.mockResolvedValue(null);
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await screen.findAllByTestId('guide-row');
+      await switchToPrograms(user);
+
+      await user.click(screen.getByText('Select other channel'));
+
+      const modal = await screen.findByTestId('program-detail-modal');
+      expect(modal).toHaveTextContent('Searched Program');
+      expect(modal).not.toHaveAttribute('data-channel-uuid');
+      expect(screen.getByText('Record')).toBeInTheDocument();
+    });
+
+    it('passes the guide clock only while Programs is shown', async () => {
+      vi.useRealTimers();
+
+      const user = userEvent.setup({ delay: null });
+      render(<Guide />);
+      await switchToPrograms(user);
+
+      expect(vi.mocked(ProgramSearchPanel).mock.lastCall[0].nowMs).toBe(
+        now.valueOf()
+      );
+
+      await user.click(screen.getByText('Channels'));
+      expect(vi.mocked(ProgramSearchPanel).mock.lastCall[0].nowMs).toBeNull();
     });
 
     it('opens an unmapped result without a channel or Record', async () => {

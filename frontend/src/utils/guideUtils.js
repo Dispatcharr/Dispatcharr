@@ -76,13 +76,16 @@ const mapProgramTimes = (program, nowMs) => {
   };
 };
 
-export const mapProgramsByChannel = (programs, channelIdByTvgId) => {
+export const mapProgramsByChannel = (
+  programs,
+  channelIdByTvgId,
+  nowMs = getNowMs()
+) => {
   if (!programs?.length || !channelIdByTvgId?.size) {
     return new Map();
   }
 
   const map = new Map();
-  const nowMs = getNowMs();
 
   programs.forEach((program) => {
     const channelIds = channelIdByTvgId.get(String(program.tvg_id));

@@ -381,9 +381,18 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return map;
   }, [guideChannels]);
 
+  // Freeze grid live/past flags while Programs is shown. Remap when the
+  // program set changes or when Channels mode is active (including the
+  // switch back, which re-runs against the current clock).
+  const gridClock = searchMode === 'channels' ? now : null;
   const programsByChannelId = useMemo(
-    () => mapProgramsByChannel(programs, channelIdByTvgId),
-    [programs, channelIdByTvgId, now]
+    () =>
+      mapProgramsByChannel(
+        programs,
+        channelIdByTvgId,
+        convertToMs(gridClock ?? getNow())
+      ),
+    [programs, channelIdByTvgId, gridClock]
   );
 
   const recordingsByProgramId = useMemo(
@@ -1052,13 +1061,20 @@ export default function TVChannelGuide({ startDate, endDate }) {
       const epoch = ++searchSelectEpochRef.current;
       let channel = searchChannel && channelById.get(searchChannel.id);
       if (searchChannel && !channel) {
-        const fetched = await API.getChannel(searchChannel.id);
+        const fetched = await API.getChannel(searchChannel.id, {
+          includeStreams: false,
+          softFail: true,
+        });
         if (searchSelectEpochRef.current !== epoch) return;
-        channel = fetched && {
-          ...searchChannel,
-          uuid: fetched.uuid,
-          epg_data_id: fetched.effective_epg_data_id,
-        };
+        // On failure getChannel notifies and returns null. Open with the
+        // search payload so Record still works. Watch Live needs uuid.
+        channel = fetched
+          ? {
+              ...searchChannel,
+              uuid: fetched.uuid,
+              epg_data_id: fetched.effective_epg_data_id,
+            }
+          : searchChannel;
       }
       openProgramDetail(program, channel || null);
     },
@@ -1558,6 +1574,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
           <SegmentedControl
             value={searchMode}
             onChange={handleSearchModeChange}
+            style={{ flexShrink: 0 }}
             data={[
               { label: 'Channels', value: 'channels' },
               { label: 'Programs', value: 'programs' },
@@ -1787,6 +1804,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
             <Suspense fallback={<LoadingOverlay />}>
               <ProgramSearchPanel
                 visible={searchMode === 'programs'}
+                nowMs={
+                  searchMode === 'programs' ? convertToMs(now) : null
+                }
                 recordingsByProgramId={recordingsByProgramId}
                 onSelect={handleSearchResultSelect}
               />

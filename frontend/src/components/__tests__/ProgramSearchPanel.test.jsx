@@ -508,6 +508,34 @@ describe('ProgramSearchPanel', () => {
       expect(screen.getByText('No channel')).toBeInTheDocument();
     });
 
+    it('refreshes airing state from the guide clock', async () => {
+      const during = new Date('2024-01-15T12:00:00Z').getTime();
+      const after = new Date('2024-01-15T13:00:00Z').getTime();
+      const { rerender } = renderPanel({ nowMs: during });
+      await typeQuery('news');
+
+      const row = () =>
+        within(screen.getByRole('button', { name: /Evening News/ }));
+      expect(row().getByText('Airing now')).toBeInTheDocument();
+
+      rerender(
+        <ProgramSearchPanel
+          visible
+          nowMs={after}
+          recordingsByProgramId={new Map()}
+          onSelect={onSelect}
+        />
+      );
+
+      expect(row().queryByText('Airing now')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Evening News'));
+      expect(onSelect).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, isLive: false, isPast: true }),
+        expect.objectContaining({ id: 101 })
+      );
+    });
+
     it('shows recording and program badges', async () => {
       API.searchPrograms.mockResolvedValue(
         makeResponse([

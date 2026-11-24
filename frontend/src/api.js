@@ -22,7 +22,7 @@ const host = import.meta.env.DEV
   ? `http://${window.location.hostname}:5656`
   : '';
 
-const errorNotification = (message, error) => {
+const errorNotification = (message, error, { rethrow = true } = {}) => {
   const errorMessage = formatApiError(error);
 
   notifications.show({
@@ -32,7 +32,9 @@ const errorNotification = (message, error) => {
     color: 'red',
   });
 
-  throw error;
+  if (rethrow) {
+    throw error;
+  }
 };
 
 const hasChannelGroupChange = (update) =>
@@ -3642,14 +3644,21 @@ export default class API {
     }
   }
 
-  static async getChannel(id) {
+  static async getChannel(
+    id,
+    { includeStreams = true, softFail = false } = {}
+  ) {
+    // Full stream objects are only needed by callers that read them.
+    // Stream id lists still come from the retrieve prefetch, so skipping
+    // include_streams only shrinks the JSON, not the queryset.
+    // softFail shows the error and returns null. The default still throws.
+    const query = includeStreams ? '?include_streams=true' : '';
     try {
-      const response = await request(
-        `${host}/api/channels/channels/${id}/?include_streams=true`
-      );
-      return response;
+      return await request(`${host}/api/channels/channels/${id}/${query}`);
     } catch (e) {
-      errorNotification('Failed to fetch channel details', e);
+      errorNotification('Failed to fetch channel details', e, {
+        rethrow: !softFail,
+      });
       return null;
     }
   }

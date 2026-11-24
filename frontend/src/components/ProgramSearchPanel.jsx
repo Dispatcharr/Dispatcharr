@@ -44,6 +44,10 @@ import {
 } from '../utils/dateTimeUtils';
 import { DESCRIPTION_MODES } from '../utils/forms/SeriesRuleEditorModalUtils';
 
+// Labels use overflow hidden, so a flex row will crush them unless they
+// keep their content width and wrap onto another line.
+const noShrink = { flexShrink: 0 };
+
 const NO_RESULTS_WINDOW_TEXT = {
   now: 'airing now',
   '24h': 'in the next 24 hours',
@@ -51,8 +55,10 @@ const NO_RESULTS_WINDOW_TEXT = {
 };
 
 const ProgramSearchResult = React.memo(
-  ({ result, index, recording, timeFormat, dateFormat, onSelect }) => {
-    const program = mapSearchResultToGuideProgram(result, getNowMs());
+  ({ result, index, recording, timeFormat, dateFormat, nowMs, onSelect }) => {
+    // nowMs is the guide clock. The click uses this same program so
+    // Watch and Record match the row badges.
+    const program = mapSearchResultToGuideProgram(result, nowMs);
     const { programStart, programEnd, isLive } = program;
     const channels = program.channels || [];
     const seasonEpisodeLabel = formatSeasonEpisode(
@@ -66,11 +72,15 @@ const ProgramSearchResult = React.memo(
       .filter(Boolean)
       .join(' ');
 
+    const selectChannel = (channel) => {
+      onSelect(program, channel || null);
+    };
+
     const handleKeyDown = (event) => {
       if (event.target !== event.currentTarget) return;
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        onSelect(program, channels[0] || null);
+        selectChannel(channels[0]);
       }
     };
 
@@ -85,7 +95,7 @@ const ProgramSearchResult = React.memo(
           backgroundColor: index % 2 === 0 ? '#27272a' : '#18181b',
           opacity: channels.length > 0 ? 1 : 0.6,
         }}
-        onClick={() => onSelect(program, channels[0] || null)}
+        onClick={() => selectChannel(channels[0])}
         onKeyDown={handleKeyDown}
       >
         <Stack gap={0} w={160}>
@@ -118,7 +128,7 @@ const ProgramSearchResult = React.memo(
                     size="compact-xs"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onSelect(program, channel);
+                      selectChannel(channel);
                     }}
                   >
                     {channel.channel_number
@@ -186,7 +196,7 @@ const ProgramSearchResult = React.memo(
 );
 
 const ProgramSearchPanel = React.memo(
-  ({ visible, recordingsByProgramId, onSelect }) => {
+  ({ visible, nowMs = null, recordingsByProgramId, onSelect }) => {
     const [query, setQuery] = useState('');
     const [search, setSearch] = useState({
       query: '',
@@ -201,6 +211,16 @@ const ProgramSearchPanel = React.memo(
     const [error, setError] = useState(null);
     const inputRef = useRef(null);
     const resultsRef = useRef(null);
+    // null while Channels is shown, so this memo skips the 60s tick.
+    // Hold the last clock so a render while hidden keeps those flags.
+    const lastNowMsRef = useRef(nowMs);
+    if (typeof nowMs === 'number') {
+      lastNowMsRef.current = nowMs;
+    }
+    const clockMs =
+      typeof nowMs === 'number'
+        ? nowMs
+        : (lastNowMsRef.current ?? getNowMs());
 
     const { timeFormat, dateFormat } = useDateTimeFormat();
     const debouncedQuery = useDebounce(query, 400);
@@ -295,7 +315,7 @@ const ProgramSearchPanel = React.memo(
         bottom={0}
         left={0}
       >
-        <Flex gap="md" align="center" p={'12px 20px'}>
+        <Flex gap="md" align="center" wrap="wrap" p={'12px 20px'}>
           <TextInput
             ref={inputRef}
             placeholder="Search programs..."
@@ -303,6 +323,7 @@ const ProgramSearchPanel = React.memo(
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleQueryKeyDown}
             w={'250px'}
+            style={noShrink}
             leftSection={<Search size={16} />}
             rightSectionWidth={query ? 56 : 32}
             rightSection={
@@ -360,12 +381,14 @@ const ProgramSearchPanel = React.memo(
             data={PROGRAM_SEARCH_FIELDS}
             value={search.field}
             onChange={(value) => updateSearch('field', value)}
+            style={noShrink}
           />
 
           <SegmentedControl
             data={DESCRIPTION_MODES}
             value={search.mode}
             onChange={(value) => updateSearch('mode', value)}
+            style={noShrink}
           />
 
           <Select
@@ -374,6 +397,7 @@ const ProgramSearchPanel = React.memo(
             onChange={(value) => updateSearch('window', value)}
             allowDeselect={false}
             w={'160px'}
+            style={noShrink}
             aria-label="When"
           />
 
@@ -431,6 +455,7 @@ const ProgramSearchPanel = React.memo(
                 recording={recordingsByProgramId.get(result.id)}
                 timeFormat={timeFormat}
                 dateFormat={dateFormat}
+                nowMs={clockMs}
                 onSelect={onSelect}
               />
             ))
