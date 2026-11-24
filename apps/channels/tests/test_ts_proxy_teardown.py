@@ -819,8 +819,13 @@ class PromoteChannelWhenBufferReadyTests(TestCase):
             return_value=proxy_server,
         ), proxy_server
 
-    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.initial_behind_chunks", return_value=4)
-    def test_buffer_ready_with_clients_becomes_active(self, _mock_chunks):
+    @patch(
+        "apps.proxy.live_proxy.init_buffer.ConfigHelper.experimental_ingest_buffer",
+        return_value=False,
+    )
+    @patch("apps.proxy.live_proxy.init_buffer.ConfigHelper.initial_behind_chunks", return_value=4)
+    def test_buffer_ready_with_clients_becomes_active(self, _mock_chunks, _mock_experimental):
+        # Chunk-count gate path (experimental ingest off).
         redis = MagicMock()
         redis.hget.return_value = ChannelState.CONNECTING.encode()
         redis.get.return_value = b"4"
@@ -836,8 +841,13 @@ class PromoteChannelWhenBufferReadyTests(TestCase):
         self.assertEqual(args[1], ChannelState.ACTIVE)
         self.assertEqual(args[2]["clients_at_activation"], "2")
 
-    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.initial_behind_chunks", return_value=4)
-    def test_buffer_ready_without_clients_becomes_waiting(self, _mock_chunks):
+    @patch(
+        "apps.proxy.live_proxy.init_buffer.ConfigHelper.experimental_ingest_buffer",
+        return_value=False,
+    )
+    @patch("apps.proxy.live_proxy.init_buffer.ConfigHelper.initial_behind_chunks", return_value=4)
+    def test_buffer_ready_without_clients_becomes_waiting(self, _mock_chunks, _mock_experimental):
+        # Chunk-count gate path (experimental ingest off).
         redis = MagicMock()
         redis.hget.return_value = ChannelState.CONNECTING.encode()
         redis.get.return_value = b"5"
@@ -857,8 +867,13 @@ class PromoteChannelWhenBufferReadyTests(TestCase):
             },
         )
 
-    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.initial_behind_chunks", return_value=4)
-    def test_buffer_not_ready_does_not_promote(self, _mock_chunks):
+    @patch(
+        "apps.proxy.live_proxy.init_buffer.ConfigHelper.experimental_ingest_buffer",
+        return_value=False,
+    )
+    @patch("apps.proxy.live_proxy.init_buffer.ConfigHelper.initial_behind_chunks", return_value=4)
+    def test_buffer_not_ready_does_not_promote(self, _mock_chunks, _mock_experimental):
+        # Chunk-count gate path (experimental ingest off).
         redis = MagicMock()
         redis.hget.return_value = ChannelState.CONNECTING.encode()
         redis.get.return_value = b"2"

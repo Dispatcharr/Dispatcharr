@@ -171,6 +171,10 @@ class RecordingOutput:
         self.events = []
         self.stopped = False
         self.on_mark = None
+        self.media_score_from_chunk_end = False
+
+    def enable_media_index(self, enabled=True):
+        """No-op: production buffers score chunks when experimental ingest is on."""
 
     def add_chunk(self, data):
         with self.lock:

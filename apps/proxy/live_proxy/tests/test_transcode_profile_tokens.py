@@ -24,7 +24,10 @@ class TranscodeProfileTokenTests(TestCase):
             locked=False,
         )
         buffer = SimpleNamespace(
-            channel_id="token-test", redis_client=Mock(), stopping=False,
+            channel_id="token-test",
+            redis_client=Mock(),
+            stopping=False,
+            enable_media_index=Mock(),
         )
         # Reading proxy settings closes the DB connection, which would break
         # the test transaction when the manager is constructed.
