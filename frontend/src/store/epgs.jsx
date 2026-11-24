@@ -120,9 +120,11 @@ const useEPGsStore = create((set) => ({
       // Only update epgs object if status or last_message actually changed
       // This prevents unnecessary re-renders on every progress update
       const lastMessage =
-        data.status === 'error'
+        status === 'error'
           ? data.error || 'Unknown error'
-          : state.epgs[data.source]?.last_message;
+          : status === 'success'
+            ? data.message ?? ''
+            : state.epgs[data.source]?.last_message;
 
       const currentEpg = state.epgs[data.source];
       const shouldUpdateEpg =

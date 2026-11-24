@@ -536,6 +536,34 @@ describe('useEPGsStore', () => {
       expect(result.current.refreshProgress.source1.status).toBe('error');
     });
 
+    it.each([true, false])(
+      'replaces a previous error after success (message: %s)',
+      (withMessage) => {
+        useEPGsStore.setState({
+          epgs: {
+            source1: {
+              id: 'source1',
+              status: 'error',
+              last_message: 'HTTP error 503',
+            },
+          },
+        });
+
+        useEPGsStore.getState().updateEPGProgress({
+          source: 'source1',
+          action: 'parsing_programs',
+          progress: 100,
+          status: 'success',
+          ...(withMessage ? { message: 'Parsed 1,462 programs' } : {}),
+        });
+
+        expect(useEPGsStore.getState().epgs.source1).toMatchObject({
+          status: 'success',
+          last_message: withMessage ? 'Parsed 1,462 programs' : '',
+        });
+      }
+    );
+
     it('should set last_message on error status', () => {
       const { result } = renderHook(() => useEPGsStore());
 
