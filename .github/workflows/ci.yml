@@ -181,7 +181,7 @@ jobs:
       - name: Install system test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libvlc5 vlc-plugin-base
+          sudo apt-get install --no-install-recommends -y ffmpeg libvlc5 vlc-plugin-base
 
       - name: Prepare /data directory
         run: |
