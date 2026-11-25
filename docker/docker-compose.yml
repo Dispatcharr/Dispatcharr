@@ -27,6 +27,8 @@ services:
     environment:
       # Deployment Mode
       - DISPATCHARR_ENV=modular
+      # Set in both web and celery services when troubleshooting.
+      #- DISPATCHARR_SAFE_MODE=true
 
       # PostgreSQL Connection
       - POSTGRES_HOST=db
@@ -137,6 +139,7 @@ services:
     environment:
       # Deployment Mode
       - DISPATCHARR_ENV=modular
+      #- DISPATCHARR_SAFE_MODE=true
 
       # Internal Service Communication
       # Celery uses these to reach the web container for DVR recording.

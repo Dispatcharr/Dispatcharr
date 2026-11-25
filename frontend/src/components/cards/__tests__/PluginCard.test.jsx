@@ -158,6 +158,13 @@ describe('PluginCard', () => {
     ).toBeInTheDocument();
   });
 
+  it('shows safe mode as paused without claiming files are missing', () => {
+    renderCard({ plugin: { ...mockPlugin, missing: false, safe_mode_paused: true } });
+    expect(screen.getByText('Disabled in safe mode')).toBeInTheDocument();
+    expect(screen.queryByText(/Missing plugin files/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disable plugin' })).toBeDisabled();
+  });
+
   it('shows legacy plugin warning', () => {
     renderCard({ plugin: { ...mockPlugin, legacy: true } });
     expect(

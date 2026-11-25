@@ -92,6 +92,8 @@ describe('useSettingsStore', () => {
       ip_lookup_enabled: true,
       ip_lookup_env_disabled: false,
       ip_lookup_pending: false,
+      safe_mode: false,
+      safe_mode_effects: [],
     });
   });
 

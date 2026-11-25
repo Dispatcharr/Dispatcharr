@@ -70,6 +70,8 @@ def beat_periodic_task():
 @shared_task
 def scan_and_process_files():
     global _first_scan_completed
+    from dispatcharr.safe_mode import automatic_refreshes_allowed
+    refreshes_allowed = automatic_refreshes_allowed()
     redis_client = RedisClient.get_client()
     now = time.time()
 
@@ -79,7 +81,7 @@ def scan_and_process_files():
         throttled_log(logger.warning, f"Watch directories missing: M3U ({os.path.exists(M3U_WATCH_DIR)}), EPG ({os.path.exists(EPG_WATCH_DIR)}), LOGO ({os.path.exists(LOGO_WATCH_DIR)})", "watch_dirs_missing")
 
     # Process M3U files
-    m3u_files = [f for f in os.listdir(M3U_WATCH_DIR)
+    m3u_files = [f for f in (os.listdir(M3U_WATCH_DIR) if refreshes_allowed else [])
                 if os.path.isfile(os.path.join(M3U_WATCH_DIR, f)) and
                 (f.endswith('.m3u') or f.endswith('.m3u8'))]
 
@@ -170,7 +172,7 @@ def scan_and_process_files():
 
     # Process EPG files
     try:
-        epg_files = os.listdir(EPG_WATCH_DIR)
+        epg_files = os.listdir(EPG_WATCH_DIR) if refreshes_allowed else []
         logger.trace(f"Found {len(epg_files)} files in EPG directory")
     except Exception as e:
         logger.error(f"Error listing EPG directory: {e}")

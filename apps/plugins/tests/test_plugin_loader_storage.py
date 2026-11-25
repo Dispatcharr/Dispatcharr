@@ -11,6 +11,24 @@ from apps.plugins.models import PluginConfig
 
 
 class PluginLoaderStorageTests(TestCase):
+    def test_safe_mode_distinguishes_paused_plugins_from_missing_files(self):
+        with tempfile.TemporaryDirectory() as plugins_dir, patch.dict(
+            os.environ, {"DISPATCHARR_PLUGINS_DIR": plugins_dir, "DISPATCHARR_SAFE_MODE": "true"}
+        ), patch.object(PluginManager, "_ensure_leadership_loop_started"):
+            folder = Path(plugins_dir, "present")
+            folder.mkdir()
+            (folder / "plugin.py").write_text("raise RuntimeError('must not import')")
+            PluginConfig.objects.create(key="present", name="Present", enabled=True)
+            PluginConfig.objects.create(key="absent", name="Absent", enabled=True)
+            pm = PluginManager()
+            self.assertEqual(pm.discover_plugins(), {})
+            entries = {item["key"]: item for item in pm.list_plugins()}
+            self.assertFalse(entries["present"]["missing"])
+            self.assertTrue(entries["present"]["safe_mode_paused"])
+            self.assertTrue(entries["present"]["enabled"])
+            self.assertTrue(entries["absent"]["missing"])
+            self.assertFalse(entries["absent"]["safe_mode_paused"])
+
     def test_retained_filesystem_helper_expires_with_plugin_instance(self):
         with tempfile.TemporaryDirectory() as tmp:
             pm = PluginManager()

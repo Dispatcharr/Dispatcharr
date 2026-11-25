@@ -22,6 +22,13 @@ class PluginsConfig(AppConfig):
           should_skip_initialization() so they only fire in the master/main process.
         """
         try:
+            from dispatcharr.safe_mode import plugins_allowed
+            if not plugins_allowed():
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Dispatcharr safe mode is active: plugins and automatic M3U/EPG refreshes are disabled"
+                )
+                return
             # Allow explicit opt-out via env var
             if os.environ.get("DISPATCHARR_SKIP_PLUGIN_AUTODISCOVERY", "").lower() in ("1", "true", "yes"):
                 return

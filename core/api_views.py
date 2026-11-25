@@ -430,6 +430,7 @@ def _perform_ip_lookup():
 @api_view(["GET"])
 @permission_classes([Authenticated])
 def environment(request):
+    from dispatcharr.safe_mode import safe_mode_status
     public_ip = None
     local_ip = None
     country_code = None
@@ -474,6 +475,7 @@ def environment(request):
             "ip_lookup_env_disabled": ip_lookup_env_disabled,
             "ip_lookup_pending": ip_lookup_pending,
             "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
+            **safe_mode_status(),
             "redis_tls": getattr(
                 django_settings,
                 "REDIS_TLS_STATUS",

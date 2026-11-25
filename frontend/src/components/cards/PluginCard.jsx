@@ -71,6 +71,7 @@ const PluginCard = ({
   }, [plugin.enabled]);
 
   const missing = plugin.missing;
+  const safeModePaused = plugin.safe_mode_paused;
 
   const openDetail = () => navigate(`/plugins/${plugin.key}`);
 
@@ -108,7 +109,7 @@ const PluginCard = ({
         height: '100%',
         minHeight: 220,
         backgroundColor: '#27272A',
-        opacity: !missing && enabled ? 1 : 0.6,
+        opacity: !missing && enabled && !safeModePaused ? 1 : 0.6,
       }}
     >
       {/* Header: avatar, name/author, badges, actions */}
@@ -130,7 +131,7 @@ const PluginCard = ({
               </ActionIcon>
             </Menu.Target>
             <Menu.Dropdown>
-              <Menu.Item leftSection={<Power size={14} />} disabled={missing} onClick={handleEnableChange}>
+              <Menu.Item leftSection={<Power size={14} />} disabled={missing || safeModePaused} onClick={handleEnableChange}>
                 {enabled && !missing ? 'Disable plugin' : 'Enable plugin'}
               </Menu.Item>
               <Menu.Item leftSection={pinned ? <PinOff size={14} /> : <Pin size={14} />} onClick={() => togglePinnedPlugin(plugin.key)}>
@@ -159,7 +160,8 @@ const PluginCard = ({
 
       {/* Bottom button row */}
       <Group justify="space-between" mt="auto" pt="sm" gap="xs">
-        {(!enabled || missing) && <Text size="xs" c="dimmed">Disabled</Text>}
+        {safeModePaused ? <Text size="xs" c="yellow">Disabled in safe mode</Text>
+          : (!enabled || missing) && <Text size="xs" c="dimmed">Disabled</Text>}
         <Group gap="xs" justify="flex-end" style={{ marginLeft: 'auto' }}>
         <Button
           size="xs"

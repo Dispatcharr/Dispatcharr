@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 from django.db import close_old_connections, connection, transaction
 from django.db.models import Case, DateTimeField, Value, When
 from django.utils import timezone
+from dispatcharr.safe_mode import plugins_allowed, require_plugins_allowed, unloaded_plugin_status
 
 from .capabilities import (
     compute_effective_capabilities,
@@ -238,6 +239,8 @@ class PluginManager:
         use_cache: bool = False,
         release_connections: bool = True,
     ) -> Dict[str, LoadedPlugin]:
+        if not plugins_allowed():
+            return {}
         # Only an explicit caller force_reload broadcasts via the shared token.
         # Reacting to a newer token must reload locally without re-touching it;
         # otherwise every consumer becomes a producer and multi-worker setups
@@ -543,6 +546,7 @@ class PluginManager:
 
     def _load_current_task_names(self, cfg: PluginConfig) -> set:
         """Load only this plugin before deciding which schedules can resume."""
+        require_plugins_allowed()
         from dispatcharr.celery import app as celery_app
 
         with self._lock:
@@ -822,6 +826,7 @@ class PluginManager:
         manifest_schema_version: int = 0,
         saved_settings: Optional[Dict[str, Any]] = None,
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
+        require_plugins_allowed()
         path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
         has_pkg = os.path.exists(os.path.join(path, "__init__.py"))
@@ -1069,6 +1074,8 @@ class PluginManager:
         for key, conf in configs.items():
             if key in discovered_keys:
                 continue
+            path = self.get_plugin_path(key) if not plugins_allowed() else None
+            unloaded_status = unloaded_plugin_status(path)
             plugin_status = get_plugin_status(
                 conf.version,
                 repo_latest.get(conf.slug or "", ""),
@@ -1091,7 +1098,7 @@ class PluginManager:
                     "actions": [],
                     "capabilities": [],
                     "manifest_version": 0,
-                    "missing": True,
+                    **unloaded_status,
                     "trusted": bool(conf.ever_enabled or conf.enabled),
                     "loaded": False,
                     "legacy": False,
@@ -1662,6 +1669,8 @@ class PluginManager:
         next cached discovery.
         Explicit reloads wait for active actions and other explicit reloads.
         """
+        if not plugins_allowed():
+            return False
         with _plugin_reload_lock(self.plugins_dir, key):
             return self._reload_plugin(key)
 
