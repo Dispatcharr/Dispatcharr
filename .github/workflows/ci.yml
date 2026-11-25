@@ -133,69 +133,30 @@ jobs:
   backend-tests:
     needs: [prepare, migration-graph-check]
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: dispatcharr
-          POSTGRES_USER: dispatch
-          POSTGRES_PASSWORD: secret
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U dispatch -d dispatcharr"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    # Run in the same base image as the published app, so tests use the
+    # Dispatcharr FFmpeg build, internal Postgres, and Redis.
+    container:
+      image: ${{ needs.prepare.outputs.base_image }}
+      options: --entrypoint ""
     env:
-      DJANGO_SECRET_KEY: test-secret-key
+      DISPATCHARR_ENV: aio
+      DJANGO_SECRET_KEY: ci-test-secret-key
       POSTGRES_DB: dispatcharr
       POSTGRES_USER: dispatch
       POSTGRES_PASSWORD: secret
-      POSTGRES_HOST: 127.0.0.1
-      POSTGRES_PORT: 5432
-      REDIS_HOST: 127.0.0.1
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      DISPATCHARR_DEBUG: "False"
+      DISPATCHARR_LOG_LEVEL: WARNING
+      SYNC_PYTHON_DEPS: "true"
+      UV_PROJECT_ENVIRONMENT: /dispatcharrpy
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.checkout_ref }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install system test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y ffmpeg libvlc5 vlc-plugin-base
-
-      - name: Prepare /data directory
-        run: |
-          sudo mkdir -p /data
-          sudo chown "$(id -u):$(id -g)" /data
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install Python dependencies
-        run: uv sync --frozen --python 3.13 --no-dev
-
-      - name: Run backend tests
-        run: uv run python manage.py test
+      - name: Run backend tests in base image
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+        run: bash scripts/ci_bootstrap_backend.sh
 
   frontend-tests:
     needs: [prepare, migration-graph-check]
