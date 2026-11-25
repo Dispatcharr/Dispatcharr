@@ -201,6 +201,13 @@ describe('PluginDetail', () => {
     expect(screen.getByText('A test plugin')).toBeInTheDocument();
   });
 
+  it('reserves the plugin scrollbar gutter until the page unmounts', () => {
+    const { unmount } = render(<PluginDetail />);
+    expect(document.documentElement).toHaveClass('plugin-page-scrollbar-gutter');
+    unmount();
+    expect(document.documentElement).not.toHaveClass('plugin-page-scrollbar-gutter');
+  });
+
   it('labels the plugin task history section Tasks', () => {
     usePluginStore.mockImplementation((selector) => selector({
       plugins: [mockPlugin], loading: false, ...enableConfirmDefaults,

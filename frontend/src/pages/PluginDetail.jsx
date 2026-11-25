@@ -37,6 +37,7 @@ import ConfirmationDialog from '../components/ConfirmationDialog.jsx';
 import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import PluginHeader from '../components/PluginHeader.jsx';
 import PluginDetailPanel from '../components/PluginDetailPanel.jsx';
+import usePluginPageScrollbarGutter from '../hooks/usePluginPageScrollbarGutter.js';
 import PluginFieldList from '../components/PluginFieldList.jsx';
 import { PluginActionList, PluginActionStatus, PluginTaskList } from '../components/PluginActionList.jsx';
 import API from '../api';
@@ -91,6 +92,7 @@ const CollapsibleHeading = ({ label, isSingleCol, opened, onToggle }) => (
 // switch instead, which resets everything at once and is far less fragile
 // than auditing every useState for a manual reset.
 export default function PluginDetail() {
+  usePluginPageScrollbarGutter();
   const { key } = useParams();
   return <PluginDetailForKey key={key} routeKey={key} />;
 }
