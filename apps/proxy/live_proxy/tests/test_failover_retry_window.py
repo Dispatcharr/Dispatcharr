@@ -27,6 +27,35 @@ def _make_manager(**overrides):
     return sm
 
 
+class FailoverProfileSelectionTests(SimpleTestCase):
+    """Failover must build the URL with the same M3U profile it records and counts."""
+
+    @patch("apps.proxy.live_proxy.input.manager.get_alternate_streams")
+    @patch("apps.proxy.live_proxy.input.manager.get_stream_info_for_switch")
+    @patch.object(StreamManager, "update_url", return_value=True)
+    def test_switch_uses_profile_from_alternate_streams(self, mock_update, mock_info, mock_alts):
+        sm = _make_manager(
+            tried_stream_ids={100},
+            current_stream_id=100,
+            url="http://current",
+            user_agent="ua",
+            transcode=False,
+            buffer=type("Buf", (), {"redis_client": None})(),
+        )
+        # The alternate stream is only available on a non-default profile (e.g. a second login).
+        mock_alts.return_value = [{"stream_id": 200, "profile_id": 7}]
+        mock_info.return_value = {
+            "url": "http://second-login",
+            "user_agent": "ua",
+            "transcode": False,
+            "stream_profile": 1,
+        }
+
+        self.assertTrue(sm._try_next_stream())
+        mock_info.assert_called_once_with("test-channel", 200, 7)
+        self.assertEqual(mock_update.call_args.args[:3], ("http://second-login", 200, 7))
+
+
 class RetryIdleResetTests(TestCase):
     def test_counter_resets_after_idle_period(self):
         sm = _make_manager(_retry_window_seconds=60)

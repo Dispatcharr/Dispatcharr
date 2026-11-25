@@ -3313,7 +3313,7 @@ class StreamManager:
 
                 # Get stream info including URL using the profile_id we already have
                 logger.info(f"Trying next stream ID {stream_id} with profile ID {profile_id} for channel {self.channel_id}")
-                stream_info = get_stream_info_for_switch(self.channel_id, stream_id)
+                stream_info = get_stream_info_for_switch(self.channel_id, stream_id, profile_id)
 
                 if 'error' in stream_info or not stream_info.get('url'):
                     logger.error(f"Error getting info for stream {stream_id} for channel {self.channel_id}: {stream_info.get('error', 'No URL')}")
