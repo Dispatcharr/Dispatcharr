@@ -1,4 +1,5 @@
 import useAuthStore from '../../store/auth';
+import { withBasePath } from '../basePath.js';
 
 const hasValidTechnicalDetails = (obj) => {
   return obj?.bitrate || obj?.video || obj?.audio;
@@ -60,7 +61,7 @@ export const getTechnicalDetails = (selectedProvider, defaultVOD) => {
 };
 
 export const getMovieStreamUrl = (vod, selectedProvider, env_mode) => {
-  let streamUrl = `/proxy/vod/movie/${vod.uuid}`;
+  let streamUrl = withBasePath(`/proxy/vod/movie/${vod.uuid}`);
 
   const params = new URLSearchParams();
   if (selectedProvider) {

@@ -1,4 +1,5 @@
 import useAuthStore from '../../store/auth';
+import { withBasePath } from '../basePath.js';
 
 export const imdbUrl = (imdb_id) =>
   imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
@@ -129,7 +130,7 @@ export const sortBySeasonNumber = (episodesBySeason) => {
 };
 
 export const getEpisodeStreamUrl = (episode, selectedProvider, env_mode) => {
-  let streamUrl = `/proxy/vod/episode/${episode.uuid}`;
+  let streamUrl = withBasePath(`/proxy/vod/episode/${episode.uuid}`);
 
   const params = new URLSearchParams();
   if (selectedProvider) {
