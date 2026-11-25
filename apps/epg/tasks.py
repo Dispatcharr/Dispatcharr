@@ -18,6 +18,7 @@ import psutil  # Add import for memory tracking
 import zipfile
 
 from celery import shared_task
+from dispatcharr.safe_mode import skip_periodic_refresh
 from apps.plugins.internal_tasks import plugin_callable_task
 from django.conf import settings
 from django.db import connection, transaction
@@ -519,6 +520,7 @@ def delete_epg_refresh_task_by_id(epg_id):
 
 
 @shared_task
+@skip_periodic_refresh("Scheduled EPG refresh skipped in safe mode.")
 def refresh_all_epg_data():
     logger.info("Starting refresh_epg_data task.")
     # Exclude dummy EPG sources from refresh - they don't need refreshing
@@ -536,6 +538,7 @@ def refresh_all_epg_data():
 
 @plugin_callable_task
 @shared_task(time_limit=14400)
+@skip_periodic_refresh("Scheduled EPG refresh skipped in safe mode.")
 def refresh_epg_data(source_id, force=False, _file_defer_retry=0):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")

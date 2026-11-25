@@ -110,6 +110,14 @@ class EnvironmentStaleWhileRevalidateTests(SimpleTestCase):
         force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
         return environment(request)
 
+    @patch.dict("os.environ", {"DISPATCHARR_SAFE_MODE": "true"})
+    @patch("core.api_views.threading.Thread")
+    def test_environment_reports_safe_mode(self, _thread, *_):
+        data = self._get_environment().data
+        self.assertTrue(data["safe_mode"])
+        self.assertEqual([effect["id"] for effect in data["safe_mode_effects"]],
+                         ["plugins", "automatic_refreshes"])
+
     @patch("core.api_views.threading.Thread")
     def test_stale_cache_serves_cached_and_kicks_background_refresh(self, mock_thread, *_):
         cache.set(_IP_CACHE_KEY, _stale_entry(), 3600)

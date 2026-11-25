@@ -278,6 +278,7 @@ function PluginDetailForKey({ routeKey: key }) {
   }
 
   const missing = plugin.missing;
+  const safeModePaused = plugin.safe_mode_paused;
   const hasFields = !missing && enabled && plugin.fields?.length > 0;
   const hasActions = !missing && enabled && plugin.actions?.length > 0;
   const isSettingsDirty =
@@ -562,7 +563,7 @@ function PluginDetailForKey({ routeKey: key }) {
                       size="xs"
                       value={enabled ? 'on' : 'off'}
                       onChange={(value) => handleEnableChange(value === 'on')}
-                      disabled={missing}
+                      disabled={missing || safeModePaused}
                       data={[
                         { label: 'Disabled', value: 'off' },
                         { label: 'Enabled', value: 'on' },
@@ -591,7 +592,7 @@ function PluginDetailForKey({ routeKey: key }) {
                       size="xs"
                       variant="default"
                       loading={reloadingCode}
-                      disabled={reloadingCode || missing}
+                      disabled={reloadingCode || missing || safeModePaused}
                       leftSection={!reloadIconOnly && <RotateCw size={14} />}
                       onClick={() => setReloadConfirmOpen(true)}
                       aria-label="Reload Plugin"

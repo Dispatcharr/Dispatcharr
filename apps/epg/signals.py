@@ -17,7 +17,8 @@ def trigger_refresh_on_new_epg_source(sender, instance, created, **kwargs):
     # can run Auto-match EPG before committing to a full schedule/program fetch.
     # A short countdown gives the frontend time to receive the API response and
     # populate the store before WebSocket updates arrive.
-    if created and instance.is_active and instance.source_type != 'dummy':
+    from dispatcharr.safe_mode import automatic_refreshes_allowed
+    if created and instance.is_active and instance.source_type != 'dummy' and automatic_refreshes_allowed():
         if instance.source_type == 'schedules_direct':
             fetch_schedules_direct_stations.apply_async((instance.id,), countdown=3)
         else:

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Safe mode helps recover from startup problems.** Set `DISPATCHARR_SAFE_MODE=true` and recreate the container to disable plugins and automatic M3U/EPG refreshes without changing saved settings. The sidebar shows when safe mode is active. For modular deployments, set the variable on both web and Celery.
 - **TV Guide can search programs.** A Channels / Programs toggle on the Guide switches to program search, which uses `GET /api/epg/programs/search/`. It matches the title or the description for programs airing now, in the next 24 hours, or in the next 7 days, with optional regex and whole-word matching. Results are paginated and list every channel that carries the program. Clicking a result opens the same details and recording options as the grid. (Closes #1846, Closes #1429) - Thanks [@sherif-fanous](https://github.com/sherif-fanous)
 - **Channel stream advanced stats show join prebuffer.** When experimental ingest detection measures the provider's initial burst, `join_prebuffer_seconds` appears under Technical in the channel streams table (seconds of media ahead of realtime in that dump).
 - **Experimental MPEG-TS ingest buffer detection, on by default.** Settings → Proxy adds **Experimental ingest buffer detection**. Applies the next time the channel starts. Existing saved proxy settings keep their stored value. (Fixes #1918)

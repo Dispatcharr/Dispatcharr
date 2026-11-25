@@ -12,6 +12,8 @@ services:
       - dispatcharr_data:/data
     environment:
       - DISPATCHARR_ENV=aio
+      # Recovery mode: skip plugins and automatic M3U/EPG refreshes.
+      #- DISPATCHARR_SAFE_MODE=true
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=info

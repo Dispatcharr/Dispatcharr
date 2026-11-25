@@ -39,6 +39,7 @@ import { canViewDvr } from '../utils/dvrAccess';
 import { canViewVod } from '../utils/vodAccess';
 import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
+import { SafeModeSidebar } from './SafeModeNotice';
 
 // Settings is the only remaining sub-panel (plugins used to have one too -
 // removed in favor of pinned rows directly in the primary nav). Kept as a
@@ -490,6 +491,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           </Text>
         )}
       </Group>
+
+      <SafeModeSidebar collapsed={collapsed} />
 
       <SlidingPanels
         isOpen={nav.isOpen}

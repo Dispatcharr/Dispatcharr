@@ -84,6 +84,16 @@ Build custom integrations using Dispatcharr's robust plugin system. Automate tas
 
 ## 🛠️ Troubleshooting & Help
 
+### Safe mode
+
+Set `DISPATCHARR_SAFE_MODE=true` and recreate the container to disable plugins
+and automatic M3U/EPG refreshes without changing saved settings. For modular
+deployments, set it on both web and Celery. Remove it and recreate the
+containers to resume normal operation.
+
+Manual refreshes remain available. Safe mode does not stop work already running
+or non-periodic refresh jobs queued before startup.
+
 - **General help?** Visit [Dispatcharr Docs](https://dispatcharr.github.io/Dispatcharr-Docs/)
 - **Community support?** Join our [Discord](https://discord.gg/Sp45V5BcxU)
 
