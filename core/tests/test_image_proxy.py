@@ -81,13 +81,12 @@ class ServeLocalOrRemoteImageTests(SimpleTestCase):
         with self.assertRaises(Http404):
             serve_local_or_remote_image("ftp://example.com/x.png")
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_remote_success(self, _mock_ua, mock_get, mock_validate):
+    def test_remote_success(self, _mock_ua, mock_get):
         mock_get.return_value = _mock_ok_response(PNG_BYTES)
 
         response = serve_local_or_remote_image("https://cdn.example.com/a.png")
@@ -96,22 +95,23 @@ class ServeLocalOrRemoteImageTests(SimpleTestCase):
         self.assertEqual(response.content, PNG_BYTES)
         self.assertEqual(response["Content-Type"], "image/png")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
-        mock_validate.assert_called_once()
         mock_get.assert_called_once()
-        _, kwargs = mock_get.call_args
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "https://cdn.example.com/a.png")
         self.assertEqual(
             kwargs.get("headers"),
             {"User-Agent": "Dispatcharr-Test/1.0"},
         )
-        self.assertFalse(kwargs.get("allow_redirects"))
+        self.assertTrue(kwargs.get("allow_private"))
+        self.assertFalse(kwargs.get("allow_loopback"))
+        self.assertTrue(kwargs.get("stream"))
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_svg_gets_csp(self, _mock_ua, mock_get, _mock_validate):
+    def test_svg_gets_csp(self, _mock_ua, mock_get):
         mock_get.return_value = _mock_ok_response(
             SVG_BYTES,
             headers={"Content-Type": "text/html"},
@@ -123,13 +123,12 @@ class ServeLocalOrRemoteImageTests(SimpleTestCase):
         self.assertEqual(response["Content-Type"], "image/svg+xml")
         self.assertIn("sandbox", response["Content-Security-Policy"])
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
+    @patch("core.image_proxy.get_with_validated_redirects")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_rejects_html_despite_image_content_type(self, _mock_ua, mock_get, _mock_validate):
+    def test_rejects_html_despite_image_content_type(self, _mock_ua, mock_get):
         mock_get.return_value = _mock_ok_response(
             HTML_BYTES,
             headers={"Content-Type": "image/png"},
@@ -138,64 +137,15 @@ class ServeLocalOrRemoteImageTests(SimpleTestCase):
         with self.assertRaises(Http404):
             serve_local_or_remote_image("https://cdn.example.com/evil.png")
 
-    @patch("core.image_proxy.validate_outbound_http_url")
-    @patch("core.image_proxy.requests.get")
     @patch(
-        "core.image_proxy.CoreSettings.get_default_user_agent",
-        return_value="Dispatcharr-Test/1.0",
-    )
-    def test_follows_redirect_and_revalidates(self, _mock_ua, mock_get, mock_validate):
-        redirect = MagicMock()
-        redirect.status_code = 302
-        redirect.headers = {"Location": "https://cdn.example.com/final.png"}
-        final = _mock_ok_response(JPEG_BYTES)
-        mock_get.side_effect = [redirect, final]
-
-        response = serve_local_or_remote_image("https://cdn.example.com/start.png")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "image/jpeg")
-        self.assertEqual(mock_get.call_count, 2)
-        self.assertEqual(mock_validate.call_count, 2)
-        self.assertEqual(
-            mock_validate.call_args_list[0].args[0],
-            "https://cdn.example.com/start.png",
-        )
-        self.assertEqual(
-            mock_validate.call_args_list[1].args[0],
-            "https://cdn.example.com/final.png",
-        )
-
-    @patch(
-        "core.image_proxy.validate_outbound_http_url",
-        side_effect=[None, ValueError("blocked")],
-    )
-    @patch("core.image_proxy.requests.get")
-    @patch(
-        "core.image_proxy.CoreSettings.get_default_user_agent",
-        return_value="Dispatcharr-Test/1.0",
-    )
-    def test_blocks_redirect_to_unsafe_target(self, _mock_ua, mock_get, _mock_validate):
-        redirect = MagicMock()
-        redirect.status_code = 302
-        redirect.headers = {"Location": "http://127.0.0.1/secret"}
-        mock_get.return_value = redirect
-
-        with self.assertRaises(Http404):
-            serve_local_or_remote_image("https://cdn.example.com/start.png")
-
-        self.assertEqual(mock_get.call_count, 1)
-
-    @patch(
-        "core.image_proxy.validate_outbound_http_url",
+        "core.image_proxy.get_with_validated_redirects",
         side_effect=ValueError("blocked"),
     )
-    @patch("core.image_proxy.requests.get")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_blocks_unsafe_url_before_fetch(self, _mock_ua, mock_get, _mock_validate):
+    def test_blocks_unsafe_url_before_fetch(self, _mock_ua, mock_get):
         with self.assertRaises(Http404):
             serve_local_or_remote_image("http://127.0.0.1/logo.png")
-        mock_get.assert_not_called()
+        mock_get.assert_called_once()

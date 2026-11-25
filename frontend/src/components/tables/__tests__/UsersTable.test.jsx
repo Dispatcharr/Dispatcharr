@@ -14,6 +14,7 @@ vi.mock('../../../store/users', () => ({ default: vi.fn() }));
 vi.mock('../../../store/channels', () => ({ default: vi.fn() }));
 vi.mock('../../../store/auth', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
+vi.mock('../../../store/settings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../hooks/useBrowserStorage', () => ({
@@ -23,6 +24,11 @@ vi.mock('../../../hooks/useBrowserStorage', () => ({
 }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
+vi.mock('../../../utils', async (importOriginal) => ({
+  ...(await importOriginal()),
+  copyToClipboard: vi.fn(),
+}));
+
 vi.mock('../../../utils/dateTimeUtils.js', () => ({
   useDateTimeFormat: vi.fn(),
   format: vi.fn((val) => `formatted:${val}`),
@@ -109,6 +115,15 @@ vi.mock('@mantine/core', () => ({
   Group: ({ children, style }) => <div style={style}>{children}</div>,
   LoadingOverlay: ({ visible }) =>
     visible ? <div data-testid="loading-overlay" /> : null,
+  Menu: ({ children }) => <div data-testid="menu">{children}</div>,
+  MenuDropdown: ({ children }) => <div>{children}</div>,
+  MenuItem: ({ children, onClick, disabled }) => (
+    <button data-testid="menu-item" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
+  MenuLabel: ({ children }) => <span data-testid="menu-label">{children}</span>,
+  MenuTarget: ({ children }) => <div>{children}</div>,
   Paper: ({ children, style }) => <div style={style}>{children}</div>,
   Stack: ({ children, style }) => <div style={style}>{children}</div>,
   TextInput: ({ placeholder, value, onChange, leftSection, rightSection }) => (
@@ -149,8 +164,10 @@ vi.mock('lucide-react', () => ({
   ArrowUpNarrowWide: ({ onClick }) => (
     <svg data-testid="icon-sort-asc" onClick={onClick} />
   ),
+  Copy: () => <svg data-testid="icon-copy" />,
   Eye: () => <svg data-testid="icon-eye" />,
   EyeOff: () => <svg data-testid="icon-eye-off" />,
+  Link: () => <svg data-testid="icon-link" />,
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
   SquarePen: () => <svg data-testid="icon-square-pen" />,
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
@@ -163,9 +180,11 @@ import useUsersStore from '../../../store/users';
 import useChannelsStore from '../../../store/channels';
 import useAuthStore from '../../../store/auth';
 import useWarningsStore from '../../../store/warnings';
+import useSettingsStore from '../../../store/settings';
 import { useDateTimeFormat, format } from '../../../utils/dateTimeUtils.js';
 import { useTable } from '../CustomTable';
 import API from '../../../api';
+import { copyToClipboard } from '../../../utils';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../../constants';
 import UsersTable from '../UsersTable';
 
@@ -209,6 +228,10 @@ const setupMocks = ({
 
   vi.mocked(useWarningsStore).mockImplementation((sel) =>
     sel({ isWarningSuppressed, suppressWarning })
+  );
+
+  vi.mocked(useSettingsStore).mockImplementation((sel) =>
+    sel({ environment: { env_mode: 'production' } })
   );
 
   vi.mocked(useDateTimeFormat).mockReturnValue({
@@ -390,6 +413,93 @@ describe('UsersTable', () => {
       expect(
         getByTestId('icon-square-pen').closest('button')
       ).not.toBeDisabled();
+    });
+  });
+
+  // ── Quick-access URLs ──────────────────────────────────────────────────────
+
+  describe('User URLs menu via actions column', () => {
+    const origin = `${window.location.protocol}//${window.location.host}`;
+
+    const renderActions = (user) => {
+      setupMocks({ users: [user] });
+      render(<UsersTable />);
+      return render(getActionsCell().cell({ row: { original: user } }));
+    };
+
+    const openMenu = (utils) =>
+      fireEvent.click(utils.getByRole('button', { name: 'Copy XC URLs' }));
+
+    const getItem = (utils, label) =>
+      utils.getAllByTestId('menu-item').find((el) => el.textContent === label);
+
+    it('renders the links icon when the user has an XC password', () => {
+      const utils = renderActions(makeUser());
+      expect(utils.getByTestId('icon-link')).toBeInTheDocument();
+    });
+
+    it('disables the links icon when the user has no XC password', () => {
+      const utils = renderActions(makeUser({ custom_properties: {} }));
+      const button = utils.getByRole('button', { name: 'Copy XC URLs' });
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(utils.queryByTestId('menu')).not.toBeInTheDocument();
+    });
+
+    it('copies the XC M3U URL with the user credentials', () => {
+      const utils = renderActions(
+        makeUser({
+          username: 'janedoe',
+          custom_properties: { xc_password: 'secret123' },
+        })
+      );
+      openMenu(utils);
+      fireEvent.click(getItem(utils, 'M3U'));
+      expect(copyToClipboard).toHaveBeenCalledWith(
+        `${origin}/get.php?username=janedoe&password=secret123`,
+        {
+          successTitle: 'M3U URL Copied!',
+          successMessage: 'The M3U URL has been copied to your clipboard.',
+        }
+      );
+    });
+
+    it('copies XC details with server, username, and password', () => {
+      const utils = renderActions(
+        makeUser({
+          username: 'janedoe',
+          custom_properties: { xc_password: 'secret123' },
+        })
+      );
+      openMenu(utils);
+      fireEvent.click(getItem(utils, 'XC Details'));
+      expect(copyToClipboard).toHaveBeenCalledWith(
+        [
+          `Server: ${origin}`,
+          'Username: janedoe',
+          'Password: secret123',
+        ].join('\n'),
+        {
+          successTitle: 'XC Details Copied!',
+          successMessage:
+            'Server, username, and XC password have been copied to your clipboard.',
+        }
+      );
+    });
+
+    it('does not mount the menu until the icon is clicked', () => {
+      const utils = renderActions(makeUser());
+      expect(utils.queryByTestId('menu')).not.toBeInTheDocument();
+      openMenu(utils);
+      expect(utils.getByTestId('menu')).toBeInTheDocument();
+    });
+
+    it('does not offer profile M3U/EPG/HDHR links', () => {
+      const utils = renderActions(makeUser());
+      openMenu(utils);
+      expect(
+        utils.getAllByTestId('menu-item').map((el) => el.textContent)
+      ).toEqual(['M3U', 'EPG', 'XC Details']);
     });
   });
 

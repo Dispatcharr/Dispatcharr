@@ -3,9 +3,14 @@
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, TestCase
+from rest_framework.settings import api_settings
 from rest_framework.test import APIClient
 
 User = get_user_model()
+
+LOGIN_ATTEMPT_LIMIT = int(
+    api_settings.DEFAULT_THROTTLE_RATES["login"].split("/")[0]
+)
 
 
 class AdminLoginRateLimitTests(TestCase):
@@ -35,7 +40,7 @@ class AdminLoginRateLimitTests(TestCase):
         )
 
     def test_fourth_admin_login_post_is_throttled(self):
-        for _ in range(3):
+        for _ in range(LOGIN_ATTEMPT_LIMIT):
             response = self._admin_login_post()
             self.assertNotEqual(response.status_code, 429)
 
@@ -48,7 +53,7 @@ class AdminLoginRateLimitTests(TestCase):
             response = self.client.get(self.admin_login_url)
             self.assertEqual(response.status_code, 200)
 
-        for _ in range(3):
+        for _ in range(LOGIN_ATTEMPT_LIMIT):
             response = self._admin_login_post()
             self.assertNotEqual(response.status_code, 429)
 
@@ -56,7 +61,7 @@ class AdminLoginRateLimitTests(TestCase):
         self.assertEqual(response.status_code, 429)
 
     def test_admin_and_jwt_login_share_throttle_bucket(self):
-        for _ in range(2):
+        for _ in range(LOGIN_ATTEMPT_LIMIT - 1):
             response = self.api.post(
                 self.token_url,
                 {"username": "adminuser", "password": "wrong-password"},

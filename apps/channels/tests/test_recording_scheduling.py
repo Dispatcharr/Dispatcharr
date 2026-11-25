@@ -517,9 +517,8 @@ class ArtworkPrefetchSignalGuardTests(TestCase):
 
 
 class DestroyDvrClientIsolationTests(TestCase):
-    """Tests that deleting a recording only stops DVR clients when the
-    recording is actively streaming — never for completed/upcoming recordings
-    that could share a channel with an unrelated in-progress recording."""
+    """Tests that deleting a recording only stops DVR clients when status is
+    recording or stopped, never for completed/upcoming recordings."""
 
     def setUp(self):
         from django.contrib.auth import get_user_model
@@ -534,11 +533,20 @@ class DestroyDvrClientIsolationTests(TestCase):
         self.force_authenticate = force_authenticate
 
     def _delete_recording(self, rec):
+        from unittest.mock import patch
         from apps.channels.api_views import RecordingViewSet
         request = self.factory.delete(f"/api/channels/recordings/{rec.id}/")
         self.force_authenticate(request, user=self.user)
         view = RecordingViewSet.as_view({"delete": "destroy"})
-        return view(request, pk=rec.id)
+        # Run the deferred teardown inline so _stop_dvr_clients assertions are
+        # deterministic (a real daemon thread can race the assert).
+        with patch("threading.Thread") as mock_thread, \
+             patch("core.utils.send_websocket_update"):
+            response = view(request, pk=rec.id)
+            mock_thread.assert_called_once()
+            with patch("django.db.connection"):
+                mock_thread.call_args.kwargs["target"]()
+        return response
 
     @patch("apps.channels.api_views._stop_dvr_clients")
     def test_destroy_completed_recording_does_not_stop_dvr_clients(self, mock_stop):
@@ -575,6 +583,20 @@ class DestroyDvrClientIsolationTests(TestCase):
             start_time=now - timedelta(minutes=5),
             end_time=now + timedelta(hours=1),
             custom_properties={"status": "recording"},
+        )
+        self._delete_recording(rec)
+        mock_stop.assert_called_once_with(str(self.channel.uuid), recording_id=rec.id)
+
+    @patch("apps.channels.api_views._stop_dvr_clients")
+    def test_destroy_stopped_recording_does_stop_dvr_clients(self, mock_stop):
+        """Deleting a stopped recording still stops its client (stop teardown may lag)."""
+        mock_stop.return_value = 1
+        now = timezone.now()
+        rec = Recording.objects.create(
+            channel=self.channel,
+            start_time=now - timedelta(minutes=5),
+            end_time=now + timedelta(hours=1),
+            custom_properties={"status": "stopped"},
         )
         self._delete_recording(rec)
         mock_stop.assert_called_once_with(str(self.channel.uuid), recording_id=rec.id)

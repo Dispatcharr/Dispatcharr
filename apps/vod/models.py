@@ -7,17 +7,27 @@ from apps.m3u.models import M3UAccount
 import uuid
 
 
+def _clamp_vod_char_field(obj, field_name, *, label):
+    """Clamp a CharField on a VOD row so bulk writes cannot abort on varchar limits."""
+    from core.utils import truncate_with_warning
+
+    value = getattr(obj, field_name, None)
+    if value is None:
+        return
+    max_length = obj._meta.get_field(field_name).max_length
+    setattr(
+        obj,
+        field_name,
+        truncate_with_warning(value, max_length=max_length, label=label),
+    )
+
+
 class VODLogoQuerySet(models.QuerySet):
     def bulk_create(self, objs, *args, **kwargs):
         # bulk_create bypasses Model.save(); clamp names here so provider
         # movie/series titles longer than varchar(255) cannot abort VOD ingest.
-        from core.utils import truncate_with_warning
-
-        max_length = self.model._meta.get_field("name").max_length
         for obj in objs:
-            obj.name = truncate_with_warning(
-                obj.name, max_length=max_length, label="Logo name"
-            )
+            _clamp_vod_char_field(obj, "name", label="Logo name")
         return super().bulk_create(objs, *args, **kwargs)
 
 
@@ -29,13 +39,7 @@ class VODLogo(models.Model):
     objects = VODLogoQuerySet.as_manager()
 
     def save(self, *args, **kwargs):
-        from core.utils import truncate_with_warning
-
-        self.name = truncate_with_warning(
-            self.name,
-            max_length=self._meta.get_field("name").max_length,
-            label="Logo name",
-        )
+        _clamp_vod_char_field(self, "name", label="Logo name")
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -99,6 +103,32 @@ class VODCategory(models.Model):
         return f"{self.name} ({self.get_category_type_display()})"
 
 
+class VODCatalogQuerySet(models.QuerySet):
+    """Clamp name/genre on bulk paths; bulk_create/bulk_update bypass Model.save()."""
+
+    _clamp_fields = ("name", "genre")
+
+    def _clamp_objs(self, objs, fields=None):
+        label_prefix = self.model.__name__
+        for obj in objs:
+            for field_name in self._clamp_fields:
+                if fields is not None and field_name not in fields:
+                    continue
+                _clamp_vod_char_field(
+                    obj,
+                    field_name,
+                    label=f"{label_prefix} {field_name}",
+                )
+
+    def bulk_create(self, objs, *args, **kwargs):
+        self._clamp_objs(objs)
+        return super().bulk_create(objs, *args, **kwargs)
+
+    def bulk_update(self, objs, fields, *args, **kwargs):
+        self._clamp_objs(objs, fields=fields)
+        return super().bulk_update(objs, fields, *args, **kwargs)
+
+
 class Series(models.Model):
     """Series information for TV shows"""
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
@@ -109,9 +139,16 @@ class Series(models.Model):
     genre = models.CharField(max_length=255, blank=True, null=True)
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='series')
 
-    # Metadata IDs for deduplication - these should be globally unique when present
-    tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
-    imdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="IMDB ID for metadata")
+    # Metadata IDs for deduplication - unique per language when present
+    tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
+    imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
+    # '' rather than NULL so untagged rows collide in the unique constraints
+    language = models.CharField(
+        max_length=2,
+        blank=True,
+        default='',
+        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
+    )
 
     # Additional metadata and properties
     custom_properties = models.JSONField(blank=True, null=True, help_text='Additional metadata and properties for the series')
@@ -119,18 +156,36 @@ class Series(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = VODCatalogQuerySet.as_manager()
+
     class Meta:
         verbose_name = 'Series'
         verbose_name_plural = 'Series'
         ordering = ['name']
-        # Only enforce name+year uniqueness when no external IDs are present
+        # Identity is (external ID, language), falling back to
+        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['name', 'year'],
+                fields=['tmdb_id', 'language'],
+                condition=models.Q(tmdb_id__isnull=False),
+                name='unique_series_tmdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['imdb_id', 'language'],
+                condition=models.Q(imdb_id__isnull=False),
+                name='unique_series_imdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['name', 'year', 'language'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_series_name_year_no_external_id'
+                name='unique_series_name_year_language_no_external_id'
             ),
         ]
+
+    def save(self, *args, **kwargs):
+        _clamp_vod_char_field(self, "name", label="Series name")
+        _clamp_vod_char_field(self, "genre", label="Series genre")
+        super().save(*args, **kwargs)
 
     def __str__(self):
         year_str = f" ({self.year})" if self.year else ""
@@ -148,9 +203,16 @@ class Movie(models.Model):
     duration_secs = models.IntegerField(blank=True, null=True, help_text="Duration in seconds")
     logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='movie')
 
-    # Metadata IDs for deduplication - these should be globally unique when present
-    tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
-    imdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="IMDB ID for metadata")
+    # Metadata IDs for deduplication - unique per language when present
+    tmdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="TMDB ID for metadata")
+    imdb_id = models.CharField(max_length=50, blank=True, null=True, db_index=True, help_text="IMDB ID for metadata")
+    # '' rather than NULL so untagged rows collide in the unique constraints
+    language = models.CharField(
+        max_length=2,
+        blank=True,
+        default='',
+        help_text="ISO 639-1 language assigned by the source category; empty when untagged",
+    )
 
     is_adult = models.BooleanField(
         default=False,
@@ -164,18 +226,36 @@ class Movie(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = VODCatalogQuerySet.as_manager()
+
     class Meta:
         verbose_name = 'Movie'
         verbose_name_plural = 'Movies'
         ordering = ['name']
-        # Only enforce name+year uniqueness when no external IDs are present
+        # Identity is (external ID, language), falling back to
+        # (name, year, language) when no external IDs are present
         constraints = [
             models.UniqueConstraint(
-                fields=['name', 'year'],
+                fields=['tmdb_id', 'language'],
+                condition=models.Q(tmdb_id__isnull=False),
+                name='unique_movie_tmdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['imdb_id', 'language'],
+                condition=models.Q(imdb_id__isnull=False),
+                name='unique_movie_imdb_id_language'
+            ),
+            models.UniqueConstraint(
+                fields=['name', 'year', 'language'],
                 condition=models.Q(tmdb_id__isnull=True) & models.Q(imdb_id__isnull=True),
-                name='unique_movie_name_year_no_external_id'
+                name='unique_movie_name_year_language_no_external_id'
             ),
         ]
+
+    def save(self, *args, **kwargs):
+        _clamp_vod_char_field(self, "name", label="Movie name")
+        _clamp_vod_char_field(self, "genre", label="Movie genre")
+        super().save(*args, **kwargs)
 
     def __str__(self):
         year_str = f" ({self.year})" if self.year else ""

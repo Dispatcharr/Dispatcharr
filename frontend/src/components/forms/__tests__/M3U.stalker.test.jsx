@@ -149,6 +149,7 @@ vi.mock('@mantine/core', () => {
     LoadingOverlay: ({ visible }) =>
       visible ? <div data-testid="loading-overlay">Loading</div> : null,
     Modal,
+    MultiSelect: () => null,
     NumberInput: wrapField('input', 'number'),
     PasswordInput: wrapField('input', 'password'),
     Select: wrapField('select'),

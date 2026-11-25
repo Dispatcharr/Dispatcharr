@@ -72,6 +72,41 @@ class UserMeAdminOnlyPropsTests(TestCase):
         self.user.refresh_from_db()
         self.assertNotIn("xc_password", self.user.custom_properties or {})
 
+    def test_cannot_clear_hide_adult_content(self):
+        self.user.custom_properties = {"hide_adult_content": True, "theme": "dark"}
+        self.user.save(update_fields=["custom_properties"])
+
+        for value in (False, None):
+            with self.subTest(value=value):
+                response = self.client.patch(
+                    self.url,
+                    {"custom_properties": {"hide_adult_content": value, "theme": "light"}},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.user.refresh_from_db()
+                self.assertTrue(self.user.custom_properties.get("hide_adult_content"))
+                self.assertEqual(self.user.custom_properties.get("theme"), "light")
+
+    def test_admin_user_update_can_still_set_hide_adult_content(self):
+        admin = User.objects.create_user(
+            username="admin",
+            password="testpass123",
+            user_level=10,
+        )
+        self.client.force_authenticate(admin)
+        response = self.client.patch(
+            f"/api/accounts/users/{self.user.id}/",
+            {"custom_properties": {"hide_adult_content": True}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.custom_properties.get("hide_adult_content"))
+        self.assertEqual(
+            self.user.custom_properties.get("allowed_m3u_profile_ids"), [1]
+        )
+
     def test_cannot_change_user_level_via_me(self):
         response = self.client.patch(
             self.url,

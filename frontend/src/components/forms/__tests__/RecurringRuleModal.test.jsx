@@ -175,11 +175,12 @@ vi.mock('@mantine/core', () => ({
 
 // ── @mantine/dates ─────────────────────────────────────────────────────────────
 vi.mock('@mantine/dates', () => ({
-  DatePickerInput: ({ label, value, onChange }) => (
+  DatePickerInput: ({ label, value, onChange, valueFormat }) => (
     <div>
       <label>{label}</label>
       <input
         data-testid={`datepicker-${label}`}
+        data-value-format={valueFormat}
         value={value ? (value.toISOString?.() ?? String(value)) : ''}
         onChange={(e) =>
           onChange(e.target.value ? new Date(e.target.value) : null)
@@ -280,6 +281,7 @@ const setupMocks = ({ rule = makeRule(), occurrences = [] } = {}) => {
   vi.mocked(useDateTimeFormat).mockReturnValue({
     timeFormat: 'HH:mm',
     dateFormat: 'MM/DD',
+    dateYearFormat: 'MMM D, YYYY',
   });
 
   vi.mocked(format).mockImplementation((moment, fmt) => `formatted-${fmt}`);
@@ -499,6 +501,26 @@ describe('RecurringRuleModal', () => {
       render(<RecurringRuleModal {...defaultProps()} />);
       expect(screen.getByTestId('datepicker-Start date')).toBeInTheDocument();
       expect(screen.getByTestId('datepicker-End date')).toBeInTheDocument();
+    });
+
+    it('uses a day-first date without a comma before the year', () => {
+      setupMocks({ occurrences: [makeOccurrence()] });
+      vi.mocked(useDateTimeFormat).mockReturnValue({
+        timeFormat: 'HH:mm',
+        dateFormat: 'D MMM',
+        dateYearFormat: 'D MMM YYYY',
+      });
+      render(<RecurringRuleModal {...defaultProps()} />);
+      expect(screen.getByText('formatted-D MMM YYYY')).toBeInTheDocument();
+      expect(screen.queryByText(/formatted-D MMM, YYYY/)).not.toBeInTheDocument();
+      expect(screen.getByTestId('datepicker-Start date')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY'
+      );
+      expect(screen.getByTestId('datepicker-End date')).toHaveAttribute(
+        'data-value-format',
+        'D MMM YYYY'
+      );
     });
 
     it('renders Start time and End time inputs', () => {

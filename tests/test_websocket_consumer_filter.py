@@ -31,6 +31,8 @@ class UserMayReceiveUpdateTests(SimpleTestCase):
                     "timeshift_stats",
                     "vod_started",
                     "vod_stopped",
+                    "plugin_task_progress",
+                    "plugin_task_complete",
                 }
             ),
         )

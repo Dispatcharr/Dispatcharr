@@ -7,10 +7,14 @@ class BaseConfig:
     CHUNK_SIZE = 8192
     CLIENT_POLL_INTERVAL = 0.1
     MAX_RETRIES = 3
+    STREAM_RETRY_TIMEOUT = 3
     RETRY_WINDOW_SECONDS = 1800  # Reset retry counter after this long without a failure
     STABLE_CONNECTION_THRESHOLD = 30  # Seconds of uptime before switch rotation state resets
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
-    CONNECTION_TIMEOUT = 10  # seconds to wait for initial connection
+    # Fallback when proxy_settings is unavailable. Prefer get_connection_timeout().
+    CONNECTION_TIMEOUT = 10
+    # Fallback when proxy_settings is unavailable. Prefer get_stream_startup_timeout().
+    STREAM_STARTUP_TIMEOUT = 8
     MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up
     FAILOVER_ROTATION_COOLDOWN = 60 # Wait this long after exhausting all streams before wrapping back to the top.
     BUFFER_CHUNK_SIZE = 188 * 1361  # ~256KB
@@ -57,9 +61,12 @@ class BaseConfig:
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
                 "connection_ready_chunks": 16,
-                "max_reconnect_attempts": 5,
                 "min_stable_time_before_reconnect": 10,
+                "stream_startup_timeout": 8,
+                "connection_timeout": 10,
                 "validate_redirect_urls": True,
+                "max_retries": 3,
+                "stream_retry_timeout": 3,
             }
 
         finally:
@@ -119,6 +126,16 @@ class TSConfig(BaseConfig):
     GHOST_CLIENT_MULTIPLIER = 10.0  # How many heartbeat intervals before client considered ghost (10 = 50s, must exceed STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD = 40s)
     CLIENT_WAIT_TIMEOUT = 60  # Seconds to wait for channel to become ready
 
+    # Native HLS output (code-level; not DB / UI Proxy Settings)
+    HLS_SEGMENT_DURATION = 4  # Target segment length in seconds
+    # Floor for HLS segment Redis TTL sizing (not the advertised playlist
+    # length; the playlist tracks surviving Redis chunks).
+    HLS_WINDOW_SIZE = 10
+    # Pull-based HLS clients: treat as ghost after this many missed segment
+    # intervals with no playlist/segment poll (3 x 4s = 12s). Matches the
+    # spirit of the legacy hls_proxy CLIENT_TIMEOUT_FACTOR approach.
+    HLS_CLIENT_GHOST_SEGMENTS = 3
+
     # Stream health and recovery settings
     MAX_HEALTH_RECOVERY_ATTEMPTS = 2     # Maximum times to attempt recovery for a single stream
     MAX_RECONNECT_ATTEMPTS = 5           # Maximum reconnects to try before switching streams
@@ -174,9 +191,8 @@ class TSConfig(BaseConfig):
 
     @classmethod
     def get_max_reconnect_attempts(cls):
-        """Get how many reconnect attempts to allow before failover."""
-        settings = cls.get_proxy_settings()
-        return settings.get("max_reconnect_attempts", 5)
+        """Backward-compatible alias for get_max_retries()."""
+        return cls.get_max_retries()
 
     @classmethod
     def get_min_stable_time_before_reconnect(cls):
@@ -189,6 +205,30 @@ class TSConfig(BaseConfig):
         """Whether Redirect mode probes the provider URL (HEAD/GET) before handing off."""
         settings = cls.get_proxy_settings()
         return bool(settings.get("validate_redirect_urls", True))
+
+    @classmethod
+    def get_stream_startup_timeout(cls):
+        """Seconds without data from a newly connected stream before failover."""
+        settings = cls.get_proxy_settings()
+        return settings.get("stream_startup_timeout", cls.STREAM_STARTUP_TIMEOUT)
+
+    @classmethod
+    def get_connection_timeout(cls):
+        """Seconds without data from an active stream before marking it unhealthy."""
+        settings = cls.get_proxy_settings()
+        return settings.get("connection_timeout", cls.CONNECTION_TIMEOUT)
+
+    @classmethod
+    def get_max_retries(cls):
+        """Get maximum retry attempts from database or default"""
+        settings = cls.get_proxy_settings()
+        return settings.get("max_retries", 3)
+
+    @classmethod
+    def get_stream_retry_timeout(cls):
+        """Get stream connection retry timeout from database or default"""
+        settings = cls.get_proxy_settings()
+        return settings.get("stream_retry_timeout", 3)
 
     # Dynamic property access for these settings
     @property
@@ -226,3 +266,11 @@ class TSConfig(BaseConfig):
     @property
     def VALIDATE_REDIRECT_URLS(self):
         return self.get_validate_redirect_urls()
+
+    @property
+    def MAX_RETRIES(self):
+        return self.get_max_retries()
+
+    @property
+    def STREAM_RETRY_TIMEOUT(self):
+        return self.get_stream_retry_timeout()

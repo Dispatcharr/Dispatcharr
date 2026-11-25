@@ -1,4 +1,5 @@
 # apps/accounts/models.py
+from django.conf import settings
 from django.db import models
 from django.contrib.auth.models import AbstractUser, Permission, UserManager
 
@@ -46,3 +47,31 @@ class User(AbstractUser):
         Returns the permissions assigned to the user and their groups.
         """
         return self.user_permissions.all() | Permission.objects.filter(group__user=self)
+
+
+class UserAppData(models.Model):
+    """One row per (user, app key). Keeps per-app reads/writes off the User row."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="app_data_entries",
+    )
+    key = models.CharField(max_length=64)
+    value = models.JSONField(default=dict)
+    # Compact UTF-8 JSON size at write time; list/total caps use this instead of
+    # re-serializing every value.
+    byte_size = models.PositiveIntegerField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "key"],
+                name="uniq_accounts_user_app_data_key",
+            ),
+        ]
+        ordering = ["key"]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.key}"

@@ -19,5 +19,5 @@ class ProxySettingsDefaultsTest(TestCase):
 
         self.assertEqual(result["new_client_behind_seconds"], 15)
         self.assertEqual(result["connection_ready_chunks"], 16)
-        self.assertEqual(result["max_reconnect_attempts"], 5)
+        self.assertEqual(result["max_retries"], 3)
         self.assertEqual(result["min_stable_time_before_reconnect"], 10)

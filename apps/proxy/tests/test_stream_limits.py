@@ -11,6 +11,7 @@ from apps.proxy.utils import (
     attempt_stream_termination,
     check_user_stream_limits,
     stop_timeshift_client,
+    user_limit_evicts_oldest_stream,
 )
 
 
@@ -24,6 +25,12 @@ class _FakeRedis:
     def hget(self, key, field):
         hash_value = self.store.get(key)
         return hash_value.get(field) if isinstance(hash_value, dict) else None
+
+    def hmget(self, key, *fields):
+        hash_value = self.store.get(key)
+        if not isinstance(hash_value, dict):
+            return [None] * len(fields)
+        return [hash_value.get(str(field)) for field in fields]
 
     def hset(self, key, field=None, value=None, mapping=None, **kwargs):
         hash_value = self.store.get(key)
@@ -308,3 +315,201 @@ class GetUserActiveConnectionsTests(TestCase):
         self.assertEqual(connections[0]["media_id"], worker_id)
         self.assertEqual(connections[0]["client_id"], client_id)
         self.assertEqual(connections[0]["type"], "live")
+
+    def test_running_anonymous_vod_session_does_not_hide_the_users_streams(self):
+        """A session opened without a user stores a non-numeric owner. It
+        belongs to no user and must not make the scan return nothing."""
+        from apps.proxy.utils import get_user_active_connections
+
+        redis = _FakeRedis()
+        redis.hset(
+            "vod_persistent_connection:vod_user",
+            mapping={
+                "user_id": "7",
+                "created_at": "1.0",
+                "content_uuid": "movie-user",
+                "active_streams": "1",
+            },
+        )
+        redis.hset(
+            "vod_persistent_connection:vod_anonymous",
+            mapping={
+                "user_id": "unknown",
+                "created_at": "2.0",
+                "content_uuid": "movie-anonymous",
+                "active_streams": "1",
+            },
+        )
+
+        with patch("apps.proxy.utils.RedisClient.get_client", return_value=redis):
+            for_user = get_user_active_connections(7)
+            everyone = get_user_active_connections(None)
+
+        self.assertEqual([c["client_id"] for c in for_user], ["vod_user"])
+        self.assertEqual(
+            sorted(c["client_id"] for c in everyone), ["vod_anonymous", "vod_user"]
+        )
+
+    def test_idle_vod_hashes_are_not_counted(self):
+        """Settle leftovers hold no stream and must not inflate the user's limit."""
+        from apps.proxy.utils import get_user_active_connections
+
+        idle_key = "vod_persistent_connection:vod_idle"
+        active_key = "vod_persistent_connection:vod_active"
+        redis = MagicMock()
+        redis.scan_iter.side_effect = lambda match, count=1000: (
+            [idle_key, active_key] if match.startswith("vod_") else []
+        )
+
+        def hmget(key, *fields):
+            rows = {
+                idle_key: {
+                    "user_id": "7",
+                    "created_at": "1.0",
+                    "content_uuid": "movie-idle",
+                    "active_streams": "0",
+                },
+                active_key: {
+                    "user_id": "7",
+                    "created_at": "2.0",
+                    "content_uuid": "movie-active",
+                    "active_streams": "1",
+                },
+            }
+            return [rows[key].get(field) for field in fields]
+
+        redis.hmget.side_effect = hmget
+
+        with patch("apps.proxy.utils.RedisClient.get_client", return_value=redis):
+            connections = get_user_active_connections(7)
+
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(connections[0]["client_id"], "vod_active")
+        self.assertEqual(connections[0]["media_id"], "movie-active")
+        self.assertEqual(connections[0]["type"], "vod")
+
+
+def _vod_connection(client_id, media_id="movie-uuid", connected_at=100.0):
+    return {
+        "media_id": media_id,
+        "client_id": client_id,
+        "connected_at": connected_at,
+        "type": "vod",
+    }
+
+
+def _limit_settings(**overrides):
+    settings = {
+        "terminate_on_limit_exceeded": True,
+        "terminate_oldest": True,
+        "prioritize_single_client_channels": True,
+        "ignore_same_channel_connections": False,
+    }
+    settings.update(overrides)
+    return settings
+
+
+class VodSessionDoesNotCountAgainstItselfTests(TestCase):
+    """A request on a VOD session the user already holds reuses that session."""
+
+    def setUp(self):
+        self.user = MagicMock(id=7, username="viewer", stream_limit=1)
+
+    def _check(self, connections, client_id="vod_own"):
+        with patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
+                   return_value=_limit_settings()), \
+             patch("apps.proxy.utils.get_user_active_connections",
+                   return_value=connections), \
+             patch("apps.proxy.utils.attempt_stream_termination",
+                   return_value=True) as terminate:
+            allowed = check_user_stream_limits(self.user, client_id, media_id="movie-uuid")
+        return allowed, terminate
+
+    def test_own_session_is_not_counted_or_ended(self):
+        allowed, terminate = self._check([_vod_connection("vod_own")])
+
+        self.assertTrue(allowed)
+        terminate.assert_not_called()
+
+    def test_another_session_of_the_user_still_counts(self):
+        allowed, terminate = self._check([_vod_connection("vod_other")])
+
+        self.assertTrue(allowed)
+        terminate.assert_called_once()
+        self.assertEqual(terminate.call_args.args[2], [_vod_connection("vod_other")])
+
+    def test_own_session_does_not_hide_another_stream(self):
+        other = _vod_connection("vod_other", media_id="other-uuid", connected_at=50.0)
+        _allowed, terminate = self._check([_vod_connection("vod_own"), other])
+
+        terminate.assert_called_once()
+        self.assertEqual(terminate.call_args.args[2], [other])
+
+
+class UserLimitEvictsOldestStreamTests(TestCase):
+    def _evicts(self, *, stream_limit=1, settings=None, connections=()):
+        user = MagicMock(id=7, stream_limit=stream_limit)
+        with patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
+                   return_value=settings or _limit_settings()), \
+             patch("apps.proxy.utils.get_user_active_connections",
+                   return_value=list(connections)):
+            return user_limit_evicts_oldest_stream(user)
+
+    def test_no_user_or_no_limit_never_evicts(self):
+        self.assertFalse(user_limit_evicts_oldest_stream(None))
+        self.assertFalse(self._evicts(stream_limit=0, connections=[_vod_connection("a")]))
+
+    def test_idle_vod_leftover_does_not_put_the_user_at_the_limit(self):
+        """One running VOD plus an idle settle hash is still one stream."""
+        redis = _FakeRedis()
+        redis.hset(
+            "vod_persistent_connection:vod_idle",
+            mapping={
+                "user_id": "7",
+                "created_at": "1.0",
+                "content_uuid": "movie-idle",
+                "active_streams": "0",
+            },
+        )
+        redis.hset(
+            "vod_persistent_connection:vod_running",
+            mapping={
+                "user_id": "7",
+                "created_at": "2.0",
+                "content_uuid": "movie-running",
+                "active_streams": "1",
+            },
+        )
+        user = MagicMock(id=7, stream_limit=2)
+        with patch("apps.proxy.utils.RedisClient.get_client", return_value=redis), \
+             patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
+                   return_value=_limit_settings()):
+            self.assertFalse(user_limit_evicts_oldest_stream(user))
+
+    def test_evicts_only_at_the_limit(self):
+        self.assertFalse(self._evicts(stream_limit=2, connections=[_vod_connection("a")]))
+        self.assertTrue(self._evicts(
+            stream_limit=2,
+            connections=[_vod_connection("a", "m1"), _vod_connection("b", "m2")],
+        ))
+
+    def test_requires_the_oldest_stream_to_be_the_one_ended(self):
+        at_limit = [_vod_connection("a")]
+        self.assertFalse(self._evicts(
+            settings=_limit_settings(terminate_on_limit_exceeded=False),
+            connections=at_limit,
+        ))
+        self.assertFalse(self._evicts(
+            settings=_limit_settings(terminate_oldest=False),
+            connections=at_limit,
+        ))
+
+    def test_same_channel_connections_count_once_when_configured(self):
+        same_title = [_vod_connection("a", "m1"), _vod_connection("b", "m1")]
+
+        self.assertTrue(self._evicts(stream_limit=2, connections=same_title))
+        self.assertFalse(self._evicts(
+            stream_limit=2,
+            settings=_limit_settings(ignore_same_channel_connections=True),
+            connections=same_title,
+        ))

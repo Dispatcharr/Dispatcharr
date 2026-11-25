@@ -496,6 +496,15 @@ class SDPosterProxyPathTests(TestCase):
         self.assertTrue(path.startswith('/api/epg/programs/42/poster/?v='))
         self.assertIn(sd_poster_cache_bust(uri), path)
 
+    def test_same_artwork_shares_v_across_program_ids(self):
+        from apps.epg.utils import sd_poster_proxy_path
+
+        uri = 'https://json.schedulesdirect.org/20141201/image/assets/a.jpg'
+        first = sd_poster_proxy_path(1, uri)
+        second = sd_poster_proxy_path(2, uri)
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.split('?v=', 1)[1], second.split('?v=', 1)[1])
+
     def test_uri_change_changes_bust(self):
         from apps.epg.utils import sd_poster_cache_bust
 

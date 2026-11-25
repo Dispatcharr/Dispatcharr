@@ -1,0 +1,57 @@
+/* Sidebar-ish background + divider on the left column, only once it's
+   actually a separate column (matches the Grid.Col `lg` breakpoint) -
+   stacked/mobile layout stays plain so it doesn't look like a stray panel.
+
+   This is deliberately NOT painted on the Grid.Col itself. Relying on the
+   Grid row to "stretch" the column to match its sibling's height turned out
+   to be unreliable (Mantine's Grid/Group alignment props didn't produce a
+   consistent full-height column across content lengths). Instead, this is a
+   background-only layer, absolutely positioned (inset: 0) inside the
+   `.plugin-detail-bg-host` wrapper that also holds the Grid in normal flow.
+   That host's height is simply "however tall its content makes it" (plus a
+   min-height floor for short content), completely decoupled from the
+   Grid's own alignment behavior, so it can't come up short. The color stop
+   sits at 33.3333% to match the left column's `span 4 of 12`. */
+.plugin-detail-bg-host {
+  position: relative;
+  min-height: 100vh;
+}
+
+@media (min-width: 75em) {
+  .plugin-detail-bg-host::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      to right,
+      #1a1a1e 0,
+      #1a1a1e calc(33.3333% - 1px),
+      #2a2a2e calc(33.3333% - 1px),
+      #2a2a2e 33.3333%,
+      transparent 33.3333%
+    );
+  }
+}
+
+.plugin-detail-grid {
+  position: relative;
+  z-index: 1;
+}
+
+/* Column padding, responsive: tighter on phones (no dead space pressed up
+   against the screen edge on a narrow viewport) and roomier once the
+   two-column desktop layout kicks in. !important because Mantine's own
+   Grid.Col padding (driven by the `gutter` prop) is a class of equal
+   specificity, and which one wins the cascade otherwise depends on unpredictable
+   bundle/import order rather than source order. */
+.plugin-detail-col-padding {
+  padding: 12px !important;
+}
+
+@media (min-width: 75em) {
+  .plugin-detail-col-padding {
+    padding: 16px 24px !important;
+  }
+}

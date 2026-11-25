@@ -5,9 +5,12 @@ token. Re-touching turns every consumer into a producer and causes a permanent
 force-reload ping-pong under multi-worker uWSGI.
 """
 
+import fcntl
 import importlib
+import hashlib
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -15,7 +18,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.plugins.loader import PluginManager
+from apps.plugins.loader import LoadedPlugin, PluginManager, _plugin_reload_lock
 
 
 class PluginReloadTokenTests(SimpleTestCase):
@@ -124,6 +127,74 @@ class PluginReloadTokenTests(SimpleTestCase):
             worker.discover_plugins(sync_db=False, use_cache=True)
 
         mock_impl.assert_not_called()
+
+    def test_single_plugin_reload_broadcasts_after_local_replacement(self):
+        worker = self._make_worker()
+        plugin_dir = os.path.join(self._tmpdir, "Example Plugin")
+        os.makedirs(plugin_dir)
+        with open(os.path.join(plugin_dir, "plugin.py"), "w", encoding="utf-8"):
+            pass
+        seed = self._pin_token_mtime(worker)
+        worker._last_reload_token = seed
+        replacement = LoadedPlugin(key="example_plugin", name="Example Plugin")
+
+        with patch.object(worker, "stop_plugin"), patch.object(
+            worker,
+            "_load_and_merge_plugin_entry",
+            return_value=(replacement, "example_package", None),
+        ), patch.object(worker, "_sync_db_with_registry"):
+            self.assertTrue(worker.reload_plugin("example_plugin"))
+
+        self.assertGreater(worker._get_reload_token(), seed)
+        self.assertEqual(worker._last_reload_token, worker._get_reload_token())
+
+    def test_reload_lock_excludes_another_process_per_plugin(self):
+        def can_lock(key, shared=False):
+            digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+            path = os.path.join(self._tmpdir, f".plugin-reload-{digest}.lock")
+            code = (
+                "import fcntl, sys\n"
+                "with open(sys.argv[1], 'a') as f:\n"
+                "    try:\n"
+                "        fcntl.flock(f.fileno(), int(sys.argv[2]) | fcntl.LOCK_NB)\n"
+                "    except BlockingIOError:\n"
+                "        sys.exit(1)\n"
+            )
+            mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+            return subprocess.run([sys.executable, "-c", code, path, str(mode)], check=False).returncode == 0
+
+        with _plugin_reload_lock(self._tmpdir, "example"):
+            self.assertFalse(can_lock("example"))
+            self.assertTrue(can_lock("other"))
+        self.assertTrue(can_lock("example"))
+
+        with _plugin_reload_lock(self._tmpdir, "example", shared=True):
+            self.assertTrue(can_lock("example", shared=True))
+            self.assertFalse(can_lock("example"))
+        self.assertTrue(can_lock("example"))
+
+    def test_reload_lock_released_after_exception(self):
+        with self.assertRaisesRegex(ValueError, "failed"):
+            with _plugin_reload_lock(self._tmpdir, "example"):
+                raise ValueError("failed")
+        with _plugin_reload_lock(self._tmpdir, "example"):
+            pass
+
+    def test_action_holds_shared_lock_only_during_execution(self):
+        worker = self._make_worker()
+        digest = hashlib.sha256(b"example").hexdigest()
+        path = os.path.join(self._tmpdir, f".plugin-reload-{digest}.lock")
+
+        def run_action(*args):
+            with open(path, "a", encoding="utf-8") as lock_file:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return {"status": "ok"}
+
+        with patch.object(worker, "_run_action", side_effect=run_action):
+            self.assertEqual(worker.run_action("example", "run"), {"status": "ok"})
+        with _plugin_reload_lock(self._tmpdir, "example"):
+            pass
 
     def test_unloading_namespace_subpackage_after_parent_is_safe(self):
         """Namespace paths can fail after their parent is removed from sys.modules."""

@@ -24,6 +24,69 @@ export function compareVersions(a, b) {
   return 0;
 }
 
+export function isDevelopmentBuild(version, timestamp) {
+  return Boolean(timestamp) || /^v?\d+\.\d+\.\d+-\d{14}$/.test(version || '');
+}
+
+const parseNumericVersion = (version) => {
+  const parts = (version || '').replace(/^v/, '').split('-')[0].split('.');
+  if (parts.length !== 3 || parts.some((part) => !/^\d+$/.test(part))) {
+    return null;
+  }
+  return parts.map(Number);
+};
+
+const compareNumericVersions = (a, b) => {
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+};
+
+const developmentTargetVersion = (appVersion, minVersion) => {
+  const current = parseNumericVersion(appVersion);
+  if (!current) return null;
+  const [major, minor, patch] = current;
+  const candidates = [
+    [major, minor, patch + 1],
+    [major, minor + 1, 0],
+    [major + 1, 0, 0],
+  ];
+  if (!minVersion) return candidates[0].join('.');
+  const target = parseNumericVersion(minVersion);
+  if (!target) return null;
+  if (compareNumericVersions(target, current) <= 0) {
+    return candidates[0].join('.');
+  }
+  return candidates.some(
+    (candidate) => candidate.every((part, index) => part === target[index])
+  )
+    ? target.join('.')
+    : null;
+};
+
+export function appVersionMeetsMinimum(appVersion, minVersion, timestamp) {
+  if (!minVersion) return true;
+  if (isDevelopmentBuild(appVersion, timestamp)) {
+    return developmentTargetVersion(appVersion, minVersion) !== null;
+  }
+  return compareVersions(appVersion, minVersion) >= 0;
+}
+
+export function appVersionMeetsMaximum(
+  appVersion,
+  maxVersion,
+  timestamp,
+  minVersion
+) {
+  if (!maxVersion) return true;
+  if (isDevelopmentBuild(appVersion, timestamp)) {
+    const targetVersion = developmentTargetVersion(appVersion, minVersion);
+    return targetVersion !== null && compareVersions(targetVersion, maxVersion) <= 0;
+  }
+  return !maxVersion || compareVersions(appVersion, maxVersion) <= 0;
+}
+
 export const buildCompatibilityTooltip = (
   selMeetsMin,
   selectedVersionData,
@@ -47,11 +110,19 @@ export function buildVersionSelectItems(
     `v${v.version}` +
     (v.prerelease ? ' (prerelease)' : '') +
     (v.version === latestVersion ? ' (latest)' : '') +
-    (installedVersion && compareVersions(v.version, installedVersion) === 0
+    (installedVersion && compareVersions(v.version, installedVersion) === 0 && !!v.prerelease === !!installedVersionIsPrerelease
       ? ' (installed)'
       : '');
 
-  let sorted = [...versions];
+  // Selection resolves to the first matching manifest entry, so keep the same
+  // entry when a repository advertises the same version more than once.
+  const seen = new Set();
+  let sorted = versions.filter((v) => {
+    if (seen.has(v.version)) return false;
+    seen.add(v.version);
+    return true;
+  });
+  const uniqueVersions = sorted;
   if (installedVersionIsPrerelease) {
     sorted = [
       ...sorted.filter((v) => v.prerelease),
@@ -67,11 +138,13 @@ export function buildVersionSelectItems(
 
   const installedMissing =
     installedVersion &&
-    !versions.some((v) => compareVersions(v.version, installedVersion) === 0);
+    !uniqueVersions.some((v) => compareVersions(v.version, installedVersion) === 0 && !!v.prerelease === !!installedVersionIsPrerelease);
 
   if (installedMissing) {
+    let ghostValue = installedVersion;
+    while (seen.has(ghostValue)) ghostValue = `installed:${ghostValue}`;
     const ghost = {
-      value: installedVersion,
+      value: ghostValue,
       label: `v${installedVersion} (installed)`,
       disabled: true,
     };

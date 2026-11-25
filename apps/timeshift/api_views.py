@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsStandardUser
-from apps.channels.models import Channel
+from apps.channels.access import get_channel_for_user
 from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from core.utils import RedisClient
 from dispatcharr.utils import network_access_allowed
@@ -21,7 +21,7 @@ from .sessions import (
     user_owns_catchup_session,
 )
 from .stats import update_catchup_session_position
-from .views import _trigger_timeshift_stats_update, _user_can_access_channel
+from .views import _trigger_timeshift_stats_update
 
 # Programme length cap expressed in seconds for position reports.
 _MAX_POSITION_SECS = MAX_DURATION_MINUTES * 60
@@ -130,13 +130,11 @@ class CatchupSessionCreateAPIView(APIView):
             )
 
         channel_uuid = body.validated_data["channel_uuid"]
-        try:
-            channel = Channel.objects.get(uuid=channel_uuid)
-        except Channel.DoesNotExist:
-            raise Http404("Channel not found") from None
-
-        if not _user_can_access_channel(user, channel):
-            return Response({"error": "Access denied"}, status=status.HTTP_403_FORBIDDEN)
+        channel = get_channel_for_user(user, uuid=channel_uuid)
+        if channel is None:
+            # Same as XC live / catch-up playback: do not reveal whether the
+            # channel exists when the user may not access it.
+            raise Http404("Channel not found")
 
         if not channel.is_catchup:
             return Response(

@@ -11,9 +11,14 @@ rate limited.
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
+from rest_framework.settings import api_settings
 from rest_framework.test import APIClient
 
 User = get_user_model()
+
+LOGIN_ATTEMPT_LIMIT = int(
+    api_settings.DEFAULT_THROTTLE_RATES["login"].split("/")[0]
+)
 
 
 class LoginThrottleSpoofingTests(TestCase):
@@ -39,7 +44,7 @@ class LoginThrottleSpoofingTests(TestCase):
         # REMOTE_ADDR is the test client's loopback default (the trusted
         # nginx hop). The rightmost address, 203.0.113.7, is the real peer
         # nginx appended; everything to its left is attacker-suppliable.
-        for i in range(3):
+        for i in range(LOGIN_ATTEMPT_LIMIT):
             response = self._post_token(f"{i}.{i}.{i}.{i}, 203.0.113.7")
             self.assertNotEqual(response.status_code, 429)
 
@@ -47,10 +52,10 @@ class LoginThrottleSpoofingTests(TestCase):
         self.assertEqual(response.status_code, 429)
 
     def test_different_real_peers_get_independent_budgets(self):
-        for i in range(3):
+        for i in range(LOGIN_ATTEMPT_LIMIT):
             response = self._post_token(f"noise, 203.0.113.{i}")
             self.assertNotEqual(response.status_code, 429)
 
-        # A fourth distinct real peer is unaffected by the other three.
+        # Another distinct real peer is unaffected by the others.
         response = self._post_token("noise, 203.0.113.42")
         self.assertNotEqual(response.status_code, 429)

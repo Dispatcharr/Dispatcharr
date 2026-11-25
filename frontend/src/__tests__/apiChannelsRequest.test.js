@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { channelsTableStore } = vi.hoisted(() => ({
+const { channelsStore, channelsTableStore } = vi.hoisted(() => ({
+  channelsStore: vi.fn(),
   channelsTableStore: vi.fn(),
 }));
 
+channelsStore.getState = vi.fn();
 channelsTableStore.getState = vi.fn();
 
 vi.mock('../store/auth', () => ({
   default: { getState: () => ({ getToken: () => Promise.resolve('token') }) },
 }));
-vi.mock('../store/channels', () => ({ default: vi.fn() }));
+vi.mock('../store/channels', () => ({ default: channelsStore }));
 vi.mock('../store/logos', () => ({ default: vi.fn() }));
 vi.mock('../store/userAgents', () => ({ default: vi.fn() }));
 vi.mock('../store/serverGroups', () => ({ default: vi.fn() }));
@@ -49,6 +51,8 @@ describe('channel request ordering', () => {
   const setPagination = vi.fn();
   const queryChannels = vi.fn();
   const setAllQueryIds = vi.fn();
+  const fetchChannelGroups = vi.fn();
+  const updateChannel = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -59,6 +63,10 @@ describe('channel request ordering', () => {
       setPagination,
       queryChannels,
       setAllQueryIds,
+    });
+    channelsStore.getState.mockReturnValue({
+      fetchChannelGroups,
+      updateChannel,
     });
   });
 
@@ -137,5 +145,31 @@ describe('channel request ordering', () => {
     await API.requeryChannels();
 
     expect(queryChannels).not.toHaveBeenCalled();
+  });
+
+  it('refreshes groups after an auto-created channel group override', async () => {
+    global.fetch = vi.fn().mockResolvedValue(successResponse({}));
+
+    await API.bulkUpdateChannels([
+      { id: 1, override: { channel_group_id: 2 } },
+    ]);
+
+    expect(fetchChannelGroups).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes groups after a single-channel group override', async () => {
+    global.fetch = vi.fn().mockResolvedValue(successResponse({ id: 1 }));
+
+    await API.updateChannel({ id: 1, override: { channel_group_id: 2 } });
+
+    expect(fetchChannelGroups).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes groups when bulk updates clear overrides', async () => {
+    global.fetch = vi.fn().mockResolvedValue(successResponse({}));
+
+    await API.updateChannels([1], { override: null });
+
+    expect(fetchChannelGroups).toHaveBeenCalledOnce();
   });
 });

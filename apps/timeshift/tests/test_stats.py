@@ -20,6 +20,7 @@ from apps.timeshift.stats import (
     find_stats_channel_for_session,
     resolve_stats_playback_fields,
     seed_stream_stats_metadata,
+    stream_info_from_metadata,
     stream_stats_to_metadata_fields,
     update_catchup_session_position,
 )
@@ -222,6 +223,39 @@ class TimeshiftStreamStatsTests(TestCase):
         self.assertEqual(fields[ChannelMetadataField.SOURCE_FPS], "30")
         self.assertEqual(fields[ChannelMetadataField.VIDEO_CODEC], "h264")
         self.assertIn(ChannelMetadataField.STREAM_INFO_UPDATED, fields)
+
+    def test_audio_streams_round_trip_as_json(self):
+        tracks = [
+            {
+                "index": 1,
+                "audio_language": "eng",
+                "audio_codec": "ac3",
+                "audio_channels": "5.1",
+                "audio_bitrate": 384.0,
+                "sample_rate": 48000,
+            },
+            {
+                "index": 2,
+                "audio_language": "eng",
+                "audio_codec": "aac",
+                "audio_channels": "stereo",
+                "audio_bitrate": 96.0,
+            },
+        ]
+        fields = stream_stats_to_metadata_fields({
+            "audio_codec": "ac3",
+            "audio_channels": "5.1",
+            "audio_language": "eng",
+            "audio_streams": tracks,
+        })
+        self.assertEqual(
+            fields[ChannelMetadataField.AUDIO_STREAMS],
+            json.dumps(tracks),
+        )
+        info = stream_info_from_metadata(fields)
+        self.assertEqual(info["audio_streams"], tracks)
+        self.assertEqual(info["audio_language"], "eng")
+        self.assertEqual(info["audio_codec"], "ac3")
 
     def test_seed_stream_stats_metadata_skips_when_stream_unchanged(self):
         redis = _FakeRedis()

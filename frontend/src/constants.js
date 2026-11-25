@@ -18,11 +18,12 @@ export const NETWORK_ACCESS_OPTIONS = {
   STREAMS: {
     label: 'Stream Endpoints',
     description:
-      'Limit network access to stream URLs, including XC stream URLs',
+      'Limit access to non-XC stream URLs (UUID proxy, catch-up sessions, recordings).',
   },
   XC_API: {
     label: 'XC API',
-    description: 'Limit access to the XC API',
+    description:
+      'Limit access to XC-credentialed URLs (player API, playlists, XMLTV, live, VOD, and timeshift)',
   },
   UI: {
     label: 'UI',
@@ -41,6 +42,18 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Speed threshold below which buffering is detected (1.0 = normal speed)',
   },
+  stream_startup_timeout: {
+    label: 'Stream Startup Timeout',
+    advanced: true,
+    description:
+      'Seconds without data after a connection opens before trying the next stream. Each new connection gets this timeout until it sends data. If there is no other stream to try, the channel keeps waiting up to Channel Initialization Timeout. Keep this shorter than Channel Initialization Timeout so the switch happens before the client is dropped.',
+  },
+  connection_timeout: {
+    label: 'Stream Idle Timeout',
+    advanced: true,
+    description:
+      'Seconds without data from a stream that has already sent data before treating it as stalled.',
+  },
   redis_chunk_ttl: {
     label: 'Buffer Chunk TTL',
     advanced: true,
@@ -56,7 +69,7 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Channel Initialization Timeout',
     advanced: true,
     description:
-      'Maximum seconds to wait for the initial buffer to fill while a channel is connecting. Channels that never receive enough buffered data are stopped after this limit.',
+      'Maximum seconds the channel may spend connecting and cycling failover streams before giving up on startup. This is the overall budget, not the per-stream wait (see Stream Startup Timeout).',
   },
   channel_client_wait_period: {
     label: 'Client Connect Grace Period',
@@ -74,15 +87,22 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Minimum buffered chunks required before Dispatcharr marks the channel ready for clients.',
   },
-  max_reconnect_attempts: {
-    label: 'Max Reconnect Attempts',
-    description:
-      'How many reconnect attempts to the current source Dispatcharr should try before failing over.',
-  },
   min_stable_time_before_reconnect: {
     label: 'Reconnect Reset Time',
     description:
       'Seconds a source must stay stable before Dispatcharr resets the reconnect budget for that same source.',
+  },
+  max_retries: {
+    label: 'Max Connection Attempts',
+    advanced: true,
+    description:
+      'Maximum connection attempts for a stream before failing over to the next stream',
+  },
+  stream_retry_timeout: {
+    label: 'Stream Retry Timeout',
+    advanced: true,
+    description:
+      'Maximum time (in seconds) to wait for an available stream slot when provider connection limits are reached (e.g. during rapid channel switching). 0 = try once with no wait.',
   },
   validate_redirect_urls: {
     label: 'Validate Redirect URLs',
@@ -133,6 +153,14 @@ export const M3U_FILTER_TYPES = [
     label: 'Stream URL',
     value: 'url',
   },
+];
+
+// Shared by Default Output Format, HDHR Default Output Format, user override,
+// and M3U URL builder selects. Keep in sync with proxy format aliases.
+export const OUTPUT_FORMAT_OPTIONS = [
+  { value: 'mpegts', label: 'MPEG-TS' },
+  { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+  { value: 'hls', label: 'HLS' },
 ];
 
 export const REGION_CHOICES = [

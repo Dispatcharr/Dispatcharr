@@ -487,7 +487,7 @@ class CleanRedisKeysOrderTests(TestCase):
         channel.release_stream.assert_called_once()
         server.redis_client.delete.assert_called_once_with(channel_key)
 
-    @patch("apps.m3u.connection_pool.release_profile_slot")
+    @patch("apps.proxy.live_proxy.slot_release.release_profile_slot")
     @patch("apps.proxy.live_proxy.url_utils.Stream.objects.get")
     @patch("apps.proxy.live_proxy.url_utils.Channel.objects.get")
     def test_clean_redis_keys_releases_profile_from_metadata_when_channel_gone(
@@ -514,6 +514,7 @@ class CleanRedisKeysOrderTests(TestCase):
             return mapping.get(field)
 
         server.redis_client.hget.side_effect = hget
+        server.redis_client.hdel.return_value = 1
         server.redis_client.scan.return_value = (0, [])
 
         server._clean_redis_keys(CHANNEL_ID)
@@ -557,8 +558,10 @@ class ClientDisconnectOwnershipTests(TestCase):
         proxy_server.extend_ownership.return_value = False
 
         redis = MagicMock()
-        redis.hget.return_value = b"viewer"
-        redis.scard.return_value = 0
+        redis.hmget.return_value = (b"viewer", None)
+        pipe = MagicMock()
+        pipe.execute.return_value = [1, 1, 0]
+        redis.pipeline.return_value = pipe
 
         manager = ClientManager(
             channel_id=CHANNEL_ID,

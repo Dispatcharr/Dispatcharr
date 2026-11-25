@@ -51,10 +51,13 @@ const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
   const handleConfirm = async () => {
     setLoading(true);
     try {
-      // Save mode and settings (backend will ignore custom settings if mode is 'default')
+      // Save mode and settings (backend will ignore custom settings if mode is 'default').
+      // Only the match fields: epg_settings also holds the guide-history fields.
       const settingsToSave = {
-        ...formValues,
         epg_match_mode: settingsMode,
+        epg_match_ignore_prefixes: formValues.epg_match_ignore_prefixes,
+        epg_match_ignore_suffixes: formValues.epg_match_ignore_suffixes,
+        epg_match_ignore_custom: formValues.epg_match_ignore_custom,
       };
       const changedSettings = getChangedGroupSettings(
         settingsToSave,

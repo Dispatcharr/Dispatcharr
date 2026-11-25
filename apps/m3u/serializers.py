@@ -2,6 +2,7 @@ from core.utils import validate_flexible_url, ensure_custom_properties_dict
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
+from .utils import parse_m3u_hash_keys
 from core.models import UserAgent
 from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
 from apps.channels.serializers import (
@@ -148,6 +149,11 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
+    # Not a model field - stored under custom_properties["hash_key"]. A
+    # missing key means this account inherits the global M3U Hash Key.
+    hash_key = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, write_only=True
+    )
     cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
     mac = serializers.CharField(required=False, allow_blank=True)
     model = serializers.CharField(required=False, allow_blank=True)
@@ -156,6 +162,26 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     device_id2 = serializers.CharField(required=False, allow_blank=True)
     signature = serializers.CharField(required=False, allow_blank=True)
     timezone = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_hash_key(self, value):
+        """Normalize and reject unknown hash key fields.
+
+        Empty/null clears the override. Non-empty values are stripped,
+        validated against the known field set, and stored as a clean CSV.
+        """
+        if value is None or value == "":
+            return value
+        try:
+            keys = parse_m3u_hash_keys(value, strict=True)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        if not keys:
+            raise serializers.ValidationError(
+                "hash_key must include at least one valid field "
+                "(name, url, tvg_id, m3u_id, group), or be empty to inherit "
+                "the global default."
+            )
+        return ",".join(keys)
 
     class Meta:
         model = M3UAccount
@@ -182,6 +208,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "password",
             "stale_stream_days",
             "priority",
+            "hash_key",
             "status",
             "last_message",
             "enable_vod",
@@ -242,6 +269,8 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         data["auto_enable_new_groups_live"] = custom_props.get("auto_enable_new_groups_live", True)
         data["auto_enable_new_groups_vod"] = custom_props.get("auto_enable_new_groups_vod", True)
         data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
+        # Missing key means this account inherits the global M3U Hash Key.
+        data["hash_key"] = custom_props.get("hash_key")
 
         # Derive cron_expression from the linked PeriodicTask's crontab (single source of truth)
         # But first check if we have a transient _cron_expression (from create/update before signal runs)
@@ -291,7 +320,17 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         if mac is None:
             mac = existing_props.get("mac", "")
 
-        if account_type == M3UAccount.Types.STADNARD and not (server_url or file_path):
+        # Only check the playlist source on create or when an edit touches it,
+        # so unrelated partial updates (e.g. hash_key) still work on accounts
+        # saved before this rule existed.
+        source_changed = self.instance is None or any(
+            key in attrs for key in ("account_type", "server_url", "file_path")
+        )
+        if (
+            account_type == M3UAccount.Types.STADNARD
+            and source_changed
+            and not (server_url or file_path)
+        ):
             raise serializers.ValidationError(
                 {
                     "server_url": [
@@ -368,17 +407,23 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             )
             if key in validated_data
         }
+        _HASH_KEY_NOT_SET = object()
+        hash_key = validated_data.pop("hash_key", _HASH_KEY_NOT_SET)
 
         # Merge client-supplied custom_properties over the existing blob
         # so unrelated keys persist. The dedicated preference fields below
         # overwrite their corresponding keys; clients should set those via
         # the typed top-level fields rather than the custom_properties
-        # payload.
+        # payload. Drop hash_key from the incoming blob so a raw write cannot
+        # bypass validation or the lock gate on the typed field.
         incoming_custom = {}
         if "custom_properties" in validated_data:
             incoming_custom = validated_data["custom_properties"] or {}
             if not isinstance(incoming_custom, dict):
                 incoming_custom = ensure_custom_properties_dict(incoming_custom)
+            incoming_custom = {
+                k: v for k, v in incoming_custom.items() if k != "hash_key"
+            }
         existing_custom = instance.custom_properties or {}
         if not isinstance(existing_custom, dict):
             existing_custom = ensure_custom_properties_dict(existing_custom)
@@ -397,6 +442,16 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 custom_props.pop(key, None)
             else:
                 custom_props[key] = value
+
+        # A hash_key override is stored under custom_properties["hash_key"].
+        # An empty/null value means "clear the override" - remove the key
+        # entirely rather than storing a null/empty value, so the account
+        # falls back to the global default.
+        if hash_key is not _HASH_KEY_NOT_SET:
+            if hash_key:
+                custom_props["hash_key"] = hash_key
+            else:
+                custom_props.pop("hash_key", None)
 
         validated_data["custom_properties"] = custom_props
 
@@ -470,11 +525,14 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             )
             if key in validated_data
         }
+        hash_key = validated_data.pop("hash_key", None)
 
-        # Parse existing custom_properties or create new
+        # Parse existing custom_properties or create new. Drop hash_key from
+        # the incoming blob so only the typed field can set the override.
         custom_props = validated_data.get("custom_properties") or {}
         if not isinstance(custom_props, dict):
             custom_props = ensure_custom_properties_dict(custom_props)
+        custom_props = {k: v for k, v in custom_props.items() if k != "hash_key"}
 
         # Set preferences (default to True for auto_enable_new_groups)
         custom_props["enable_vod"] = enable_vod
@@ -484,6 +542,11 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         for key, value in stalker_fields.items():
             if value not in (None, ""):
                 custom_props[key] = value
+        # A hash_key override is stored under custom_properties["hash_key"];
+        # a missing key means this account inherits the global default, so
+        # only set it when a non-empty override was supplied.
+        if hash_key:
+            custom_props["hash_key"] = hash_key
         validated_data["custom_properties"] = custom_props
 
         # Build instance manually so we can attach transient attr before save triggers signal

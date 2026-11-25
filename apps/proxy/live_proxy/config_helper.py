@@ -18,8 +18,13 @@ class ConfigHelper:
     # Commonly used configuration values
     @staticmethod
     def connection_timeout():
-        """Get connection timeout in seconds"""
-        return ConfigHelper.get('CONNECTION_TIMEOUT', 10)
+        """Seconds without data from an active stream before marking it unhealthy."""
+        return Config.get_connection_timeout()
+
+    @staticmethod
+    def stream_startup_timeout():
+        """Seconds without data after a stream connects before trying the next one."""
+        return Config.get_stream_startup_timeout()
 
     @staticmethod
     def client_wait_timeout():
@@ -77,18 +82,23 @@ class ConfigHelper:
 
     @staticmethod
     def max_retries():
-        """Backward-compatible alias for max reconnect attempts."""
-        return Config.get_max_reconnect_attempts()
+        """Get maximum connection attempts for a stream before failover."""
+        return Config.get_max_retries()
 
     @staticmethod
     def max_reconnect_attempts():
-        """Get maximum reconnect attempts before failover."""
-        return Config.get_max_reconnect_attempts()
+        """Backward-compatible alias for max_retries()."""
+        return Config.get_max_retries()
 
     @staticmethod
     def min_stable_time_before_reconnect():
         """Get stable time required to reset reconnect budget."""
         return Config.get_min_stable_time_before_reconnect()
+
+    @staticmethod
+    def stream_retry_timeout():
+        """Get stream connection retry timeout in seconds when profiles are at max connections."""
+        return Config.get_stream_retry_timeout()
 
     @staticmethod
     def retry_window_seconds():

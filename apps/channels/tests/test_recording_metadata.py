@@ -301,8 +301,7 @@ class LogoNegativeCacheTests(TestCase):
         """Non-200 response adds URL to negative cache."""
         logo = Logo.objects.create(name="Dead Logo", url="https://dead-cdn.com/logo.png")
         mock_resp = MagicMock(status_code=404)
-        with patch("core.image_proxy.validate_outbound_http_url"), \
-             patch("core.image_proxy.requests.get", return_value=mock_resp), \
+        with patch("core.image_proxy.get_with_validated_redirects", return_value=mock_resp), \
              patch("core.image_proxy.CoreSettings.get_default_user_agent", return_value="Test/1.0"):
             response = self._fetch_logo(logo)
         self.assertEqual(response.status_code, 404)
@@ -313,7 +312,7 @@ class LogoNegativeCacheTests(TestCase):
         logo = Logo.objects.create(name="Cached Fail", url="https://cached-fail.com/logo.png")
         self._failures["https://cached-fail.com/logo.png"] = time_mod.monotonic() + 300
 
-        with patch("core.image_proxy.requests.get") as mock_get:
+        with patch("core.image_proxy.get_with_validated_redirects") as mock_get:
             response = self._fetch_logo(logo)
         self.assertEqual(response.status_code, 404)
         mock_get.assert_not_called()
@@ -327,8 +326,7 @@ class LogoNegativeCacheTests(TestCase):
         mock_resp = MagicMock(status_code=200)
         mock_resp.headers = {"Content-Type": "image/png"}
         mock_resp.iter_content = MagicMock(return_value=[png])
-        with patch("core.image_proxy.validate_outbound_http_url"), \
-             patch("core.image_proxy.requests.get", return_value=mock_resp), \
+        with patch("core.image_proxy.get_with_validated_redirects", return_value=mock_resp), \
              patch("core.image_proxy.CoreSettings.get_default_user_agent", return_value="Test/1.0"):
             response = self._fetch_logo(logo)
         self.assertEqual(response.status_code, 200)
@@ -343,8 +341,7 @@ class LogoNegativeCacheTests(TestCase):
         mock_resp = MagicMock(status_code=200)
         mock_resp.headers = {"Content-Type": "image/png"}
         mock_resp.iter_content = MagicMock(return_value=[png])
-        with patch("core.image_proxy.validate_outbound_http_url"), \
-             patch("core.image_proxy.requests.get", return_value=mock_resp), \
+        with patch("core.image_proxy.get_with_validated_redirects", return_value=mock_resp), \
              patch("core.image_proxy.CoreSettings.get_default_user_agent", return_value="Test/1.0"):
             self._fetch_logo(logo)
         self.assertNotIn(url, self._failures)
@@ -353,8 +350,7 @@ class LogoNegativeCacheTests(TestCase):
         """Transport errors should not poison the negative cache."""
         import requests
         logo = Logo.objects.create(name="Timeout", url="https://timeout.com/logo.png")
-        with patch("core.image_proxy.validate_outbound_http_url"), \
-             patch("core.image_proxy.requests.get", side_effect=requests.ConnectionError("network down")), \
+        with patch("core.image_proxy.get_with_validated_redirects", side_effect=requests.ConnectionError("network down")), \
              patch("core.image_proxy.CoreSettings.get_default_user_agent", return_value="Test/1.0"):
             response = self._fetch_logo(logo)
         self.assertEqual(response.status_code, 404)
@@ -364,8 +360,7 @@ class LogoNegativeCacheTests(TestCase):
         """Read/connect timeout remains negatively cached to protect workers."""
         import requests
         logo = Logo.objects.create(name="Timeout", url="https://timeout.com/logo.png")
-        with patch("core.image_proxy.validate_outbound_http_url"), \
-             patch("core.image_proxy.requests.get", side_effect=requests.Timeout("timed out")), \
+        with patch("core.image_proxy.get_with_validated_redirects", side_effect=requests.Timeout("timed out")), \
              patch("core.image_proxy.CoreSettings.get_default_user_agent", return_value="Test/1.0"):
             response = self._fetch_logo(logo)
         self.assertEqual(response.status_code, 404)
@@ -381,9 +376,8 @@ class LogoNegativeCacheTests(TestCase):
         mock_resp.headers = {"Content-Type": "image/png"}
         mock_resp.iter_content = MagicMock(return_value=[png])
 
-        with patch("core.image_proxy.validate_outbound_http_url"), \
-             patch(
-                 "core.image_proxy.requests.get",
+        with patch(
+                 "core.image_proxy.get_with_validated_redirects",
                  side_effect=[requests.ConnectionError("network down"), mock_resp],
              ) as mock_get, \
              patch("core.image_proxy.CoreSettings.get_default_user_agent", return_value="Test/1.0"):
@@ -406,8 +400,7 @@ class LogoNegativeCacheTests(TestCase):
         # (e.g. ConnectionError) deliberately do not, since the scheme/host
         # may just be temporarily unreachable.
         mock_resp = MagicMock(status_code=404)
-        with patch("core.image_proxy.validate_outbound_http_url"), \
-             patch("core.image_proxy.requests.get", return_value=mock_resp), \
+        with patch("core.image_proxy.get_with_validated_redirects", return_value=mock_resp), \
              patch("core.image_proxy.CoreSettings.get_default_user_agent", return_value="Test/1.0"):
             self._fetch_logo(logo)
 

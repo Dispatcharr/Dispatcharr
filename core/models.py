@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from collections import namedtuple
 from shlex import split as shlex_split
 
 from django.conf import settings
@@ -16,6 +17,7 @@ from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from core.utils import clamp_int
 from dispatcharr.log_collector import DEFAULT_LOG_KEEP, DEFAULT_LOG_MB
 
 logger = logging.getLogger(__name__)
@@ -84,7 +86,10 @@ class StreamProfile(models.Model):
         blank=True,
     )
     parameters = models.TextField(
-        help_text="Command-line parameters. Use {userAgent}, {streamUrl}, and {channelId} as placeholders.",
+        help_text=(
+            "Command-line parameters. Use {userAgent}, {streamUrl}, "
+            "{channelId}, {channelName}, and {tvgId} as placeholders."
+        ),
         blank=True,
     )
     locked = models.BooleanField(
@@ -148,7 +153,14 @@ class StreamProfile(models.Model):
             return True
         return False
 
-    def build_command(self, stream_url, user_agent, channel_id=None):
+    def build_command(
+        self,
+        stream_url,
+        user_agent,
+        channel_id=None,
+        channel_name=None,
+        tvg_id=None,
+    ):
 
         if self.is_proxy():
             return []
@@ -157,6 +169,8 @@ class StreamProfile(models.Model):
             "{streamUrl}": stream_url,
             "{userAgent}": user_agent,
             "{channelId}": str(channel_id) if channel_id else "",
+            "{channelName}": channel_name if channel_name else "",
+            "{tvgId}": tvg_id if tvg_id else "",
         }
 
         # Split the command and iterate through each part to apply replacements
@@ -278,6 +292,14 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
+# Guide-history defaults. Every day limit is clamped to 0..EPG_DAYS_LIMIT.
+EPG_HISTORY_MIN_DAYS_DEFAULT = 1
+EPG_HISTORY_MAX_DAYS_DEFAULT = 30
+EPG_DAYS_LIMIT = 365
+EpgHistoryPolicy = namedtuple(
+    "EpgHistoryPolicy",
+    ["min_days", "max_days", "default_prev_days", "default_days"],
+)
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
 REVERSE_PROXY_AUTH_KEY = "reverse_proxy_auth"
 
@@ -526,6 +548,7 @@ class CoreSettings(models.Model):
             "m3u_hash_key": "",
             "default_output_format": "mpegts",
             "hdhr_output_profile_id": None,
+            "hdhr_output_format": "mpegts",
         })
 
     @classmethod
@@ -683,7 +706,38 @@ class CoreSettings(models.Model):
             "epg_match_ignore_prefixes": [],
             "epg_match_ignore_suffixes": [],
             "epg_match_ignore_custom": [],
+            "epg_history_min_days": EPG_HISTORY_MIN_DAYS_DEFAULT,
+            "epg_history_max_days": EPG_HISTORY_MAX_DAYS_DEFAULT,
+            "epg_default_prev_days": 0,
+            "epg_default_days": 0,
         })
+
+    @classmethod
+    def get_epg_history_policy(cls):
+        """Past-history floor/ceiling and the default output windows.
+
+        Missing or unreadable values use the defaults. A stored minimum above
+        the maximum is pulled down to the maximum, and default days back
+        cannot exceed it.
+        """
+        settings = cls.get_epg_settings()
+        max_days = clamp_int(
+            settings.get("epg_history_max_days"),
+            EPG_HISTORY_MAX_DAYS_DEFAULT, 0, EPG_DAYS_LIMIT,
+        )
+        min_days = min(
+            clamp_int(
+                settings.get("epg_history_min_days"),
+                EPG_HISTORY_MIN_DAYS_DEFAULT, 0, EPG_DAYS_LIMIT,
+            ),
+            max_days,
+        )
+        return EpgHistoryPolicy(
+            min_days,
+            max_days,
+            clamp_int(settings.get("epg_default_prev_days"), 0, 0, max_days),
+            clamp_int(settings.get("epg_default_days"), 0, 0, EPG_DAYS_LIMIT),
+        )
 
     @classmethod
     def _safe_string_list(cls, value):
@@ -805,9 +859,12 @@ class CoreSettings(models.Model):
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
             "connection_ready_chunks": 16,
-            "max_reconnect_attempts": 5,
             "min_stable_time_before_reconnect": 10,
+            "stream_startup_timeout": 8,
+            "connection_timeout": 10,
             "validate_redirect_urls": True,
+            "max_retries": 3,
+            "stream_retry_timeout": 3,
         }
         settings = cls._get_group(PROXY_SETTINGS_KEY, defaults)
         if not isinstance(settings, dict):
@@ -842,6 +899,7 @@ class CoreSettings(models.Model):
             "log_max_mb": DEFAULT_LOG_MB,
             "log_keep": DEFAULT_LOG_KEEP,
             "log_persist": True,
+            "log_redact": True,
         })
 
     @classmethod
@@ -867,6 +925,20 @@ class CoreSettings(models.Model):
             return int(raw) if raw is not None else None
         except (ValueError, TypeError):
             return None
+
+    @classmethod
+    def get_hdhr_output_format(cls):
+        """HDHR output format, or None to inherit Default Output Format.
+
+        Missing, null, or invalid values default to mpegts. The explicit
+        sentinel ``system`` inherits the system Default Output Format.
+        """
+        raw = cls.get_stream_settings().get("hdhr_output_format")
+        if raw == "system":
+            return None
+        if raw in ("mpegts", "fmp4", "hls"):
+            return raw
+        return "mpegts"
 
     @classmethod
     def get_dvr_output_profile_id(cls):
@@ -947,6 +1019,7 @@ class SystemNotification(models.Model):
         ANNOUNCEMENT = 'announcement', 'System Announcement'
         WARNING = 'warning', 'Warning'
         INFO = 'info', 'Information'
+        PLUGIN_UPDATE = 'plugin_update', 'Plugin Update Available'
 
     class Priority(models.TextChoices):
         LOW = 'low', 'Low'
@@ -957,6 +1030,7 @@ class SystemNotification(models.Model):
     class Source(models.TextChoices):
         SYSTEM = 'system', 'System Generated'
         DEVELOPER = 'developer', 'Developer Notification'
+        PLUGIN_MANIFEST = 'plugin_manifest', 'Plugin System Notification'
 
     # Unique identifier for the notification (e.g., 'version-0.19.0', 'setting-proxy-buffer')
     # This allows deduplication and targeted dismissals

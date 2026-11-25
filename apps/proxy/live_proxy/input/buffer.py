@@ -2,21 +2,25 @@
 
 import threading
 import time
-import random
+from ..discontinuity_sidecar import DiscontinuitySidecarMixin
+from ..psi_scan import PsiScanCache
 from ..redis_keys import RedisKeys
 from ..config_helper import ConfigHelper
 from ..constants import TS_PACKET_SIZE
+from .ts_discontinuity import stamp_first_packet_per_pid
 from ..utils import get_logger
 import gevent.event
 import gevent
 
 logger = get_logger()
 
-class StreamBuffer:
+
+class StreamBuffer(DiscontinuitySidecarMixin):
     """Manages stream data buffering with optimized chunk storage"""
 
     def __init__(self, channel_id=None, redis_client=None,
-                 buffer_index_key=None, buffer_chunk_prefix=None, chunk_timestamps_key=None):
+                 buffer_index_key=None, buffer_chunk_prefix=None, chunk_timestamps_key=None,
+                 discontinuities_key=None):
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.lock = threading.Lock()
@@ -27,6 +31,10 @@ class StreamBuffer:
         self.buffer_prefix = buffer_chunk_prefix or (RedisKeys.buffer_chunk_prefix(channel_id) if channel_id else "")
 
         self.chunk_ttl = ConfigHelper.redis_chunk_ttl()
+
+        # PAT/PMT locations per chunk, shared by every output reading this
+        # buffer so each chunk is scanned once, not once per output.
+        self.psi_scan_cache = PsiScanCache()
 
         # Initialize from Redis if available
         if self.redis_client and channel_id:
@@ -43,6 +51,21 @@ class StreamBuffer:
 
         # Sorted-set key for chunk receive-timestamps (time-based positioning)
         self.chunk_timestamps_key = chunk_timestamps_key or (RedisKeys.chunk_timestamps(channel_id) if channel_id else "")
+        # Sidecar: chunk indices where a source discontinuity begins. Optional for
+        # profile output buffers that do not participate in failover marking.
+        if discontinuities_key is not None:
+            self.discontinuities_key = discontinuities_key
+        elif channel_id and buffer_index_key is None:
+            # Default input buffer only; custom-keyed buffers opt in explicitly.
+            self.discontinuities_key = RedisKeys.buffer_discontinuities(channel_id)
+        else:
+            self.discontinuities_key = ""
+
+        # After mark_discontinuity(): stamp discontinuity_indicator on the first
+        # packet of each PID until the first post-mark Redis chunk is written.
+        self._disc_stamp_active = False
+        self._disc_stamped_pids = set()
+        self._disc_mark_index = 0
 
         # Register Lua scripts once — subsequent calls use EVALSHA (just the
         # SHA hash) instead of sending the full script text on every invocation.
@@ -87,38 +110,22 @@ class StreamBuffer:
                     return True
 
                 # Split into complete packets and remainder
-                complete_packets = combined_data[:complete_packets_size]
-                self._partial_packet = combined_data[complete_packets_size:]
+                complete_packets = bytes(combined_data[:complete_packets_size])
+                self._partial_packet = bytearray(combined_data[complete_packets_size:])
+
+                if self._disc_stamp_active:
+                    complete_packets, _ = stamp_first_packet_per_pid(
+                        complete_packets, self._disc_stamped_pids
+                    )
 
                 # Add completed packets to write buffer
                 self._write_buffer.extend(complete_packets)
 
                 # Only write to Redis when we have enough data for an optimized chunk
                 while len(self._write_buffer) >= self.target_chunk_size:
-                    # Extract a full chunk
-                    chunk_data = self._write_buffer[:self.target_chunk_size]
-                    self._write_buffer = self._write_buffer[self.target_chunk_size:]
-
-                    # Write optimized chunk to Redis. We need the new index from
-                    # incr() to build the chunk key, so issue that first; the
-                    # remaining writes are pipelined into one round trip.
-                    if self.redis_client:
-                        chunk_index = self.redis_client.incr(self.buffer_index_key)
-                        chunk_key = f"{self.buffer_prefix}{chunk_index}"
-
-                        pipe = self.redis_client.pipeline(transaction=False)
-                        pipe.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
-
-                        if self.chunk_timestamps_key:
-                            now = time.time()
-                            pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
-                            pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
-                            pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
-
-                        pipe.execute()
-
-                        # Update local tracking
-                        self.index = chunk_index
+                    chunk_data = bytes(self._write_buffer[:self.target_chunk_size])
+                    del self._write_buffer[:self.target_chunk_size]
+                    if self._write_chunk_unlocked(chunk_data):
                         writes_done += 1
 
             if writes_done > 0:
@@ -133,13 +140,116 @@ class StreamBuffer:
             logger.error(f"Error adding chunk to buffer: {e}")
             return False
 
+    def _write_chunk_unlocked(self, chunk_data):
+        """Write one packet-aligned chunk to Redis. Caller must hold self.lock.
+
+        Index is chosen locally and published only after the chunk write
+        succeeds. A prior INCR-first approach could burn an index when the
+        subsequent pipeline failed, leaving a permanent hole that every
+        positional reader (TS / fMP4 / HLS / profile) treats as contiguous.
+        Single-writer under self.lock, so local self.index + 1 is safe.
+        """
+        if not chunk_data or not self.redis_client:
+            return False
+        chunk_index = self.index + 1
+        chunk_key = f"{self.buffer_prefix}{chunk_index}"
+
+        pipe = self.redis_client.pipeline(transaction=False)
+        pipe.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
+        pipe.set(self.buffer_index_key, chunk_index)
+
+        if self.chunk_timestamps_key:
+            now = time.time()
+            pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
+            pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
+            pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
+
+        try:
+            pipe.execute()
+        except Exception as e:
+            logger.error(
+                f"Failed to write buffer chunk {chunk_index} for channel "
+                f"{self.channel_id}: {e}"
+            )
+            return False
+
+        self.index = chunk_index
+
+        # First Redis chunk after a discontinuity mark finishes the in-band
+        # stamping pass (PAT/PMT/A/V first packets are already in this chunk).
+        if self._disc_stamp_active and chunk_index > self._disc_mark_index:
+            self._disc_stamp_active = False
+
+        return True
+
+    def mark_discontinuity(self):
+        """
+        Close out the old source in Redis and arm discontinuity handling for
+        the next source.
+
+        1. Flush any complete packets still in the write buffer so the last
+           old-source Redis chunk ends cleanly.
+        2. Drop a trailing partial packet (cannot form a valid TS packet).
+        3. Record the next chunk index in the discontinuities sidecar so
+           consumers (HLS) can cut before reading it.
+        4. Arm in-band stamping: the first packet of each PID in the new
+           source gets discontinuity_indicator=1 (ISO 13818-1 / FFmpeg
+           initial_discontinuity).
+
+        Must be called after the old input is closed and before new bytes
+        are written.
+        """
+        try:
+            with self.lock:
+                flushed = self._flush_write_buffer_unlocked()
+                # Incomplete trailing bytes belong to the old source and must
+                # not be prepended to the new source's first packet.
+                if hasattr(self, '_partial_packet'):
+                    self._partial_packet = bytearray()
+
+                self._disc_mark_index = self.index
+                next_index = self.index + 1
+                self._disc_stamp_active = True
+                self._disc_stamped_pids = set()
+                self._record_discontinuity_unlocked(next_index)
+
+            if flushed:
+                self.chunk_available.set()
+                self.chunk_available.clear()
+            logger.debug(
+                f"Marked stream discontinuity for channel {self.channel_id} "
+                f"at buffer index {next_index} (flushed={flushed})"
+            )
+            return next_index
+        except Exception as e:
+            logger.error(
+                f"Error marking discontinuity for channel {self.channel_id}: {e}",
+                exc_info=True,
+            )
+            return None
+
+    def _flush_write_buffer_unlocked(self):
+        """Write any pending complete packets even if under target_chunk_size."""
+        if not self._write_buffer:
+            return False
+        # Write buffer is always packet-aligned by construction.
+        aligned = len(self._write_buffer) - (len(self._write_buffer) % self.TS_PACKET_SIZE)
+        if aligned <= 0:
+            self._write_buffer = bytearray()
+            return False
+        chunk_data = bytes(self._write_buffer[:aligned])
+        self._write_buffer = bytearray(self._write_buffer[aligned:])
+        return self._write_chunk_unlocked(chunk_data)
+
     def reset_buffer_position(self):
         """
         Reset internal buffers for a clean stream transition (failover).
 
-        Called by stream_manager.update_url() when switching between FFmpeg
-        processes. Without this, _partial_packet from the old FFmpeg gets
-        concatenated with the first bytes from the new FFmpeg, creating
+        Prefer mark_discontinuity() on URL switches: it flushes complete
+        packets to Redis before clearing. This method remains for callers that
+        only need to drop local leftovers (e.g. after mark_discontinuity already
+        flushed). Without clearing _partial_packet, bytes from the old FFmpeg
+        get concatenated with the first bytes from the new FFmpeg, creating
         corrupted TS packets that break audio decoder sync in the client.
         """
         try:
@@ -167,90 +277,18 @@ class StreamBuffer:
                 f"Error resetting buffer position for channel {self.channel_id}: {e}"
             )
 
-    def get_chunks(self, start_index=None):
-        """Get chunks from the buffer with detailed logging"""
-        try:
-            request_id = f"req_{random.randint(1000, 9999)}"
-            logger.debug(f"[{request_id}] get_chunks called with start_index={start_index}")
+    def _get_chunks_exact_indexed(self, start_index, count):
+        """Return [(redis_index, bytes), ...] for the chunks that still exist.
 
-            if not self.redis_client:
-                logger.error("Redis not available, cannot retrieve chunks")
-                return []
-
-            # If no start_index provided, use most recent chunks
-            if start_index is None:
-                start_index = max(0, self.index - 10)  # Start closer to current position
-                logger.debug(f"[{request_id}] No start_index provided, using {start_index}")
-
-            # Get current index from Redis
-            current_index = int(self.redis_client.get(self.buffer_index_key) or 0)
-
-            # Calculate range of chunks to retrieve
-            start_id = start_index + 1
-            chunks_behind = current_index - start_id
-
-            # Adaptive chunk retrieval based on how far behind
-            if chunks_behind > 100:
-                fetch_count = 15
-                logger.debug(f"[{request_id}] Client very behind ({chunks_behind} chunks), fetching {fetch_count}")
-            elif chunks_behind > 50:
-                fetch_count = 10
-                logger.debug(f"[{request_id}] Client moderately behind ({chunks_behind} chunks), fetching {fetch_count}")
-            elif chunks_behind > 20:
-                fetch_count = 5
-                logger.debug(f"[{request_id}] Client slightly behind ({chunks_behind} chunks), fetching {fetch_count}")
-            else:
-                fetch_count = 3
-                logger.debug(f"[{request_id}] Client up-to-date (only {chunks_behind} chunks behind), fetching {fetch_count}")
-
-            end_id = min(current_index + 1, start_id + fetch_count)
-
-            if start_id >= end_id:
-                logger.debug(f"[{request_id}] No new chunks to fetch (start_id={start_id}, end_id={end_id})")
-                return []
-
-            # Log the range we're retrieving
-            logger.debug(f"[{request_id}] Retrieving chunks {start_id} to {end_id-1} (total: {end_id-start_id})")
-
-            # Directly fetch from Redis using pipeline for efficiency
-            pipe = self.redis_client.pipeline()
-            for idx in range(start_id, end_id):
-                chunk_key = f"{self.buffer_prefix}{idx}"
-                pipe.get(chunk_key)
-
-            results = pipe.execute()
-
-            # Process results
-            chunks = [result for result in results if result is not None]
-
-            # Count non-None results
-            found_chunks = len(chunks)
-            missing_chunks = len(results) - found_chunks
-
-            if missing_chunks > 0:
-                logger.debug(f"[{request_id}] Missing {missing_chunks}/{len(results)} chunks in Redis")
-
-            # Update local tracking
-            if chunks:
-                self.index = end_id - 1
-
-            # Final log message
-            chunk_sizes = [len(c) for c in chunks]
-            total_bytes = sum(chunk_sizes) if chunks else 0
-            logger.debug(f"[{request_id}] Returning {len(chunks)} chunks ({total_bytes} bytes)")
-
-            return chunks
-
-        except Exception as e:
-            logger.error(f"Error getting chunks from buffer: {e}", exc_info=True)
-            return []
-
-    def get_chunks_exact(self, start_index, count):
-        """Get exactly the requested number of chunks from given index"""
+        Missing keys are omitted. The index is the real Redis chunk number, so
+        a hole in the middle does not renumber the chunks that follow it.
+        Returns None when the read failed, and an empty list when every
+        requested key is absent or the range is past the buffer head.
+        """
         try:
             if not self.redis_client:
                 logger.error("Redis not available, cannot retrieve chunks")
-                return []
+                return None
 
             # Calculate range to retrieve
             start_id = start_index + 1
@@ -274,18 +312,23 @@ class StreamBuffer:
 
             results = pipe.execute()
 
-            # Filter out None results
-            chunks = [result for result in results if result is not None]
+            # Keep the Redis index with each hit. A missing key is a hole,
+            # not a shift of every later chunk.
+            indexed = [
+                (idx, result)
+                for idx, result in zip(range(start_id, end_id), results)
+                if result is not None
+            ]
 
             # Update local index if needed
-            if chunks and start_id + len(chunks) - 1 > self.index:
-                self.index = start_id + len(chunks) - 1
+            if indexed and indexed[-1][0] > self.index:
+                self.index = indexed[-1][0]
 
-            return chunks
+            return indexed
 
         except Exception as e:
             logger.error(f"Error getting exact chunks: {e}", exc_info=True)
-            return []
+            return None
 
     def stop(self):
         """Stop the buffer and cancel all timers"""
@@ -323,12 +366,25 @@ class StreamBuffer:
             logger.error(f"Error during buffer stop: {e}")
 
     def get_optimized_client_data(self, client_index):
-        """Get optimal amount of data for client streaming based on position and target size"""
+        """Get optimal amount of data for client streaming based on position and target size."""
+        indexed, new_index = self.get_optimized_client_data_indexed(client_index)
+        return [data for _idx, data in indexed], new_index
+
+    def get_optimized_client_data_indexed(self, client_index):
+        """Same batch as get_optimized_client_data, with each chunk's Redis index.
+
+        Returns ([(index, bytes), ...], new_index). ``new_index`` is the end of
+        the requested range, including holes, so the caller does not read the
+        same gap again. A first batch under about 1MB is followed by more
+        batches until that target, the 2MB cap, the per-call chunk ceiling,
+        or the buffer head.
+        """
         # Define limits
         MIN_CHUNKS = 3                      # Minimum chunks to read for efficiency
-        MAX_CHUNKS = 20                     # Safety limit to prevent memory spikes
-        TARGET_SIZE = 1024 * 1024           # Target ~1MB per response (typical media buffer)
-        MAX_SIZE = 2 * 1024 * 1024          # Hard cap at 2MB
+        MAX_CHUNKS = 20                     # Max chunks per Redis read
+        MAX_CHUNKS_PER_CALL = 100           # Ceiling across top-up batches (bounds round-trips)
+        TARGET_SIZE = 1024 * 1024           # Keep reading small chunks until ~1MB
+        MAX_SIZE = 2 * 1024 * 1024          # Do not append a further batch past this
 
         # Calculate how far behind we are
         chunks_behind = self.index - client_index
@@ -341,36 +397,55 @@ class StreamBuffer:
             # Reasonable amount behind, catch up completely
             chunk_count = chunks_behind
         else:
-            # Way behind, retrieve MAX_CHUNKS to avoid memory pressure
+            # Way behind. First read is one batch; the loop below tops up
+            # when those chunks are still under the size target.
             chunk_count = MAX_CHUNKS
 
-        # Retrieve chunks
-        chunks = self.get_chunks_exact(client_index, chunk_count)
+        # Retrieve chunks. Each entry is (redis_index, bytes); holes are omitted.
+        indexed = self._get_chunks_exact_indexed(client_index, chunk_count)
+        if indexed is None:
+            # Transient Redis failure: keep the caller's index so the next
+            # attempt retries the same range instead of skipping past it.
+            return [], client_index
 
         # Check if we got significantly fewer chunks than expected (likely due to expiration)
         # Only check if we expected multiple chunks and got none or very few
-        if chunk_count > 3 and len(chunks) == 0 and chunks_behind > 10:
-            # Chunks are missing - likely expired from Redis
-            # Return empty list to signal client should skip forward
+        if not indexed and chunk_count > 3 and chunks_behind > 10:
+            # Chunks are missing. Signal the caller to skip forward.
             logger.debug(f"Chunks missing for client at index {client_index}, buffer at {self.index} ({chunks_behind} behind)")
             return [], client_index
 
         # Check total size
-        total_size = sum(len(c) for c in chunks)
+        total_size = sum(len(c) for _idx, c in indexed)
 
-        # If we're under target and have more chunks available, get more
-        if total_size < TARGET_SIZE and chunks_behind > chunk_count:
-            # Calculate how many more chunks we can get
-            additional = min(MAX_CHUNKS - chunk_count, chunks_behind - chunk_count)
-            more_chunks = self.get_chunks_exact(client_index + chunk_count, additional)
+        # The first batch is capped at MAX_CHUNKS, so a run of small chunks
+        # can sit under the 1MB target with more data still buffered. Keep
+        # reading one batch at a time. A failed read (None) stops without
+        # skipping ahead; an empty one is a hole and is advanced over.
+        while (
+            total_size < TARGET_SIZE
+            and chunks_behind > chunk_count
+            and chunk_count < MAX_CHUNKS_PER_CALL
+        ):
+            additional = min(
+                MAX_CHUNKS,
+                chunks_behind - chunk_count,
+                MAX_CHUNKS_PER_CALL - chunk_count,
+            )
+            more_chunks = self._get_chunks_exact_indexed(
+                client_index + chunk_count, additional
+            )
+            if more_chunks is None:
+                break
+            additional_size = sum(len(c) for _idx, c in more_chunks)
+            if total_size + additional_size > MAX_SIZE:
+                break
+            indexed.extend(more_chunks)
+            total_size += additional_size
+            # Requested span, not hit count, so a hole is not read again.
+            chunk_count += additional
 
-            # Check if adding more would exceed MAX_SIZE
-            additional_size = sum(len(c) for c in more_chunks)
-            if total_size + additional_size <= MAX_SIZE:
-                chunks.extend(more_chunks)
-                chunk_count += len(more_chunks)
-
-        return chunks, client_index + chunk_count
+        return indexed, client_index + chunk_count
 
     # Lua script that runs an atomic binary search on the Redis server.
     # Chunks expire in FIFO order (same TTL, sequential writes), so the

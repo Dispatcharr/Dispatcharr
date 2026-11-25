@@ -8,6 +8,12 @@
 
 Closes #
 
+## Related Proposal
+
+<!-- Required for large features and major refactors: link the approved proposal discussion. PRs without this link may be closed automatically. Leave blank for other changes. -->
+
+Proposal:
+
 ## How was it tested?
 
 <!-- What did you actually run to verify this works? Be specific — "it works" is not sufficient. -->

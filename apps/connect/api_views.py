@@ -21,10 +21,9 @@ from .handlers.script import ScriptHandler
 class IntegrationViewSet(viewsets.ModelViewSet):
     queryset = Integration.objects.all()
     serializer_class = IntegrationSerializer
-
-    def get_permissions(self):
-        # Integrations expose webhook URLs / script paths in config; admin only.
-        return [IsAdmin()]
+    # Integrations expose webhook URLs / script paths in config; admin only.
+    # A class-level policy applies to every action, including ones added later.
+    permission_classes = [IsAdmin]
 
     @action(detail=True, methods=["get"], url_path="subscriptions")
     def list_subscriptions(self, request, pk=None):

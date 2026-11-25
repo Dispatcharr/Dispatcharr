@@ -141,3 +141,44 @@ class M3UAccountDestroyTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["deleted_channels"], 0)
+
+    def test_locked_account_cannot_be_deleted(self):
+        # The system custom account is locked and must survive API deletes
+        # so later migrations and custom-stream paths can resolve it.
+        locked = M3UAccount.get_custom_account()
+
+        response = self.client.delete(f"/api/m3u/accounts/{locked.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(M3UAccount.objects.filter(id=locked.id).exists())
+
+    def test_locked_account_cannot_be_updated(self):
+        locked = M3UAccount.get_custom_account()
+        original_name = locked.name
+
+        response = self.client.patch(
+            f"/api/m3u/accounts/{locked.id}/",
+            {"name": "renamed-custom"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        locked.refresh_from_db()
+        self.assertEqual(locked.name, original_name)
+
+    def test_locked_account_cannot_be_put(self):
+        locked = M3UAccount.get_custom_account()
+        original_name = locked.name
+
+        response = self.client.put(
+            f"/api/m3u/accounts/{locked.id}/",
+            {
+                "name": "renamed-custom",
+                "server_url": "http://example.com/custom.m3u",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        locked.refresh_from_db()
+        self.assertEqual(locked.name, original_name)

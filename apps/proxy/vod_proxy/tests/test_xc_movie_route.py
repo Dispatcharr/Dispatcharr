@@ -57,6 +57,7 @@ class StreamXcMovieRouteTest(TestCase):
             None,
             None,
             self.user,
+            check_network=False,
         )
 
     @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
@@ -88,6 +89,7 @@ class StreamXcMovieRouteTest(TestCase):
             None,
             None,
             self.user,
+            check_network=False,
         )
 
     @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)

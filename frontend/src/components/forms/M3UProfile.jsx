@@ -19,7 +19,7 @@ import {
 } from '@mantine/core';
 import { TriangleAlert } from 'lucide-react';
 import { DateTimePicker } from '@mantine/dates';
-import { useWebSocket } from '../../WebSocket';
+import { useWebSocket } from '../../WebSocketContext';
 import {
   addM3UProfile,
   applyRegex,
@@ -34,6 +34,7 @@ import {
   updateM3UProfile,
   validateXcSimple,
 } from '../../utils/forms/M3uProfileUtils.js';
+import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 
 const RegexFormAndView = ({
   profile = null,
@@ -59,6 +60,8 @@ const RegexFormAndView = ({
   // hidden and exp_date is never sent for either provider type.
   const hasProviderManagedExpiration =
     isXC || m3u?.account_type === 'STALKER';
+
+  const { timeFormat: timeformat, dateYearFormat } = useDateTimeFormat();
 
   const defaultValues = useMemo(
     () => ({
@@ -387,7 +390,7 @@ const RegexFormAndView = ({
             description="Set an expiration date to receive a 7-day warning notification"
             placeholder="No expiration"
             clearable
-            valueFormat="MMM D, YYYY h:mm A"
+            valueFormat={`${dateYearFormat} ${timeformat}`}
             value={watch('exp_date')}
             onChange={(value) => setValue('exp_date', value)}
           />

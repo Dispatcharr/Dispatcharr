@@ -271,5 +271,25 @@ describe('M3uUtils', () => {
         expect(values).toEqual(original);
       });
     });
+
+    describe('hash_key handling', () => {
+      it('joins a non-empty hash_key array into a comma-separated string', () => {
+        const values = { account_type: 'M3U', hash_key: ['name', 'tvg_id'] };
+        const result = prepareSubmitValues(values, null);
+        expect(result.hash_key).toBe('name,tvg_id');
+      });
+
+      it('sets hash_key to null when the array is empty (inherit global default)', () => {
+        const values = { account_type: 'M3U', hash_key: [] };
+        const result = prepareSubmitValues(values, null);
+        expect(result.hash_key).toBeNull();
+      });
+
+      it('leaves hash_key untouched when it is not an array', () => {
+        const values = { account_type: 'M3U', hash_key: undefined };
+        const result = prepareSubmitValues(values, null);
+        expect(result.hash_key).toBeUndefined();
+      });
+    });
   });
 });

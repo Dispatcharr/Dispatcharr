@@ -262,8 +262,9 @@ class StreamTsClientRegistrationTests(SimpleTestCase):
         self.assertIsInstance(response, JsonResponse)
         self.assertEqual(response.status_code, 503)
         client_manager.remove_client.assert_not_called()
-        proxy_server.redis_client.srem.assert_called_once()
-        proxy_server.redis_client.delete.assert_called_once()
+        pipe = proxy_server.redis_client.pipeline.return_value
+        pipe.srem.assert_called_once()
+        pipe.delete.assert_called()
 
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")

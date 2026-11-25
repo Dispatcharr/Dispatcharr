@@ -183,6 +183,14 @@ describe('UserUtils', () => {
       expect(result.channel_profiles).toEqual(['3', '4']);
     });
 
+    it('keeps an explicit days-back of 0 distinct from unset', () => {
+      const result = userToFormValues(
+        makeUser({ custom_properties: { epg_prev_days: 0, epg_days: 0 } })
+      );
+      expect(result.epg_prev_days).toBe(0);
+      expect(result.epg_days).toBe(0);
+    });
+
     it('maps custom_properties fields with defaults', () => {
       const result = userToFormValues(makeUser({ custom_properties: {} }));
       expect(result.xc_password).toBe('');
@@ -194,8 +202,8 @@ describe('UserUtils', () => {
       expect(result.vod_movies_enabled).toBe(true);
       expect(result.vod_series_enabled).toBe(true);
       expect(result.dvr_access).toBe('view');
-      expect(result.epg_days).toBe(0);
-      expect(result.epg_prev_days).toBe(0);
+      expect(result.epg_days).toBe('');
+      expect(result.epg_prev_days).toBe('');
     });
 
     it('maps allowed_m3u_profile_ids empty list as restricted none', () => {
@@ -437,6 +445,18 @@ describe('UserUtils', () => {
       expect(result.custom_properties.epg_prev_days).toBe(2);
     });
 
+    it('stores an explicit days-back of 0', () => {
+      const result = formValuesToPayload(makeValues({ epg_prev_days: 0 }), null);
+      expect(result.custom_properties.epg_prev_days).toBe(0);
+    });
+
+    it('clears days back so the user follows the system default', () => {
+      const result = formValuesToPayload(makeValues({ epg_prev_days: '' }), {
+        custom_properties: { epg_prev_days: 0 },
+      });
+      expect(result.custom_properties.epg_prev_days).toBeNull();
+    });
+
     it('populates allowed_networks for all NETWORK_KEYS when allowed_ips present', () => {
       const result = formValuesToPayload(
         makeValues({ allowed_ips: ['192.168.1.0/24', '10.0.0.1/32'] }),
@@ -511,8 +531,8 @@ describe('UserUtils', () => {
         vod_movies_enabled: true,
         vod_series_enabled: true,
         dvr_access: 'view',
-        epg_days: 0,
-        epg_prev_days: 0,
+        epg_days: '',
+        epg_prev_days: '',
         allowed_ips: [],
       });
     });

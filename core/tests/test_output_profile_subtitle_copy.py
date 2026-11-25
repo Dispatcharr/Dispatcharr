@@ -23,11 +23,12 @@ class SeededOutputProfilesCarrySubtitleCopyTests(TestCase):
         self.assertEqual(
             profile.parameters,
             (
-                "-fflags +discardcorrupt+genpts+nobuffer "
-                "-probesize 512K "
-                "-analyzeduration 0 "
+                "-fflags +discardcorrupt+genpts "
+                "-probesize 20M "
+                "-analyzeduration 3M "
                 "-i pipe:0 "
                 "-map 0 "
+                "-max_interleave_delta 100K "
                 "-c:v copy "
                 "-c:a ac3 "
                 "-b:a 384k "
@@ -44,11 +45,12 @@ class SeededOutputProfilesCarrySubtitleCopyTests(TestCase):
         self.assertEqual(
             profile.parameters,
             (
-                "-fflags +discardcorrupt+genpts+nobuffer "
-                "-probesize 512K "
-                "-analyzeduration 0 "
+                "-fflags +discardcorrupt+genpts "
+                "-probesize 20M "
+                "-analyzeduration 3M "
                 "-i pipe:0 "
                 "-map 0 "
+                "-max_interleave_delta 100K "
                 "-c:v copy "
                 "-c:a aac "
                 "-b:a 192k "

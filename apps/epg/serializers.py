@@ -6,7 +6,8 @@ from apps.epg.utils import sd_poster_proxy_path
 from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
-from apps.channels.models import Stream
+from apps.channels.access import channels_queryset_for_user, is_admin_user
+from apps.channels.models import Channel, Stream
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -218,8 +219,8 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         data['icon'] = cp.get('icon')
         data['images'] = cp.get('images') or []
 
-        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth.
-        # ``?v=`` tracks the sd_icon URI so nginx/browser caches bust when artwork changes.
+        # SD poster: absolute proxy URL so clients never need SD auth.
+        # ``?v=`` is a hash of the artwork URI. nginx caches on that hash.
         sd_icon = cp.get('sd_icon')
         if sd_icon:
             poster_path = sd_poster_proxy_path(obj.id, sd_icon)
@@ -319,15 +320,21 @@ class ProgramSearchResultSerializer(serializers.ModelSerializer):
             return by_epg.get(obj.epg_id, [])
 
         channels = list(obj.epg.channels.all()) if obj.epg else []
-        user = self.context.get('user')
-        if user is None or user.user_level >= 10:
+        user = self.context.get("user")
+        if (
+            not channels
+            or user is None
+            or not getattr(user, "is_authenticated", False)
+            or is_admin_user(user)
+        ):
             return channels
-        custom_props = user.custom_properties or {}
-        hide_adult = custom_props.get('hide_adult_content', False)
-        return [
-            ch for ch in channels
-            if ch.user_level <= user.user_level and (not hide_adult or not ch.is_adult)
-        ]
+        visible = set(
+            channels_queryset_for_user(
+                Channel.objects.filter(pk__in=[ch.pk for ch in channels]),
+                user,
+            ).values_list("pk", flat=True)
+        )
+        return [ch for ch in channels if ch.pk in visible]
 
     def get_channels(self, obj):
         fields = self.context.get('fields')

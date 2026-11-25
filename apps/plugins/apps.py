@@ -13,7 +13,8 @@ class PluginsConfig(AppConfig):
 
         - Skip during common management commands that don't need discovery.
         - Register post_migrate handler to sync plugin registry to DB after migrations.
-        - Run in-memory discovery (no DB) in every non-Celery process so plugin
+        - Run discovery without syncing the registry to the DB in every non-Celery
+          process (it still records an enabled plugin's Celery task names) so plugin
           modules are imported and monkey-patches apply. This includes uWSGI workers
           under lazy-apps=true, which each start cold and never inherit a warmed fork.
           Celery workers skip here and discover via the worker_ready signal instead.
@@ -47,6 +48,7 @@ class PluginsConfig(AppConfig):
             post_migrate.connect(
                 _post_migrate_discover,
                 dispatch_uid="apps.plugins.post_migrate_discover",
+                weak=False,
             )
 
             from dispatcharr.app_initialization import should_skip_initialization

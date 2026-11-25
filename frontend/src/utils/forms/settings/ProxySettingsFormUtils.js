@@ -17,8 +17,11 @@ export const getProxySettingDefaults = () => {
     channel_client_wait_period: 5,
     new_client_behind_seconds: 5,
     connection_ready_chunks: 16,
-    max_reconnect_attempts: 5,
     min_stable_time_before_reconnect: 10,
+    stream_startup_timeout: 8,
+    connection_timeout: 10,
     validate_redirect_urls: true,
+    max_retries: 3,
+    stream_retry_timeout: 3,
   };
 };

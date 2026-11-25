@@ -64,9 +64,12 @@ describe('ProxySettingsFormUtils', () => {
         channel_client_wait_period: 5,
         new_client_behind_seconds: 5,
         connection_ready_chunks: 16,
-        max_reconnect_attempts: 5,
         min_stable_time_before_reconnect: 10,
+        stream_startup_timeout: 8,
+        connection_timeout: 10,
         validate_redirect_urls: true,
+        max_retries: 3,
+        stream_retry_timeout: 3,
       });
     });
 
@@ -89,9 +92,12 @@ describe('ProxySettingsFormUtils', () => {
       expect(typeof result.channel_client_wait_period).toBe('number');
       expect(typeof result.new_client_behind_seconds).toBe('number');
       expect(typeof result.connection_ready_chunks).toBe('number');
-      expect(typeof result.max_reconnect_attempts).toBe('number');
       expect(typeof result.min_stable_time_before_reconnect).toBe('number');
+      expect(typeof result.stream_startup_timeout).toBe('number');
+      expect(typeof result.connection_timeout).toBe('number');
       expect(typeof result.validate_redirect_urls).toBe('boolean');
+      expect(typeof result.max_retries).toBe('number');
+      expect(typeof result.stream_retry_timeout).toBe('number');
     });
   });
 });

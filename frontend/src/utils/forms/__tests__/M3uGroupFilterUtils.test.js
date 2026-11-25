@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   buildGroupStates,
+  prepareCategorySettings,
   saveAndRefreshPlaylist,
 } from '../M3uGroupFilterUtils.js';
 
@@ -48,6 +49,7 @@ const makeCategoryState = (overrides = {}) => ({
   enabled: true,
   original_enabled: false,
   custom_properties: null,
+  original_custom_properties: {},
   ...overrides,
 });
 
@@ -474,6 +476,93 @@ describe('M3uGroupFilterUtils', () => {
           .mock.calls[0];
         expect(categorySettings[0].custom_properties).toEqual({ key: 'value' });
       });
+
+      it('includes categories when only language/quality changed', async () => {
+        const cat = makeCategoryState({
+          enabled: true,
+          original_enabled: true,
+          custom_properties: { language: 'es', quality: '4K' },
+          original_custom_properties: { language: 'en' },
+        });
+
+        await saveAndRefreshPlaylist(
+          makePlaylist(),
+          [],
+          [cat],
+          [],
+          makeAutoEnableSettings()
+        );
+
+        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings)
+          .mock.calls[0];
+        expect(categorySettings).toHaveLength(1);
+        expect(categorySettings[0]).toEqual({
+          id: 'cat-1',
+          enabled: true,
+          custom_properties: { language: 'es', quality: '4K' },
+        });
+      });
+
+      it('includes categories when language is cleared to null', async () => {
+        const cat = makeCategoryState({
+          enabled: true,
+          original_enabled: true,
+          custom_properties: { language: null },
+          original_custom_properties: { language: 'es' },
+        });
+
+        await saveAndRefreshPlaylist(
+          makePlaylist(),
+          [],
+          [cat],
+          [],
+          makeAutoEnableSettings()
+        );
+
+        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings)
+          .mock.calls[0];
+        expect(categorySettings).toHaveLength(1);
+        expect(categorySettings[0].custom_properties.language).toBeNull();
+      });
+    });
+  });
+
+  describe('prepareCategorySettings', () => {
+    it('returns only id, enabled, and custom_properties', () => {
+      const result = prepareCategorySettings(
+        [
+          makeCategoryState({
+            id: 'cat-1',
+            name: 'Action',
+            enabled: false,
+            original_enabled: true,
+            custom_properties: { language: 'fr' },
+          }),
+        ],
+        []
+      );
+      expect(result).toEqual([
+        {
+          id: 'cat-1',
+          enabled: false,
+          custom_properties: { language: 'fr' },
+        },
+      ]);
+    });
+
+    it('treats missing and null language/quality as unchanged', () => {
+      const result = prepareCategorySettings(
+        [
+          makeCategoryState({
+            enabled: true,
+            original_enabled: true,
+            custom_properties: { language: null, quality: null },
+            original_custom_properties: {},
+          }),
+        ],
+        []
+      );
+      expect(result).toHaveLength(0);
     });
   });
 });

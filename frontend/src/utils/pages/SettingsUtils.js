@@ -31,6 +31,8 @@ const GROUP_CONFIG = {
       m3u_hash_key: { type: 'm3u_hash_key', default: [] },
       default_output_format: { type: 'string', default: 'mpegts' },
       hdhr_output_profile_id: { type: 'id' },
+      // mpegts/fmp4/hls pin a format; "system" inherits Default Output Format.
+      hdhr_output_format: { type: 'string', default: 'mpegts' },
     },
   },
   epg_settings: {
@@ -40,6 +42,10 @@ const GROUP_CONFIG = {
       epg_match_ignore_prefixes: { type: 'array', default: [] },
       epg_match_ignore_suffixes: { type: 'array', default: [] },
       epg_match_ignore_custom: { type: 'array', default: [] },
+      epg_history_min_days: { type: 'int', default: 1 },
+      epg_history_max_days: { type: 'int', default: 30 },
+      epg_default_prev_days: { type: 'int', default: 0 },
+      epg_default_days: { type: 'int', default: 0 },
     },
   },
   dvr_settings: {
@@ -76,6 +82,7 @@ const GROUP_CONFIG = {
       log_max_mb: { type: 'int', default: 5 },
       log_keep: { type: 'int', default: 5 },
       log_persist: { type: 'bool', default: true },
+      log_redact: { type: 'bool', default: true },
       preferred_region: { type: 'nullable', default: null },
       auto_import_mapped_files: { type: 'bool', default: true },
       enable_ip_lookup: { type: 'bool', default: true },
@@ -87,8 +94,14 @@ const GROUP_CONFIG = {
 const toOptionalIdString = (value) =>
   value != null ? String(value) : null;
 
-const toIntOr = (value, fallback) =>
-  typeof value === 'number' ? value : parseInt(value, 10) || fallback;
+const toIntOr = (value, fallback) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  const parsed = parseInt(value, 10);
+  // 0 is a real value for several EPG day fields; do not treat it as missing.
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
 const toBool = (value, fallback = false) =>
   typeof value === 'boolean' ? value : value == null ? fallback : Boolean(value);

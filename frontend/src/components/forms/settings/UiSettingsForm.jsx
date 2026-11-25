@@ -1,4 +1,5 @@
 import useSettingsStore from '../../../store/settings.jsx';
+import useAuthStore from '../../../store/auth';
 import useBrowserStorage from '../../../hooks/useBrowserStorage.jsx';
 import useTablePreferences from '../../../hooks/useTablePreferences.jsx';
 import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
@@ -8,6 +9,7 @@ import {
 } from '../../../utils/components/FloatingVideoUtils.js';
 import {
   buildTimeZoneOptions,
+  DATE_FORMAT_OPTIONS,
   getDefaultTimeZone,
 } from '../../../utils/dateTimeUtils.js';
 import React, {
@@ -20,10 +22,13 @@ import React, {
 import { showNotification } from '../../../utils/notificationUtils.js';
 import { Select, Switch, Stack } from '@mantine/core';
 import { saveTimeZoneSetting } from '../../../utils/forms/settings/UiSettingsFormUtils.js';
+import { USER_LEVELS } from '../../../constants';
 
 const UiSettingsForm = React.memo(() => {
   const settings = useSettingsStore((s) => s.settings);
+  const user = useAuthStore((s) => s.user);
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
+  const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
 
   const [webPlayerProfileId, setWebPlayerProfileId] = useState(
     () => getPlayerPrefs().webPlayerOutputProfileId ?? null
@@ -47,8 +52,13 @@ const UiSettingsForm = React.memo(() => {
 
   const timeZoneSyncedRef = useRef(false);
 
+  // system_settings.time_zone is a global CoreSettings field (admin-only write).
+  // Non-admins keep the preference in browser storage only.
   const persistTimeZoneSetting = useCallback(
     async (tzValue) => {
+      if (!isAdmin) {
+        return;
+      }
       try {
         await saveTimeZoneSetting(tzValue, settings);
       } catch (error) {
@@ -60,7 +70,7 @@ const UiSettingsForm = React.memo(() => {
         });
       }
     },
-    [settings]
+    [settings, isAdmin]
   );
 
   useEffect(() => {
@@ -154,16 +164,7 @@ const UiSettingsForm = React.memo(() => {
         label="Date format"
         value={dateFormat}
         onChange={(val) => onUISettingsChange('date-format', val)}
-        data={[
-          {
-            value: 'mdy',
-            label: 'MM/DD/YYYY',
-          },
-          {
-            value: 'dmy',
-            label: 'DD/MM/YYYY',
-          },
-        ]}
+        data={DATE_FORMAT_OPTIONS}
       />
       <Select
         label="Time zone"

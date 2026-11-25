@@ -1,4 +1,5 @@
 import {
+  MultiSelect,
   NumberInput,
   Select,
   Switch,
@@ -7,8 +8,10 @@ import {
   TextInput,
 } from '@mantine/core';
 import React from 'react';
+import { PluginTableField } from './PluginTableField';
+import { PluginFileField } from './PluginFileField';
 
-export const Field = ({ field, value, onChange }) => {
+export const Field = ({ field, value, onChange, pluginKey }) => {
   const description = field.help_text ?? field.description ?? field.value;
   const common = { label: field.label, description };
   const effective = value ?? field.default;
@@ -50,6 +53,7 @@ export const Field = ({ field, value, onChange }) => {
     case 'select':
       return (
         <Select
+          searchable={(field.options || []).length > 10}
           value={(value ?? field.default ?? '') + ''}
           data={(field.options || []).map((o) => ({
             value: o.value + '',
@@ -60,9 +64,39 @@ export const Field = ({ field, value, onChange }) => {
           {...common}
         />
       );
+    case 'multiselect':
+      return (
+        <MultiSelect
+          searchable={(field.options || []).length > 10}
+          value={(value ?? field.default ?? []).map((v) => v + '')}
+          data={(field.options || []).map((o) => ({
+            value: o.value + '',
+            label: o.label,
+          }))}
+          onChange={(vals) => onChange(field.id, vals)}
+          placeholder={field.placeholder}
+          {...common}
+        />
+      );
+    case 'section':
+      return null;
+    case 'table':
+      return (
+        <PluginTableField field={field} value={effective} onChange={onChange} />
+      );
+    case 'file':
+      return (
+        <PluginFileField
+          field={field}
+          value={effective}
+          onChange={onChange}
+          pluginKey={pluginKey}
+        />
+      );
     case 'text':
       return (
         <Textarea
+          rows={field.rows ?? 4}
           value={value ?? field.default ?? ''}
           onChange={(e) => onChange(field.id, e.currentTarget.value)}
           placeholder={field.placeholder}

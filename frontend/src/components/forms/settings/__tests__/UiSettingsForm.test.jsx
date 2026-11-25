@@ -1,9 +1,14 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UiSettingsForm from '../UiSettingsForm';
+import { USER_LEVELS } from '../../../../constants';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../../store/settings.jsx', () => ({ default: vi.fn() }));
+vi.mock('../../../../store/auth', () => ({ default: vi.fn() }));
+vi.mock('../../../../store/outputProfiles.jsx', () => ({
+  default: vi.fn((sel) => sel({ profiles: [] })),
+}));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../../hooks/useBrowserStorage.jsx', () => ({
@@ -19,6 +24,11 @@ vi.mock('../../../../hooks/useTablePreferences.jsx', () => ({
 vi.mock('../../../../utils/dateTimeUtils.js', () => ({
   buildTimeZoneOptions: vi.fn(),
   getDefaultTimeZone: vi.fn(),
+  DATE_FORMAT_OPTIONS: [
+    { value: 'mdy', label: 'MM/DD/YYYY' },
+    { value: 'dmy', label: 'DD/MM/YYYY' },
+    { value: 'ymd', label: 'YYYY-MM-DD' },
+  ],
 }));
 
 vi.mock('../../../../utils/notificationUtils.js', () => ({
@@ -27,6 +37,11 @@ vi.mock('../../../../utils/notificationUtils.js', () => ({
 
 vi.mock('../../../../utils/forms/settings/UiSettingsFormUtils.js', () => ({
   saveTimeZoneSetting: vi.fn(),
+}));
+
+vi.mock('../../../../utils/components/FloatingVideoUtils.js', () => ({
+  getPlayerPrefs: vi.fn(() => ({})),
+  savePlayerPrefs: vi.fn(),
 }));
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
@@ -66,6 +81,7 @@ vi.mock('@mantine/core', () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import useSettingsStore from '../../../../store/settings.jsx';
+import useAuthStore from '../../../../store/auth';
 import useBrowserStorage from '../../../../hooks/useBrowserStorage.jsx';
 import useTablePreferences from '../../../../hooks/useTablePreferences.jsx';
 import {
@@ -98,6 +114,7 @@ const setupMocks = ({
   timeZone = DEFAULT_TZ,
   headerPinned = false,
   tableSize = 'default',
+  userLevel = USER_LEVELS.ADMIN,
 } = {}) => {
   const setTimeFormat = vi.fn();
   const setDateFormat = vi.fn();
@@ -110,6 +127,9 @@ const setupMocks = ({
   vi.mocked(saveTimeZoneSetting).mockResolvedValue(undefined);
 
   vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
+  vi.mocked(useAuthStore).mockImplementation((sel) =>
+    sel({ user: { user_level: userLevel } })
+  );
 
   vi.mocked(useBrowserStorage).mockImplementation((key, defaultVal) => {
     if (key === 'time-format') return [timeFormat, setTimeFormat];
@@ -201,6 +221,26 @@ describe('UiSettingsForm', () => {
       expect(screen.getByTestId('select-date-format')).toHaveValue('dmy');
     });
 
+    it('offers month-first, day-first and ISO 8601 date formats', () => {
+      setupMocks();
+      render(<UiSettingsForm />);
+      const options = Array.from(
+        screen.getByTestId('select-date-format').querySelectorAll('option')
+      );
+      expect(options.map((o) => o.value)).toEqual(['mdy', 'dmy', 'ymd']);
+      expect(options.map((o) => o.textContent)).toEqual([
+        'MM/DD/YYYY',
+        'DD/MM/YYYY',
+        'YYYY-MM-DD',
+      ]);
+    });
+
+    it('renders Date format select with ISO 8601 value', () => {
+      setupMocks({ dateFormat: 'ymd' });
+      render(<UiSettingsForm />);
+      expect(screen.getByTestId('select-date-format')).toHaveValue('ymd');
+    });
+
     it('renders Time zone select with initial value', () => {
       setupMocks({ timeZone: 'UTC' });
       render(<UiSettingsForm />);
@@ -268,6 +308,15 @@ describe('UiSettingsForm', () => {
       expect(setDateFormat).toHaveBeenCalledWith('dmy');
     });
 
+    it('calls setDateFormat with ymd when ISO 8601 is selected', () => {
+      const { setDateFormat } = setupMocks();
+      render(<UiSettingsForm />);
+      fireEvent.change(screen.getByTestId('select-date-format'), {
+        target: { value: 'ymd' },
+      });
+      expect(setDateFormat).toHaveBeenCalledWith('ymd');
+    });
+
     it('does not call setDateFormat when value is empty', () => {
       const { setDateFormat } = setupMocks();
       render(<UiSettingsForm />);
@@ -286,6 +335,21 @@ describe('UiSettingsForm', () => {
       expect(setTimeZone).toHaveBeenCalledWith('UTC');
       await waitFor(() => {
         expect(saveTimeZoneSetting).toHaveBeenCalledWith('UTC', makeSettings());
+      });
+    });
+
+    it('updates local time zone for standard users without saving to CoreSettings', async () => {
+      const { setTimeZone } = setupMocks({
+        settings: makeSettings({ timeZone: 'UTC' }),
+        userLevel: USER_LEVELS.STANDARD,
+      });
+      render(<UiSettingsForm />);
+      fireEvent.change(screen.getByTestId('select-time-zone'), {
+        target: { value: 'America/Chicago' },
+      });
+      expect(setTimeZone).toHaveBeenCalledWith('America/Chicago');
+      await waitFor(() => {
+        expect(saveTimeZoneSetting).not.toHaveBeenCalled();
       });
     });
 
@@ -351,6 +415,18 @@ describe('UiSettingsForm', () => {
           DEFAULT_TZ,
           makeSettings({ timeZone: null })
         );
+      });
+    });
+
+    it('does not call saveTimeZoneSetting for standard users when no tz in settings', async () => {
+      setupMocks({
+        settings: makeSettings({ timeZone: null }),
+        timeZone: DEFAULT_TZ,
+        userLevel: USER_LEVELS.STANDARD,
+      });
+      render(<UiSettingsForm />);
+      await waitFor(() => {
+        expect(saveTimeZoneSetting).not.toHaveBeenCalled();
       });
     });
 

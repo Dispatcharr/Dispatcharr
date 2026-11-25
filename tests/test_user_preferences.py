@@ -1,3 +1,6 @@
+import json
+from urllib.parse import urlencode
+
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
@@ -184,3 +187,45 @@ class UserPreferencesAPITests(TestCase):
         self.assertFalse(self.user.custom_properties.get("vod_movies_enabled"))
         self.assertFalse(self.user.custom_properties.get("vod_series_enabled"))
         self.assertEqual(self.user.custom_properties.get("theme"), "light")
+
+    def test_patch_me_filters_admin_properties_for_all_content_types(self):
+        original = {
+            "xc_password": "original",
+            "allowed_networks": {"XC": "192.168.1.0/24"},
+            "catchup_enabled": False,
+            "vod_movies_enabled": False,
+            "vod_series_enabled": False,
+            "dvr_access": "none",
+            "allowed_m3u_profile_ids": [1],
+            "hide_adult_content": True,
+        }
+        attempted = {
+            "xc_password": "changed",
+            "allowed_networks": None,
+            "catchup_enabled": True,
+            "vod_movies_enabled": True,
+            "vod_series_enabled": True,
+            "dvr_access": "manage",
+            "allowed_m3u_profile_ids": None,
+            "hide_adult_content": False,
+            "theme": "light",
+        }
+        self.user.user_level = 1
+        for content_type in ("json", "multipart", "form"):
+            with self.subTest(content_type=content_type):
+                self.user.custom_properties = original.copy()
+                self.user.save(update_fields=["custom_properties", "user_level"])
+                if content_type == "form":
+                    response = self.client.patch(
+                        self.me_url, urlencode({"custom_properties": json.dumps(attempted), "user_level": 99}),
+                        content_type="application/x-www-form-urlencoded",
+                    )
+                else:
+                    value = attempted if content_type == "json" else json.dumps(attempted)
+                    response = self.client.patch(
+                        self.me_url, {"custom_properties": value, "user_level": 99}, format=content_type,
+                    )
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.user.refresh_from_db()
+                self.assertEqual(self.user.custom_properties, {**original, "theme": "light"})
+                self.assertEqual(self.user.user_level, 1)

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import StreamSettingsForm from '../StreamSettingsForm';
 
@@ -14,6 +14,11 @@ vi.mock('../../../../constants.js', () => ({
   REGION_CHOICES: [
     { label: 'US', value: 'us' },
     { label: 'EU', value: 'eu' },
+  ],
+  OUTPUT_FORMAT_OPTIONS: [
+    { value: 'mpegts', label: 'MPEG-TS' },
+    { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+    { value: 'hls', label: 'HLS' },
   ],
 }));
 
@@ -176,6 +181,7 @@ const mockFormValues = {
   default_stream_profile: '2',
   m3u_hash_key: ['name'],
   hdhr_output_profile_id: null,
+  hdhr_output_format: 'mpegts',
 };
 
 const makeFormMock = (overrides = {}) => ({
@@ -297,6 +303,18 @@ describe('StreamSettingsForm', () => {
       expect(screen.getByTestId('m3u_hash_key')).toBeInTheDocument();
     });
 
+    it('renders the HDHR Default Output Format select with MPEG-TS, fMP4, HLS, and system', () => {
+      render(<StreamSettingsForm active={true} />);
+      const select = screen.getByTestId('hdhr_output_format');
+      expect(
+        screen.getByLabelText('HDHR Default Output Format')
+      ).toBe(select);
+      const options = within(select)
+        .getAllByRole('option')
+        .map((o) => o.value);
+      expect(options).toEqual(['system', 'mpegts', 'fmp4', 'hls']);
+    });
+
     it('populates user agent options from store', () => {
       render(<StreamSettingsForm active={true} />);
       expect(screen.getByText('Chrome')).toBeInTheDocument();
@@ -305,8 +323,9 @@ describe('StreamSettingsForm', () => {
 
     it('populates stream profile options from store', () => {
       render(<StreamSettingsForm active={true} />);
-      expect(screen.getByText('Default')).toBeInTheDocument();
-      expect(screen.getByText('HLS')).toBeInTheDocument();
+      const profiles = screen.getByTestId('default_stream_profile');
+      expect(within(profiles).getByRole('option', { name: 'Default' })).toBeInTheDocument();
+      expect(within(profiles).getByRole('option', { name: 'HLS' })).toBeInTheDocument();
     });
 
     it('does not show success alert on initial render', () => {
@@ -780,6 +799,11 @@ describe('StreamSettingsForm', () => {
       expect(formMock.getInputProps).toHaveBeenCalledWith(
         'default_output_format'
       );
+    });
+
+    it('calls getInputProps for hdhr_output_format', () => {
+      render(<StreamSettingsForm active={true} />);
+      expect(formMock.getInputProps).toHaveBeenCalledWith('hdhr_output_format');
     });
 
     it('calls getInputProps for m3u_hash_key', () => {

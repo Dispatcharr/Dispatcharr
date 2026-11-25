@@ -433,7 +433,8 @@ class OutputXtreamRelationSelectionTest(TestCase):
 
         self.assertEqual(len(response), 1)
         self.assertEqual(response[0]["name"], "FR - Example Series")
-        self.assertEqual(response[0]["series_id"], self.fr_series_relation.id)
+        # XC series listings publish Series.id (upstream b029eb21).
+        self.assertEqual(response[0]["series_id"], self.fr_series_relation.series_id)
 
     def test_xc_get_series_info_uses_relation_title(self):
         request = self.factory.get("/player_api.php")

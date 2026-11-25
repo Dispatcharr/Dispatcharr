@@ -29,18 +29,15 @@ const isNumericField = (key) => {
     'channel_client_wait_period',
     'new_client_behind_seconds',
     'connection_ready_chunks',
-    'max_reconnect_attempts',
     'min_stable_time_before_reconnect',
+    'stream_startup_timeout',
+    'connection_timeout',
+    'max_retries',
+    'stream_retry_timeout',
   ].includes(key);
 };
 
 const isFloatField = (key) => key === 'buffering_speed';
-
-const getNumericFieldMin = (key) => {
-  if (key === 'connection_ready_chunks') return 1;
-  if (key === 'max_reconnect_attempts') return 1;
-  return 0;
-};
 
 const isBooleanField = (_key, config) => config?.type === 'boolean';
 
@@ -52,9 +49,23 @@ const getNumericFieldMax = (key) => {
   if (key === 'channel_client_wait_period') return 300;
   if (key === 'new_client_behind_seconds') return 120;
   if (key === 'connection_ready_chunks') return 64;
-  if (key === 'max_reconnect_attempts') return 20;
   if (key === 'min_stable_time_before_reconnect') return 300;
+  if (key === 'stream_startup_timeout' || key === 'connection_timeout') return 120;
+  if (key === 'max_retries') return 10;
+  if (key === 'stream_retry_timeout') return 30;
   return 300;
+};
+
+const getNumericFieldMin = (key) => {
+  if (
+    key === 'stream_startup_timeout' ||
+    key === 'connection_timeout' ||
+    key === 'max_retries' ||
+    key === 'connection_ready_chunks'
+  ) {
+    return 1;
+  }
+  return 0;
 };
 
 const renderProxySettingField = (key, config, proxySettingsForm) => {
