@@ -659,6 +659,30 @@ def xc_get_live_categories(user):
     return response
 
 
+# Returned by _xc_normalize_category_id for a category_id that can't match.
+_XC_NO_MATCHING_CATEGORY = object()
+
+
+def _xc_normalize_category_id(category_id):
+    """Turn an XC ``category_id`` query value into a filter value.
+
+    Returns None for "all categories": missing, empty, or the ``*`` wildcard
+    that some clients send. Returns the integer id for a valid id, and
+    ``_XC_NO_MATCHING_CATEGORY`` for anything else, so callers return no
+    results instead of passing a non-numeric value to the database.
+    """
+    if category_id is None:
+        return None
+    value = str(category_id).strip()
+    if value in ("", "*"):
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return _XC_NO_MATCHING_CATEGORY
+    return parsed if parsed >= 0 else _XC_NO_MATCHING_CATEGORY
+
+
 def _xc_live_streams_setup(request, user, category_id):
     from apps.channels.managers import with_effective_values
 
@@ -667,7 +691,10 @@ def _xc_live_streams_setup(request, user, category_id):
         user,
         level_cap_admins=True,
     ).select_related("channel_group", "logo")
-    if category_id is not None:
+    category_id = _xc_normalize_category_id(category_id)
+    if category_id is _XC_NO_MATCHING_CATEGORY:
+        base_qs = base_qs.none()
+    elif category_id is not None:
         base_qs = base_qs.filter(channel_group__id=category_id)
 
     channels = (
@@ -1206,8 +1233,12 @@ def xc_get_vod_streams(request, user, category_id=None):
 
     from apps.vod.models import M3UMovieRelation
 
+    category_id = _xc_normalize_category_id(category_id)
+    if category_id is _XC_NO_MATCHING_CATEGORY:
+        return []
+
     rel_filters = {"m3u_account__is_active": True}
-    if category_id:
+    if category_id is not None:
         rel_filters["category_id"] = category_id
     # Non-admins with Hide Mature Content skip adult VODs.
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
@@ -1304,8 +1335,12 @@ def xc_get_series(request, user, category_id=None):
 
     from apps.vod.models import M3USeriesRelation
 
+    category_id = _xc_normalize_category_id(category_id)
+    if category_id is _XC_NO_MATCHING_CATEGORY:
+        return []
+
     rel_filters = {"m3u_account__is_active": True}
-    if category_id:
+    if category_id is not None:
         rel_filters["category_id"] = category_id
 
     relations = _xc_fetch_priority_distinct_relations(
