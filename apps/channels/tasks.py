@@ -1496,6 +1496,23 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     # Avoid overwriting an existing MKV from a different recording.  The HLS
     # working directory is keyed by recording id, so it cannot collide and is
     # not part of this check.
+    #
+    # The MKV only appears on disk after the post-recording remux, so a
+    # recording that is still in progress (e.g. part 1 of a two-part episode
+    # airing back to back with part 2) does not occupy its path yet.  Paths
+    # already claimed by other recordings in the database count as taken too.
+    from apps.channels.models import Recording
+
+    try:
+        claimed_paths = set(
+            Recording.objects
+            .exclude(id=recording_id)
+            .filter(custom_properties__file_path__startswith=os.path.splitext(final_path)[0])
+            .values_list('custom_properties__file_path', flat=True)
+        )
+    except Exception:
+        claimed_paths = set()
+
     base, ext = os.path.splitext(final_path)
     counter = 1
     while True:
@@ -1503,7 +1520,7 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
             mkv_occupied = os.stat(final_path).st_size > 0
         except OSError:
             mkv_occupied = False
-        if not mkv_occupied:
+        if not mkv_occupied and final_path not in claimed_paths:
             break
         counter += 1
         final_path = f"{base}_{counter}{ext}"
