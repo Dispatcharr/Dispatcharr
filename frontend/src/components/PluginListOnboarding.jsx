@@ -25,16 +25,7 @@ const OnboardingCard = ({ title, children, action }) => (
 
 export default function PluginListOnboarding({ onInstallPlugin, onReloadAllPlugins }) {
   return (
-    <Box
-      ta="center"
-      py="xl"
-      style={{
-        minHeight: 'calc(100vh - 220px)',
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
-      }}
-    >
+    <Box>
       <Text size="lg" c="dimmed">
         No plugins installed yet
       </Text>

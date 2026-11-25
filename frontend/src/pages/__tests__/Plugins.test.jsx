@@ -308,8 +308,11 @@ describe('PluginsPage', () => {
 
       expect(screen.getByText('No plugins installed yet')).toBeInTheDocument();
       expect(screen.getByText('Browse Plugins')).toBeInTheDocument();
-      expect(screen.getAllByText('Install Plugin')).toHaveLength(2);
+      expect(screen.getAllByText('Install Plugin')).toHaveLength(1);
       expect(screen.getByText('Reload Plugins')).toBeInTheDocument();
+      expect(screen.queryByPlaceholderText('Search plugins…')).not.toBeInTheDocument();
+      expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+      expect(screen.queryByText('Reload All Plugins')).not.toBeInTheDocument();
     });
   });
 

@@ -135,6 +135,10 @@ const PluginsList = ({
     return <Loader />;
   }
 
+  if (plugins.length === 0) {
+    return <PluginListOnboarding onInstallPlugin={onInstallPlugin} onReloadAllPlugins={onReloadAllPlugins} />;
+  }
+
   return (
     <>
       <Group gap="sm" mb="md" wrap="wrap">
@@ -203,12 +207,6 @@ const PluginsList = ({
         </Box>
       )}
 
-      {plugins.length === 0 && (
-        <PluginListOnboarding
-          onInstallPlugin={onInstallPlugin}
-          onReloadAllPlugins={onReloadAllPlugins}
-        />
-      )}
     </>
   );
 };
