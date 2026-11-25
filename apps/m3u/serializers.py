@@ -204,6 +204,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "updated_at",
             "filters",
             "user_agent",
+            "vary_user_agent",
             "profiles",
             "locked",
             "channel_groups",

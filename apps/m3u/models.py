@@ -75,6 +75,17 @@ class M3UAccount(models.Model):
         related_name="m3u_accounts",
         help_text="The User-Agent associated with this M3U account.",
     )
+    vary_user_agent = models.BooleanField(
+        default=False,
+        help_text=(
+            "Append a per-connection number to this account's User-Agent so "
+            "concurrent streams don't all present an identical UA to the "
+            "provider. Some providers' middleware misbehaves when "
+            "multiple simultaneous connections share one UA string. Put {#} "
+            "anywhere in the User-Agent to control where the number goes; "
+            "otherwise it's appended as a suffix."
+        ),
+    )
     locked = models.BooleanField(
         default=False, help_text="Protected - can't be deleted or modified"
     )
@@ -143,17 +154,29 @@ class M3UAccount(models.Model):
             return self.user_agent
         return None
 
-    def get_user_agent_string(self):
+    def get_user_agent_string(self, connection_index=None):
         """Return the User-Agent string for provider requests.
 
         Uses this account's configured User-Agent when set; otherwise the
         Redis-cached system default from ``CoreSettings.get_default_user_agent()``.
+
+        When ``vary_user_agent`` is set and a ``connection_index`` is given
+        (the per-connection slot number from ``connection_pool.reserve_ua_slot``),
+        the number is substituted into a ``{#}`` placeholder in the UA string,
+        or appended as a suffix when no placeholder is present.
         """
         if self.user_agent_id:
             ua = self.user_agent
-            if ua is not None and ua.user_agent:
-                return ua.user_agent
-        return CoreSettings.get_default_user_agent()
+            base = ua.user_agent if ua is not None and ua.user_agent else None
+        else:
+            base = None
+        base = base or CoreSettings.get_default_user_agent()
+
+        if self.vary_user_agent and connection_index is not None:
+            if "{#}" in base:
+                return base.replace("{#}", str(connection_index))
+            return f"{base} {connection_index}"
+        return base
 
     def save(self, *args, **kwargs):
         if self.custom_properties is not None and not isinstance(
