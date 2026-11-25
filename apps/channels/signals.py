@@ -434,3 +434,35 @@ def update_channel_catchup_fields(sender, instance, **kwargs):
     from apps.channels.utils import rollup_catchup_for_channels
 
     rollup_catchup_for_channels([instance.channel_id])
+
+
+@receiver(post_save, sender=Channel)
+def note_channel_saved(sender, instance, created, raw=False, **kwargs):
+    """Report the save for the next ``channels_updated`` event."""
+    if raw:
+        return
+    from apps.channels.change_events import note_channels_changed
+
+    if created:
+        note_channels_changed(created=[instance.pk])
+    else:
+        note_channels_changed(updated=[instance.pk])
+
+
+@receiver(post_delete, sender=Channel)
+def note_channel_deleted(sender, instance, **kwargs):
+    """Report the deletion for the next ``channels_updated`` event."""
+    from apps.channels.change_events import note_channels_changed
+
+    note_channels_changed(deleted=[instance.uuid])
+
+
+@receiver([post_save, post_delete], sender=ChannelStream)
+@receiver([post_save, post_delete], sender=ChannelOverride)
+def note_channel_child_changed(sender, instance, raw=False, **kwargs):
+    """A channel's streams or overrides changed: the channel was updated."""
+    if raw:
+        return
+    from apps.channels.change_events import note_channels_changed
+
+    note_channels_changed(updated=[instance.channel_id])
