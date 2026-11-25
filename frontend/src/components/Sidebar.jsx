@@ -573,9 +573,12 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                   </Box>
                 </Box>
               )}
-
+            
             {!collapsed && authUser && (
-              <Group gap="xs" style={{ justifyContent: 'space-between', width: '100%' }}>
+              <Group
+                gap="xs"
+                style={{ justifyContent: 'space-between', width: '100%' }}
+              >
                 <Group gap="xs">
                   <Avatar src="" radius="xl" />
                   <UnstyledButton onClick={() => setUserFormOpen(true)}>
@@ -589,7 +592,12 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             )}
             {collapsed && (
               <Group justify="center" style={{ width: '100%' }}>
-                <Avatar src="" radius="xl" />
+                <UnstyledButton
+                  onClick={() => setUserFormOpen(true)}
+                  data-testid="user-avatar-button"
+                >
+                  <Avatar src="" radius="xl" />
+                </UnstyledButton>
               </Group>
             )}
           </Stack>
