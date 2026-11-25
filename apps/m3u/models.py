@@ -93,6 +93,14 @@ class M3UAccount(models.Model):
     refresh_task = models.ForeignKey(
         PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True
     )
+    vod_refresh_interval = models.IntegerField(default=0)
+    vod_refresh_task = models.ForeignKey(
+        PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    vod_refresh_after_live = models.BooleanField(
+        default=True,
+        help_text="Refresh VOD after Live TV unless a separate VOD schedule is configured.",
+    )
     stale_stream_days = models.PositiveIntegerField(
         default=7,
         help_text="Number of days after which a stream will be removed if not seen in the M3U source.",
