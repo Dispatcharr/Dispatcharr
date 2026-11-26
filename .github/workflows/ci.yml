@@ -250,10 +250,16 @@ jobs:
               .sort((left, right) => new Date(right.created_at) - new Date(left.created_at))
               .slice(3);
 
+            // Cleanup is best effort: the image is already published, and a
+            // version left behind is deleted on the next run.
             for (const version of staleVersions) {
-              await github.rest.packages.deletePackageVersionForAuthenticatedUser({
-                package_type: 'container',
-                package_name: context.repo.repo.toLowerCase(),
-                package_version_id: version.id,
-              });
+              try {
+                await github.rest.packages.deletePackageVersionForAuthenticatedUser({
+                  package_type: 'container',
+                  package_name: context.repo.repo.toLowerCase(),
+                  package_version_id: version.id,
+                });
+              } catch (error) {
+                core.warning(`Could not delete package version ${version.id}: ${error.message}`);
+              }
             }
