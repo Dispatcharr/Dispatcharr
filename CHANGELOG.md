@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **VOD sync no longer merges unrelated series or movies that share placeholder TMDB ID `999999`.** Xtream Codes providers sometimes emit `'999999'` (or whitespace-padded `'0'` / blank values) when no TMDB match exists, which previously collapsed unrelated items onto a single `('tmdb', '999999', language)` entry and triggered `handle_movie_id_conflicts` merges during detail refreshes. Placeholder TMDB values are now normalized to `None` alongside `'0'` and `''` so items fall back to `imdb_id` or `(name, year, language)`. (#2041)
 - **Plugin capability approval is required when changing repositories.** When an enabled plugin is adopted from another repository or an unmanaged installation, updates that request new capabilities now prompt for approval before the updated plugin runs.
 - **Plugin task triggers appear without refreshing the page.** Newly started actions show their recorded trigger immediately when available instead of temporarily showing `unknown`.
 - **The user modal no longer appears behind the TV Guide filter bar.** - Thanks [@subzero79](https://github.com/subzero79)

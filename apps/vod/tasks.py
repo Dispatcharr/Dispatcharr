@@ -21,6 +21,19 @@ import re
 logger = logging.getLogger(__name__)
 
 
+PLACEHOLDER_TMDB_IDS = frozenset({'', '0', '999999'})
+
+
+def normalize_tmdb_id(value):
+    """Return a stripped non-placeholder TMDB ID string, or None when missing."""
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    cleaned = str(value).strip()
+    if cleaned in PLACEHOLDER_TMDB_IDS:
+        return None
+    return cleaned
+
+
 def _empty_categories_should_abort(categories_data, account, category_type):
     """True when an empty provider response would wipe existing group selections."""
     if categories_data:
@@ -549,12 +562,13 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Extract metadata
             year = extract_year_from_data(movie_data, 'name')
-            tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
+            tmdb_id = (
+                normalize_tmdb_id(movie_data.get('tmdb_id'))
+                or normalize_tmdb_id(movie_data.get('tmdb'))
+            )
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
             # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
-            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
-                tmdb_id = None
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
@@ -927,12 +941,13 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if not year and series_data.get('release_date'):
                 year = extract_year(series_data.get('release_date'))
 
-            tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
+            tmdb_id = (
+                normalize_tmdb_id(series_data.get('tmdb'))
+                or normalize_tmdb_id(series_data.get('tmdb_id'))
+            )
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
 
             # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
-            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
-                tmdb_id = None
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
@@ -1668,7 +1683,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             duration_secs = normalize_duration_secs(
                 info.get('duration_secs') if info else None
             )
-            tmdb_id = info.get('tmdb_id') if info else None
+            tmdb_id = normalize_tmdb_id(info.get('tmdb_id')) if info else None
             imdb_id = info.get('imdb_id') if info else None
 
             # Prepare custom properties
@@ -3426,7 +3441,15 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                     except Exception:
                         pass
                 # Handle TMDB/IMDB ID updates with duplicate key protection
-                tmdb_id_to_set = info.get('tmdb_id') if info.get('tmdb_id') and info.get('tmdb_id') != movie.tmdb_id else None
+                incoming_tmdb_id = (
+                    normalize_tmdb_id(info.get('tmdb_id'))
+                    or normalize_tmdb_id(info.get('tmdb'))
+                )
+                tmdb_id_to_set = (
+                    incoming_tmdb_id
+                    if incoming_tmdb_id and incoming_tmdb_id != movie.tmdb_id
+                    else None
+                )
                 imdb_id_to_set = info.get('imdb_id') if info.get('imdb_id') and info.get('imdb_id') != movie.imdb_id else None
 
                 logger.debug(f"Movie {movie.id} current IDs: tmdb_id={movie.tmdb_id}, imdb_id={movie.imdb_id}")
