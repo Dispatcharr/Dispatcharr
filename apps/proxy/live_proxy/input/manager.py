@@ -1014,6 +1014,7 @@ class StreamManager:
                     logger.info(f"URL {self.url} failed after {self.retry_count} attempts, trying next stream for channel: {self.channel_id}")
 
                     # Try to switch to next stream (wait out wrap cooldown in this thread)
+                    self._switch_skipped_idle = False
                     switch_result = self._try_next_stream_with_cooldown(reason='max_retries_exceeded')
                     if switch_result:
                         # Successfully switched to a new stream, continue with the new URL
@@ -1021,13 +1022,17 @@ class StreamManager:
                         logger.info(f"Successfully switched to new URL: {self.url} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
                         self._clear_connection_failure_history()
                         # Continue outer loop with new URL - DON'T add a break statement here
-                    elif self._idle_shutdown_deadline() is not None:
+                    elif getattr(self, '_switch_skipped_idle', False):
                         # The last viewer left during the switch, so it was
                         # skipped. Do not mark the channel failed: hold it until
-                        # a viewer returns (retry) or the delay ends (stop).
+                        # a viewer returns or the delay ends (stop). A viewer may
+                        # already be back, so this does not query Redis first.
                         if self._stop_if_idle():
                             return
+                        # A viewer is back: resume the pending failover on the
+                        # next pass of the loop.
                         self._clear_connection_failure_history()
+                        self.needs_stream_switch = True
                     else:
                         # No more streams to try
                         logger.error(f"Failed to find alternative streams after {stream_switch_attempts} attempts for channel: {self.channel_id}")
@@ -3111,6 +3116,7 @@ class StreamManager:
             logger.info(
                 f"Channel {self.channel_id} has no clients - skipping stream switch"
             )
+            self._switch_skipped_idle = True
             return False
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")

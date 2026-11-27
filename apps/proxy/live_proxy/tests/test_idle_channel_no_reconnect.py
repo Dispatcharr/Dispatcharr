@@ -209,22 +209,26 @@ class IdleChannelSkipsNewConnectionsTests(TestCase):
 
         reader.assert_not_called()
 
-    def _failing_upstream(self):
+    def _failing_upstream(self, switch_results):
         self.manager.max_retries = 1
         establish = self.enterContext(
             patch.object(self.manager, '_establish_http_connection', return_value=False)
         )
-        self.enterContext(
-            patch.object(self.manager, '_try_next_stream_with_cooldown', return_value=False)
+
+        def try_switch(reason=None):
+            result = next(switch_results)
+            if result == 'idle':
+                self.manager._switch_skipped_idle = True
+                return False
+            return result
+
+        switch = self.enterContext(
+            patch.object(self.manager, '_try_next_stream_with_cooldown', side_effect=try_switch)
         )
-        return establish
+        return establish, switch
 
     def test_viewer_leaving_during_failover_does_not_fail_the_channel(self):
-        establish = self._failing_upstream()
-        # The switch was skipped because the channel became idle.
-        self.enterContext(
-            patch.object(self.manager, '_idle_shutdown_deadline', return_value=time.time() + 60)
-        )
+        establish, _switch = self._failing_upstream(iter(['idle']))
         # Before connecting, after the failure, before the switch: watched.
         # After the skipped switch: held until the coordinated stop.
         answers = iter([False, False, False])
@@ -253,20 +257,27 @@ class IdleChannelSkipsNewConnectionsTests(TestCase):
         # A deliberate stop: the finally block does not publish ERROR.
         self.assertTrue(self.manager._transport_shutdown_expected())
 
-    def test_viewer_returning_after_a_skipped_failover_retries_the_stream(self):
-        establish = self._failing_upstream()
+    def test_viewer_returning_after_a_skipped_failover_resumes_the_failover(self):
+        # The switch is skipped (idle), the viewer comes back at once, and the
+        # resumed failover finds a stream that plays until the channel stops.
+        establish, switch = self._failing_upstream(iter(['idle', True]))
+        # Every idle check sees a watched channel: the viewer is already back.
+        self.enterContext(patch.object(self.manager, '_stop_if_idle', return_value=False))
+        establish.side_effect = [False, True]
+
+        def plays_until_stop():
+            self.manager.stop_requested = True
+            self.manager.running = False
+
         self.enterContext(
-            patch.object(self.manager, '_idle_shutdown_deadline', return_value=time.time() + 60)
-        )
-        # ... held, then the viewer returns (False): retry; then idle at the
-        # next attempt and the coordinated stop arrives.
-        self.enterContext(
-            patch.object(
-                self.manager, '_stop_if_idle', side_effect=[False, False, False, False, True]
-            )
+            patch.object(self.manager, '_process_stream_data', side_effect=plays_until_stop)
         )
 
         self.manager.run()
 
-        self.assertEqual(establish.call_count, 1)
-        self.assertEqual(self.manager.retry_count, 0)
+        self.assertEqual(switch.call_count, 2)
+        self.assertEqual(
+            [c.kwargs.get('reason') for c in switch.call_args_list],
+            ['max_retries_exceeded', 'health_monitor'],
+        )
+        self.assertEqual(establish.call_count, 2)
