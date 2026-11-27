@@ -3,6 +3,7 @@ Stream generation and client-side handling for TS streams.
 This module handles generating and delivering video streams to clients.
 """
 
+import hashlib
 import time
 import gevent
 from apps.proxy.config import TSConfig as Config
@@ -15,6 +16,11 @@ from ...constants import ChannelMetadataField
 from ...config_helper import ConfigHelper
 
 logger = get_logger()
+
+# How long the proxy remembers how far a viewer got, so a player that reopens
+# the stream does not get content it already showed.
+RESUME_POSITION_TTL = 60
+RESUME_POSITION_WRITE_INTERVAL = 1.0
 
 class StreamGenerator:
     """
@@ -89,6 +95,8 @@ class StreamGenerator:
         # them while allowing cheap in-memory checks to run every iteration.
         self._last_resource_check_time = 0.0
         self._resource_check_interval = 1.0  # seconds
+
+        self._last_resume_write = 0.0
 
     def generate(self):
         """
@@ -318,6 +326,8 @@ class StreamGenerator:
                 f"initial_behind={initial_behind})"
             )
 
+        self._resume_viewer_position(current_buffer_index)
+
         # Store important objects as instance variables
         self.proxy_server = proxy_server
         self.buffer = buffer
@@ -329,6 +339,60 @@ class StreamGenerator:
 
         logger.info(f"[{self.client_id}] Starting stream at index {self.local_index} (buffer at {buffer.index})")
         return True
+
+    def _resume_key(self):
+        """Redis key for this viewer's position. A viewer is a client IP + user agent."""
+        viewer = f"{self.client_ip or ''}|{self.client_user_agent or ''}"
+        digest = hashlib.sha1(viewer.encode("utf-8", "replace")).hexdigest()[:16]
+        return RedisKeys.viewer_resume_position(self.channel_id, digest)
+
+    def _resume_viewer_position(self, buffer_head):
+        """
+        Never start a viewer earlier than the last chunk it was already sent.
+
+        A player that stalls often opens a second request for the same channel.
+        Time-based positioning would place it "N seconds behind live", which
+        replays content the viewer already saw when the buffer is young.
+        """
+        proxy_server = ProxyServer.get_instance()
+        redis_client = getattr(proxy_server, 'redis_client', None)
+        if not redis_client:
+            return
+        try:
+            raw = redis_client.get(self._resume_key())
+            if raw is None:
+                return
+            resume_index = int(raw)
+        except Exception as e:
+            logger.debug(f"[{self.client_id}] Could not read resume position: {e}")
+            return
+
+        # A position above the head is left over from an earlier run of the channel.
+        if self.local_index < resume_index <= buffer_head:
+            logger.info(
+                f"[{self.client_id}] Same viewer reconnected, resuming at index {resume_index} "
+                f"instead of {self.local_index} to avoid replaying content "
+                f"(buffer head at {buffer_head})"
+            )
+            self.local_index = resume_index
+
+    def _record_resume_position(self, force=False):
+        """Remember how far this viewer got (throttled)."""
+        try:
+            if getattr(self, 'chunks_sent', 0) <= 0:
+                return
+            now = time.time()
+            last_write = getattr(self, '_last_resume_write', 0.0)
+            if not force and now - last_write < RESUME_POSITION_WRITE_INTERVAL:
+                return
+            proxy_server = getattr(self, 'proxy_server', None) or ProxyServer.get_instance()
+            redis_client = getattr(proxy_server, 'redis_client', None)
+            if not redis_client:
+                return
+            redis_client.setex(self._resume_key(), RESUME_POSITION_TTL, str(self.local_index))
+            self._last_resume_write = now
+        except Exception as e:
+            logger.debug(f"[{getattr(self, 'client_id', '?')}] Could not store resume position: {e}")
 
     def _stream_data_generator(self):
         """Generate stream data chunks based on buffer contents."""
@@ -349,6 +413,7 @@ class StreamGenerator:
                 keepalive_start_time = None  # Each recovery restarts the cap independently.
                 yield from self._process_chunks(chunks, next_index)
                 self.local_index = next_index
+                self._record_resume_position()
                 self.last_yield_time = time.time()
                 self.empty_reads = 0
                 self.consecutive_empty = 0
@@ -621,6 +686,8 @@ class StreamGenerator:
     def _cleanup(self):
         """Clean up resources and report final statistics."""
         try:
+            self._record_resume_position(force=True)
+
             # Client cleanup
             elapsed = time.time() - self.stream_start_time
             local_clients = 0

@@ -60,6 +60,11 @@ class RedisKeys:
         return f"live:channel:{channel_id}:last_client_disconnect_time"
 
     @staticmethod
+    def viewer_resume_position(channel_id, viewer_key):
+        """Key for the last buffer index sent to a viewer (client IP + user agent)"""
+        return f"live:channel:{channel_id}:resume:{viewer_key}"
+
+    @staticmethod
     def connection_attempt(channel_id):
         """Key for connection attempt timestamp"""
         return f"live:channel:{channel_id}:connection_attempt_time"
