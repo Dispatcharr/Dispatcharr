@@ -360,11 +360,13 @@ class StreamGenerator:
         """
         Redis key for this viewer's position in this buffer.
 
-        A viewer is a client IP + user agent. The buffer's index key is part of
-        the digest: transcoded profiles have their own chunk numbering.
+        A viewer is a client IP + user agent + Dispatcharr user. The buffer's
+        index key is part of the digest: transcoded profiles have their own
+        chunk numbering.
         """
         buffer_key = getattr(self._resume_buffer(), 'buffer_index_key', '') or ''
-        viewer = f"{self.client_ip or ''}|{self.client_user_agent or ''}|{buffer_key}"
+        user_id = getattr(getattr(self, 'user', None), 'id', '') or ''
+        viewer = f"{self.client_ip or ''}|{self.client_user_agent or ''}|{user_id}|{buffer_key}"
         digest = hashlib.sha1(viewer.encode("utf-8", "replace")).hexdigest()[:16]
         return RedisKeys.viewer_resume_position(self.channel_id, digest)
 
@@ -460,12 +462,13 @@ class StreamGenerator:
                 break
 
             # Get chunks at client's position using improved strategy
-            chunks, next_index = self.buffer.get_optimized_client_data(self.local_index)
+            chunks, chunk_indices, next_index = self._read_batch()
 
             if chunks:
                 keepalive_start_time = None  # Each recovery restarts the cap independently.
-                yield from self._process_chunks(chunks, next_index)
+                yield from self._process_chunks(chunks, next_index, chunk_indices)
                 self.local_index = next_index
+                self._sent_index = next_index
                 self._record_resume_position()
                 self.last_yield_time = time.time()
                 self.empty_reads = 0
@@ -601,7 +604,16 @@ class StreamGenerator:
 
         return True
 
-    def _process_chunks(self, chunks, next_index):
+    def _read_batch(self):
+        """Return (chunks, their buffer indices or None, next_index)."""
+        # Class-level check: the indexed read exists on the real input buffer.
+        if hasattr(type(self.buffer), 'get_optimized_client_data_indexed'):
+            indexed, next_index = self.buffer.get_optimized_client_data_indexed(self.local_index)
+            return [data for _idx, data in indexed], [idx for idx, _data in indexed], next_index
+        chunks, next_index = self.buffer.get_optimized_client_data(self.local_index)
+        return chunks, None, next_index
+
+    def _process_chunks(self, chunks, next_index, chunk_indices=None):
         """Process and yield chunks to the client."""
         # Process and send chunks
         total_size = sum(len(c) for c in chunks)
@@ -609,10 +621,15 @@ class StreamGenerator:
         proxy_server = self.proxy_server or ProxyServer.get_instance()
 
         # Send the chunks to the client
+        # Without per-chunk indices, only a batch without holes maps offsets to indices.
+        consecutive = chunk_indices is None and len(chunks) == next_index - self.local_index
         for offset, chunk in enumerate(chunks, start=1):
             try:
                 yield chunk
-                self._sent_index = self.local_index + offset
+                if chunk_indices is not None:
+                    self._sent_index = chunk_indices[offset - 1]
+                elif consecutive:
+                    self._sent_index = self.local_index + offset
                 self.bytes_sent += len(chunk)
                 self.chunks_sent += 1
                 logger.debug(f"[{self.client_id}] Sent chunk {self.chunks_sent} ({len(chunk)} bytes) for channel {self.channel_id} to client")

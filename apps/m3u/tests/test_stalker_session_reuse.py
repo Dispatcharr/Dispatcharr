@@ -114,6 +114,8 @@ class StalkerMalformedLinkSwitchTests(StalkerSessionReuseTests):
             Stream, "get_stream",
             return_value=(self.stream.id, self.account_profile.id, None, True),
         ), patch.object(
+            Stream, "release_stream"
+        ) as mock_release, patch.object(
             Stream, "get_stream_profile", return_value=self.proxy_profile
         ), patch(
             "apps.proxy.live_proxy.url_utils.StalkerClient.resolve_playback_url",
@@ -128,3 +130,5 @@ class StalkerMalformedLinkSwitchTests(StalkerSessionReuseTests):
 
         self.assertIn("error", info)
         self.assertNotIn("url", info)
+        # The provider slot reserved for this attempt is given back.
+        mock_release.assert_called_once_with(m3u_profile_id=self.account_profile.id)

@@ -411,18 +411,26 @@ class StalkerPhase5PreviewTests(TestCase):
         )
         self.assertEqual(mock_create_link.call_count, 2)
 
-    def _create_link_with_responses(self, resolved_cmds, allow_malformed=False):
+    def _create_link_with_responses(
+        self,
+        resolved_cmds,
+        allow_malformed=False,
+        portal_url="http://portal.example.com/stalker_portal/portal.php",
+    ):
         client = StalkerClient(
             server_url="http://portal.example.com/stalker_portal/portal.php",
             mac="00:1A:79:00:00:40",
         )
-        responses = [{"js": {"cmd": cmd}} for cmd in resolved_cmds]
+        responses = [
+            cmd if isinstance(cmd, Exception) else {"js": {"cmd": cmd}}
+            for cmd in resolved_cmds
+        ]
         with patch.object(
             client, "_request", side_effect=responses
         ) as mock_request, patch("apps.m3u.stalker.logger.warning") as mock_warning:
             try:
                 result = client.create_link(
-                    "http://portal.example.com/stalker_portal/portal.php",
+                    portal_url,
                     "ffmpeg http://upstream.example.com/live.php?stream=176913&extension=ts",
                     allow_malformed=allow_malformed,
                 )
@@ -467,14 +475,44 @@ class StalkerPhase5PreviewTests(TestCase):
 
         self.assertIsInstance(result, StalkerMalformedLinkError)
 
-    def test_create_link_can_return_the_malformed_link_when_allowed(self):
+    def test_cold_start_keeps_a_single_call_and_returns_the_malformed_link(self):
         result, mock_request, _ = self._create_link_with_responses(
             ["ffmpeg http://portal.example.com/live.php?stream=&token=abc"] * 3,
             allow_malformed=True,
         )
 
         self.assertEqual(result, "http://portal.example.com/live.php?stream=&token=abc")
-        self.assertEqual(mock_request.call_count, 3)
+        self.assertEqual(mock_request.call_count, 1)
+
+    def test_failed_retry_after_a_malformed_link_reports_the_malformed_link(self):
+        result, mock_request, _ = self._create_link_with_responses(
+            [
+                "ffmpeg http://portal.example.com/live.php?stream=&token=abc",
+                StalkerRecoverableError("Request failed: read timed out"),
+            ]
+        )
+
+        self.assertIsInstance(result, StalkerMalformedLinkError)
+        self.assertEqual(mock_request.call_count, 2)
+
+    def test_retries_stop_when_the_time_budget_is_spent(self):
+        with patch("apps.m3u.stalker.time.monotonic", side_effect=[0.0, 10.0]):
+            result, mock_request, _ = self._create_link_with_responses(
+                ["ffmpeg http://portal.example.com/live.php?stream=&token=abc"] * 3
+            )
+
+        self.assertIsInstance(result, StalkerMalformedLinkError)
+        self.assertEqual(mock_request.call_count, 1)
+
+    def test_warning_never_logs_credentials_from_the_portal_url(self):
+        _, _, mock_warning = self._create_link_with_responses(
+            ["ffmpeg http://portal.example.com/live.php?stream=&token=abc"] * 3,
+            portal_url="http://user:secret@portal.example.com/stalker_portal/portal.php",
+        )
+
+        for call in mock_warning.call_args_list:
+            logged = " ".join(str(arg) for arg in call.args)
+            self.assertNotIn("secret", logged)
 
     def test_malformed_link_skips_command_refresh_and_session_recovery(self):
         client = StalkerClient(

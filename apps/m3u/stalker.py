@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import re
+import time
 from datetime import date, datetime, time as dt_time, timezone as dt_timezone
 from dataclasses import dataclass
 from secrets import token_hex
@@ -37,8 +38,10 @@ DEFAULT_USER_AGENT = (
 )
 
 
-# How many times create_link is asked before a malformed link is rejected.
+# How many times create_link is asked before a malformed link is rejected,
+# and how long those retries may take in total.
 CREATE_LINK_ATTEMPTS = 3
+CREATE_LINK_RETRY_BUDGET_SECONDS = 4.0
 # A stream id is a plain token. Slashes, colons or "?" mean the portal pasted
 # part of another URL into it.
 STREAM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -1095,23 +1098,35 @@ class StalkerClient:
         )
         # Some portals intermittently return a link whose stream id is empty or
         # holds a fragment of another URL. Connecting to it fails upstream
-        # (HTTP 405), so ask again before giving the link to the proxy.
-        for attempt in range(1, CREATE_LINK_ATTEMPTS + 1):
-            payload = self._request("GET", request_url, with_auth=True)
-            resolved_url = self._extract_create_link_url(payload)
+        # (HTTP 405). Failover asks again, within a short time budget, so it can
+        # move on to the next stream quickly. Cold start (allow_malformed) keeps
+        # a single call and hands the link over: the stream manager retries it.
+        portal_host = urlparse(portal_url).hostname or "portal"
+        max_attempts = 1 if allow_malformed else CREATE_LINK_ATTEMPTS
+        started = time.monotonic()
+        resolved_url = None
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1 and time.monotonic() - started >= CREATE_LINK_RETRY_BUDGET_SECONDS:
+                break
+            try:
+                payload = self._request("GET", request_url, with_auth=True)
+                resolved_url = self._extract_create_link_url(payload)
+            except StalkerError:
+                if attempt == 1:
+                    raise
+                # The first link was malformed; a failed retry does not change that.
+                break
             if _has_usable_stream_id(resolved_url):
                 return resolved_url
             logger.warning(
                 "Stalker create_link returned a link with an empty or malformed stream id "
                 "from %s (attempt %s/%s)",
-                urlparse(portal_url).netloc or portal_url,
+                portal_host,
                 attempt,
-                CREATE_LINK_ATTEMPTS,
+                max_attempts,
             )
 
         if allow_malformed:
-            # Caller prefers a link to an error; the stream manager retries
-            # and refreshes the URL if the upstream rejects it.
             return resolved_url
         raise StalkerMalformedLinkError(
             "Portal returned a malformed playback link.",

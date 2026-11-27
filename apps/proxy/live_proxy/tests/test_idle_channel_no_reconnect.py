@@ -38,78 +38,72 @@ def _redis(client_count, disconnect_value, later_client_count=0):
 
 
 @patch('apps.proxy.live_proxy.input.manager.ConfigHelper.channel_shutdown_delay', return_value=60)
-class EndIdleShutdownDelayTests(TestCase):
-    def test_idle_channel_ends_the_delay_and_waits_for_the_coordinated_stop(self, _delay):
-        redis_client = _redis(0, str(time.time() - 5).encode())
-        manager = _manager(redis_client)
+class IdleShutdownDeadlineTests(TestCase):
+    def test_idle_channel_reports_when_its_shutdown_delay_ends(self, _delay):
+        manager = _manager(_redis(0, b'1000.0'))
+        self.assertEqual(manager._idle_shutdown_deadline(), 1060.0)
 
-        def coordinated_stop(_seconds):
-            manager.stop_requested = True
+    def test_channel_with_a_viewer_is_not_idle(self, _delay):
+        manager = _manager(_redis(1, b'1000.0'))
+        self.assertIsNone(manager._idle_shutdown_deadline())
 
-        with patch.object(manager, '_ensure_owner_or_stop') as ensure, patch(
-            'apps.proxy.live_proxy.input.manager.gevent.sleep', side_effect=coordinated_stop
-        ):
-            self.assertTrue(manager._stop_if_idle())
+    def test_channel_still_starting_without_disconnect_marker_is_not_idle(self, _delay):
+        # Before the first client leaves there is no disconnect marker.
+        manager = _manager(_redis(0, None))
+        self.assertIsNone(manager._idle_shutdown_deadline())
 
-        # The manager never stops the upstream itself: stop_channel does.
-        ensure.assert_not_called()
-        key, value = redis_client.set.call_args.args
-        self.assertEqual(key, RedisKeys.last_client_disconnect(CHANNEL_ID))
-        self.assertLessEqual(float(value), time.time() - 60)
-        # Never recreate the key if a client cancelled the delay meanwhile.
-        self.assertEqual(redis_client.set.call_args.kwargs, {'xx': True, 'keepttl': True})
-
-    def test_channel_with_a_viewer_keeps_reconnecting(self, _delay):
-        redis_client = _redis(1, str(time.time() - 5).encode())
-        manager = _manager(redis_client)
-
-        with patch.object(manager, '_ensure_owner_or_stop') as ensure:
-            self.assertFalse(manager._stop_if_idle())
-
-        redis_client.set.assert_not_called()
-        ensure.assert_not_called()
-
-    def test_channel_still_starting_without_disconnect_marker_keeps_reconnecting(self, _delay):
-        # Before the first client attaches there is no disconnect marker.
-        redis_client = _redis(0, None)
-        manager = _manager(redis_client)
-
-        with patch.object(manager, '_ensure_owner_or_stop') as ensure:
-            self.assertFalse(manager._stop_if_idle())
-
-        redis_client.set.assert_not_called()
-        ensure.assert_not_called()
-
-    def test_viewer_returning_while_waiting_reconnects_the_upstream(self, _delay):
-        redis_client = _redis(0, str(time.time() - 5).encode(), later_client_count=1)
-        manager = _manager(redis_client)
-
-        with patch.object(manager, '_ensure_owner_or_stop') as ensure, patch(
-            'apps.proxy.live_proxy.input.manager.gevent.sleep'
-        ):
-            self.assertFalse(manager._stop_if_idle())
-
-        ensure.assert_not_called()
-
-    def test_without_a_coordinated_stop_the_ownership_check_decides(self, _delay):
-        redis_client = _redis(0, str(time.time() - 5).encode())
-        manager = _manager(redis_client)
-        manager._IDLE_STOP_WAIT_SECONDS = 0
-
-        with patch.object(manager, '_ensure_owner_or_stop', return_value=False) as ensure:
-            self.assertTrue(manager._stop_if_idle())
-
-        ensure.assert_called_once_with()
-
-    def test_redis_errors_never_stop_the_channel(self, _delay):
+    def test_redis_errors_keep_the_usual_behavior(self, _delay):
         redis_client = MagicMock()
         redis_client.pipeline.side_effect = RuntimeError('redis down')
         manager = _manager(redis_client)
+        self.assertIsNone(manager._idle_shutdown_deadline())
 
-        with patch.object(manager, '_ensure_owner_or_stop') as ensure:
-            self.assertFalse(manager._stop_if_idle())
 
+class StopIfIdleTests(TestCase):
+    """The idle channel waits without a connection; it never ends the delay early."""
+
+    def setUp(self):
+        self.manager = _manager(MagicMock())
+        self.sleep = self.enterContext(
+            patch('apps.proxy.live_proxy.input.manager.gevent.sleep')
+        )
+
+    def test_watched_channel_reconnects_at_once(self):
+        with patch.object(self.manager, '_idle_shutdown_deadline', return_value=None):
+            self.assertFalse(self.manager._stop_if_idle())
+        self.sleep.assert_not_called()
+
+    def test_idle_channel_waits_for_the_coordinated_stop(self):
+        def coordinated_stop(_seconds):
+            self.manager.stop_requested = True
+
+        self.sleep.side_effect = coordinated_stop
+        with patch.object(
+            self.manager, '_idle_shutdown_deadline', return_value=time.time() + 60
+        ), patch.object(self.manager, '_ensure_owner_or_stop') as ensure:
+            self.assertTrue(self.manager._stop_if_idle())
+
+        # The manager does not stop the upstream itself: stop_channel does.
         ensure.assert_not_called()
+
+    def test_viewer_returning_during_the_delay_reconnects(self):
+        with patch.object(
+            self.manager, '_idle_shutdown_deadline',
+            side_effect=[time.time() + 60, time.time() + 60, None],
+        ), patch.object(self.manager, '_ensure_owner_or_stop') as ensure:
+            self.assertFalse(self.manager._stop_if_idle())
+
+        self.assertEqual(self.sleep.call_count, 2)
+        ensure.assert_not_called()
+
+    def test_without_a_coordinated_stop_the_ownership_check_decides(self):
+        self.manager._IDLE_STOP_GRACE_SECONDS = 0
+        with patch.object(
+            self.manager, '_idle_shutdown_deadline', return_value=time.time() - 1
+        ), patch.object(self.manager, '_ensure_owner_or_stop', return_value=False) as ensure:
+            self.assertTrue(self.manager._stop_if_idle())
+
+        ensure.assert_called_once_with()
 
 
 class IdleChannelSkipsNewConnectionsTests(TestCase):
@@ -183,7 +177,10 @@ class IdleChannelSkipsNewConnectionsTests(TestCase):
         self.assertEqual(establish.call_count, 2)
 
     def test_failover_on_idle_channel_does_not_look_for_another_stream(self):
-        self.enterContext(patch.object(self.manager, '_stop_if_idle', return_value=True))
+        # Non-blocking check: _try_next_stream also runs on the stderr thread.
+        self.enterContext(
+            patch.object(self.manager, '_idle_shutdown_deadline', return_value=time.time() + 60)
+        )
         alternates = self.enterContext(
             patch('apps.proxy.live_proxy.input.manager.get_alternate_streams')
         )
@@ -199,3 +196,15 @@ class IdleChannelSkipsNewConnectionsTests(TestCase):
         self.assertFalse(self.manager._attempt_reconnect())
 
         establish.assert_not_called()
+
+    def test_upstream_is_not_opened_when_the_last_viewer_left_during_cleanup(self):
+        self.enterContext(
+            patch.object(self.manager, '_idle_shutdown_deadline', return_value=time.time() + 60)
+        )
+        reader = self.enterContext(
+            patch('apps.proxy.live_proxy.input.http_streamer.HTTPStreamReader')
+        )
+
+        self.assertFalse(self.manager._establish_http_connection())
+
+        reader.assert_not_called()

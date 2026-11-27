@@ -687,79 +687,69 @@ class StreamManager:
         self.stop()
         return False
 
-    def _end_idle_shutdown_delay(self):
+    # After the shutdown delay should have ended, how long an idle channel keeps
+    # waiting for the coordinated stop before it checks ownership itself.
+    _IDLE_STOP_GRACE_SECONDS = 5.0
+    _IDLE_POLL_SECONDS = 0.5
+
+    def _idle_shutdown_deadline(self):
         """
-        End the shutdown delay now when no client is attached to the channel.
+        Return when the shutdown delay ends if the channel has no client, else None.
 
-        The delay keeps an idle upstream open so a returning viewer starts
-        instantly. Opening a *new* upstream connection for an idle channel is
-        different: some providers allow one connection per account and drop the
-        oldest one, which cuts the channel someone is watching. Returns True
-        when the delay was ended.
+        None also covers a channel that is starting (no client has left yet)
+        and any Redis error: those keep the usual reconnect behavior.
         """
-        redis_client = getattr(getattr(self, 'buffer', None), 'redis_client', None)
-        if not redis_client:
-            return False
-
-        disconnect_key = RedisKeys.last_client_disconnect(self.channel_id)
-        try:
-            pipe = redis_client.pipeline(transaction=False)
-            pipe.scard(RedisKeys.clients(self.channel_id))
-            pipe.get(disconnect_key)
-            client_count, disconnect_value = pipe.execute()
-            if (client_count or 0) > 0 or not disconnect_value:
-                return False
-
-            expired_at = time.time() - max(ConfigHelper.channel_shutdown_delay(), 0) - 1
-            # xx: a client that came back has deleted the key; never recreate it.
-            redis_client.set(disconnect_key, str(expired_at), xx=True, keepttl=True)
-        except Exception as e:
-            logger.debug(f"Idle check failed for channel {self.channel_id}: {e}")
-            return False
-
-        logger.info(
-            f"Channel {self.channel_id} has no clients - ending shutdown delay "
-            f"instead of opening a new upstream connection"
-        )
-        return True
-
-    # How long an idle channel waits for the coordinated stop after ending its
-    # shutdown delay. The delay waiter polls every second.
-    _IDLE_STOP_WAIT_SECONDS = 5.0
-
-    def _idle_client_count(self):
         redis_client = getattr(getattr(self, 'buffer', None), 'redis_client', None)
         if not redis_client:
             return None
         try:
-            return int(redis_client.scard(RedisKeys.clients(self.channel_id)) or 0)
-        except Exception:
+            pipe = redis_client.pipeline(transaction=False)
+            pipe.scard(RedisKeys.clients(self.channel_id))
+            pipe.get(RedisKeys.last_client_disconnect(self.channel_id))
+            client_count, disconnect_value = pipe.execute()
+            if (client_count or 0) > 0 or not disconnect_value:
+                return None
+            disconnect_value = self._decode_redis_value(disconnect_value)
+            return float(disconnect_value) + max(ConfigHelper.channel_shutdown_delay(), 0)
+        except Exception as e:
+            logger.debug(f"Idle check failed for channel {self.channel_id}: {e}")
             return None
 
     def _stop_if_idle(self):
         """
-        Return True when the channel has no client and must not reconnect.
+        Hold off new upstream connections while the channel has no client.
 
-        After ending the shutdown delay, wait for the coordinated stop instead
-        of stopping here. A client that comes back in the meantime cancels the
-        stop the usual way, and this returns False so the upstream reconnects.
+        The shutdown delay keeps an idle upstream open so a returning viewer
+        starts instantly. Opening a *new* connection for an idle channel is
+        different: some providers allow one connection per account and drop the
+        oldest one, which cuts the channel someone is watching. So wait without
+        a connection until a viewer comes back (returns False: reconnect) or
+        the coordinated stop at the end of the delay arrives (returns True).
+        Only call this from the run loop: it can block for the whole delay.
         """
-        if not self._end_idle_shutdown_delay():
+        deadline = self._idle_shutdown_deadline()
+        if deadline is None:
             return False
 
-        deadline = time.time() + self._IDLE_STOP_WAIT_SECONDS
-        while time.time() < deadline:
+        logger.info(
+            f"Channel {self.channel_id} has no clients - not opening a new upstream "
+            f"connection; waiting for a viewer or the end of the shutdown delay"
+        )
+        while time.time() < deadline + self._IDLE_STOP_GRACE_SECONDS:
             if self.stop_requested or not self.running:
                 return True
-            if (self._idle_client_count() or 0) > 0:
+            gevent.sleep(self._IDLE_POLL_SECONDS)
+            if self.stop_requested or not self.running:
+                return True
+            current_deadline = self._idle_shutdown_deadline()
+            if current_deadline is None:
                 logger.info(
-                    f"Client returned to idle channel {self.channel_id} - reconnecting upstream"
+                    f"Viewer returned to channel {self.channel_id} - reconnecting upstream"
                 )
                 return False
-            gevent.sleep(0.25)
+            deadline = current_deadline
 
-        # No coordinated stop arrived: apply the same check as an expired
-        # shutdown delay.
+        # No coordinated stop arrived: same check as an expired shutdown delay.
         return not self._ensure_owner_or_stop()
 
     def run(self):
@@ -791,6 +781,13 @@ class StreamManager:
                     self._reset_url_switching_state()
 
                 # NEW: Check for health monitor recovery requests
+                if (
+                    (getattr(self, 'needs_reconnect', False) or getattr(self, 'needs_stream_switch', False))
+                    and not self.url_switching
+                    and self._stop_if_idle()
+                ):
+                    return
+
                 if hasattr(self, 'needs_reconnect') and self.needs_reconnect and not self.url_switching:
                     logger.info(f"Health monitor requested reconnect for channel {self.channel_id}")
                     self.needs_reconnect = False
@@ -847,13 +844,15 @@ class StreamManager:
                 ):
                     if not self._ensure_owner_or_stop():
                         break
-                    # The last client may have left during the backoff above.
-                    if self._stop_if_idle():
-                        return
                     if self.retry_count > 0:
                         self._refresh_runtime_stream_url(reason="retry")
                         self.stream_type = detect_stream_type(self.url)
                         self._apply_transport_mode_override()
+
+                    # The last client may have left during the backoff or the
+                    # URL refresh above: check right before connecting.
+                    if self._stop_if_idle():
+                        return
 
                     attempt = self.retry_count + 1
                     logger.info(
@@ -1010,6 +1009,8 @@ class StreamManager:
 
                 # If URL failed and we're still running, try switching to another stream
                 if url_failed and self.running:
+                    if self._stop_if_idle():
+                        return
                     logger.info(f"URL {self.url} failed after {self.retry_count} attempts, trying next stream for channel: {self.channel_id}")
 
                     # Try to switch to next stream (wait out wrap cooldown in this thread)
@@ -1144,6 +1145,10 @@ class StreamManager:
             if self.current_response or self.current_session:
                 logger.debug(f"Closing existing HTTP connections before establishing transcode connection for channel {self.channel_id}")
                 self._close_connection()
+
+            if self._idle_shutdown_deadline() is not None:
+                logger.info(f"Channel {self.channel_id} has no clients - not starting the transcode")
+                return False
 
             try:
                 channel = get_stream_object(self.channel_id)
@@ -1956,6 +1961,10 @@ class StreamManager:
             if self.transcode_process and self.transcode_process.poll() is None:
                 logger.debug(f"Closing existing transcode process before establishing HTTP connection for channel {self.channel_id}")
                 self._close_socket()
+
+            if self._idle_shutdown_deadline() is not None:
+                logger.info(f"Channel {self.channel_id} has no clients - not opening the upstream")
+                return False
 
             # Use HTTPStreamReader to fetch stream and pipe to a readable file descriptor
             # This allows us to use the same fetch_chunk() path as transcode
@@ -3089,7 +3098,12 @@ class StreamManager:
         """
         if previous_stream_info is None:
             previous_stream_info = {}
-        if self._stop_if_idle():
+        # Non-blocking: this also runs on the stderr reader thread. The run
+        # loop holds the idle channel until a viewer returns or it stops.
+        if self._idle_shutdown_deadline() is not None:
+            logger.info(
+                f"Channel {self.channel_id} has no clients - skipping stream switch"
+            )
             return False
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")

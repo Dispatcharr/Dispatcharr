@@ -196,3 +196,43 @@ class TsViewerResumeTests(TestCase):
         gen.local_index = 5
         gen._record_resume_position(force=True)
         self.assertEqual(self.redis.positions(), {})
+
+    def test_hole_in_a_batch_records_the_real_chunk_index(self):
+        # Chunk 12 expired: the batch holds 11 and 13.
+        gen = self._generator(_Buffer(head=20, time_index=0))
+        gen.local_index = 10
+        gen.proxy_server = self.server
+        stream = gen._process_chunks([b'a', b'c'], 13, [11, 13])
+        next(stream)  # chunk 11
+        next(stream)  # chunk 11 written; chunk 13 handed over
+        stream.close()
+        gen._record_resume_position(force=True)
+
+        [value] = self.redis.positions().values()
+        self.assertEqual(value, b'11')
+
+    def test_batches_are_read_with_their_chunk_indices(self):
+        class _IndexedBuffer(_Buffer):
+            def get_optimized_client_data_indexed(self, _index):
+                return [(11, b'a'), (13, b'c')], 13
+
+        gen = self._generator(_IndexedBuffer(head=20, time_index=0))
+        gen.buffer = gen._source_buffer
+        gen.local_index = 10
+
+        self.assertEqual(gen._read_batch(), ([b'a', b'c'], [11, 13], 13))
+
+    def test_different_users_behind_the_same_ip_and_app_do_not_share_a_position(self):
+        first = self._generator(_Buffer(head=80, time_index=0))
+        first.user = SimpleNamespace(id=1, username='living-room')
+        first.local_index = 80
+        first.chunks_sent = 80
+        first._record_resume_position(force=True)
+
+        second = StreamGenerator(
+            CHANNEL_ID, 'client-2', *APPLE_TV, buffer=_Buffer(head=80, time_index=0),
+            channel_name='HGTV', user=SimpleNamespace(id=2, username='bedroom'),
+        )
+        self.assertTrue(second._setup_streaming())
+
+        self.assertEqual(second.local_index, 0)
