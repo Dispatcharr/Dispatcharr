@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Schedules Direct dates now come out in XMLTV form.** `<date>` and `<previously-shown start>` were written as `YYYY-MM-DD`, which clients such as Jellyfin reject, so those programmes had no year. They are now written as `YYYYMMDD`. (Closes #2027) - Thanks [@benjohngf](https://github.com/benjohngf)
+- **Schedules Direct and dummy guide dates now come out in XMLTV form.** `<date>` and `<previously-shown start>` were written as `YYYY-MM-DD`, which clients such as Jellyfin reject, so those programmes had no year. They are now written as `YYYYMMDD`. (Closes #2027) - Thanks [@benjohngf](https://github.com/benjohngf)
 - **Plugin capability approval is required when changing repositories.** When an enabled plugin is adopted from another repository or an unmanaged installation, updates that request new capabilities now prompt for approval before the updated plugin runs.
 - **Plugin task triggers appear without refreshing the page.** Newly started actions show their recorded trigger immediately when available instead of temporarily showing `unknown`.
 - **The user modal no longer appears behind the TV Guide filter bar.** - Thanks [@subzero79](https://github.com/subzero79)
