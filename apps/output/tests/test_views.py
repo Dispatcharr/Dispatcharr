@@ -411,6 +411,42 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
         self.assertLess(content.find('<title>First</title>'), content.find('<title>Second</title>'))
         self.assertLess(content.find('<title>Second</title>'), content.find('<title>Third</title>'))
 
+    def test_schedules_direct_dates_are_written_in_xmltv_form(self):
+        """Dashed dates from Schedules Direct come out as YYYYMMDD, year-only dates are left alone."""
+        from django.utils import timezone
+
+        epg_source = EPGSource.objects.create(name="SD EPG", source_type="xmltv")
+        epg_data = EPGData.objects.create(name="SD Station", epg_source=epg_source, tvg_id="sd.station")
+        self._add_channel(channel_number=150.0, name="SD Channel", tvg_id="sd.station", epg_data=epg_data)
+        now = timezone.now()
+        ProgramData.objects.create(
+            epg=epg_data,
+            start_time=now + timedelta(hours=1),
+            end_time=now + timedelta(hours=2),
+            title="Rerun",
+            tvg_id="sd.station",
+            custom_properties={
+                "date": "2025-11-15",
+                "previously_shown": True,
+                "previously_shown_details": {"start": "2025-11-15"},
+            },
+        )
+        ProgramData.objects.create(
+            epg=epg_data,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=3),
+            title="Movie",
+            tvg_id="sd.station",
+            custom_properties={"date": "2024"},
+        )
+
+        content = _response_text(self.client.get(self._epg_url("tvg_id_source=tvg_id&days=7")))
+
+        self.assertIn("<date>20251115</date>", content)
+        self.assertIn('<previously-shown start="20251115" />', content)
+        self.assertIn("<date>2024</date>", content)
+        self.assertNotIn("2025-11-15", content)
+
     def test_override_epg_change_invalidates_xmltv_chunk_cache(self):
         """
         XC reads live ProgramData; XMLTV is chunk-cached. Changing the

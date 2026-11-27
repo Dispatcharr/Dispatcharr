@@ -551,3 +551,21 @@ class DummyEpgXmltvIntegrationTest(OutputEndpointTestMixin, TestCase):
         content = _response_text(response)
         self.assertIn("<programme ", content)
         self.assertIn("Capitals", content)
+
+    def test_custom_dummy_date_is_written_in_xmltv_form(self):
+        epg_source = EPGSource.objects.create(
+            name="XMLTV Dummy Date",
+            source_type="dummy",
+            custom_properties=NHL_PROPS,
+        )
+        epg_data = EPGData.objects.get(epg_source=epg_source)
+        self._add_channel(
+            channel_number=502.0,
+            name="NHL 01: Washington Capitals vs Philadelphia Flyers @ August 27 07:00 PM ET",
+            epg_data=epg_data,
+        )
+
+        content = _response_text(self.client.get(self._epg_url()))
+
+        self.assertRegex(content, r"<date>\d{8}</date>")
+        self.assertNotRegex(content, r"<date>\d{4}-\d{2}-\d{2}</date>")
