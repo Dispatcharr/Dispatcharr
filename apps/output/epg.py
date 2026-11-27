@@ -8,6 +8,7 @@ and call into this module; Redis chunk caching lives in streaming_chunk_cache.py
 
 import html
 import logging
+import re
 from datetime import timedelta
 
 from django.http import Http404
@@ -32,6 +33,14 @@ from apps.output.streaming_chunk_cache import (
 from core.utils import build_absolute_uri_with_port, log_system_event
 
 logger = logging.getLogger(__name__)
+
+_ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def _xmltv_date(value):
+    """Schedules Direct stores YYYY-MM-DD; XMLTV clients only parse YYYYMMDD."""
+    match = _ISO_DATE_RE.match(str(value).strip())
+    return "".join(match.groups()) if match else value
 
 _EPG_CHANNEL_XML_BATCH_SIZE = 200
 _EPG_PROGRAM_YIELD_BATCH_SIZE = 1000
@@ -485,7 +494,7 @@ def generate_epg(request, profile_name=None, user=None):
                             program_xml.append("    </credits>")
 
                         if "date" in custom_data:
-                            program_xml.append(f'    <date>{html.escape(custom_data["date"])}</date>')
+                            program_xml.append(f'    <date>{html.escape(_xmltv_date(custom_data["date"]))}</date>')
 
                         if "country" in custom_data:
                             program_xml.append(f'    <country>{html.escape(custom_data["country"])}</country>')
@@ -506,7 +515,7 @@ def generate_epg(request, profile_name=None, user=None):
                             prev_shown_details = custom_data.get("previously_shown_details", {})
                             attrs = []
                             if "start" in prev_shown_details:
-                                attrs.append(f'start="{html.escape(prev_shown_details["start"])}"')
+                                attrs.append(f'start="{html.escape(_xmltv_date(prev_shown_details["start"]))}"')
                             if "channel" in prev_shown_details:
                                 attrs.append(f'channel="{html.escape(prev_shown_details["channel"])}"')
                             attr_str = " " + " ".join(attrs) if attrs else ""
@@ -574,7 +583,7 @@ def generate_epg(request, profile_name=None, user=None):
                     for cat in custom_data['categories']:
                         lines.append(f"    <category>{html.escape(cat)}</category>")
                 if 'date' in custom_data:
-                    lines.append(f"    <date>{html.escape(custom_data['date'])}</date>")
+                    lines.append(f"    <date>{html.escape(_xmltv_date(custom_data['date']))}</date>")
                 if custom_data.get('live', False):
                     lines.append("    <live />")
                 if custom_data.get('new', False):
