@@ -687,6 +687,50 @@ class StreamManager:
         self.stop()
         return False
 
+    def _end_idle_shutdown_delay(self):
+        """
+        End the shutdown delay now when no client is attached to the channel.
+
+        The delay keeps an idle upstream open so a returning viewer starts
+        instantly. Opening a *new* upstream connection for an idle channel is
+        different: some providers allow one connection per account and drop the
+        oldest one, which cuts the channel someone is watching. Returns True
+        when the delay was ended.
+        """
+        redis_client = getattr(getattr(self, 'buffer', None), 'redis_client', None)
+        if not redis_client:
+            return False
+
+        disconnect_key = RedisKeys.last_client_disconnect(self.channel_id)
+        try:
+            pipe = redis_client.pipeline(transaction=False)
+            pipe.scard(RedisKeys.clients(self.channel_id))
+            pipe.get(disconnect_key)
+            client_count, disconnect_value = pipe.execute()
+            if (client_count or 0) > 0 or not disconnect_value:
+                return False
+
+            expired_at = time.time() - max(ConfigHelper.channel_shutdown_delay(), 0) - 1
+            # xx: a client that came back has deleted the key; never recreate it.
+            redis_client.set(disconnect_key, str(expired_at), xx=True, keepttl=True)
+        except Exception as e:
+            logger.debug(f"Idle check failed for channel {self.channel_id}: {e}")
+            return False
+
+        logger.info(
+            f"Channel {self.channel_id} has no clients - ending shutdown delay "
+            f"instead of opening a new upstream connection"
+        )
+        return True
+
+    def _stop_if_idle(self):
+        """Return True when the channel has no client and its upstream was stopped."""
+        if not self._end_idle_shutdown_delay():
+            return False
+        # Same check as a shutdown delay that ran out: a client that came back
+        # in the meantime keeps the upstream alive.
+        return not self._ensure_owner_or_stop()
+
     def run(self):
         """Main execution loop using HTTP streaming with improved connection handling and stream switching"""
         # Add tracking for stream switching attempts
@@ -844,6 +888,9 @@ class StreamManager:
                             # Normal shutdown requested
                             return
 
+                        if self._stop_if_idle():
+                            return
+
                         if self.needs_reconnect:
                             # Health monitor asked for a same-URL reconnect. Clear the
                             # flag and tear the old socket down so the next establish
@@ -894,6 +941,8 @@ class StreamManager:
                     except Exception as e:
                         logger.error(f"Connection error on channel: {self.channel_id}: {e}", exc_info=True)
                         self.connected = False
+                        if self._stop_if_idle():
+                            return
                         failures = self._record_connection_failure()
 
                         if failures >= self.max_retries:
@@ -2501,6 +2550,8 @@ class StreamManager:
 
     def _attempt_reconnect(self):
         """Attempt to reconnect to the current stream"""
+        if self._stop_if_idle():
+            return False
         try:
             self._log_reconnect_diagnostics("attempt_reconnect_start", level="info")
             logger.info(f"Attempting reconnect to current stream for channel {self.channel_id}")
@@ -3004,6 +3055,8 @@ class StreamManager:
         """
         if previous_stream_info is None:
             previous_stream_info = {}
+        if self._stop_if_idle():
+            return False
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")
 
