@@ -408,26 +408,74 @@ class StalkerPhase5PreviewTests(TestCase):
         )
         self.assertEqual(mock_create_link.call_count, 2)
 
-    def test_create_link_logs_unusable_resolved_url_payload(self):
+    def _create_link_with_responses(self, resolved_cmds):
         client = StalkerClient(
             server_url="http://portal.example.com/stalker_portal/portal.php",
             mac="00:1A:79:00:00:40",
         )
+        responses = [{"js": {"cmd": cmd}} for cmd in resolved_cmds]
+        with patch.object(
+            client, "_request", side_effect=responses
+        ) as mock_request, patch("apps.m3u.stalker.logger.warning") as mock_warning:
+            try:
+                result = client.create_link(
+                    "http://portal.example.com/stalker_portal/portal.php",
+                    "ffmpeg http://upstream.example.com/live.php?stream=176913&extension=ts",
+                )
+            except StalkerError as exc:
+                result = exc
+        return result, mock_request, mock_warning
 
-        with patch.object(client, "handshake"), patch.object(
-            client, "authenticate_with_device_ids", return_value={"id": "1"}
-        ), patch.object(
-            client, "watchdog_update", return_value={}
-        ), patch.object(
-            client, "_request",
-            return_value={"js": {"cmd": "ffmpeg http://portal.example.com/live.php?stream=&token=abc"}},
-        ), patch("apps.m3u.stalker.logger.warning") as mock_warning:
-            client.create_link(
-                "http://portal.example.com/stalker_portal/portal.php",
-                "ffmpeg http://upstream.example.com/live.php?stream=176913&extension=ts",
-            )
+    def test_create_link_rejects_empty_stream_id_after_retries(self):
+        result, mock_request, mock_warning = self._create_link_with_responses(
+            ["ffmpeg http://portal.example.com/live.php?stream=&token=abc"] * 3
+        )
 
-        mock_warning.assert_called_once()
+        self.assertIsInstance(result, StalkerRecoverableError)
+        self.assertIn("invalid playback link", str(result).lower())
+        self.assertEqual(mock_request.call_count, 3)
+        self.assertEqual(mock_warning.call_count, 3)
+
+    def test_create_link_rejects_url_fragment_in_stream_id(self):
+        # Seen in production: the portal pasted part of the source URL into
+        # the stream parameter, and the upstream answered HTTP 405.
+        garbled = (
+            "ffmpeg http://mag.portal.example:80/play/live.php?mac=00:1A:79:00:00:40"
+            "&stream=tal.example:80/play/live.php?mac=00:1A:79:00:00:40"
+            "&extension=ts&play_token=abc"
+        )
+        result, mock_request, _ = self._create_link_with_responses([garbled] * 3)
+
+        self.assertIsInstance(result, StalkerRecoverableError)
+        self.assertEqual(mock_request.call_count, 3)
+
+    def test_create_link_retries_until_portal_returns_valid_link(self):
+        garbled = (
+            "ffmpeg http://mag.portal.example:80/play/live.php?mac=00:1A:79:00:00:40"
+            "&stream=tal.example:80/play/live.php?mac=00:1A:79:00:00:40"
+            "&extension=ts&play_token=abc"
+        )
+        valid = (
+            "ffmpeg http://mag.portal.example:80/play/live.php?mac=00:1A:79:00:00:40"
+            "&stream=902105&extension=ts&play_token=abc"
+        )
+        result, mock_request, _ = self._create_link_with_responses([garbled, valid])
+
+        self.assertEqual(
+            result,
+            "http://mag.portal.example:80/play/live.php?mac=00:1A:79:00:00:40"
+            "&stream=902105&extension=ts&play_token=abc",
+        )
+        self.assertEqual(mock_request.call_count, 2)
+
+    def test_create_link_accepts_links_without_stream_parameter(self):
+        result, mock_request, mock_warning = self._create_link_with_responses(
+            ["ffmpeg http://resolved.example.com/live/world-news.ts?token=abc"]
+        )
+
+        self.assertEqual(result, "http://resolved.example.com/live/world-news.ts?token=abc")
+        self.assertEqual(mock_request.call_count, 1)
+        mock_warning.assert_not_called()
 
     def test_get_fresh_channel_cmd_prefers_current_session_channel_cmd(self):
         client = StalkerClient(

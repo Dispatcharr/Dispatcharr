@@ -6,7 +6,7 @@ from datetime import date, datetime, time as dt_time, timezone as dt_timezone
 from dataclasses import dataclass
 from secrets import token_hex
 from posixpath import dirname, join
-from urllib.parse import quote, quote_plus, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, quote_plus, urlparse, urlunparse
 from zoneinfo import ZoneInfo
 
 import requests
@@ -35,6 +35,22 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 "
     "(KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 2116 Mobile Safari/533.3"
 )
+
+
+# How many times create_link is asked before a malformed link is rejected.
+CREATE_LINK_ATTEMPTS = 3
+# A stream id is a plain token. Slashes, colons or "?" mean the portal pasted
+# part of another URL into it.
+STREAM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _has_usable_stream_id(resolved_url):
+    """Return False when the link has a ``stream`` parameter that is empty or malformed."""
+    query = urlparse(resolved_url).query
+    values = parse_qs(query, keep_blank_values=True).get("stream")
+    if values is None:
+        return True
+    return all(STREAM_ID_PATTERN.match(value) for value in values)
 
 
 class StalkerError(Exception):
@@ -1058,16 +1074,27 @@ class StalkerClient:
             f"&cmd={encoded_cmd}"
             f"&JsHttpRequest=1-xml"
         )
-        payload = self._request("GET", request_url, with_auth=True)
-        resolved_url = self._extract_create_link_url(payload)
-        if "stream=&" in resolved_url or resolved_url.endswith("stream="):
+        # Some portals intermittently return a link whose stream id is empty or
+        # holds a fragment of another URL. Connecting to it fails upstream
+        # (HTTP 405), so ask again before giving the link to the proxy.
+        for attempt in range(1, CREATE_LINK_ATTEMPTS + 1):
+            payload = self._request("GET", request_url, with_auth=True)
+            resolved_url = self._extract_create_link_url(payload)
+            if _has_usable_stream_id(resolved_url):
+                return resolved_url
             logger.warning(
-                "Stalker create_link returned an unusable playback URL for portal %s: %s; payload=%s",
+                "Stalker create_link returned an unusable playback URL for portal %s "
+                "(attempt %s/%s): %s; payload=%s",
                 portal_url,
+                attempt,
+                CREATE_LINK_ATTEMPTS,
                 resolved_url,
                 payload,
             )
-        return resolved_url
+
+        raise StalkerRecoverableError(
+            "Portal returned an invalid playback link (malformed stream id)."
+        )
 
     def build_media_headers(self, media_url):
         """Build headers for fetching the resolved Stalker media URL."""
