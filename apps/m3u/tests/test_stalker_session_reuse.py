@@ -102,3 +102,29 @@ class StalkerSessionReuseTests(TestCase):
 
         self.assertEqual(len(seen_clients), 2)
         self.assertIsNot(seen_clients[0], seen_clients[1])
+
+
+class StalkerMalformedLinkSwitchTests(StalkerSessionReuseTests):
+    """Failover must not hand a malformed Stalker link to the stream manager."""
+
+    def test_switch_reports_an_error_for_a_malformed_link(self):
+        from apps.m3u.stalker import StalkerMalformedLinkError
+
+        with patch.object(
+            Stream, "get_stream",
+            return_value=(self.stream.id, self.account_profile.id, None, True),
+        ), patch.object(
+            Stream, "get_stream_profile", return_value=self.proxy_profile
+        ), patch(
+            "apps.proxy.live_proxy.url_utils.StalkerClient.resolve_playback_url",
+            side_effect=StalkerMalformedLinkError(
+                "Portal returned a malformed playback link.",
+                resolved_url="http://portal.example.com/live.php?stream=bad:80/x",
+            ),
+        ), patch(
+            "apps.proxy.live_proxy.url_utils.close_old_connections"
+        ):
+            info = get_stream_info_for_switch(self.stream.stream_hash)
+
+        self.assertIn("error", info)
+        self.assertNotIn("url", info)

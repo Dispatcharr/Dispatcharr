@@ -8,6 +8,7 @@ from apps.m3u.stalker import (
     DEFAULT_USER_AGENT,
     StalkerClient,
     StalkerError,
+    StalkerMalformedLinkError,
     StalkerRecoverableError,
 )
 from apps.proxy.live_proxy.url_utils import generate_stream_url, resolve_live_stream_url
@@ -78,7 +79,9 @@ class StalkerPhase5PreviewTests(TestCase):
         mock_create_link.assert_not_called()
 
     def test_generate_stream_url_uses_stalker_create_link_before_profile_transform(self):
-        def fake_resolve_playback_url(client, portal_url, channel_metadata):
+        def fake_resolve_playback_url(client, portal_url, channel_metadata, allow_malformed=False):
+            # Cold start accepts a malformed link rather than failing with a 503.
+            self.assertTrue(allow_malformed)
             self.assertEqual(
                 portal_url,
                 "http://portal.example.com/stalker_portal/server/load.php",
@@ -408,7 +411,7 @@ class StalkerPhase5PreviewTests(TestCase):
         )
         self.assertEqual(mock_create_link.call_count, 2)
 
-    def _create_link_with_responses(self, resolved_cmds):
+    def _create_link_with_responses(self, resolved_cmds, allow_malformed=False):
         client = StalkerClient(
             server_url="http://portal.example.com/stalker_portal/portal.php",
             mac="00:1A:79:00:00:40",
@@ -421,6 +424,7 @@ class StalkerPhase5PreviewTests(TestCase):
                 result = client.create_link(
                     "http://portal.example.com/stalker_portal/portal.php",
                     "ffmpeg http://upstream.example.com/live.php?stream=176913&extension=ts",
+                    allow_malformed=allow_malformed,
                 )
             except StalkerError as exc:
                 result = exc
@@ -431,10 +435,17 @@ class StalkerPhase5PreviewTests(TestCase):
             ["ffmpeg http://portal.example.com/live.php?stream=&token=abc"] * 3
         )
 
-        self.assertIsInstance(result, StalkerRecoverableError)
-        self.assertIn("invalid playback link", str(result).lower())
+        self.assertIsInstance(result, StalkerMalformedLinkError)
+        self.assertEqual(
+            result.resolved_url, "http://portal.example.com/live.php?stream=&token=abc"
+        )
         self.assertEqual(mock_request.call_count, 3)
         self.assertEqual(mock_warning.call_count, 3)
+        # The warning names the portal host only, never the link or its tokens.
+        for call in mock_warning.call_args_list:
+            logged = " ".join(str(arg) for arg in call.args)
+            self.assertNotIn("token=abc", logged)
+            self.assertIn("portal.example.com", logged)
 
     def test_create_link_rejects_url_fragment_in_stream_id(self):
         # Seen in production: the portal pasted part of the source URL into
@@ -446,8 +457,45 @@ class StalkerPhase5PreviewTests(TestCase):
         )
         result, mock_request, _ = self._create_link_with_responses([garbled] * 3)
 
-        self.assertIsInstance(result, StalkerRecoverableError)
+        self.assertIsInstance(result, StalkerMalformedLinkError)
         self.assertEqual(mock_request.call_count, 3)
+
+    def test_create_link_rejects_encoded_newline_in_stream_id(self):
+        result, _, _ = self._create_link_with_responses(
+            ["ffmpeg http://portal.example.com/live.php?stream=123%0A&token=abc"] * 3
+        )
+
+        self.assertIsInstance(result, StalkerMalformedLinkError)
+
+    def test_create_link_can_return_the_malformed_link_when_allowed(self):
+        result, mock_request, _ = self._create_link_with_responses(
+            ["ffmpeg http://portal.example.com/live.php?stream=&token=abc"] * 3,
+            allow_malformed=True,
+        )
+
+        self.assertEqual(result, "http://portal.example.com/live.php?stream=&token=abc")
+        self.assertEqual(mock_request.call_count, 3)
+
+    def test_malformed_link_skips_command_refresh_and_session_recovery(self):
+        client = StalkerClient(
+            server_url="http://portal.example.com/stalker_portal/portal.php",
+            mac="00:1A:79:00:00:40",
+        )
+        with patch.object(client, "prepare_playback_session"), patch.object(
+            client, "get_fresh_channel_cmd"
+        ) as mock_get_fresh_cmd, patch.object(
+            client,
+            "create_link",
+            side_effect=StalkerMalformedLinkError("bad", resolved_url="http://x/?stream="),
+        ) as mock_create_link:
+            with self.assertRaises(StalkerMalformedLinkError):
+                client.resolve_playback_url(
+                    "http://portal.example.com/stalker_portal/portal.php",
+                    {"stalker_channel_id": "5001", "cmd": "ffmpeg http://x/ch/1"},
+                )
+
+        mock_create_link.assert_called_once()
+        mock_get_fresh_cmd.assert_not_called()
 
     def test_create_link_retries_until_portal_returns_valid_link(self):
         garbled = (

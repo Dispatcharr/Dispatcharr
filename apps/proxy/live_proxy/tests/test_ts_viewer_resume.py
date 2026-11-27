@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
+from apps.proxy.live_proxy.redis_keys import RedisKeys
 
 CHANNEL_ID = 'resume-channel'
 APPLE_TV = ('10.1.1.50', 'UHF/2.2 AppleTV')
@@ -23,21 +24,32 @@ class _KV:
     """Minimal Redis stand-in for string keys with TTL."""
 
     def __init__(self):
-        self.kv = {}
+        self.kv = {RedisKeys.channel_metadata(CHANNEL_ID): b'meta'}
         self.ttl = {}
 
     def get(self, key):
         return self.kv.get(key)
 
-    def setex(self, key, ttl, value):
-        self.kv[key] = str(value).encode()
+    def exists(self, key):
+        return int(key in self.kv)
+
+    def eval(self, _script, _numkeys, key, value, ttl):
+        # Same semantics as the generator's Lua script: keep the maximum.
+        current = int(self.kv.get(key, b'-1'))
+        if int(value) > current:
+            self.kv[key] = str(value).encode()
         self.ttl[key] = ttl
+        return 1
+
+    def positions(self):
+        return {k: v for k, v in self.kv.items() if ':resume:' in k}
 
 
 class _Buffer:
-    def __init__(self, head, time_index):
+    def __init__(self, head, time_index, index_key=None):
         self.index = head
         self._time_index = time_index
+        self.buffer_index_key = index_key or RedisKeys.buffer_index(CHANNEL_ID)
 
     def find_chunk_index_by_time(self, _seconds):
         return self._time_index
@@ -61,6 +73,11 @@ class TsViewerResumeTests(TestCase):
             return_value=25,
         ))
 
+    def _generator(self, buffer, viewer=APPLE_TV, client_id='client-1'):
+        return StreamGenerator(
+            CHANNEL_ID, client_id, viewer[0], viewer[1], buffer=buffer, channel_name='HGTV',
+        )
+
     def _start(self, buffer, viewer=APPLE_TV, client_id='client-2'):
         gen = StreamGenerator(
             CHANNEL_ID, client_id, viewer[0], viewer[1], buffer=buffer, channel_name='HGTV',
@@ -68,11 +85,8 @@ class TsViewerResumeTests(TestCase):
         self.assertTrue(gen._setup_streaming())
         return gen
 
-    def _previous_request_reached(self, index, viewer=APPLE_TV):
-        gen = StreamGenerator(
-            CHANNEL_ID, 'client-1', viewer[0], viewer[1],
-            buffer=_Buffer(head=index, time_index=0), channel_name='HGTV',
-        )
+    def _previous_request_reached(self, index, viewer=APPLE_TV, buffer=None):
+        gen = self._generator(buffer or _Buffer(head=index, time_index=0), viewer=viewer)
         gen.local_index = index
         gen.chunks_sent = index
         gen._record_resume_position(force=True)
@@ -111,30 +125,74 @@ class TsViewerResumeTests(TestCase):
 
         self.assertEqual(gen.local_index, 0)
 
-    def test_position_is_written_with_a_short_ttl_and_throttled(self):
-        gen = StreamGenerator(
-            CHANNEL_ID, 'client-1', *APPLE_TV, buffer=_Buffer(head=10, time_index=0),
-            channel_name='HGTV',
-        )
+    def test_position_is_throttled_and_kept_as_long_as_chunks(self):
+        gen = self._generator(_Buffer(head=10, time_index=0))
         gen.local_index = 10
         gen.chunks_sent = 10
-        gen._record_resume_position()
-        [(key, value)] = self.redis.kv.items()
-        self.assertEqual(value, b'10')
-        self.assertLessEqual(self.redis.ttl[key], 120)
+        with patch(
+            'apps.proxy.live_proxy.output.ts.generator.ConfigHelper.redis_chunk_ttl',
+            return_value=120,
+        ):
+            gen._record_resume_position()
+            [(key, value)] = self.redis.positions().items()
+            self.assertEqual(value, b'10')
+            self.assertEqual(self.redis.ttl[key], 120)
 
-        gen.local_index = 12
-        gen._record_resume_position()  # within the throttle window
-        self.assertEqual(self.redis.kv[key], b'10')
+            gen.local_index = 12
+            gen._record_resume_position()  # within the throttle window
+            self.assertEqual(self.redis.kv[key], b'10')
 
+            gen._record_resume_position(force=True)
+            self.assertEqual(self.redis.kv[key], b'12')
+
+    def test_closing_mid_batch_keeps_the_chunks_already_sent(self):
+        gen = self._generator(_Buffer(head=20, time_index=0))
+        gen.local_index = 10
+        gen.proxy_server = self.server
+        stream = gen._process_chunks([b'a', b'b', b'c', b'd'], 14)
+        next(stream)  # chunk 11
+        next(stream)  # chunk 11 written; chunk 12 handed over
+        next(stream)  # chunk 12 written; chunk 13 handed over
+        stream.close()  # player hung up while chunk 13 was being written
         gen._record_resume_position(force=True)
-        self.assertEqual(self.redis.kv[key], b'12')
+
+        # Chunk 12 is the last one the response finished writing.
+        [value] = self.redis.positions().values()
+        self.assertEqual(value, b'12')
+
+    def test_late_cleanup_of_an_older_request_does_not_move_the_position_back(self):
+        self._previous_request_reached(80)
+        self._previous_request_reached(40)
+
+        [value] = self.redis.positions().values()
+        self.assertEqual(value, b'80')
+
+    def test_non_owner_worker_uses_the_shared_buffer_head(self):
+        # This worker's buffer copy says 50; the owner already wrote chunk 80.
+        self._previous_request_reached(80)
+        self.redis.kv[RedisKeys.buffer_index(CHANNEL_ID)] = b'80'
+
+        gen = self._start(_Buffer(head=50, time_index=0))
+
+        self.assertEqual(gen.local_index, 80)
+
+    def test_transcoded_profile_buffer_has_its_own_position(self):
+        profile_buffer = _Buffer(head=80, time_index=0, index_key='live:channel:x:profile:3:index')
+        self._previous_request_reached(80, buffer=profile_buffer)
+
+        gen = self._start(_Buffer(head=80, time_index=0))
+
+        self.assertEqual(gen.local_index, 0)
+
+    def test_no_position_is_written_after_the_channel_was_torn_down(self):
+        del self.redis.kv[RedisKeys.channel_metadata(CHANNEL_ID)]
+
+        self._previous_request_reached(30)
+
+        self.assertEqual(self.redis.positions(), {})
 
     def test_nothing_is_written_before_any_chunk_was_sent(self):
-        gen = StreamGenerator(
-            CHANNEL_ID, 'client-1', *APPLE_TV, buffer=_Buffer(head=10, time_index=0),
-            channel_name='HGTV',
-        )
+        gen = self._generator(_Buffer(head=10, time_index=0))
         gen.local_index = 5
         gen._record_resume_position(force=True)
-        self.assertEqual(self.redis.kv, {})
+        self.assertEqual(self.redis.positions(), {})

@@ -28,24 +28,31 @@ def _manager(redis_client):
     )
 
 
-def _redis(client_count, disconnect_value):
+def _redis(client_count, disconnect_value, later_client_count=0):
     redis_client = MagicMock()
     pipe = MagicMock()
     pipe.execute.return_value = [client_count, disconnect_value]
     redis_client.pipeline.return_value = pipe
+    redis_client.scard.return_value = later_client_count
     return redis_client
 
 
 @patch('apps.proxy.live_proxy.input.manager.ConfigHelper.channel_shutdown_delay', return_value=60)
 class EndIdleShutdownDelayTests(TestCase):
-    def test_idle_channel_in_shutdown_delay_expires_the_delay_and_stops(self, _delay):
+    def test_idle_channel_ends_the_delay_and_waits_for_the_coordinated_stop(self, _delay):
         redis_client = _redis(0, str(time.time() - 5).encode())
         manager = _manager(redis_client)
 
-        with patch.object(manager, '_ensure_owner_or_stop', return_value=False) as ensure:
+        def coordinated_stop(_seconds):
+            manager.stop_requested = True
+
+        with patch.object(manager, '_ensure_owner_or_stop') as ensure, patch(
+            'apps.proxy.live_proxy.input.manager.gevent.sleep', side_effect=coordinated_stop
+        ):
             self.assertTrue(manager._stop_if_idle())
 
-        ensure.assert_called_once_with()
+        # The manager never stops the upstream itself: stop_channel does.
+        ensure.assert_not_called()
         key, value = redis_client.set.call_args.args
         self.assertEqual(key, RedisKeys.last_client_disconnect(CHANNEL_ID))
         self.assertLessEqual(float(value), time.time() - 60)
@@ -73,13 +80,26 @@ class EndIdleShutdownDelayTests(TestCase):
         redis_client.set.assert_not_called()
         ensure.assert_not_called()
 
-    def test_viewer_returning_during_the_check_keeps_the_upstream(self, _delay):
-        redis_client = _redis(0, str(time.time() - 5).encode())
+    def test_viewer_returning_while_waiting_reconnects_the_upstream(self, _delay):
+        redis_client = _redis(0, str(time.time() - 5).encode(), later_client_count=1)
         manager = _manager(redis_client)
 
-        # The ownership check sees the returning client and keeps the upstream.
-        with patch.object(manager, '_ensure_owner_or_stop', return_value=True):
+        with patch.object(manager, '_ensure_owner_or_stop') as ensure, patch(
+            'apps.proxy.live_proxy.input.manager.gevent.sleep'
+        ):
             self.assertFalse(manager._stop_if_idle())
+
+        ensure.assert_not_called()
+
+    def test_without_a_coordinated_stop_the_ownership_check_decides(self, _delay):
+        redis_client = _redis(0, str(time.time() - 5).encode())
+        manager = _manager(redis_client)
+        manager._IDLE_STOP_WAIT_SECONDS = 0
+
+        with patch.object(manager, '_ensure_owner_or_stop', return_value=False) as ensure:
+            self.assertTrue(manager._stop_if_idle())
+
+        ensure.assert_called_once_with()
 
     def test_redis_errors_never_stop_the_channel(self, _delay):
         redis_client = MagicMock()
@@ -119,12 +139,33 @@ class IdleChannelSkipsNewConnectionsTests(TestCase):
         switch = self.enterContext(
             patch.object(self.manager, '_try_next_stream_with_cooldown', return_value=False)
         )
-        self.enterContext(patch.object(self.manager, '_stop_if_idle', return_value=True))
+        # Watched at the first attempt, idle once the upstream ends.
+        self.enterContext(
+            patch.object(self.manager, '_stop_if_idle', side_effect=[False, True])
+        )
 
         self.manager.run()
 
         establish.assert_called_once_with()
         switch.assert_not_called()
+
+    def test_viewer_leaving_during_backoff_prevents_the_next_attempt(self):
+        self.manager.max_retries = 3
+        establish = self.enterContext(
+            patch.object(self.manager, '_establish_http_connection', return_value=True)
+        )
+        self.enterContext(patch.object(self.manager, '_process_stream_data'))
+        self.enterContext(
+            patch.object(self.manager, '_try_next_stream_with_cooldown', return_value=False)
+        )
+        # First attempt and end of stream: watched. Before the retry: idle.
+        self.enterContext(
+            patch.object(self.manager, '_stop_if_idle', side_effect=[False, False, True])
+        )
+
+        self.manager.run()
+
+        establish.assert_called_once_with()
 
     def test_upstream_end_on_watched_channel_still_reconnects(self):
         self.manager.max_retries = 2

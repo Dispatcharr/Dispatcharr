@@ -22,9 +22,15 @@ logger = get_logger()
 
 
 def _resolve_live_stream_context(
-    stream: Stream, stalker_client_cache: Optional[dict] = None
+    stream: Stream,
+    stalker_client_cache: Optional[dict] = None,
+    allow_malformed_link: bool = False,
 ) -> dict:
     """Resolve a stream URL and any upstream request context needed to fetch it.
+
+    ``allow_malformed_link`` returns a Stalker link with a malformed stream id
+    instead of raising ``StalkerMalformedLinkError``. Failover leaves it off so
+    the switch moves on to the next stream.
 
     ``stalker_client_cache`` is an optional dict, owned by the caller (e.g. one
     per channel connection lifecycle), used to reuse an already-authenticated
@@ -72,7 +78,12 @@ def _resolve_live_stream_context(
         )
         if stalker_client_cache is not None:
             stalker_client_cache[cache_key] = client
-    resolved_url = client.resolve_playback_url(portal_url, custom_properties)
+    if allow_malformed_link:
+        resolved_url = client.resolve_playback_url(
+            portal_url, custom_properties, allow_malformed=True
+        )
+    else:
+        resolved_url = client.resolve_playback_url(portal_url, custom_properties)
     input_headers = client.build_media_headers(resolved_url)
 
     if (
@@ -144,10 +155,14 @@ def _build_runtime_stream_info(
     profile: M3UAccountProfile,
     stream_profile,
     stalker_client_cache: Optional[dict] = None,
+    stream_context: Optional[dict] = None,
 ) -> dict:
     """Build runtime playback info for a stream using provider-aware URL resolution."""
     m3u_account = stream.m3u_account
-    stream_context = _resolve_live_stream_context(stream, stalker_client_cache=stalker_client_cache)
+    if stream_context is None:
+        stream_context = _resolve_live_stream_context(
+            stream, stalker_client_cache=stalker_client_cache
+        )
     if m3u_account and m3u_account.account_type == M3UAccount.Types.STALKER:
         stream_url = transform_url(
             stream_context['url'],
@@ -344,7 +359,9 @@ def generate_stream_url(
                 # Prefer the profile's account so select_related populates the UA.
                 m3u_account = m3u_profile.m3u_account or stream.m3u_account
 
-                stream_context = _resolve_live_stream_context(stream)
+                # Cold start: a malformed Stalker link is still better than a
+                # 503 here; the stream manager retries and refreshes it.
+                stream_context = _resolve_live_stream_context(stream, allow_malformed_link=True)
                 stream_user_agent = stream_context.get('user_agent')
                 if stream_user_agent is None:
                     stream_user_agent = m3u_account.get_user_agent_string()
@@ -434,7 +451,7 @@ def generate_stream_url(
             m3u_account = m3u_profile.m3u_account
 
             # Get the appropriate user agent
-            stream_context = _resolve_live_stream_context(stream)
+            stream_context = _resolve_live_stream_context(stream, allow_malformed_link=True)
             stream_user_agent = stream_context.get('user_agent')
             if stream_user_agent is None:
                 stream_user_agent = m3u_account.get_user_agent_string()
@@ -708,8 +725,14 @@ def get_stream_info_for_switch(
 
         # Get transcode info from the channel's stream profile
         stream_profile = channel.get_stream_profile()
+        # Reuse the context resolved above: resolving again calls the portal a
+        # second time and can get a different (possibly malformed) link.
         stream_info = _build_runtime_stream_info(
-            stream, m3u_profile, stream_profile, stalker_client_cache=stalker_client_cache
+            stream,
+            m3u_profile,
+            stream_profile,
+            stalker_client_cache=stalker_client_cache,
+            stream_context=stream_context,
         )
         stream_info['stream_name'] = stream.name
         return stream_info

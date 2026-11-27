@@ -50,11 +50,23 @@ def _has_usable_stream_id(resolved_url):
     values = parse_qs(query, keep_blank_values=True).get("stream")
     if values is None:
         return True
-    return all(STREAM_ID_PATTERN.match(value) for value in values)
+    return all(STREAM_ID_PATTERN.fullmatch(value) for value in values)
 
 
 class StalkerError(Exception):
     pass
+
+
+class StalkerMalformedLinkError(StalkerError):
+    """create_link kept returning a link with an empty or malformed stream id.
+
+    Not recoverable through a session or command refresh: the portal answers,
+    but with a bad link. ``resolved_url`` holds the last link it returned.
+    """
+
+    def __init__(self, message, resolved_url=None):
+        super().__init__(message)
+        self.resolved_url = resolved_url
 
 
 class StalkerRecoverableError(StalkerError):
@@ -938,14 +950,16 @@ class StalkerClient:
         )
         return any(marker in message for marker in refresh_markers)
 
-    def _resolve_playback_url_once(self, portal_url, channel_metadata):
+    def _resolve_playback_url_once(self, portal_url, channel_metadata, allow_malformed=False):
         self.prepare_playback_session(portal_url)
         cached_cmd = str(channel_metadata.get("cmd") or "").strip()
         cached_cmd_error = None
 
         if cached_cmd:
             try:
-                return self.create_link(portal_url, cached_cmd)
+                return self._create_link_for_playback(portal_url, cached_cmd, allow_malformed)
+            except StalkerMalformedLinkError:
+                raise
             except StalkerError as exc:
                 cached_cmd_error = exc
                 if not self._should_refresh_channel_cmd(exc):
@@ -961,7 +975,12 @@ class StalkerClient:
             raise StalkerError("Stalker stream is missing a usable live command.")
         if cached_cmd_error is not None and fresh_cmd == cached_cmd:
             raise cached_cmd_error
-        return self.create_link(portal_url, fresh_cmd)
+        return self._create_link_for_playback(portal_url, fresh_cmd, allow_malformed)
+
+    def _create_link_for_playback(self, portal_url, cmd, allow_malformed):
+        if allow_malformed:
+            return self.create_link(portal_url, cmd, allow_malformed=True)
+        return self.create_link(portal_url, cmd)
 
     def _resolve_vod_playback_url_once(self, portal_url, cmd, series=None):
         self.prepare_vod_playback_session(portal_url)
@@ -1057,7 +1076,7 @@ class StalkerClient:
 
         return str(channel_metadata.get("cmd") or "").strip()
 
-    def create_link(self, portal_url, cmd):
+    def create_link(self, portal_url, cmd, allow_malformed=False):
         normalized_cmd = str(cmd or "").strip()
         if not normalized_cmd:
             raise StalkerError("Stalker stream is missing the source command.")
@@ -1083,26 +1102,31 @@ class StalkerClient:
             if _has_usable_stream_id(resolved_url):
                 return resolved_url
             logger.warning(
-                "Stalker create_link returned an unusable playback URL for portal %s "
-                "(attempt %s/%s): %s; payload=%s",
-                portal_url,
+                "Stalker create_link returned a link with an empty or malformed stream id "
+                "from %s (attempt %s/%s)",
+                urlparse(portal_url).netloc or portal_url,
                 attempt,
                 CREATE_LINK_ATTEMPTS,
-                resolved_url,
-                payload,
             )
 
-        raise StalkerRecoverableError(
-            "Portal returned an invalid playback link (malformed stream id)."
+        if allow_malformed:
+            # Caller prefers a link to an error; the stream manager retries
+            # and refreshes the URL if the upstream rejects it.
+            return resolved_url
+        raise StalkerMalformedLinkError(
+            "Portal returned a malformed playback link.",
+            resolved_url=resolved_url,
         )
 
     def build_media_headers(self, media_url):
         """Build headers for fetching the resolved Stalker media URL."""
         return self._headers(media_url, with_auth=True)
 
-    def resolve_playback_url(self, portal_url, channel_metadata):
+    def resolve_playback_url(self, portal_url, channel_metadata, allow_malformed=False):
         try:
-            return self._resolve_playback_url_once(portal_url, channel_metadata)
+            return self._resolve_playback_url_once(portal_url, channel_metadata, allow_malformed)
+        except StalkerMalformedLinkError:
+            raise
         except StalkerError as exc:
             if not self._should_retry_playback_resolution(exc):
                 raise
@@ -1113,7 +1137,7 @@ class StalkerClient:
                 exc,
             )
             self._prepared_portal_url = None
-            return self._resolve_playback_url_once(portal_url, channel_metadata)
+            return self._resolve_playback_url_once(portal_url, channel_metadata, allow_malformed)
 
     def resolve_vod_playback_url(self, portal_url, cmd, series=None):
         try:

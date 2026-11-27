@@ -723,12 +723,43 @@ class StreamManager:
         )
         return True
 
+    # How long an idle channel waits for the coordinated stop after ending its
+    # shutdown delay. The delay waiter polls every second.
+    _IDLE_STOP_WAIT_SECONDS = 5.0
+
+    def _idle_client_count(self):
+        redis_client = getattr(getattr(self, 'buffer', None), 'redis_client', None)
+        if not redis_client:
+            return None
+        try:
+            return int(redis_client.scard(RedisKeys.clients(self.channel_id)) or 0)
+        except Exception:
+            return None
+
     def _stop_if_idle(self):
-        """Return True when the channel has no client and its upstream was stopped."""
+        """
+        Return True when the channel has no client and must not reconnect.
+
+        After ending the shutdown delay, wait for the coordinated stop instead
+        of stopping here. A client that comes back in the meantime cancels the
+        stop the usual way, and this returns False so the upstream reconnects.
+        """
         if not self._end_idle_shutdown_delay():
             return False
-        # Same check as a shutdown delay that ran out: a client that came back
-        # in the meantime keeps the upstream alive.
+
+        deadline = time.time() + self._IDLE_STOP_WAIT_SECONDS
+        while time.time() < deadline:
+            if self.stop_requested or not self.running:
+                return True
+            if (self._idle_client_count() or 0) > 0:
+                logger.info(
+                    f"Client returned to idle channel {self.channel_id} - reconnecting upstream"
+                )
+                return False
+            gevent.sleep(0.25)
+
+        # No coordinated stop arrived: apply the same check as an expired
+        # shutdown delay.
         return not self._ensure_owner_or_stop()
 
     def run(self):
@@ -816,6 +847,9 @@ class StreamManager:
                 ):
                     if not self._ensure_owner_or_stop():
                         break
+                    # The last client may have left during the backoff above.
+                    if self._stop_if_idle():
+                        return
                     if self.retry_count > 0:
                         self._refresh_runtime_stream_url(reason="retry")
                         self.stream_type = detect_stream_type(self.url)

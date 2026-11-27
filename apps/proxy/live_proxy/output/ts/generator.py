@@ -20,7 +20,20 @@ logger = get_logger()
 # How long the proxy remembers how far a viewer got, so a player that reopens
 # the stream does not get content it already showed.
 RESUME_POSITION_TTL = 60
-RESUME_POSITION_WRITE_INTERVAL = 1.0
+RESUME_POSITION_WRITE_INTERVAL = 0.5
+
+# Store a viewer position only when it moves forward: a request that closes
+# late must not overwrite the position reached by a newer one.
+_MAX_POSITION_SCRIPT = """
+local current = tonumber(redis.call('GET', KEYS[1]) or '-1')
+local value = tonumber(ARGV[1])
+if value > current then
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+else
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 1
+"""
 
 class StreamGenerator:
     """
@@ -340,11 +353,41 @@ class StreamGenerator:
         logger.info(f"[{self.client_id}] Starting stream at index {self.local_index} (buffer at {buffer.index})")
         return True
 
+    def _resume_buffer(self):
+        return getattr(self, 'buffer', None) or getattr(self, '_source_buffer', None)
+
     def _resume_key(self):
-        """Redis key for this viewer's position. A viewer is a client IP + user agent."""
-        viewer = f"{self.client_ip or ''}|{self.client_user_agent or ''}"
+        """
+        Redis key for this viewer's position in this buffer.
+
+        A viewer is a client IP + user agent. The buffer's index key is part of
+        the digest: transcoded profiles have their own chunk numbering.
+        """
+        buffer_key = getattr(self._resume_buffer(), 'buffer_index_key', '') or ''
+        viewer = f"{self.client_ip or ''}|{self.client_user_agent or ''}|{buffer_key}"
         digest = hashlib.sha1(viewer.encode("utf-8", "replace")).hexdigest()[:16]
         return RedisKeys.viewer_resume_position(self.channel_id, digest)
+
+    @staticmethod
+    def _resume_ttl():
+        # Keep the position as long as the buffer can still replay old chunks.
+        try:
+            return max(RESUME_POSITION_TTL, int(ConfigHelper.redis_chunk_ttl()))
+        except Exception:
+            return RESUME_POSITION_TTL
+
+    def _shared_buffer_head(self, buffer, local_head, redis_client):
+        """Buffer head as written by the owner worker; a non-owner's copy can lag."""
+        head = local_head
+        index_key = getattr(buffer, 'buffer_index_key', None)
+        if index_key:
+            try:
+                raw = redis_client.get(index_key)
+                if raw is not None:
+                    head = max(head, int(raw))
+            except Exception:
+                pass
+        return head
 
     def _resume_viewer_position(self, buffer_head):
         """
@@ -367,17 +410,18 @@ class StreamGenerator:
             logger.debug(f"[{self.client_id}] Could not read resume position: {e}")
             return
 
+        head = self._shared_buffer_head(self._resume_buffer(), buffer_head, redis_client)
         # A position above the head is left over from an earlier run of the channel.
-        if self.local_index < resume_index <= buffer_head:
+        if self.local_index < resume_index <= head:
             logger.info(
                 f"[{self.client_id}] Same viewer reconnected, resuming at index {resume_index} "
                 f"instead of {self.local_index} to avoid replaying content "
-                f"(buffer head at {buffer_head})"
+                f"(buffer head at {head})"
             )
             self.local_index = resume_index
 
     def _record_resume_position(self, force=False):
-        """Remember how far this viewer got (throttled)."""
+        """Remember how far this viewer got (throttled, never moves backward)."""
         try:
             if getattr(self, 'chunks_sent', 0) <= 0:
                 return
@@ -389,7 +433,16 @@ class StreamGenerator:
             redis_client = getattr(proxy_server, 'redis_client', None)
             if not redis_client:
                 return
-            redis_client.setex(self._resume_key(), RESUME_POSITION_TTL, str(self.local_index))
+            # The last chunk actually handed to the response, even mid-batch.
+            sent_index = getattr(self, '_sent_index', None)
+            if sent_index is None:
+                sent_index = self.local_index
+            if force and not redis_client.exists(RedisKeys.channel_metadata(self.channel_id)):
+                # The channel was torn down: do not leave a position for a new run.
+                return
+            redis_client.eval(
+                _MAX_POSITION_SCRIPT, 1, self._resume_key(), int(sent_index), self._resume_ttl()
+            )
             self._last_resume_write = now
         except Exception as e:
             logger.debug(f"[{getattr(self, 'client_id', '?')}] Could not store resume position: {e}")
@@ -465,6 +518,8 @@ class StreamGenerator:
                         break
 
                     keepalive_packet = create_ts_packet('keepalive')
+                    # Keep the viewer's position alive while the upstream recovers.
+                    self._record_resume_position()
                     logger.debug(f"[{self.client_id}] Sending keepalive packet while waiting at buffer head")
                     yield keepalive_packet
                     self.bytes_sent += len(keepalive_packet)
@@ -554,9 +609,10 @@ class StreamGenerator:
         proxy_server = self.proxy_server or ProxyServer.get_instance()
 
         # Send the chunks to the client
-        for chunk in chunks:
+        for offset, chunk in enumerate(chunks, start=1):
             try:
                 yield chunk
+                self._sent_index = self.local_index + offset
                 self.bytes_sent += len(chunk)
                 self.chunks_sent += 1
                 logger.debug(f"[{self.client_id}] Sent chunk {self.chunks_sent} ({len(chunk)} bytes) for channel {self.channel_id} to client")
