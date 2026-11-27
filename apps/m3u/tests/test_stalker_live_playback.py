@@ -504,6 +504,20 @@ class StalkerPhase5PreviewTests(TestCase):
         self.assertIsInstance(result, StalkerMalformedLinkError)
         self.assertEqual(mock_request.call_count, 1)
 
+    def test_retry_request_only_gets_the_time_left_in_the_budget(self):
+        # The first call returns at 1 s: the retry may wait 3 s at most.
+        with patch("apps.m3u.stalker.time.monotonic", side_effect=[0.0, 1.0, 5.0]):
+            result, mock_request, _ = self._create_link_with_responses(
+                [
+                    "ffmpeg http://portal.example.com/live.php?stream=&token=abc",
+                    StalkerRecoverableError("Request failed: read timed out"),
+                ]
+            )
+
+        self.assertIsInstance(result, StalkerMalformedLinkError)
+        self.assertNotIn("timeout", mock_request.call_args_list[0].kwargs)
+        self.assertEqual(mock_request.call_args_list[1].kwargs["timeout"], 3.0)
+
     def test_warning_never_logs_credentials_from_the_portal_url(self):
         _, _, mock_warning = self._create_link_with_responses(
             ["ffmpeg http://portal.example.com/live.php?stream=&token=abc"] * 3,

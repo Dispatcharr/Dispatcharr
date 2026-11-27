@@ -468,7 +468,8 @@ class StreamGenerator:
                 keepalive_start_time = None  # Each recovery restarts the cap independently.
                 yield from self._process_chunks(chunks, next_index, chunk_indices)
                 self.local_index = next_index
-                self._sent_index = next_index
+                # _sent_index stays at the last chunk delivered: trailing holes
+                # in the batch were skipped, not sent.
                 self._record_resume_position()
                 self.last_yield_time = time.time()
                 self.empty_reads = 0

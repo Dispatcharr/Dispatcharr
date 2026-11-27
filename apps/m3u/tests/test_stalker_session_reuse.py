@@ -130,5 +130,5 @@ class StalkerMalformedLinkSwitchTests(StalkerSessionReuseTests):
 
         self.assertIn("error", info)
         self.assertNotIn("url", info)
-        # The provider slot reserved for this attempt is given back.
-        mock_release.assert_called_once_with(m3u_profile_id=self.account_profile.id)
+        # The default preview slot that get_stream() reserved is given back.
+        mock_release.assert_called_once_with()

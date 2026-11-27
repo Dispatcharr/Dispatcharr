@@ -208,3 +208,65 @@ class IdleChannelSkipsNewConnectionsTests(TestCase):
         self.assertFalse(self.manager._establish_http_connection())
 
         reader.assert_not_called()
+
+    def _failing_upstream(self):
+        self.manager.max_retries = 1
+        establish = self.enterContext(
+            patch.object(self.manager, '_establish_http_connection', return_value=False)
+        )
+        self.enterContext(
+            patch.object(self.manager, '_try_next_stream_with_cooldown', return_value=False)
+        )
+        return establish
+
+    def test_viewer_leaving_during_failover_does_not_fail_the_channel(self):
+        establish = self._failing_upstream()
+        # The switch was skipped because the channel became idle.
+        self.enterContext(
+            patch.object(self.manager, '_idle_shutdown_deadline', return_value=time.time() + 60)
+        )
+        # Before connecting, after the failure, before the switch: watched.
+        # After the skipped switch: held until the coordinated stop.
+        answers = iter([False, False, False])
+
+        def stop_if_idle():
+            try:
+                return next(answers)
+            except StopIteration:
+                self.manager.stop_requested = True  # what stop_channel does
+                return True
+
+        stop_if_idle_mock = self.enterContext(
+            patch.object(self.manager, '_stop_if_idle', side_effect=stop_if_idle)
+        )
+        error_logged = self.enterContext(
+            patch('apps.proxy.live_proxy.input.manager.logger.error')
+        )
+
+        self.manager.run()
+
+        establish.assert_called_once_with()
+        self.assertEqual(stop_if_idle_mock.call_count, 4)
+        # Not reported as "failed to find alternative streams".
+        for call in error_logged.call_args_list:
+            self.assertNotIn('Failed to find alternative streams', str(call.args[0]))
+        # A deliberate stop: the finally block does not publish ERROR.
+        self.assertTrue(self.manager._transport_shutdown_expected())
+
+    def test_viewer_returning_after_a_skipped_failover_retries_the_stream(self):
+        establish = self._failing_upstream()
+        self.enterContext(
+            patch.object(self.manager, '_idle_shutdown_deadline', return_value=time.time() + 60)
+        )
+        # ... held, then the viewer returns (False): retry; then idle at the
+        # next attempt and the coordinated stop arrives.
+        self.enterContext(
+            patch.object(
+                self.manager, '_stop_if_idle', side_effect=[False, False, False, False, True]
+            )
+        )
+
+        self.manager.run()
+
+        self.assertEqual(establish.call_count, 1)
+        self.assertEqual(self.manager.retry_count, 0)

@@ -236,3 +236,22 @@ class TsViewerResumeTests(TestCase):
         self.assertTrue(second._setup_streaming())
 
         self.assertEqual(second.local_index, 0)
+
+    def test_trailing_holes_do_not_count_as_sent(self):
+        # The batch sends chunk 11, then 12 and 13 are missing.
+        class _IndexedBuffer(_Buffer):
+            def get_optimized_client_data_indexed(self, _index):
+                return [(11, b'a')], 13
+
+        gen = self._generator(_IndexedBuffer(head=13, time_index=0))
+        gen.buffer = gen._source_buffer
+        gen.proxy_server = self.server
+        gen.local_index = 10
+        with patch.object(gen, '_check_resources', side_effect=[True, False]):
+            self.assertEqual(list(gen._stream_data_generator()), [b'a'])
+        gen._record_resume_position(force=True)
+
+        [value] = self.redis.positions().values()
+        self.assertEqual(value, b'11')
+        # Reading still moves past the holes.
+        self.assertEqual(gen.local_index, 13)

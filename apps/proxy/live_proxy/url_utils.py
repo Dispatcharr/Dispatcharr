@@ -589,7 +589,6 @@ def get_stream_info_for_switch(
     slot_reserved = False
     channel = None
     preview_stream = None
-    preview_profile_id = None
     try:
         from core.utils import RedisClient
 
@@ -604,8 +603,8 @@ def get_stream_info_for_switch(
             stream_id, m3u_profile_id, error_reason, slot_reserved = stream.get_stream()
             if stream_id is None or m3u_profile_id is None:
                 return {'error': error_reason or 'No profile available for stream'}
+            # get_stream() above reserved the default preview slot.
             preview_stream = stream
-            preview_profile_id = m3u_profile_id
 
             profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
             stream_profile = stream.get_stream_profile()
@@ -744,7 +743,7 @@ def get_stream_info_for_switch(
         if slot_reserved and channel is not None:
             channel.release_stream()
         elif slot_reserved and preview_stream is not None:
-            preview_stream.release_stream(m3u_profile_id=preview_profile_id)
+            preview_stream.release_stream()
         logger.error(f"Error getting stream info for switch: {e}", exc_info=True)
         return {'error': f'Error: {str(e)}'}
     finally:

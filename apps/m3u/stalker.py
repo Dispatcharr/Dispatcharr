@@ -1106,10 +1106,15 @@ class StalkerClient:
         started = time.monotonic()
         resolved_url = None
         for attempt in range(1, max_attempts + 1):
-            if attempt > 1 and time.monotonic() - started >= CREATE_LINK_RETRY_BUDGET_SECONDS:
-                break
+            request_kwargs = {}
+            if attempt > 1:
+                # Retries must fit in what is left of the budget, request included.
+                remaining = CREATE_LINK_RETRY_BUDGET_SECONDS - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                request_kwargs["timeout"] = min(self.timeout, remaining)
             try:
-                payload = self._request("GET", request_url, with_auth=True)
+                payload = self._request("GET", request_url, with_auth=True, **request_kwargs)
                 resolved_url = self._extract_create_link_url(payload)
             except StalkerError:
                 if attempt == 1:
@@ -1741,11 +1746,11 @@ class StalkerClient:
                     return value
         return None
 
-    def _request(self, method, portal_url, query=None, data=None, with_auth=False):
+    def _request(self, method, portal_url, query=None, data=None, with_auth=False, timeout=None):
         headers = self._headers(portal_url, with_auth=with_auth)
         request_kwargs = {
             "headers": headers,
-            "timeout": self.timeout,
+            "timeout": self.timeout if timeout is None else timeout,
         }
         if query:
             request_kwargs["params"] = query

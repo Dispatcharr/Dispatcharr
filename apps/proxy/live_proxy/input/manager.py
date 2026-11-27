@@ -1021,6 +1021,13 @@ class StreamManager:
                         logger.info(f"Successfully switched to new URL: {self.url} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
                         self._clear_connection_failure_history()
                         # Continue outer loop with new URL - DON'T add a break statement here
+                    elif self._idle_shutdown_deadline() is not None:
+                        # The last viewer left during the switch, so it was
+                        # skipped. Do not mark the channel failed: hold it until
+                        # a viewer returns (retry) or the delay ends (stop).
+                        if self._stop_if_idle():
+                            return
+                        self._clear_connection_failure_history()
                     else:
                         # No more streams to try
                         logger.error(f"Failed to find alternative streams after {stream_switch_attempts} attempts for channel: {self.channel_id}")
