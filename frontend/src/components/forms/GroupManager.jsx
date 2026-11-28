@@ -709,16 +709,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
           </Alert>
 
           {isReordering && (
-            <Group
-              justify="flex-end"
-              style={{
-                position: 'sticky',
-                top: 0,
-                zIndex: 10,
-                background: 'var(--mantine-color-body)',
-                paddingBlock: 8,
-              }}
-            >
+            <Group justify="flex-end">
               <Button
                 variant="default"
                 onClick={() => setIsReordering(false)}
@@ -886,7 +877,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
                     items={reorderGroups.map((group) => group.id)}
                     strategy={verticalListSortingStrategy}
                   >
-                    <Stack gap="xs">
+                    <Stack gap="xs" mah="45dvh" style={{ overflowY: 'auto' }}>
                       {reorderGroups.map((group) => (
                         <SortableCategory key={group.id} group={group} />
                       ))}
