@@ -419,6 +419,25 @@ class ChannelListEffectiveOrderingTests(TestCase):
             [1.0, 2.0, 3.0],
         )
 
+    def test_category_order_uses_override_even_when_target_is_unranked(self):
+        self.group.sort_order = 0
+        self.group.save(update_fields=["sort_order"])
+        unranked = ChannelGroup.objects.create(name="Unranked")
+        ChannelOverride.objects.filter(channel=self.channel_a).update(
+            channel_group=unranked
+        )
+
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"ordering": "category_order", "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [row["id"] for row in response.data["results"]],
+            [self.channel_b.id, self.channel_c.id, self.channel_a.id],
+        )
+
     def test_list_orders_by_effective_name(self):
         response = self.client.get(
             "/api/channels/channels/",

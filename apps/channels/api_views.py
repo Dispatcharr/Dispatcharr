@@ -13,6 +13,9 @@ from django.shortcuts import get_object_or_404, get_list_or_404
 from django.core.paginator import Paginator
 from django.db import DataError, connection, transaction
 from django.db.models import (
+    Case,
+    F,
+    When,
     Count,
     Exists,
     IntegerField,
@@ -1248,6 +1251,31 @@ class EffectiveChannelOrderingFilter(OrderingFilter):
         for term in ordering:
             prefix = "-" if term.startswith("-") else ""
             field = term.lstrip("-")
+            if field == "category_order":
+                aliases.update(
+                    category_rank=Case(
+                        When(
+                            override__channel_group_id__isnull=False,
+                            then=F("override__channel_group__sort_order"),
+                        ),
+                        default=F("channel_group__sort_order"),
+                        output_field=IntegerField(),
+                    ),
+                    effective_group_id=Coalesce(
+                        "override__channel_group_id", "channel_group_id"
+                    ),
+                    effective_number=Coalesce(
+                        "override__channel_number", "channel_number"
+                    ),
+                )
+                rank = F("category_rank")
+                terms.extend([
+                    rank.desc(nulls_last=True) if prefix else rank.asc(nulls_last=True),
+                    F("effective_group_id").asc(nulls_last=True),
+                    F("effective_number").asc(nulls_last=True),
+                    "pk",
+                ])
+                break
             mapped = self.EFFECTIVE_ORDER_MAP.get(field)
             if mapped:
                 alias, coalesce_args = mapped
@@ -1271,7 +1299,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
         EffectiveChannelOrderingFilter,
     ]
     filterset_class = ChannelFilter
-    ordering_fields = ["channel_number", "name", "channel_group__name", "epg_data__name"]
+    ordering_fields = [
+        "channel_number", "name", "channel_group__name", "epg_data__name",
+        "category_order",
+    ]
     ordering = ["-channel_number"]
 
     def create(self, request, *args, **kwargs):
