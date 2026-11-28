@@ -11,7 +11,6 @@ import {
   Flex,
   Group,
   Modal,
-  ScrollArea,
   Stack,
   Text,
   TextInput,
@@ -699,249 +698,251 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
         onClose={onClose}
         title="Group Manager"
         size="lg"
-        scrollAreaComponent={ScrollArea.Autosize}
         zIndex={2000}
       >
         <Stack>
-          <Alert icon={<AlertCircle size={16} />} color="blue" variant="light">
-            Manage channel groups. Promote groups to protect them from automatic
-            removal, or demote empty custom groups to remove that protection.
-          </Alert>
+          <Stack mah="min(65dvh, calc(100dvh - 10rem))" style={{ overflowY: 'auto' }}>
+            <Alert icon={<AlertCircle size={16} />} color="blue" variant="light">
+              Manage channel groups. Promote groups to protect them from automatic
+              removal, or demote empty custom groups to remove that protection.
+            </Alert>
 
-          {isReordering && (
-            <Group justify="flex-end">
-              <Button
-                variant="default"
-                onClick={() => setIsReordering(false)}
-                disabled={isSavingOrder}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSaveCategoryOrder}
-                loading={isSavingOrder}
-              >
-                Save Order
-              </Button>
+            {/* Create new group section */}
+            <Group justify="space-between">
+              {isCreating ? (
+                <Group style={{ flex: 1 }}>
+                  <TextInput
+                    placeholder="Enter group name"
+                    value={newGroupName}
+                    onChange={handleNewGroupNameChange}
+                    style={{ flex: 1 }}
+                    onKeyPress={(e) => e.key === 'Enter' && handleCreate()}
+                    autoFocus
+                  />
+                  <ActionIcon color="green" onClick={handleCreate}>
+                    <Check size={16} />
+                  </ActionIcon>
+                  <ActionIcon
+                    color="gray"
+                    onClick={() => {
+                      setIsCreating(false);
+                      setNewGroupName('');
+                    }}
+                  >
+                    <X size={16} />
+                  </ActionIcon>
+                </Group>
+              ) : (
+                <Button
+                  leftSection={<SquarePlus size={16} />}
+                  variant="light"
+                  size="sm"
+                  onClick={() => setIsCreating(true)}
+                  disabled={isReordering}
+                >
+                  Add Group
+                </Button>
+              )}
+
+              {!isCreating && (
+                <Group gap="xs">
+                  <Button
+                    leftSection={<GripVertical size={16} />}
+                    variant="light"
+                    size="sm"
+                    onClick={handleStartReordering}
+                    disabled={isReordering}
+                  >
+                    Reorder Xtream Categories
+                  </Button>
+                  <Button
+                    leftSection={<Trash size={16} />}
+                    variant="light"
+                    size="sm"
+                    color="orange"
+                    onClick={handleCleanup}
+                    loading={isCleaningUp}
+                    disabled={isReordering}
+                  >
+                    Cleanup Unused
+                  </Button>
+                </Group>
+              )}
             </Group>
-          )}
 
-          {/* Create new group section */}
-          <Group justify="space-between">
-            {isCreating ? (
-              <Group style={{ flex: 1 }}>
+            <Divider />
+
+            {/* Filter Controls */}
+            <Stack gap="sm" hidden={isReordering}>
+              <Group justify="space-between" align="center">
+                <Group align="center" gap="sm">
+                  <Filter size={16} />
+                  <Text size="sm" fw={600}>
+                    Filter Groups
+                  </Text>
+                </Group>
                 <TextInput
-                  placeholder="Enter group name"
-                  value={newGroupName}
-                  onChange={handleNewGroupNameChange}
-                  style={{ flex: 1 }}
-                  onKeyPress={(e) => e.key === 'Enter' && handleCreate()}
-                  autoFocus
+                  placeholder="Search groups..."
+                  value={searchTerm}
+                  onChange={handleSearchChange}
+                  size="sm"
+                  style={{ width: '200px' }}
+                  rightSection={
+                    searchTerm && (
+                      <ActionIcon
+                        size="sm"
+                        variant="subtle"
+                        onClick={() => setSearchTerm('')}
+                      >
+                        <X size={14} />
+                      </ActionIcon>
+                    )
+                  }
                 />
-                <ActionIcon color="green" onClick={handleCreate}>
-                  <Check size={16} />
-                </ActionIcon>
-                <ActionIcon
-                  color="gray"
-                  onClick={() => {
-                    setIsCreating(false);
-                    setNewGroupName('');
-                  }}
-                >
-                  <X size={16} />
-                </ActionIcon>
               </Group>
-            ) : (
-              <Button
-                leftSection={<SquarePlus size={16} />}
-                variant="light"
-                size="sm"
-                onClick={() => setIsCreating(true)}
-                disabled={isReordering}
-              >
-                Add Group
-              </Button>
-            )}
 
-            {!isCreating && (
-              <Group gap="xs">
-                <Button
-                  leftSection={<GripVertical size={16} />}
-                  variant="light"
+              <Group gap="xs" align="center">
+                <Text size="xs" c="dimmed">
+                  Show:
+                </Text>
+                <Chip
+                  checked={showChannelGroups}
+                  onChange={setShowChannelGroups}
                   size="sm"
-                  onClick={handleStartReordering}
-                  disabled={isReordering}
+                  color="blue"
                 >
-                  Reorder Xtream Categories
-                </Button>
-                <Button
-                  leftSection={<Trash size={16} />}
-                  variant="light"
+                  <Group gap={4}>
+                    <Tv size={10} />
+                    Channel Groups ({filterCounts.channels})
+                  </Group>
+                </Chip>
+                <Chip
+                  checked={showM3UGroups}
+                  onChange={setShowM3UGroups}
                   size="sm"
-                  color="orange"
-                  onClick={handleCleanup}
-                  loading={isCleaningUp}
-                  disabled={isReordering}
+                  color="purple"
                 >
-                  Cleanup Unused
-                </Button>
+                  <Group gap={4}>
+                    <Database size={10} />
+                    M3U Groups ({filterCounts.m3u})
+                  </Group>
+                </Chip>
+                <Chip
+                  checked={showUnusedGroups}
+                  onChange={setShowUnusedGroups}
+                  size="sm"
+                  color="gray"
+                >
+                  Unused Groups ({filterCounts.unused})
+                </Chip>
               </Group>
-            )}
-          </Group>
+            </Stack>
+
+            {!isReordering && <Divider />}
+
+            {/* Existing groups */}
+            <Stack>
+              {isReordering ? (
+                <>
+                  <Text size="sm" c="dimmed">
+                    Drag the categories into the order you want in Xtream clients.
+                    This changes category order only; channel numbers stay the same.
+                  </Text>
+                  <DndContext
+                    collisionDetection={closestCenter}
+                    modifiers={[restrictToVerticalAxis]}
+                    onDragEnd={handleCategoryDragEnd}
+                    sensors={sensors}
+                  >
+                    <SortableContext
+                      items={reorderGroups.map((group) => group.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <Stack gap="xs">
+                        {reorderGroups.map((group) => (
+                          <SortableCategory key={group.id} group={group} />
+                        ))}
+                      </Stack>
+                    </SortableContext>
+                  </DndContext>
+                </>
+              ) : (
+                <>
+                  <Text size="sm" fw={600}>
+                    Groups ({filteredGroups.length}
+                    {(searchTerm ||
+                      !showChannelGroups ||
+                      !showM3UGroups ||
+                      !showUnusedGroups) &&
+                      ` of ${sortedGroups.length}`}
+                    )
+                  </Text>
+
+                  {loading ? (
+                <Text size="sm" c="dimmed">
+                  Loading group information...
+                </Text>
+              ) : filteredGroups.length === 0 ? (
+                <Text size="sm" c="dimmed">
+                  {searchTerm ||
+                  !showChannelGroups ||
+                  !showM3UGroups ||
+                  !showUnusedGroups
+                    ? 'No groups found matching your filters'
+                    : 'No groups found'}
+                </Text>
+              ) : (
+                <Stack gap="xs">
+                  {filteredGroups.map((group) => (
+                    <GroupItem
+                      key={group.id}
+                      group={group}
+                      editingGroupId={editingGroupId}
+                      editName={editName}
+                      onEditNameChange={handleEditNameChange}
+                      onSaveEdit={handleSaveEdit}
+                      onCancelEdit={handleCancelEdit}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
+                      onDemote={handleDemote}
+                      onClaimCustom={handleClaimCustom}
+                      groupUsage={groupUsage}
+                      canEditGroup={canEditChannelGroup}
+                      canDeleteGroup={canDeleteChannelGroup}
+                    />
+                  ))}
+                </Stack>
+              )}
+                </>
+              )}
+            </Stack>
+
+          </Stack>
 
           <Divider />
 
-          {/* Filter Controls */}
-          <Stack gap="sm" hidden={isReordering}>
-            <Group justify="space-between" align="center">
-              <Group align="center" gap="sm">
-                <Filter size={16} />
-                <Text size="sm" fw={600}>
-                  Filter Groups
-                </Text>
-              </Group>
-              <TextInput
-                placeholder="Search groups..."
-                value={searchTerm}
-                onChange={handleSearchChange}
-                size="sm"
-                style={{ width: '200px' }}
-                rightSection={
-                  searchTerm && (
-                    <ActionIcon
-                      size="sm"
-                      variant="subtle"
-                      onClick={() => setSearchTerm('')}
-                    >
-                      <X size={14} />
-                    </ActionIcon>
-                  )
-                }
-              />
-            </Group>
-
-            <Group gap="xs" align="center">
-              <Text size="xs" c="dimmed">
-                Show:
-              </Text>
-              <Chip
-                checked={showChannelGroups}
-                onChange={setShowChannelGroups}
-                size="sm"
-                color="blue"
-              >
-                <Group gap={4}>
-                  <Tv size={10} />
-                  Channel Groups ({filterCounts.channels})
-                </Group>
-              </Chip>
-              <Chip
-                checked={showM3UGroups}
-                onChange={setShowM3UGroups}
-                size="sm"
-                color="purple"
-              >
-                <Group gap={4}>
-                  <Database size={10} />
-                  M3U Groups ({filterCounts.m3u})
-                </Group>
-              </Chip>
-              <Chip
-                checked={showUnusedGroups}
-                onChange={setShowUnusedGroups}
-                size="sm"
-                color="gray"
-              >
-                Unused Groups ({filterCounts.unused})
-              </Chip>
-            </Group>
-          </Stack>
-
-          {!isReordering && <Divider />}
-
-          {/* Existing groups */}
-          <Stack>
+          <Flex justify="flex-end" gap="xs">
             {isReordering ? (
               <>
-                <Text size="sm" c="dimmed">
-                  Drag the categories into the order you want in Xtream clients.
-                  This changes category order only; channel numbers stay the same.
-                </Text>
-                <DndContext
-                  collisionDetection={closestCenter}
-                  modifiers={[restrictToVerticalAxis]}
-                  onDragEnd={handleCategoryDragEnd}
-                  sensors={sensors}
+                <Button
+                  variant="default"
+                  onClick={() => setIsReordering(false)}
+                  disabled={isSavingOrder}
                 >
-                  <SortableContext
-                    items={reorderGroups.map((group) => group.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <Stack gap="xs" mah="45dvh" style={{ overflowY: 'auto' }}>
-                      {reorderGroups.map((group) => (
-                        <SortableCategory key={group.id} group={group} />
-                      ))}
-                    </Stack>
-                  </SortableContext>
-                </DndContext>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveCategoryOrder}
+                  loading={isSavingOrder}
+                >
+                  Save Order
+                </Button>
               </>
             ) : (
-              <>
-                <Text size="sm" fw={600}>
-                  Groups ({filteredGroups.length}
-                  {(searchTerm ||
-                    !showChannelGroups ||
-                    !showM3UGroups ||
-                    !showUnusedGroups) &&
-                    ` of ${sortedGroups.length}`}
-                  )
-                </Text>
-
-                {loading ? (
-              <Text size="sm" c="dimmed">
-                Loading group information...
-              </Text>
-            ) : filteredGroups.length === 0 ? (
-              <Text size="sm" c="dimmed">
-                {searchTerm ||
-                !showChannelGroups ||
-                !showM3UGroups ||
-                !showUnusedGroups
-                  ? 'No groups found matching your filters'
-                  : 'No groups found'}
-              </Text>
-            ) : (
-              <Stack gap="xs">
-                {filteredGroups.map((group) => (
-                  <GroupItem
-                    key={group.id}
-                    group={group}
-                    editingGroupId={editingGroupId}
-                    editName={editName}
-                    onEditNameChange={handleEditNameChange}
-                    onSaveEdit={handleSaveEdit}
-                    onCancelEdit={handleCancelEdit}
-                    onEdit={handleEdit}
-                    onDelete={handleDelete}
-                    onDemote={handleDemote}
-                    onClaimCustom={handleClaimCustom}
-                    groupUsage={groupUsage}
-                    canEditGroup={canEditChannelGroup}
-                    canDeleteGroup={canDeleteChannelGroup}
-                  />
-                ))}
-              </Stack>
+              <Button variant="default" onClick={onClose}>
+                Close
+              </Button>
             )}
-              </>
-            )}
-          </Stack>
-
-          <Divider />
-
-          <Flex justify="flex-end">
-            <Button variant="default" onClick={onClose}>
-              Close
-            </Button>
           </Flex>
         </Stack>
       </Modal>
