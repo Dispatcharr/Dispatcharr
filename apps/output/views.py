@@ -618,7 +618,7 @@ def xc_xmltv(request):
 
 
 def xc_get_live_categories(user):
-    from django.db.models import Min
+    from django.db.models import F, Min
     from django.db.models.functions import Coalesce
 
     response = []
@@ -644,7 +644,7 @@ def xc_get_live_categories(user):
         )
         .distinct()
         .annotate(min_channel_number=effective_min)
-        .order_by("min_channel_number")
+        .order_by(F("sort_order").asc(nulls_last=True), "min_channel_number")
     )
 
     for group in channel_groups:

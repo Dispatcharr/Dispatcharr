@@ -16,6 +16,7 @@ vi.mock('../../../utils/forms/ChannelGroupUtils.js', () => ({
   claimChannelGroupAsCustom: vi.fn(),
   cleanupUnusedChannelGroups: vi.fn(),
   deleteChannelGroup: vi.fn(),
+  reorderChannelGroups: vi.fn(),
   unclaimChannelGroup: vi.fn(),
   updateChannelGroup: vi.fn(),
 }));
@@ -54,6 +55,7 @@ vi.mock('lucide-react', () => ({
   Check: () => <svg data-testid="icon-check" />,
   Database: () => <svg data-testid="icon-database" />,
   Filter: () => <svg data-testid="icon-filter" />,
+  GripVertical: () => <svg data-testid="icon-grip-vertical" />,
   Minus: () => <svg data-testid="icon-minus" />,
   Plus: () => <svg data-testid="icon-plus" />,
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
@@ -224,6 +226,24 @@ describe('GroupManager', () => {
       renderGroupManager({ onClose });
       fireEvent.click(screen.getByTestId('modal-close'));
       expect(onClose).toHaveBeenCalled();
+    });
+  });
+
+  describe('Xtream category ordering', () => {
+    it('opens the drag list and saves the displayed order', async () => {
+      setupMocks({ groups: { 1: makeGroup({ name: 'Sports' }) } });
+      vi.mocked(ChannelGroupUtils.reorderChannelGroups).mockResolvedValue();
+      renderGroupManager();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reorder Xtream Categories' }));
+      expect(screen.getByText(/Drag the categories into the order/)).toBeInTheDocument();
+      expect(screen.getByText('Sports')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save Order' }));
+
+      await waitFor(() =>
+        expect(ChannelGroupUtils.reorderChannelGroups).toHaveBeenCalledWith([1])
+      );
     });
   });
 

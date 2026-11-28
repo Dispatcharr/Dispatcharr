@@ -13,9 +13,13 @@ from django.shortcuts import get_object_or_404, get_list_or_404
 from django.core.paginator import Paginator
 from django.db import DataError, connection, transaction
 from django.db.models import (
+    Case,
+    F,
+    When,
     Count,
     Exists,
     IntegerField,
+    Min,
     OuterRef,
     Prefetch,
     Q,
@@ -89,6 +93,7 @@ from .serializers import (
     StreamSerializer,
     ChannelSerializer,
     ChannelGroupSerializer,
+    ChannelGroupReorderSerializer,
     LogoSerializer,
     ChannelProfileMembershipSerializer,
     BulkChannelProfileMembershipSerializer,
@@ -703,6 +708,41 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return permissions_for_action(self)
 
+    @extend_schema(
+        request=ChannelGroupReorderSerializer,
+        responses={
+            204: None,
+            400: inline_serializer(
+                name="ChannelGroupReorderError",
+                fields={"detail": serializers.CharField(required=False)},
+            ),
+        },
+        description="Save the display order of channel groups for Xtream output.",
+    )
+    @action(detail=False, methods=["post"], url_path="reorder")
+    def reorder(self, request, *args, **kwargs):
+        serializer = ChannelGroupReorderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        group_ids = serializer.validated_data["group_ids"]
+
+        order_by_id = {group_id: index for index, group_id in enumerate(group_ids)}
+        with transaction.atomic():
+            groups = list(ChannelGroup.objects.select_for_update().order_by("pk"))
+            if not order_by_id.keys() <= {group.pk for group in groups}:
+                return Response(
+                    {"detail": "One or more channel groups do not exist."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            changed = []
+            for group in groups:
+                sort_order = order_by_id.get(group.pk)
+                if group.sort_order != sort_order:
+                    group.sort_order = sort_order
+                    changed.append(group)
+            ChannelGroup.objects.bulk_update(changed, ["sort_order"])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @staticmethod
     def _has_effective_channels(group):
         return Channel.objects.annotate(
@@ -830,8 +870,8 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
 
         # Count effective groups in one GROUP BY query rather than using a
         # correlated count subquery for every group in the list query.
-        effective_group_counts = {
-            row['gid']: row['c']
+        effective_group_stats = {
+            row['gid']: row
             for row in (
                 Channel.objects.annotate(
                     gid=Coalesce(
@@ -841,11 +881,19 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
                 )
                 .filter(gid__in=group_ids)
                 .values('gid')
-                .annotate(c=Count('id'))
+                .annotate(
+                    c=Count("id"),
+                    min_number=Min(
+                        Coalesce("override__channel_number", "channel_number"),
+                        filter=Q(hidden_from_output=False),
+                    ),
+                )
             )
         }
         for group in groups:
-            group.channel_count = effective_group_counts.get(group.id, 0)
+            stats = effective_group_stats.get(group.id, {})
+            group.channel_count = stats.get("c", 0)
+            group.min_channel_number = stats.get("min_number")
 
         # Pre-aggregate stream counts for all (account, group) pairs in a
         # single query so the nested ChannelGroupM3UAccountSerializer never
@@ -1203,6 +1251,31 @@ class EffectiveChannelOrderingFilter(OrderingFilter):
         for term in ordering:
             prefix = "-" if term.startswith("-") else ""
             field = term.lstrip("-")
+            if field == "category_order":
+                aliases.update(
+                    category_rank=Case(
+                        When(
+                            override__channel_group_id__isnull=False,
+                            then=F("override__channel_group__sort_order"),
+                        ),
+                        default=F("channel_group__sort_order"),
+                        output_field=IntegerField(),
+                    ),
+                    effective_group_id=Coalesce(
+                        "override__channel_group_id", "channel_group_id"
+                    ),
+                    effective_number=Coalesce(
+                        "override__channel_number", "channel_number"
+                    ),
+                )
+                rank = F("category_rank")
+                terms.extend([
+                    rank.desc(nulls_last=True) if prefix else rank.asc(nulls_last=True),
+                    F("effective_group_id").asc(nulls_last=True),
+                    F("effective_number").asc(nulls_last=True),
+                    "pk",
+                ])
+                break
             mapped = self.EFFECTIVE_ORDER_MAP.get(field)
             if mapped:
                 alias, coalesce_args = mapped
@@ -1226,7 +1299,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
         EffectiveChannelOrderingFilter,
     ]
     filterset_class = ChannelFilter
-    ordering_fields = ["channel_number", "name", "channel_group__name", "epg_data__name"]
+    ordering_fields = [
+        "channel_number", "name", "channel_group__name", "epg_data__name",
+        "category_order",
+    ]
     ordering = ["-channel_number"]
 
     def create(self, request, *args, **kwargs):

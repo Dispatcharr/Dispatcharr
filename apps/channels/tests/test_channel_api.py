@@ -419,6 +419,25 @@ class ChannelListEffectiveOrderingTests(TestCase):
             [1.0, 2.0, 3.0],
         )
 
+    def test_category_order_uses_override_even_when_target_is_unranked(self):
+        self.group.sort_order = 0
+        self.group.save(update_fields=["sort_order"])
+        unranked = ChannelGroup.objects.create(name="Unranked")
+        ChannelOverride.objects.filter(channel=self.channel_a).update(
+            channel_group=unranked
+        )
+
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"ordering": "category_order", "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [row["id"] for row in response.data["results"]],
+            [self.channel_b.id, self.channel_c.id, self.channel_a.id],
+        )
+
     def test_list_orders_by_effective_name(self):
         response = self.client.get(
             "/api/channels/channels/",
@@ -1699,6 +1718,28 @@ class ChannelGroupEffectiveCountTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["channel_count"], 0)
+
+    def test_admin_can_save_category_order_in_one_request(self):
+        response = self.client.post(
+            "/api/channels/groups/reorder/",
+            {"group_ids": [self.target.id, self.source.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.source.refresh_from_db()
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.sort_order, 0)
+        self.assertEqual(self.source.sort_order, 1)
+
+    def test_reorder_rejects_unknown_group_ids(self):
+        response = self.client.post(
+            "/api/channels/groups/reorder/",
+            {"group_ids": [self.source.id, 999999]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ChannelListOnlyCatchupFilterTests(TestCase):

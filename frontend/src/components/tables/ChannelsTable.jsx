@@ -353,6 +353,8 @@ const ChannelsTable = ({ onReady }) => {
   const pagination = useChannelsTableStore((s) => s.pagination);
   const setPagination = useChannelsTableStore((s) => s.setPagination);
   const sorting = useChannelsTableStore((s) => s.sorting);
+  const isCategoryOrder = sorting[0]?.id === 'category_order';
+  const categoryRanks = isCategoryOrder ? channelGroups : null;
   const setSorting = useChannelsTableStore((s) => s.setSorting);
   const totalCount = useChannelsTableStore((s) => s.totalCount);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
@@ -892,7 +894,7 @@ const ChannelsTable = ({ onReady }) => {
   const handleDragEnd = async (event) => {
     const { active, over } = event;
 
-    if (!over || active.id === over.id) {
+    if (isCategoryOrder || !over || active.id === over.id) {
       return;
     }
 
@@ -935,7 +937,7 @@ const ChannelsTable = ({ onReady }) => {
    */
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, categoryRanks]);
 
   // Store still has a nullish entry beyond just this render; refetch to clear it.
   useEffect(() => {
@@ -1298,7 +1300,7 @@ const ChannelsTable = ({ onReady }) => {
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
-    enableDragDrop: true,
+    enableDragDrop: !isCategoryOrder,
     onRowSelectionChange: onRowSelectionChange,
     onRowExpansionChange: onRowExpansionChange,
     state: {
@@ -1722,6 +1724,26 @@ const ChannelsTable = ({ onReady }) => {
             visibilityFilter={visibilityFilter}
             setVisibilityFilter={setVisibilityFilter}
           />
+
+          {hasChannels && (
+            <Button
+              size="xs"
+              variant="subtle"
+              onClick={() => {
+                setPagination({ ...pagination, pageIndex: 0 });
+                setSorting([
+                  {
+                    id: isCategoryOrder ? 'channel_number' : 'category_order',
+                    desc: false,
+                  },
+                ]);
+              }}
+            >
+              {isCategoryOrder
+                ? 'Sort by Channel Number'
+                : 'Sort by Category Order'}
+            </Button>
+          )}
 
           {/* Table or ghost empty state inside Paper */}
           <Box>

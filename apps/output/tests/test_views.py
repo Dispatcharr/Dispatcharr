@@ -1225,6 +1225,54 @@ class XcLiveCategoriesProfileUserLevelTests(OutputEndpointTestMixin, TestCase):
         )
 
 
+class XcLiveCategoriesSortOrderTests(OutputEndpointTestMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(
+            username=f"xc-order-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+        )
+
+    def test_explicit_group_order_precedes_channel_number_order(self):
+        low_number = ChannelGroup.objects.create(
+            name="Low Number", sort_order=20
+        )
+        high_number = ChannelGroup.objects.create(
+            name="High Number", sort_order=10
+        )
+        default_order = ChannelGroup.objects.create(name="Default Order")
+        Channel.objects.create(
+            name="Channel 1", channel_number=1, channel_group=low_number
+        )
+        Channel.objects.create(
+            name="Channel 50", channel_number=50, channel_group=high_number
+        )
+        Channel.objects.create(
+            name="Channel 100", channel_number=100, channel_group=default_order
+        )
+
+        categories = xc_get_live_categories(self.user)
+
+        self.assertEqual(
+            [category["category_name"] for category in categories],
+            ["High Number", "Low Number", "Default Order"],
+        )
+
+    def test_groups_without_explicit_order_keep_channel_number_order(self):
+        later = ChannelGroup.objects.create(name="Later")
+        earlier = ChannelGroup.objects.create(name="Earlier")
+        Channel.objects.create(name="Channel 20", channel_number=20, channel_group=later)
+        Channel.objects.create(name="Channel 5", channel_number=5, channel_group=earlier)
+
+        categories = xc_get_live_categories(self.user)
+
+        self.assertEqual(
+            [category["category_name"] for category in categories],
+            ["Earlier", "Later"],
+        )
+
+
 class XcLiveStreamsCatchupAdvertisingTests(TestCase):
     """XC live streams omit tv_archive when catchup is disabled for the user."""
 

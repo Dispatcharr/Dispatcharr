@@ -6,6 +6,8 @@ export const updateChannelGroup = (channelGroup, values) => {
     ...values,
   });
 };
+export const reorderChannelGroups = (groupIds) =>
+  API.reorderChannelGroups(groupIds);
 export const addChannelGroup = (values) => {
   return API.addChannelGroup(values);
 };
