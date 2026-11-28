@@ -69,6 +69,7 @@ class ChannelGroupManager(models.Manager):
 
 class ChannelGroup(models.Model):
     name = models.TextField(unique=True, db_index=True)
+    sort_order = models.IntegerField(null=True, blank=True, db_index=True)
 
     objects = ChannelGroupManager()
 

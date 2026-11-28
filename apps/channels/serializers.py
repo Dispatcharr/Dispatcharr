@@ -291,8 +291,21 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 #
 # Channel Group
 #
+class ChannelGroupReorderSerializer(serializers.Serializer):
+    group_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=True,
+    )
+
+    def validate_group_ids(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Group IDs must be unique.")
+        return value
+
+
 class ChannelGroupSerializer(serializers.ModelSerializer):
     channel_count = serializers.SerializerMethodField()
+    min_channel_number = serializers.IntegerField(read_only=True, allow_null=True)
     is_custom = serializers.SerializerMethodField()
     m3u_account_count = serializers.SerializerMethodField()
     m3u_accounts = ChannelGroupM3UAccountSerializer(
@@ -301,11 +314,15 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
         source="provider_m3u_account_relations",
     )
 
+    sort_order = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = ChannelGroup
         fields = [
             "id",
             "name",
+            "sort_order",
+            "min_channel_number",
             "channel_count",
             "is_custom",
             "m3u_account_count",

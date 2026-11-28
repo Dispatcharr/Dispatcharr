@@ -22,6 +22,7 @@ import {
   Check,
   Database,
   Filter,
+  GripVertical,
   Minus,
   Plus,
   SquareMinus,
@@ -31,6 +32,23 @@ import {
   Tv,
   X,
 } from 'lucide-react';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  sortableKeyboardCoordinates,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import useChannelsStore from '../../store/channels';
 import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
@@ -41,6 +59,7 @@ import {
   cleanupUnusedChannelGroups,
   deleteChannelGroup,
   unclaimChannelGroup,
+  reorderChannelGroups,
   updateChannelGroup,
 } from '../../utils/forms/ChannelGroupUtils.js';
 
@@ -50,6 +69,46 @@ const toGroupUsage = (group) => ({
   canEdit: group.m3u_account_count === 0 || group.is_custom,
   canDelete: group.channel_count === 0 && group.m3u_account_count === 0,
 });
+
+const SortableCategory = ({ group }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: group.id });
+
+  return (
+    <Box
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.7 : 1,
+        position: 'relative',
+        border: '1px solid #444',
+        borderRadius: 8,
+        backgroundColor: isDragging ? '#3A3A3E' : '#2A2A2E',
+        padding: '8px',
+      }}
+    >
+      <Group gap="sm">
+        <ActionIcon
+          {...attributes}
+          {...listeners}
+          variant="transparent"
+          aria-label={`Drag ${group.name} to reorder`}
+          style={{ cursor: 'grab', touchAction: 'none' }}
+        >
+          <GripVertical size={16} />
+        </ActionIcon>
+        <Text size="sm">{group.name}</Text>
+      </Group>
+    </Box>
+  );
+};
 
 // Move GroupItem outside to prevent recreation on every render
 const GroupItem = React.memo(
@@ -234,6 +293,9 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
 
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editName, setEditName] = useState('');
+  const [isReordering, setIsReordering] = useState(false);
+  const [reorderGroups, setReorderGroups] = useState([]);
+  const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [groupUsage, setGroupUsage] = useState({});
@@ -251,6 +313,10 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
   const [includeCustomInCleanup, setIncludeCustomInCleanup] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   // Memoize the channel groups array to prevent unnecessary re-renders
   const channelGroupsArray = useMemo(
@@ -260,7 +326,19 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
 
   // Memoize sorted groups to prevent re-sorting on every render
   const sortedGroups = useMemo(
-    () => channelGroupsArray.sort((a, b) => a.name.localeCompare(b.name)),
+    () =>
+      [...channelGroupsArray].sort((a, b) => {
+        const aOrder = a.sort_order ?? Number.MAX_SAFE_INTEGER;
+        const bOrder = b.sort_order ?? Number.MAX_SAFE_INTEGER;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+
+        const aChannelNumber = a.min_channel_number ?? Number.MAX_SAFE_INTEGER;
+        const bChannelNumber = b.min_channel_number ?? Number.MAX_SAFE_INTEGER;
+        if (aChannelNumber !== bChannelNumber) {
+          return aChannelNumber - bChannelNumber;
+        }
+        return a.name.localeCompare(b.name);
+      }),
     [channelGroupsArray]
   );
 
@@ -383,6 +461,41 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     setEditingGroupId(null);
     setEditName('');
   }, []);
+
+  const handleStartReordering = useCallback(() => {
+    setReorderGroups(sortedGroups.filter((group) => group.hasChannels));
+    setIsReordering(true);
+  }, [sortedGroups]);
+
+  const handleCategoryDragEnd = useCallback(({ active, over }) => {
+    if (!over || active.id === over.id) return;
+    setReorderGroups((groups) => {
+      const oldIndex = groups.findIndex((group) => group.id === active.id);
+      const newIndex = groups.findIndex((group) => group.id === over.id);
+      return arrayMove(groups, oldIndex, newIndex);
+    });
+  }, []);
+
+  const handleSaveCategoryOrder = useCallback(async () => {
+    setIsSavingOrder(true);
+    try {
+      await reorderChannelGroups(reorderGroups.map((group) => group.id));
+      showNotification({
+        title: 'Success',
+        message: 'Xtream category order saved.',
+        color: 'green',
+      });
+      setIsReordering(false);
+    } catch {
+      showNotification({
+        title: 'Error',
+        message: 'Failed to save category order.',
+        color: 'red',
+      });
+    } finally {
+      setIsSavingOrder(false);
+    }
+  }, [reorderGroups]);
 
   const handleCreate = useCallback(async () => {
     if (!newGroupName.trim()) {
@@ -595,6 +708,33 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
             removal, or demote empty custom groups to remove that protection.
           </Alert>
 
+          {isReordering && (
+            <Group
+              justify="flex-end"
+              style={{
+                position: 'sticky',
+                top: 0,
+                zIndex: 10,
+                background: 'var(--mantine-color-body)',
+                paddingBlock: 8,
+              }}
+            >
+              <Button
+                variant="default"
+                onClick={() => setIsReordering(false)}
+                disabled={isSavingOrder}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSaveCategoryOrder}
+                loading={isSavingOrder}
+              >
+                Save Order
+              </Button>
+            </Group>
+          )}
+
           {/* Create new group section */}
           <Group justify="space-between">
             {isCreating ? (
@@ -626,29 +766,42 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
                 variant="light"
                 size="sm"
                 onClick={() => setIsCreating(true)}
+                disabled={isReordering}
               >
                 Add Group
               </Button>
             )}
 
             {!isCreating && (
-              <Button
-                leftSection={<Trash size={16} />}
-                variant="light"
-                size="sm"
-                color="orange"
-                onClick={handleCleanup}
-                loading={isCleaningUp}
-              >
-                Cleanup Unused
-              </Button>
+              <Group gap="xs">
+                <Button
+                  leftSection={<GripVertical size={16} />}
+                  variant="light"
+                  size="sm"
+                  onClick={handleStartReordering}
+                  disabled={isReordering}
+                >
+                  Reorder Xtream Categories
+                </Button>
+                <Button
+                  leftSection={<Trash size={16} />}
+                  variant="light"
+                  size="sm"
+                  color="orange"
+                  onClick={handleCleanup}
+                  loading={isCleaningUp}
+                  disabled={isReordering}
+                >
+                  Cleanup Unused
+                </Button>
+              </Group>
             )}
           </Group>
 
           <Divider />
 
           {/* Filter Controls */}
-          <Stack gap="sm">
+          <Stack gap="sm" hidden={isReordering}>
             <Group justify="space-between" align="center">
               <Group align="center" gap="sm">
                 <Filter size={16} />
@@ -713,21 +866,47 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
             </Group>
           </Stack>
 
-          <Divider />
+          {!isReordering && <Divider />}
 
           {/* Existing groups */}
           <Stack>
-            <Text size="sm" fw={600}>
-              Groups ({filteredGroups.length}
-              {(searchTerm ||
-                !showChannelGroups ||
-                !showM3UGroups ||
-                !showUnusedGroups) &&
-                ` of ${sortedGroups.length}`}
-              )
-            </Text>
+            {isReordering ? (
+              <>
+                <Text size="sm" c="dimmed">
+                  Drag the categories into the order you want in Xtream clients.
+                  This changes category order only; channel numbers stay the same.
+                </Text>
+                <DndContext
+                  collisionDetection={closestCenter}
+                  modifiers={[restrictToVerticalAxis]}
+                  onDragEnd={handleCategoryDragEnd}
+                  sensors={sensors}
+                >
+                  <SortableContext
+                    items={reorderGroups.map((group) => group.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <Stack gap="xs">
+                      {reorderGroups.map((group) => (
+                        <SortableCategory key={group.id} group={group} />
+                      ))}
+                    </Stack>
+                  </SortableContext>
+                </DndContext>
+              </>
+            ) : (
+              <>
+                <Text size="sm" fw={600}>
+                  Groups ({filteredGroups.length}
+                  {(searchTerm ||
+                    !showChannelGroups ||
+                    !showM3UGroups ||
+                    !showUnusedGroups) &&
+                    ` of ${sortedGroups.length}`}
+                  )
+                </Text>
 
-            {loading ? (
+                {loading ? (
               <Text size="sm" c="dimmed">
                 Loading group information...
               </Text>
@@ -761,6 +940,8 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
                   />
                 ))}
               </Stack>
+            )}
+              </>
             )}
           </Stack>
 

@@ -661,6 +661,14 @@ export default class API {
     }
   }
 
+  static async reorderChannelGroups(groupIds) {
+    await request(`${host}/api/channels/groups/reorder/`, {
+      method: 'POST',
+      body: { group_ids: groupIds },
+    });
+    await useChannelsStore.getState().fetchChannelGroups();
+  }
+
   static async deleteChannelGroup(id) {
     try {
       const response = await request(`${host}/api/channels/groups/${id}/`, {
